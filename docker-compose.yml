@@ -1,0 +1,36 @@
+version: '3'
+
+name: dns-bundle
+
+networks:
+  dnsnet:
+    ipam:
+      config:
+        - subnet: 192.168.180.240/29
+
+
+services:
+  pi-hole:
+    container_name: pi-hole
+    restart: unless-stopped
+    build: pihole/
+    networks:
+      dnsnet:
+        ipv4_address: 192.168.180.242
+
+  unbound:
+    container_name: unbound
+    restart: unless-stopped
+    build: unbound/
+    networks:
+      dnsnet:
+        ipv4_address: 192.168.180.243
+
+  tor-socat:
+    container_name: tor-socat
+    restart: unless-stopped
+    image: 	sureserver/tor-socat:latest
+    networks:
+      dnsnet:
+        ipv4_address: 192.168.180.244
+
