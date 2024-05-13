@@ -1,3 +1,3 @@
 FROM alpinelinux/unbound:latest
 
-ADD etc/* /etc/unbound/
+ADD --chown=unbound:unbound etc/* /etc/unbound/

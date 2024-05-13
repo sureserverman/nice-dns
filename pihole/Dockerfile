@@ -1,3 +1,3 @@
 FROM pihole/pihole:latest
 
-ADD etc/* /etc/pihole/
+COPY --chown=pihole:pihole etc/* /etc/pihole/
