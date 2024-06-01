@@ -67,7 +67,7 @@
 > `sudo docker compose up -d`
 > 
 > To install it on Ubuntu with one-line command try to use:\
-> `bash<(curl -Ls https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb.sh)`
+> `bash <(curl -Ls https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb.sh)`
 > 
 
 
