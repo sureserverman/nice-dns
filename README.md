@@ -46,32 +46,29 @@
 ## About
 
 > This is docker-compose file and all necessary files to build multi-container application with pi-hole, unbound and socat with tor
-> chained together to provide DNS stripped of excessive advertising, trackers, malware and upstreaming your DNS requests< encrypted with tls to 
+> chained together to provide DNS stripped of excessive advertising, trackers, malware and upstreaming your DNS requests, encrypted with tls to 
 > CloudFlare's hidden .onion DNS resolver
 
 ## Usage
 
 
-> To create the application there are just a few commands to do in your teminal:
+> To create the application there are just a few commands to do in your teminal:\
 > `git clone https://github.com/sureserverman/nice-dns.git`
+> `cd nice-dns`
+> Of course you'll need git and docker to be installed on your machine
+> If you want to install it with persistent data dirs, so that you could change your settings and they'll survive reboot then run:\
+> `sudo docker compose -f persistent-settings-compose.yml up -d`
 > 
-> If you want to access it from your host, publish port 853 like this:\
-> `docker run -d --name=nice-dns -p 853:853 --restart=always sureserver/nice-dns:latest`
+> If you want to install it with web interface for pi-hole enabled, then run following command:\
+> `sudo docker compose -f webinterface-compose.yml up -d`
 > 
-> This image uses obfs4 bridges to access tor network. There is a pair of them in this image. If you want to use another ones, just do it like this:\
-> `docker run -d --name=nice-dns -e BRIDGE1="obfs4 217.182.78.247:52234 FF98116BB1530B18EDFBD0721FEF9874ADB1346A cert=tPXL+y4Wk+oFiqWdGtSAJ2BhcJBBcSD3gNn6dbgvmojNXy7DSeygNuHx4PYXvM9B+fTCPg iat-mode=0" -e BRIDGE2="obfs4 217.182.78.247:52234 FF98116BB1530B18EDFBD0721FEF9874ADB1346A cert=tPXL+y4Wk+oFiqWdGtSAJ2BhcJBBcSD3gNn6dbgvmojNXy7DSeygNuHx4PYXvM9B+fTCPg iat-mode=0" --restart=always sureserver/nice-dns:latest`
-> with your desired bridges' strings in quotes
+> But my favorite way is to install it without web interface and without persistent volumes. This is the most secure way. 
+> For two reasons: No possibility for any sort of logs to survive reboots and no possible vulnerabilities in web interface. For this option you just run:\ 
+> `sudo docker compose up -d`
 > 
-> After that just use IP-address of your container and port 853 as DNS-over-TLS upstream resolver
->
-> To use it for DNS-over-HTTPS do it this way:\
-> `docker run -d --name=nice-dns --e PORT=443 --restart=always sureserver/nice-dns:latest`
 > 
-> To use it for DNS do it this way:\
-> `docker run -d --name=nice-dns --e PORT=53 --restart=always sureserver/nice-dns:latest`
->
-> To disable obfs4-bridges:\
-> `docker run -d --name=nice-dns --e BRIDGED="N" --restart=always sureserver/nice-dns:latest`
+> 
+> 
 
 
 ## Roadmap
