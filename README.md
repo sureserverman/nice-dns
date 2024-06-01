@@ -54,7 +54,7 @@
 
 > To create the application there are just a few commands to do in your teminal:\
 > `git clone https://github.com/sureserverman/nice-dns.git`\
-> `cd nice-dns`
+> `cd nice-dns`\
 > Of course you'll need git and docker to be installed on your machine
 > If you want to install it with persistent data dirs, so that you could change your settings and they'll survive reboot then run:\
 > `sudo docker compose -f persistent-settings-compose.yml up -d`
