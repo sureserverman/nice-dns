@@ -66,8 +66,8 @@
 > For two reasons: No possibility for any sort of logs to survive reboots and no possible vulnerabilities in web interface. For this option you just run:\
 > `sudo docker compose up -d`
 > 
-> 
-> 
+> To install it on Ubuntu with one-line command try to use:\
+> `bash<(curl -Ls https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb.sh)`
 > 
 
 
