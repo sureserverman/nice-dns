@@ -53,7 +53,7 @@
 
 
 > To create the application there are just a few commands to do in your teminal:\
-> `git clone https://github.com/sureserverman/nice-dns.git`
+> `git clone https://github.com/sureserverman/nice-dns.git`\
 > `cd nice-dns`
 > Of course you'll need git and docker to be installed on your machine
 > If you want to install it with persistent data dirs, so that you could change your settings and they'll survive reboot then run:\
@@ -63,7 +63,7 @@
 > `sudo docker compose -f webinterface-compose.yml up -d`
 > 
 > But my favorite way is to install it without web interface and without persistent volumes. This is the most secure way. 
-> For two reasons: No possibility for any sort of logs to survive reboots and no possible vulnerabilities in web interface. For this option you just run:\ 
+> For two reasons: No possibility for any sort of logs to survive reboots and no possible vulnerabilities in web interface. For this option you just run:\
 > `sudo docker compose up -d`
 > 
 > 
