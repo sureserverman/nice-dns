@@ -11,7 +11,7 @@ services:
 
   tor-socat:
     container_name: tor-socat
-    restart: unless-stopped
+    restart: always
     image: 	sureserver/tor-socat:latest
     networks:
       dnsnet:
