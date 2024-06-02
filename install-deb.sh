@@ -3,6 +3,18 @@
 #Install required software
 sudo apt-get install -yq git docker docker-compose
 
+#Remove previous versions if any
+sudo docker stop pi-hole &>/dev/null
+sudo docker rm pi-hole &>/dev/null
+sudo docker image rm nice-dns-web-pi-hole:latest &>/dev/null
+sudo docker stop unbound &>/dev/null
+sudo docker rm unbound &>/dev/null
+sudo docker image rm nice-dns-web-unbound:latest&>/dev/null
+sudo docker stop tor-socat &>/dev/null
+sudo docker rm tor-socat &>/dev/null
+sudo docker image rm sureserver/tor-socat:latest &>/dev/null
+sudo docker network rm nice-dns-web_dnsnet &>/dev/null
+
 #Start docker containers
 git clone https://github.com/sureserverman/nice-dns.git
 cd nice-dns
