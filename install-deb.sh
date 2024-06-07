@@ -3,7 +3,7 @@
 resconffile="/etc/systemd/resolved.conf"
 
 #Reset firewall settings
-sudo ufw reset 
+sudo ufw reset -y
 
 #Check if there are installed previous versions
 if [ "$(docker ps -a | grep -c 'tor-socat\|unbound\|pi-hole')" -gt 0 ]
