@@ -33,13 +33,6 @@ if [ $(sudo docker ps -a | grep -c "tor-socat\|unbound\|pi-hole") -gt 0 ]
     sudo apt-get install -yq git docker docker-compose
 fi
 
-#Start docker containers
-git clone https://github.com/sureserverman/nice-dns.git
-cd nice-dns
-sudo docker compose up -d
-cd -
-rm -rf nice-dns
-
 #Use installed containers ad default DNS-server
 # Comment all DNS server settings
 sudo sed -i -e 's/^DNS/#DNS/g' $resconffile
@@ -53,6 +46,13 @@ if [[ $(sudo grep "^#DNS=127.0.0.1" $resconffile) = "" ]]
     #Uncomment if there is one
     sudo sed -i -e 's/^#DNS=127.0.0.1/DNS=127.0.0.1/g' $resconffile
   fi
+
+#Start docker containers
+git clone https://github.com/sureserverman/nice-dns.git
+cd nice-dns
+sudo docker compose up -d
+cd -
+rm -rf nice-dns
 
 sudo systemctl restart systemd-resolved
 
