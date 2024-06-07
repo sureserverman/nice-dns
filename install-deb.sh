@@ -50,11 +50,12 @@ if [[ $(sudo grep "^#DNS=127.0.0.1" $resconffile) = "" ]]
 #Start docker containers
 git clone https://github.com/sureserverman/nice-dns.git
 cd nice-dns
+sudo systemctl stop systemd-resolved
 sudo docker compose up -d
 cd -
 rm -rf nice-dns
 
-sudo systemctl restart systemd-resolved
+sudo systemctl start systemd-resolved
 
 #Deny in firewall any alternative DNS servers
 sudo ufw default deny incoming
