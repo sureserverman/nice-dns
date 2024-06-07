@@ -55,7 +55,7 @@ sudo docker compose up -d
 cd -
 rm -rf nice-dns
 
-sudo systemctl start systemd-resolved
+# sudo systemctl start systemd-resolved
 
 #Deny in firewall any alternative DNS servers
 sudo ufw default deny incoming
