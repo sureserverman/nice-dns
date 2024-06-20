@@ -13,6 +13,11 @@ services:
     container_name: tor-socat
     restart: always
     image: 	sureserver/tor-socat:latest
+    environment:
+      - BRIDGE1=${BRIDGENV1}
+      - BRIDGE2=${BRIDGENV2}
+      - BRIDGED=${BRIDGEDVAR}
+
     networks:
       dnsnet:
         ipv4_address: 192.168.180.244
@@ -31,7 +36,8 @@ services:
     build: pihole/
     ports:
       - 53:53/tcp
-      - 53:53/udp     
+      - 53:53/udp
+      - ${WEBPORT}:80     
     networks:
       dnsnet:
         ipv4_address: 192.168.180.242
