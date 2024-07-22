@@ -37,7 +37,7 @@ services:
     ports:
       - 53:53/tcp
       - 53:53/udp
-      - ${WEBPORT}:80     
+      - ${WEBPORT}:80      
     networks:
       dnsnet:
         ipv4_address: 192.168.180.242
