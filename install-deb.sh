@@ -23,6 +23,7 @@ if [ $(sudo docker ps -a | grep -c "tor-socat\|unbound\|pi-hole") -gt 0 ]
       else
         sudo sed -i -e 's/^#DNS=1.1.1.1/DNS=1.1.1.1/g' $resconffile
       fi
+    sudo systemctl enable systemd-resolved
     sudo systemctl restart systemd-resolved
   else
     #Install required software
