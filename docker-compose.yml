@@ -12,12 +12,11 @@ services:
   tor-socat:
     container_name: tor-socat
     restart: always
-    image: 	sureserver/tor-socat:latest
+    image: sureserver/tor-socat:latest
     environment:
       - BRIDGE1=${BRIDGENV1}
       - BRIDGE2=${BRIDGENV2}
       - BRIDGED=${BRIDGEDVAR}
-
     networks:
       dnsnet:
         ipv4_address: 192.168.180.244
