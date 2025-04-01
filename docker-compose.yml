@@ -4,7 +4,7 @@ networks:
   dnsnet:
     ipam:
       config:
-        - subnet: 192.168.180.240/29
+        - subnet: 172.31.240.248/29
 
 
 services:
@@ -19,7 +19,7 @@ services:
       - BRIDGED=${BRIDGEDVAR}
     networks:
       dnsnet:
-        ipv4_address: 192.168.180.244
+        ipv4_address: 172.31.240.252
 
   unbound:
     container_name: unbound
@@ -27,7 +27,7 @@ services:
     build: unbound/
     networks:
       dnsnet:
-        ipv4_address: 192.168.180.243
+        ipv4_address: 172.31.240.251
 
   pi-hole:
     container_name: pi-hole
@@ -39,6 +39,6 @@ services:
       - ${WEBPORT}:80      
     networks:
       dnsnet:
-        ipv4_address: 192.168.180.242
+        ipv4_address: 172.31.240.250
 
 
