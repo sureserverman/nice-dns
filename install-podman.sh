@@ -27,6 +27,3 @@ cd nice-dns
 podman compose --env-file .env up -d
 cd -
 rm -rf nice-dns
-
-#Apply changes to DNS resolver settings
-sudo systemctl restart systemd-resolved
