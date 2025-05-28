@@ -3,7 +3,7 @@
 # resconffile="/etc/systemd/resolved.conf"
 
 #Check if there are installed previous versions
-if [ $(sudo podman ps -a | grep -c "tor-socat\|unbound\|pi-hole") -gt 0 ]
+if [ $(podman ps -a | grep -c "tor-socat\|unbound\|pi-hole") -gt 0 ]
   then
     #Remove them if exist
     podman stop pi-hole &>/dev/null
@@ -19,11 +19,18 @@ if [ $(sudo podman ps -a | grep -c "tor-socat\|unbound\|pi-hole") -gt 0 ]
   else
     #Install required software
     sudo apt-get install -yq git podman podman-compose
+    ./add-dockerhub-for-podman.sh
 fi
 
 #Start podman containers
 git clone https://github.com/sureserverman/nice-dns.git
 cd nice-dns
-podman compose --env-file .env up -d
+
+podman network create \
+  --driver bridge \
+  --subnet 172.31.240.248/29 \
+  dnsnet
+
+PODMAN_COMPOSE_PROVIDER=podman-compose podman compose -f podman-compose.yml --env-file .env up -d
 cd -
 rm -rf nice-dns
