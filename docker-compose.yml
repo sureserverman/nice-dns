@@ -2,10 +2,7 @@ name: nice-dns
 
 networks:
   dnsnet:
-    ipam:
-      config:
-        - subnet: 172.31.240.248/29
-
+    external: true
 
 services:
 
@@ -23,7 +20,7 @@ services:
 
   unbound:
     container_name: unbound
-    restart: unless-stopped
+    restart: always
     build: unbound/
     networks:
       dnsnet:
@@ -31,7 +28,7 @@ services:
 
   pi-hole:
     container_name: pi-hole
-    restart: unless-stopped
+    restart: always
     build: pihole/
     ports:
       - 2053:53/tcp
