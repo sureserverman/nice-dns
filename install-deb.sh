@@ -28,7 +28,7 @@ podman network create \
   --driver bridge \
   --subnet 172.31.240.248/29 \
   dnsnet
-PODMAN_COMPOSE_PROVIDER=podman-compose podman compose --env-file .env up -d
+PODMAN_COMPOSE_PROVIDER=podman-compose podman compose up -d
 ./persistent-podman.sh
 ./dns-deb.sh
 cd -
