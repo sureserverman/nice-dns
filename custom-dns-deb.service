@@ -1,0 +1,12 @@
+[Unit]
+Description=Force system-wide DNS to 127.0.0.1:2053
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/custom-dns-deb
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
