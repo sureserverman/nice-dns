@@ -1,4 +1,5 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
 resconffile="/etc/systemd/resolved.conf"
 
@@ -31,10 +32,10 @@ if [ "$(sudo docker ps -a | grep -c "tor-socat\|unbound\|pi-hole")" -gt 0 ]
 fi
 
 #Start docker containers
-git clone https://github.com/sureserverman/nice-dns.git &&\
-cd nice-dns &&\
-sudo docker compose --env-file .env up -d &&\
-cd - &&\
+git clone https://github.com/sureserverman/nice-dns.git
+cd nice-dns
+sudo docker compose --env-file .env up -d
+cd -
 rm -rf nice-dns
 
 #Apply changes to DNS resolver settings
