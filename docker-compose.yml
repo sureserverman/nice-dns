@@ -37,5 +37,10 @@ services:
     networks:
       dnsnet:
         ipv4_address: 172.31.240.250
+    environment:
+    - TZ=Europe/London
+    - DNS1=172.31.240.251
+    - DISABLE_GITHUB_UPDATES=true
+
 
 
