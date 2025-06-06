@@ -5,16 +5,16 @@
 if [ "$(podman ps -a | grep -c "tor-socat\|unbound\|pi-hole")" -gt 0 ]
   then
     #Remove them if exist
-    podman stop pi-hole
-    podman rm pi-hole
-    podman image rm nice-dns-web-pi-hole:latest
-    podman stop unbound
-    podman rm unbound
-    podman image rm nice-dns-web-unbound:lates
-    podman stop tor-socat
-    podman rm tor-socat
-    podman image rm sureserver/tor-socat:latest
-    podman network rm dnsnet
+    podman stop pi-hole || true
+    podman rm pi-hole || true
+    podman image rm nice-dns-web-pi-hole:latest || true
+    podman stop unbound || true
+    podman rm unbound || true
+    podman image rm nice-dns-web-unbound:latest || true
+    podman stop tor-socat || true
+    podman rm tor-socat || true
+    podman image rm sureserver/tor-socat:latest || true
+    podman network rm dnsnet || true
   else
     #Install required software
     sudo apt-get install -yq git podman podman-compose
