@@ -5,16 +5,16 @@ set -euo pipefail
 if [ "$(podman ps -a | grep -c "tor-socat\|unbound\|pi-hole")" -gt 0 ]
   then
     #Remove them if exist
-    podman stop pi-hole &>/dev/null
-    podman rm pi-hole &>/dev/null
-    podman image rm nice-dns-web-pi-hole:latest &>/dev/null
-    podman stop unbound &>/dev/null
-    podman rm unbound &>/dev/null
-    podman image rm nice-dns-web-unbound:latest&>/dev/null
-    podman stop tor-socat &>/dev/null
-    podman rm tor-socat &>/dev/null
-    podman image rm sureserver/tor-socat:latest &>/dev/null
-    podman network rm dnsnet &>/dev/null
+    podman stop pi-hole
+    podman rm pi-hole
+    podman image rm nice-dns-web-pi-hole:latest
+    podman stop unbound
+    podman rm unbound
+    podman image rm nice-dns-web-unbound:lates
+    podman stop tor-socat
+    podman rm tor-socat
+    podman image rm sureserver/tor-socat:latest
+    podman network rm dnsnet
   else
     #Install required software
     sudo apt-get install -yq git podman podman-compose
