@@ -14,7 +14,7 @@ if [ "$(podman ps -a | grep -c "tor-socat\|unbound\|pi-hole")" -gt 0 ]
     podman stop tor-socat &>/dev/null
     podman rm tor-socat &>/dev/null
     podman image rm sureserver/tor-socat:latest &>/dev/null
-    podman network rm nice-dns-web_dnsnet &>/dev/null
+    podman network rm dnsnet &>/dev/null
   else
     #Install required software
     sudo apt-get install -yq git podman podman-compose
@@ -65,7 +65,7 @@ location = "registry-1.docker.io"
 EOF
       echo "Appended [[registry]] block for docker.io"
     fi
-    
+
     echo "Done updating $CONFIG."
 fi
 
