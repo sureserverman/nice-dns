@@ -7,13 +7,15 @@ if [ "$(podman ps -a | grep -c "tor-socat\|unbound\|pi-hole")" -gt 0 ]
     #Remove them if exist
     podman stop pi-hole || true
     podman rm pi-hole || true
-    podman image rm nice-dns-web-pi-hole:latest || true
+    podman image rm nice-dns_pi-hole || true
     podman stop unbound || true
     podman rm unbound || true
-    podman image rm nice-dns-web-unbound:latest || true
+    podman image rm nice-dns_unbound || true
     podman stop tor-socat || true
     podman rm tor-socat || true
-    podman image rm sureserver/tor-socat:latest || true
+    podman image rm sureserver/tor-socat || true
+    podman image rm pihole/pihole || true
+    podman image rm alpinelinux/unbound || true
     podman network rm dnsnet || true
   else
     #Install required software
