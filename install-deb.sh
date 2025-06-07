@@ -39,7 +39,6 @@ prefix = "docker.io"
 location = "registry-1.docker.io"
 EOF
       echo "Created new $CONFIG with Docker Hub settings."
-      exit 0
     fi
 
     # helper to add or update unqualified-search-registries
