@@ -45,7 +45,8 @@ else
   echo " • Anchor already present in $PF_CONF"
 fi
 
-# 5. (Re)load PFecho "🔄 Reloading PF configuration..."
+# 5. (Re)load PF
+echo "🔄 Reloading PF configuration..."
 pfctl -f "$PF_CONF"
 pfctl -s info | grep -q "Status: Enabled" || pfctl -e
 echo "✅ PF is enabled and redirect is active."
