@@ -55,6 +55,9 @@ podman network exists dnsnet || \
 echo "Launching containers with podman-compose..."
 podman-compose up -d
 
+sudo ./mac/dns-mac.sh
+sudo ./mac/mac-rules-persist.sh
+
 popd >/dev/null
 rm -rf nice-dns
 
