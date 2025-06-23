@@ -77,7 +77,8 @@ podman network create \
   --driver bridge \
   --subnet 172.31.240.248/29 \
   dnsnet
-PODMAN_COMPOSE_PROVIDER=podman-compose podman compose up -d
+PODMAN_COMPOSE_PROVIDER=podman-compose BUILDAH_FORMAT=docker \
+podman compose --podman-run-args="--health-on-failure=restart" up -d
 ./persistent-podman.sh
 ./dns-deb.sh
 cd -

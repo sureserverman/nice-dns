@@ -53,7 +53,8 @@ podman network exists dnsnet || \
     dnsnet
 
 echo "Launching containers with podman-compose..."
-podman-compose up -d
+PODMAN_COMPOSE_PROVIDER=podman-compose BUILDAH_FORMAT=docker \
+podman compose --podman-run-args="--health-on-failure=restart" up -d
 
 sudo ./mac/dns-mac.sh
 sudo ./mac/mac-rules-persist.sh

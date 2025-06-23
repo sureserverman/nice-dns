@@ -1,5 +1,11 @@
 name: nice-dns
 
+x-health-defaults: &probe          # central place for timings
+  interval: 30s
+  timeout: 5s
+  retries: 3
+  start_period: 10s
+
 networks:
   dnsnet:
     external: true
@@ -8,7 +14,6 @@ services:
 
   tor-socat:
     container_name: tor-socat
-    restart: always
     image: sureserver/tor-socat:latest
     environment:
       - BRIDGE1=${BRIDGENV1}
@@ -17,18 +22,20 @@ services:
     networks:
       dnsnet:
         ipv4_address: 172.31.240.252
+    healthcheck:
+      <<: *probe
 
   unbound:
     container_name: unbound
-    restart: always
     build: unbound/
     networks:
       dnsnet:
         ipv4_address: 172.31.240.251
+    healthcheck:
+      <<: *probe
 
   pi-hole:
     container_name: pi-hole
-    restart: always
     build: pihole/
     ports:
       - 2053:53/tcp
@@ -41,6 +48,8 @@ services:
     - TZ=Europe/London
     - DNS1=172.31.240.251
     - DISABLE_GITHUB_UPDATES=true
+    healthcheck:
+      <<: *probe
 
 
 
