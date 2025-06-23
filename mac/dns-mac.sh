@@ -30,25 +30,4 @@ rdr pass inet proto { tcp, udp } from any to 127.0.0.1 port 53 -> 127.0.0.1 port
 EOF
 echo " • Wrote redirect rule to $ANCHOR_FILE"
 
-# 4. Inject anchor into /etc/pf.conf if missing
-echo "🔧 Checking $PF_CONF for anchor inclusion..."
-if ! grep -q "anchor \"${ANCHOR_NAME}\"" "$PF_CONF"; then
-  cat >> "$PF_CONF" <<EOF
-
-# >>> ${ANCHOR_NAME} redirect >>> 
-rdr-anchor "${ANCHOR_NAME}"
-load anchor "${ANCHOR_NAME}" from "${ANCHOR_FILE}"
-# <<< ${ANCHOR_NAME} redirect <<<
-EOF
-  echo " • Injected anchor into $PF_CONF"
-else
-  echo " • Anchor already present in $PF_CONF"
-fi
-
-# 5. (Re)load PF
-echo "🔄 Reloading PF configuration..."
-pfctl -f "$PF_CONF"
-pfctl -s info | grep -q "Status: Enabled" || pfctl -e
-echo "✅ PF is enabled and redirect is active."
-
 echo "🎉 All done! Your system will now send every DNS query → 127.0.0.1:2053"

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" 
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>org.startpodman</string>
+
+    <!-- Run at boot -->
+    <key>RunAtLoad</key><true/>
+
+    <!-- Run as your user (replace with short username) -->
+    <key>UserName</key>
+    <string>frank</string>
+
+    <!-- Environment: set PATH and HOME for Podman -->
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+      <key>HOME</key>
+      <string>/Users/frank</string>
+    </dict>
+
+    <!-- Program to execute: shell script to start Podman VM and containers -->
+    <key>ProgramArguments</key>
+    <array>
+      <string>/usr/local/sbin/start-podman.sh</string>
+    </array>
+
+    <key>AbandonProcessGroup</key><true/>
+
+    <!-- (Optional) Output logs for debugging -->
+    <key>StandardOutPath</key>
+    <string>/Users/frank/Library/Logs/start-podman.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/frank/Library/Logs/start-podman.err</string>
+
+    <!-- No KeepAlive: run once at load -->
+    <key>KeepAlive</key><false/>
+    <!-- If using keychain/GUI APIs, uncomment the next line to create a user session:
+    <key>SessionCreate</key><true/> -->
+  </dict>
+</plist>
