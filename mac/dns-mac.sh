@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup-local-dns.sh — idempotent setup for macOS to redirect all DNS → 127.0.0.1:2053
+# setup-local-dns.sh — idempotent setup for macOS to use local DNS at 127.0.0.1
 
 set -euo pipefail
 
@@ -23,11 +23,18 @@ networksetup -listallnetworkservices |\
       networksetup -setdnsservers "$SERVICE" 127.0.0.1 >/dev/null
     done
 
-# 3. Create PF anchor file
-echo "🔧 Ensuring PF anchor ${ANCHOR_FILE} exists..."
-cat > "$ANCHOR_FILE" <<EOF
-rdr pass inet proto { tcp, udp } from any to 127.0.0.1 port 53 -> 127.0.0.1 port 2053
-EOF
-echo " • Wrote redirect rule to $ANCHOR_FILE"
 
-echo "🎉 All done! Your system will now send every DNS query → 127.0.0.1:2053"
+# 3. Remove any old PF redirect rule (if present)
+if [ -f "$ANCHOR_FILE" ]; then
+  rm -f "$ANCHOR_FILE"
+  echo "🔧 Removed obsolete PF anchor $ANCHOR_FILE"
+fi
+
+if grep -q "anchor \"${ANCHOR_NAME}\"" "$PF_CONF"; then
+  sed -i '' "/anchor \"${ANCHOR_NAME}\"/d" "$PF_CONF"
+  echo "🔧 Cleaned anchor reference from $PF_CONF"
+fi
+
+pfctl -f "$PF_CONF" >/dev/null 2>&1 || true
+
+echo "🎉 All done! Your system will now send every DNS query → 127.0.0.1:53"
