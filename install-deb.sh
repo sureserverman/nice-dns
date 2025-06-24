@@ -10,7 +10,7 @@ if [ "$(podman ps -a | grep -c "tor-socat\|unbound\|pi-hole")" -gt 0 ]
         sudo iptables -t nat -D OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 2053
       fi
     done
-    cat "nameserver 1.1.1.1" | sudo tee /etc.resolv.conf
+    echo "nameserver 1.1.1.1" | sudo tee /etc/resolv.conf
     podman stop pi-hole || true
     podman rm pi-hole || true
     podman image rm -f nice-dns_pi-hole || true
@@ -85,7 +85,7 @@ podman network create \
   dnsnet
 PODMAN_COMPOSE_PROVIDER=podman-compose BUILDAH_FORMAT=docker \
 podman compose --podman-run-args="--health-on-failure=restart" up -d
-./persistent-podman.sh
-./dns-deb.sh
+./deb/persistent-podman.sh
+./deb/dns-deb.sh
 cd -
 rm -rf nice-dns
