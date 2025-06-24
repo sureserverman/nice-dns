@@ -1,5 +1,5 @@
 [Unit]
-Description=Force system-wide DNS to 127.0.0.1:2053
+Description=Configure system DNS to use 127.0.0.1:53
 After=network.target
 Wants=network-online.target
 
