@@ -119,16 +119,6 @@ for cname in "${CONTAINERS[@]}"; do
 done
 echo
 
-# 6) Final status check
-echo "6) Status of each container’s systemd unit (should be \"active (running)\"):"
-for cname in "${CONTAINERS[@]}"; do
-  unit="container-${cname}.service"
-  echo
-  echo "┌─ $unit ─────────────────────────────────────────────────────"
-  systemctl --user status "$unit" --no-pager
-  echo "└────────────────────────────────────────────────────────────"
-done
-
 echo
 echo "6a) ‘podman ps’ shows which containers are up:"
 podman ps
