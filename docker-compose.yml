@@ -33,7 +33,7 @@ services:
       dnsnet:
         ipv4_address: 172.31.240.251
     healthcheck:
-      test: ["CMD", "unbound-control", "status"]
+      test: ["CMD", "dig +short +norecurse +retry=0 -p 5335 @127.0.0.1 google.com || exit 1"]
       <<: *probe
 
   pi-hole:
