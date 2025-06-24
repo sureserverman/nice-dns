@@ -5,6 +5,12 @@
 if [ "$(podman ps -a | grep -c "tor-socat\|unbound\|pi-hole")" -gt 0 ]
   then
     #Remove them if exist
+    for proto in udp tcp; do
+      if iptables -t nat -C OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 2053 2>/dev/null; then
+        sudo iptables -t nat -D OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 2053
+      fi
+    done
+    cat "nameserver 1.1.1.1" | sudo tee /etc.resolv.conf
     podman stop pi-hole || true
     podman rm pi-hole || true
     podman image rm -f nice-dns_pi-hole || true
