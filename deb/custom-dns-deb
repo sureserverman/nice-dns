@@ -35,12 +35,6 @@ EOF
   fi
 fi
 
-### 3) Add iptables‐NAT rules to redirect all DNS to port 2053
-# (glibc always sends to port 53; we catch it and forward to 2053)
-for proto in udp tcp; do
-  if ! iptables -t nat -C OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 2053 2>/dev/null; then
-    iptables -t nat -A OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 2053
-  fi
-done
+### 3) No iptables redirection needed, Pi-hole now binds directly to port 53
 
-echo "✅ System-wide DNS now forced to 127.0.0.1:2053"
+echo "✅ System-wide DNS now points to 127.0.0.1:53"

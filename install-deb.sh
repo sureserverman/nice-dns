@@ -5,6 +5,7 @@
 if [ "$(podman ps -a | grep -c "tor-socat\|unbound\|pi-hole")" -gt 0 ]
   then
     #Remove them if exist
+    # Clean up legacy iptables redirection rules from older versions
     for proto in udp tcp; do
       if iptables -t nat -C OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 2053 2>/dev/null; then
         sudo iptables -t nat -D OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 2053
