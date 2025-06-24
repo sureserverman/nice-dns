@@ -58,6 +58,7 @@ services:
     - DISABLE_GITHUB_UPDATES=true
     healthcheck:
       <<: *probe
+      start_period: 15s
 
 
 
