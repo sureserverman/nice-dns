@@ -80,6 +80,22 @@ echo 'net.ipv4.ip_unprivileged_port_start = 53' | \
   sudo tee /etc/sysctl.d/99-podman-privileged-ports.conf
 sudo sysctl --system
 
+CONFIG="/etc/NetworkManager/NetworkManager.conf"
+
+# Check for an uncommented 'dns=dnsmasq' line
+if grep -Eq '^[[:space:]]*dns[[:space:]]*=[[:space:]]*dnsmasq' "$CONFIG"; then
+  echo "Found dns=dnsmasq in $CONFIG – disabling it..."
+
+  # Comment out the line
+  sudo sed -i -E 's|^[[:space:]]*dns[[:space:]]*=[[:space:]]*dnsmasq|#&|' "$CONFIG"
+  echo "Line commented out."
+
+  # Restart NetworkManager
+  echo "Restarting NetworkManager..."
+  sudo systemctl restart NetworkManager
+  echo "Done. dnsmasq is now disabled in NetworkManager."
+fi
+
 
 #Start podman containers
 git clone https://github.com/sureserverman/nice-dns.git
