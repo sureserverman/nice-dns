@@ -77,6 +77,12 @@ EOF
     echo "Done updating $CONFIG."
 fi
 
+
+echo 'net.ipv4.ip_unprivileged_port_start = 53' | \
+  sudo tee /etc/sysctl.d/99-podman-privileged-ports.conf
+sudo sysctl --system
+
+
 #Start podman containers
 git clone https://github.com/sureserverman/nice-dns.git
 cd nice-dns
