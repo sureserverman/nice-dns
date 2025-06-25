@@ -40,6 +40,10 @@ else
   podman machine start
 fi
 
+podman machine ssh \
+  'echo "net.ipv4.ip_unprivileged_port_start=53" \
+    | sudo tee /etc/sysctl.d/99-podman-ports.conf && sudo sysctl --system'
+
 # 3. Clone, network, and bring up the stack
 echo "Cloning nice-dns repo..."
 git clone https://github.com/sureserverman/nice-dns.git
