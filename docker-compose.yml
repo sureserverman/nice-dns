@@ -23,7 +23,7 @@ services:
       dnsnet:
         ipv4_address: 172.31.240.252
     healthcheck:
-      test: ["CMD", "dig +short +tls +norecurse +retry=0 -p 853 @127.0.0.1 google.com || exit 1"]
+      test: ["CMD-SHELL", "dig +short +tls -p 853 @127.0.0.1 cloudflare.com | grep -Eo '\\b[0-9.]{7,15}\\b' >/dev/null"]
       <<: *probe
 
   unbound:
@@ -36,7 +36,7 @@ services:
       dnsnet:
         ipv4_address: 172.31.240.251
     healthcheck:
-      test: ["CMD", "dig +short +norecurse +retry=0 -p 5335 @127.0.0.1 google.com || exit 1"]
+      test: ["CMD-SHELL", "dig +short -p 5335 @127.0.0.1 cloudflare.com | grep -Eo '\\b[0-9.]{7,15}\\b' >/dev/null"]
       <<: *probe
 
   pi-hole:
