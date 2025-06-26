@@ -93,7 +93,7 @@ for cname in "${CONTAINERS[@]}"; do
   # Use “podman generate systemd --name <cname> --files”
   # This creates a file named “container-<cname>.service” in the current working directory.
   echo -n "     Generating container-$cname.service... "
-  podman generate systemd --name "$cname" --files &>/dev/null
+  podman generate systemd --new --name "$cname" --files &>/dev/null
   echo "done."
 
   # The generated filename is exactly “container-<cname>.service”
