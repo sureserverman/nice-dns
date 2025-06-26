@@ -29,9 +29,6 @@ services:
   unbound:
     container_name: unbound
     build: unbound/
-    depends_on:
-      tor-socat:
-        condition: service_healthy
     networks:
       dnsnet:
         ipv4_address: 172.31.240.251
