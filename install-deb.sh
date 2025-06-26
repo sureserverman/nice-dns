@@ -18,14 +18,9 @@ if [ "$(podman ps -a | grep -c "tor-socat\|unbound\|pi-hole")" -gt 0 ]
         sudo iptables -t nat -D OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 2053
     done
     echo "nameserver 1.1.1.1" | sudo tee /etc/resolv.conf
-    podman stop pi-hole || true
-    podman rm pi-hole || true
+    podman rm -f -a || true
     podman image rm -f nice-dns_pi-hole || true
-    podman stop unbound || true
-    podman rm unbound || true
     podman image rm -f nice-dns_unbound || true
-    podman stop tor-socat || true
-    podman rm tor-socat || true
     podman image rm -f sureserver/tor-socat || true
     podman image rm -f pihole/pihole || true
     podman image rm -f alpinelinux/unbound || true
