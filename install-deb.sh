@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 #set -euo pipefail
 
+# This script is intended to be run as an unprivileged user. It uses sudo
+# internally for the few commands that require escalation. Running the entire
+# script with sudo will break the rootless Podman setup.
+if [[ $EUID -eq 0 ]]; then
+  echo "Please run install-deb.sh as a regular user, not with sudo." >&2
+  exit 1
+fi
+
 #Check if there are installed previous versions
 if [ "$(podman ps -a | grep -c "tor-socat\|unbound\|pi-hole")" -gt 0 ]
   then
