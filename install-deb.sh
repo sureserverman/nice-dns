@@ -19,11 +19,7 @@ if [ "$(podman ps -a | grep -c "tor-socat\|unbound\|pi-hole")" -gt 0 ]
     done
     echo "nameserver 1.1.1.1" | sudo tee /etc/resolv.conf
     podman rm -f -a || true
-    podman image rm -f nice-dns_pi-hole || true
-    podman image rm -f nice-dns_unbound || true
-    podman image rm -f sureserver/tor-socat || true
-    podman image rm -f pihole/pihole || true
-    podman image rm -f alpinelinux/unbound || true
+    podman image rm -f -a || true
     podman network rm dnsnet || true
   else
     #Install required software
