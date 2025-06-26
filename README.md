@@ -68,6 +68,12 @@
 > 
 > To install it on Ubuntu with one-line command try to use:\
 > `bash <(curl -Ls https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb.sh)`
+
+Run this command **without** `sudo`. The script uses `sudo` internally when
+needed and must be executed as your regular user so that rootless Podman and
+user-mode systemd work correctly. If any of the generated
+`container-*.service` units fail to start, inspect them with
+`journalctl --user -xeu container-name.service` for troubleshooting.
 > 
 
 

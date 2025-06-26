@@ -32,6 +32,13 @@
 
 set -euo pipefail
 
+# Ensure we are not running as root. The script relies on rootless Podman and
+# user-mode systemd. Running it via sudo will cause `systemctl --user` failures.
+if [ "$(id -u)" -eq 0 ]; then
+  echo "ERROR: Run this script as your regular user (without sudo)." >&2
+  exit 1
+fi
+
 # ──────────── CONFIGURATION ────────────
 # List the exact names of your existing containers:
 CONTAINERS=(
@@ -114,8 +121,23 @@ echo "5) Enabling and starting each container-<name>.service..."
 for cname in "${CONTAINERS[@]}"; do
   unit="container-${cname}.service"
   echo -n "   • Enabling $unit ... "
-  systemctl --user enable "$unit" --now
-  echo "done."
+  # If the container is currently running, stop it first otherwise
+  # `podman start` in the generated service would fail and systemd
+  # reports the unit with Result=protocol.
+  if podman container inspect "$cname" &>/dev/null; then
+    if podman container inspect "$cname" -f '{{.State.Running}}' | grep -q true; then
+      echo -n "(stopping running container first) ... "
+      podman stop "$cname" &>/dev/null || true
+    fi
+  fi
+  if systemctl --user enable "$unit" --now; then
+    echo "done."
+  else
+    echo "failed!" >&2
+    echo "     ↳ Displaying last 20 journal lines for troubleshooting..." >&2
+    journalctl --user -u "$unit" --no-pager -n 20 >&2 || true
+    exit 1
+  fi
 done
 echo
 
