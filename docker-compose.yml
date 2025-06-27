@@ -22,7 +22,7 @@ services:
     networks:
       dnsnet:
         ipv4_address: 172.31.240.252
-    
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "dig +short +tls -p 853 @127.0.0.1 cloudflare.com | grep -Eo '\\b[0-9.]{7,15}\\b' >/dev/null"]
       <<: *probe
@@ -33,6 +33,7 @@ services:
     networks:
       dnsnet:
         ipv4_address: 172.31.240.251
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "dig +short -p 5335 @127.0.0.1 cloudflare.com | grep -Eo '\\b[0-9.]{7,15}\\b' >/dev/null"]
       <<: *probe
@@ -47,6 +48,7 @@ services:
     networks:
       dnsnet:
         ipv4_address: 172.31.240.250
+    restart: unless-stopped
     environment:
     - TZ=Europe/London
     - DNS1=172.31.240.251
