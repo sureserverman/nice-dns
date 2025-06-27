@@ -126,13 +126,13 @@ for cname in "${CONTAINERS[@]}"; do
   # If the container is currently running, stop it first otherwise
   # `podman start` in the generated service would fail and systemd
   # reports the unit with Result=protocol.
-  if podman container inspect "$cname" &>/dev/null; then
-    if podman container inspect "$cname" -f '{{.State.Running}}' | grep -q true; then
-      echo -n "(stopping running container first) ... "
-      podman stop "$cname" &>/dev/null || true
-    fi
-  fi
-  if systemctl --user enable "$unit" --now; then
+  # if podman container inspect "$cname" &>/dev/null; then
+    # if podman container inspect "$cname" -f '{{.State.Running}}' | grep -q true; then
+      # echo -n "(stopping running container first) ... "
+      # podman stop "$cname" &>/dev/null || true
+    # fi
+  # fi
+  if systemctl --user enable "$unit"; then
     echo "done."
   else
     echo "failed!" >&2
