@@ -11,6 +11,17 @@ if [ "$(id -u)" -eq 0 ]; then
   exit 1
 fi
 
+# ──────────── CONFIGURATION ────────────
+# List the exact names of your existing containers:
+CONTAINERS=(
+  "tor-socat"
+  "unbound"
+  "pi-hole"
+)
+
+# Where to drop the generated service files:
+USER_SYSTEMD_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+
 # ──────────── SCRIPT START ────────────
 
 echo
@@ -34,8 +45,21 @@ else
 fi
 echo
 
+# 3) For each container, generate a systemd unit
+echo "3) Generating systemd user units for each container..."
+for cname in "${CONTAINERS[@]}"; do
+  echo -n "   • Checking for container '$cname'... "
+  # The generated filename is exactly “container-<cname>.service”
+  GENERATED="container-${cname}.service"
+
+  systemctl --user disable --now "$GENERATED" &>/dev/null || true
+  echo -n "Disabling container $GENERATED... "
+  rm -f "$USER_SYSTEMD_DIR/$GENERATED" &>/dev/null || true
+  echo "done."
+done
+
 # First time on the machine – install a generic template
-sudo podman-compose systemd -a create-unit
+podman-compose systemd -a create-unit
 # This creates a podman-compose@.service template in ~/.config/systemd/user/
 # It will be used to start the podman-compose service for each stack.
 # cd ..
@@ -43,4 +67,4 @@ sudo podman-compose systemd -a create-unit
 podman-compose systemd -a register  # makes podman-compose@dns-stack.service
 
 # Enable it for your user
-systemctl --user enable --now podman-compose@dns-stack
+systemctl --user enable --now podman-compose@nice-dns
