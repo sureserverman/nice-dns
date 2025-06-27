@@ -11,4 +11,4 @@ ExecStart=/usr/bin/podman restart -a
 RemainAfterExit=yes
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
