@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -euo pipefail
+# set -euo pipefail
 
 # 1. Ensure Homebrew is installed
 if ! command -v brew &>/dev/null; then
@@ -32,10 +32,10 @@ else
   brew install git podman podman-compose
 
   # Initialize & start the Podman VM
-  # if ! podman machine list --format "{{.Name}}" | grep -q '^default$'; then
-    # echo "Initializing podman machine..."
-    # podman machine init
-  # fi
+  if ! podman machine list --format "{{.Name}}" | grep -q '^default$'; then
+    echo "Initializing podman machine..."
+    podman machine init
+  fi
   echo "Starting podman machine..."
   podman machine start
 fi
