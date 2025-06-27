@@ -1,0 +1,14 @@
+[Unit]
+Description=Restart all Podman containers after boot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Make sure this path matches where Podman is installed on your system
+ExecStart=/usr/bin/podman restart -a
+# Keep the service “active” after the one‐shot so that systemd considers it successful
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
