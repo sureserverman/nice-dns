@@ -54,6 +54,7 @@ services:
     - DNS1=172.31.240.251
     - DISABLE_GITHUB_UPDATES=true
     healthcheck:
+      test: ["CMD-SHELL", "dig -p $(pihole-FTL --config dns.port) +short +norecurse +retry=0 @127.0.0.1 pi.hole || exit 1"]
       <<: *probe
 
 
