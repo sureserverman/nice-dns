@@ -32,10 +32,10 @@ else
   brew install git podman podman-compose
 
   # Initialize & start the Podman VM
-  if ! podman machine list --format "{{.Name}}" | grep -q '^default$'; then
-    echo "Initializing podman machine..."
-    podman machine init
-  fi
+  # if ! podman machine list --format "{{.Name}}" | grep -q '^default$'; then
+    # echo "Initializing podman machine..."
+    # podman machine init
+  # fi
   echo "Starting podman machine..."
   podman machine start
 fi
