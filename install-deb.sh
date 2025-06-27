@@ -95,6 +95,19 @@ if grep -Eq '^[[:space:]]*dns[[:space:]]*=[[:space:]]*dnsmasq' "$CONFIG"; then
   echo "Done. dnsmasq is now disabled in NetworkManager."
 fi
 
+# Add UID/GID mappings for current user
+sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $USER
+
+# Enable cgroups v2 delegation for systemd services
+sudo mkdir -p /etc/systemd/system/user@.service.d
+sudo tee /etc/systemd/system/user@.service.d/delegate.conf << EOF
+[Service]
+Delegate=cpu cpuset io memory pids
+EOF
+sudo systemctl daemon-reload
+
+# Enable user lingering for service persistence
+sudo loginctl enable-linger $USER
 
 #Start podman containers
 git clone https://github.com/sureserverman/nice-dns.git

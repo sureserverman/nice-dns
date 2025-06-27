@@ -38,7 +38,7 @@ echo
 sudo podman-compose systemd -a create-unit
 # This creates a podman-compose@.service template in ~/.config/systemd/user/
 # It will be used to start the podman-compose service for each stack.
-cd ..
+# cd ..
 # In your project directory:
 podman-compose systemd -a register  # makes podman-compose@dns-stack.service
 
