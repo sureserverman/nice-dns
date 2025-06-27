@@ -103,6 +103,8 @@ for cname in "${CONTAINERS[@]}"; do
     exit 1
   fi
 
+  systemctl --user disable --now "$GENERATED" &>/dev/null || true
+  rm -f "$USER_SYSTEMD_DIR/$GENERATED" &>/dev/null || true
   # Move it under ~/.config/systemd/user/
   echo -n "     Moving $GENERATED → $USER_SYSTEMD_DIR/ ... "
   mv "$GENERATED" "$USER_SYSTEMD_DIR/"
