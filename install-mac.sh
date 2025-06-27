@@ -36,13 +36,17 @@ else
     echo "Initializing podman machine..."
     podman machine init
   fi
+  echo "Modifying podman machine..."
+  podman machine ssh \
+  'echo "net.ipv4.ip_unprivileged_port_start=53" \
+    | sudo tee /etc/sysctl.d/99-podman-ports.conf && sudo sysctl --system'
+  echo "Stopping any existing podman machine..."
+  podman machine stop 2>/dev/null || true
   echo "Starting podman machine..."
   podman machine start
 fi
 
-podman machine ssh \
-  'echo "net.ipv4.ip_unprivileged_port_start=53" \
-    | sudo tee /etc/sysctl.d/99-podman-ports.conf && sudo sysctl --system'
+
 
 # 3. Clone, network, and bring up the stack
 echo "Cloning nice-dns repo..."
