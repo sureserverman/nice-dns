@@ -32,10 +32,10 @@ else
   brew install git podman podman-compose
 
   # Initialize & start the Podman VM
-  if ! podman machine list --format "{{.Name}}" | grep -q '^default$'; then
-    echo "Initializing podman machine..."
-    podman machine init
-  fi
+  echo "Checking for existing podman machine..."
+  podman machine list --format "{{.Name}}" | xargs -n1 podman machine rm -f
+  echo "Initializing podman machine..."
+  podman machine init
   echo "Modifying podman machine..."
   podman machine ssh \
   'echo "net.ipv4.ip_unprivileged_port_start=53" \
