@@ -31,22 +31,21 @@ else
   brew update
   brew install git podman podman-compose
 
-  # Initialize & start the Podman VM
-  echo "Checking for existing podman machine..."
-  podman machine list --format "{{.Name}}" | xargs -n1 podman machine rm -f
-  echo "Initializing podman machine..."
-  podman machine init
-  echo "Modifying podman machine..."
-  # podman machine ssh \
-  # 'echo "net.ipv4.ip_unprivileged_port_start=53" \
-  #   | sudo tee /etc/sysctl.d/99-podman-ports.conf && sudo sysctl --system'
-  echo "Stopping any existing podman machine..."
-  podman machine stop 2>/dev/null || true
-  echo "Starting podman machine..."
-  podman machine start
 fi
 
-
+# Initialize & start the Podman VM
+echo "Checking for existing podman machine..."
+podman machine list --format "{{.Name}}" | xargs -n1 podman machine rm -f
+echo "Initializing podman machine..."
+podman machine init
+echo "Modifying podman machine..."
+# podman machine ssh \
+# 'echo "net.ipv4.ip_unprivileged_port_start=53" \
+#   | sudo tee /etc/sysctl.d/99-podman-ports.conf && sudo sysctl --system'
+echo "Stopping any existing podman machine..."
+podman machine stop 2>/dev/null || true
+echo "Starting podman machine..."
+podman machine start
 
 # 3. Clone, network, and bring up the stack
 echo "Cloning nice-dns repo..."
