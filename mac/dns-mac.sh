@@ -35,6 +35,6 @@ if grep -q "anchor \"${ANCHOR_NAME}\"" "$PF_CONF"; then
   echo "🔧 Cleaned anchor reference from $PF_CONF"
 fi
 
-pfctl -f "$PF_CONF" >/dev/null 2>&1 || true
+# pfctl -f "$PF_CONF" >/dev/null 2>&1 || true
 
 echo "🎉 All done! Your system will now send every DNS query → 127.0.0.1:53"
