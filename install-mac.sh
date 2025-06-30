@@ -64,7 +64,7 @@ PODMAN_COMPOSE_PROVIDER=podman-compose BUILDAH_FORMAT=docker \
 podman compose --podman-run-args="--health-on-failure=restart" up -d
 
 sudo ./mac/dns-mac.sh
-sudo ./mac/mac-rules-persist.sh
+./mac/mac-rules-persist.sh
 
 popd >/dev/null
 rm -rf nice-dns
