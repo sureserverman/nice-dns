@@ -1,4 +1,6 @@
 #!/bin/bash
+launchctl unload ~/Library/LaunchAgents/org.startpodman.plist
+
 sudo cp ./mac/start-podman.sh /usr/local/sbin/
 cp ./mac/org.startpodman.plist ~/Library/LaunchAgents/
 
