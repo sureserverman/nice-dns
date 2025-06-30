@@ -2,6 +2,8 @@
 
 # set -euo pipefail
 
+sudo networksetup -setdnsservers Wi-Fi 1.1.1.1 >/dev/null
+
 # 1. Ensure Homebrew is installed
 if ! command -v brew &>/dev/null; then
   cat <<EOF
