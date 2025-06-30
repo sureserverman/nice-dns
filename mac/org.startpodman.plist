@@ -30,12 +30,6 @@
 
     <key>AbandonProcessGroup</key><true/>
 
-    <!-- (Optional) Output logs for debugging -->
-    <key>StandardOutPath</key>
-    <string>~/Library/Logs/start-podman.out</string>
-    <key>StandardErrorPath</key>
-    <string>~/Library/Logs/start-podman.err</string>
-
     <!-- No KeepAlive: run once at load -->
     <key>KeepAlive</key><false/>
     <!-- If using keychain/GUI APIs, uncomment the next line to create a user session:
