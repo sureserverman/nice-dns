@@ -24,4 +24,4 @@ done
 
 # Start all containers with restart=always
 echo "$(date): Starting containers (restart=always)..." >> ~/Library/Logs/podman-autostart.out 2>&1
-podman start --filter restart-policy=always --all >> ~/Library/Logs/podman-autostart.out 2>&1
+podman restart --all >> ~/Library/Logs/podman-autostart.out 2>&1
