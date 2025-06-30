@@ -9,14 +9,17 @@ if [[ $EUID -eq 0 ]]; then
   exit 1
 fi
 
+# Clean up legacy iptables redirection rules from older versions
+for proto in udp tcp; do
+    sudo iptables -t nat -D OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 2053
+done
+sudo netfilter-persistent save
+
 #Check if there are installed previous versions
 if [ "$(podman ps -a | grep -c "tor-socat\|unbound\|pi-hole")" -gt 0 ]
   then
     #Remove them if exist
-    # Clean up legacy iptables redirection rules from older versions
-    for proto in udp tcp; do
-        sudo iptables -t nat -D OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 2053
-    done
+
     echo "nameserver 1.1.1.1" | sudo tee /etc/resolv.conf
     podman rm -f -a || true
     podman image rm -f -a || true
