@@ -24,9 +24,7 @@ if podman ps -a --format "{{.Names}}" | grep -Eq "^(tor-socat|unbound|pi-hole)$"
     podman stop "$name" 2>/dev/null || true
     podman rm   "$name" 2>/dev/null || true
   done
-  podman image rm nice-dns-web-pi-hole:latest     2>/dev/null || true
-  podman image rm nice-dns-web-unbound:latest     2>/dev/null || true
-  podman image rm sureserver/tor-socat:latest     2>/dev/null || true
+  podman image rm -a 2>/dev/null || true
   podman network rm nice-dns-web_dnsnet           2>/dev/null || true
 else
   echo "Installing prerequisites via Homebrew..."
