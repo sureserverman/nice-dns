@@ -13,3 +13,6 @@ chmod 644    ~/Library/LaunchAgents/org.startpodman.plist
 
 # Load it now and at every boot:
 launchctl load ~/Library/LaunchAgents/org.startpodman.plist
+
+/usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on
+/usr/libexec/ApplicationFirewall/socketfilterfw --add /opt/podman/bin/podman
