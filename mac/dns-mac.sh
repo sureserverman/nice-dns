@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # setup-local-dns.sh — idempotent setup for macOS to use local DNS at 127.0.0.1
 
-set -euo pipefail
-
-ANCHOR_NAME="localdns"
-ANCHOR_FILE="/etc/pf.anchors/${ANCHOR_NAME}"
-PF_CONF="/etc/pf.conf"
+# set -euo pipefail
+# 
+# ANCHOR_NAME="localdns"
+# ANCHOR_FILE="/etc/pf.anchors/${ANCHOR_NAME}"
+# PF_CONF="/etc/pf.conf"
 
 # 1. Ensure running as root
 if [[ $EUID -ne 0 ]]; then
@@ -25,15 +25,15 @@ networksetup -listallnetworkservices |\
 
 
 # 3. Remove any old PF redirect rule (if present)
-if [ -f "$ANCHOR_FILE" ]; then
-  rm -f "$ANCHOR_FILE"
-  echo "🔧 Removed obsolete PF anchor $ANCHOR_FILE"
-fi
-
-if grep -q "anchor \"${ANCHOR_NAME}\"" "$PF_CONF"; then
-  sed -i '' "/anchor \"${ANCHOR_NAME}\"/d" "$PF_CONF"
-  echo "🔧 Cleaned anchor reference from $PF_CONF"
-fi
+# if [ -f "$ANCHOR_FILE" ]; then
+  # rm -f "$ANCHOR_FILE"
+  # echo "🔧 Removed obsolete PF anchor $ANCHOR_FILE"
+# fi
+# 
+# if grep -q "anchor \"${ANCHOR_NAME}\"" "$PF_CONF"; then
+  # sed -i '' "/anchor \"${ANCHOR_NAME}\"/d" "$PF_CONF"
+  # echo "🔧 Cleaned anchor reference from $PF_CONF"
+# fi
 
 # pfctl -f "$PF_CONF" >/dev/null 2>&1 || true
 
