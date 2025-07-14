@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
-# set -euo pipefail
+# Fail on error and undefined variables
+set -euo pipefail
 
 sudo networksetup -setdnsservers Wi-Fi 1.1.1.1 >/dev/null
 
@@ -35,7 +36,7 @@ fi
 
 # Initialize & start the Podman VM
 echo "Checking for existing podman machine..."
-podman machine list --format "{{.Name}}" | xargs -n1 podman machine rm -f
+podman machine list --format "{{.Name}}" | xargs -r -n1 podman machine rm -f
 echo "Initializing podman machine..."
 podman machine init
 echo "Modifying podman machine..."
@@ -49,6 +50,7 @@ podman machine start
 
 # 3. Clone, network, and bring up the stack
 echo "Cloning nice-dns repo..."
+rm -rf nice-dns
 git clone https://github.com/sureserverman/nice-dns.git
 pushd nice-dns >/dev/null
 
