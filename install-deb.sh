@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#set -euo pipefail
+set -euo pipefail
 
 # This script is intended to be run as an unprivileged user. It uses sudo
 # internally for the few commands that require escalation. Running the entire
@@ -93,8 +93,13 @@ if grep -Eq '^[[:space:]]*dns[[:space:]]*=[[:space:]]*dnsmasq' "$CONFIG"; then
   echo "Done. dnsmasq is now disabled in NetworkManager."
 fi
 
-# Add UID/GID mappings for current user
-sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $USER
+# Add UID/GID mappings for current user if missing
+if ! grep -q "^$USER:100000:65536" /etc/subuid 2>/dev/null; then
+  sudo usermod --add-subuids 100000-165535 $USER
+fi
+if ! grep -q "^$USER:100000:65536" /etc/subgid 2>/dev/null; then
+  sudo usermod --add-subgids 100000-165535 $USER
+fi
 
 # Enable cgroups v2 delegation for systemd services
 sudo mkdir -p /etc/systemd/system/user@.service.d
@@ -108,15 +113,18 @@ sudo systemctl daemon-reload
 sudo loginctl enable-linger $USER
 
 #Start podman containers
+rm -rf nice-dns
 git clone https://github.com/sureserverman/nice-dns.git
 cd nice-dns
-podman network create \
-  --driver bridge \
-  --subnet 172.31.240.248/29 \
-  dnsnet
+podman network exists dnsnet || \
+  podman network create \
+    --driver bridge \
+    --subnet 172.31.240.248/29 \
+    dnsnet
 PODMAN_COMPOSE_PROVIDER=podman-compose BUILDAH_FORMAT=docker \
 podman compose --podman-run-args="--health-on-failure=restart" up -d
 ./deb/persistent-podman.sh
 ./deb/dns-deb.sh
 cd -
 rm -rf nice-dns
+
