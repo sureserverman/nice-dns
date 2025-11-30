@@ -122,7 +122,7 @@ podman network exists dnsnet || \
     --subnet 172.31.240.248/29 \
     dnsnet
 PODMAN_COMPOSE_PROVIDER=podman-compose BUILDAH_FORMAT=docker \
-podman compose --podman-run-args="--health-on-failure=restart" up -d
+podman-compose --podman-run-args="--health-on-failure=restart" up -d
 ./deb/persistent-podman.sh
 ./deb/dns-deb.sh
 cd -
