@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# set -euo pipefail
 
 # This script is intended to be run as an unprivileged user. It uses sudo
 # internally for the few commands that require escalation. Running the entire
