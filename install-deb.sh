@@ -121,6 +121,29 @@ podman network exists dnsnet || \
     --driver bridge \
     --subnet 172.31.240.248/29 \
     dnsnet
+
+# Check if alpinelinux/unbound is available for current platform
+echo "Checking if alpinelinux/unbound:latest is available for this platform..."
+if ! podman pull --platform="$(uname -m)" docker.io/alpinelinux/unbound:latest 2>/dev/null; then
+  echo "alpinelinux/unbound:latest not available for platform $(uname -m)"
+  echo "Building from source..."
+
+  # Clone the source repository
+  UNBOUND_SRC_DIR=$(mktemp -d)
+  git clone https://gitlab.alpinelinux.org/alpine/infra/docker/unbound.git "$UNBOUND_SRC_DIR"
+
+  # Build the image
+  pushd "$UNBOUND_SRC_DIR" > /dev/null
+  podman build -t docker.io/alpinelinux/unbound:latest .
+  popd > /dev/null
+
+  # Clean up
+  rm -rf "$UNBOUND_SRC_DIR"
+  echo "Successfully built alpinelinux/unbound:latest from source"
+else
+  echo "alpinelinux/unbound:latest is available and has been pulled"
+fi
+
 PODMAN_COMPOSE_PROVIDER=podman-compose BUILDAH_FORMAT=docker \
 podman-compose --podman-run-args="--health-on-failure=restart" up -d
 ./deb/persistent-podman.sh
