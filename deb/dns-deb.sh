@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 #set -euo pipefail
 
 sudo cp deb/custom-dns-deb.service /etc/systemd/system/custom-dns-deb.service
