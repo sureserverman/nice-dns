@@ -15,10 +15,9 @@ services:
   tor-socat:
     container_name: tor-socat
     image: sureserver/tor-socat:latest
-    environment:
-      - BRIDGE1=${BRIDGENV1}
-      - BRIDGE2=${BRIDGENV2}
-      - BRIDGED=${BRIDGEDVAR}
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
     networks:
       dnsnet:
         ipv4_address: 172.31.240.252
