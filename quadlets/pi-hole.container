@@ -1,0 +1,31 @@
+[Unit]
+Description=Pi-hole DNS ad blocker
+After=network-online.target dnsnet-network.service unbound.service
+Wants=network-online.target
+Requires=dnsnet-network.service
+Requires=unbound.service
+
+[Container]
+Image=localhost/nice-dns-pihole:latest
+ContainerName=pi-hole
+PublishPort=53:53/tcp
+PublishPort=53:53/udp
+PublishPort=8880:80/tcp
+Network=dnsnet.network
+IP=172.31.240.250
+Environment=TZ=Europe/London
+Environment=DNS1=172.31.240.251
+Environment=DISABLE_GITHUB_UPDATES=true
+HealthCmd=dig -p 53 +short +norecurse +retry=0 @127.0.0.1 pi.hole || exit 1
+HealthInterval=30s
+HealthTimeout=5s
+HealthRetries=3
+HealthStartPeriod=20s
+HealthOnFailure=restart
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target
