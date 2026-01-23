@@ -5,7 +5,7 @@ Wants=network-online.target
 Requires=dnsnet-network.service
 
 [Container]
-Image=localhost/nice-dns-unbound:latest
+Image=nice-dns-unbound:latest
 ContainerName=unbound
 Network=dnsnet.network
 IP=172.31.240.251

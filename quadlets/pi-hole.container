@@ -6,7 +6,7 @@ Requires=dnsnet-network.service
 Requires=unbound.service
 
 [Container]
-Image=localhost/nice-dns-pihole:latest
+Image=nice-dns-pi-hole:latest
 ContainerName=pi-hole
 PublishPort=53:53/tcp
 PublishPort=53:53/udp

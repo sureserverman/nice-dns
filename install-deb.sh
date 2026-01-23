@@ -119,8 +119,8 @@ cd nice-dns
 
 # Build the images
 echo "Building container images..."
-podman build -t localhost/nice-dns-unbound:latest unbound/
-podman build -t localhost/nice-dns-pihole:latest pihole/
+podman build -t nice-dns-unbound:latest unbound/
+podman build -t nice-dns-pi-hole:latest pihole/
 
 # Pull the tor-socat image
 echo "Pulling tor-socat image..."
