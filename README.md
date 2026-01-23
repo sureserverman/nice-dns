@@ -51,29 +51,60 @@
 
 ## Usage
 
+### Quadlet-based Installation (Recommended)
 
-> To create the application there are just a few commands to do in your teminal:\
-> `git clone https://github.com/sureserverman/nice-dns.git`\
-> `cd nice-dns`\
-> Of course you'll need git and docker to be installed on your machine
-> If you want to install it with persistent data dirs, so that you could change your settings and they'll survive reboot then run:\
-> `sudo docker compose -f persistent-settings-compose.yml up -d`
-> 
-> If you want to install it with web interface for pi-hole enabled, then run following command:\
-> `sudo docker compose -f webinterface-compose.yml up -d`
-> 
-> But my favorite way is to install it without web interface and without persistent volumes. This is the most secure way. 
-> For two reasons: No possibility for any sort of logs to survive reboots and no possible vulnerabilities in web interface. For this option you just run:\
-> `sudo docker compose up -d`
-> 
-> To install it on Ubuntu with one-line command try to use:\
+This project uses **Podman Quadlets** for native systemd integration. Quadlets provide:
+- Automatic container lifecycle management through systemd
+- Native service dependencies and ordering
+- Proper integration with system boot/shutdown
+- Better resource management and logging
+
+> To install on Ubuntu/Debian with one-line command:\
 > `bash <(curl -Ls https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb.sh)`
 
 Run this command **without** `sudo`. The script uses `sudo` internally when
 needed and must be executed as your regular user so that rootless Podman and
-user-mode systemd work correctly. If any of the generated
-`container-*.service` units fail to start, inspect them with
-`journalctl --user -xeu container-name.service` for troubleshooting.
+user-mode systemd work correctly.
+
+The installation will:
+1. Install Podman and required dependencies
+2. Build container images for unbound and pi-hole
+3. Pull the tor-socat image
+4. Install quadlet files to `~/.config/containers/systemd/`
+5. Enable systemd services for automatic startup
+6. Configure system DNS to use 127.0.0.1:53
+
+After installation, manage services with:
+```bash
+# Check status
+systemctl --user status pi-hole.service
+
+# View logs
+journalctl --user -u pi-hole.service -f
+
+# Restart a service
+systemctl --user restart pi-hole.service
+
+# Stop all services
+systemctl --user stop tor-socat.service unbound.service pi-hole.service
+```
+
+### Docker Compose Installation (Alternative)
+
+> For traditional Docker/Podman Compose deployment:\
+> `git clone https://github.com/sureserverman/nice-dns.git`\
+> `cd nice-dns`
+
+Then choose your deployment method:
+
+- **Minimal (no persistence, no web UI)** - Most secure:\
+  `sudo docker compose up -d`
+
+- **With web interface**:\
+  `sudo docker compose -f webinterface-compose.yml up -d`
+
+- **With persistent settings**:\
+  `sudo docker compose -f persistent-settings-compose.yml up -d`
 > 
 
 

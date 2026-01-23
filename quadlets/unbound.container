@@ -1,0 +1,24 @@
+[Unit]
+Description=Unbound DNS resolver
+After=network-online.target dnsnet-network.service
+Wants=network-online.target
+Requires=dnsnet-network.service
+
+[Container]
+Image=nice-dns-unbound:latest
+ContainerName=unbound
+Network=dnsnet.network
+IP=172.31.240.251
+HealthCmd=dig +short -p 5335 @127.0.0.1 cloudflare.com | grep -Eo '\b[0-9.]{7,15}\b' >/dev/null
+HealthInterval=30s
+HealthTimeout=5s
+HealthRetries=3
+HealthStartPeriod=20s
+HealthOnFailure=restart
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

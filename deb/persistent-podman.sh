@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 #
+# Setup Podman quadlets for nice-dns containers
+# This script is now simplified for quadlet-based deployment
 
 set -euo pipefail
 
@@ -9,19 +11,6 @@ if [ "$(id -u)" -eq 0 ]; then
   echo "ERROR: Run this script as your regular user (without sudo)." >&2
   exit 1
 fi
-# ──────────── CONFIGURATION ────────────
-
-# List the exact names of your existing containers:
-CONTAINERS=(
-  "tor-socat"
-  "unbound"
-  "pi-hole"
-)
-
-# Where to drop the generated service files:
-USER_SYSTEMD_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-
-# ──────────── SCRIPT START ────────────
 
 echo
 echo "▸ Running as user: $(whoami)"
@@ -34,7 +23,7 @@ fi
 echo "▸ Podman version: $(podman --version)"
 echo
 
-# 1) Enable “linger” so your user’s --user units survive reboot/logout
+# 1) Enable "linger" so your user's --user units survive reboot/logout
 echo "1) Enabling linger for user $(whoami) (so systemd-user services survive reboot)..."
 if ! loginctl show-user "$(whoami)" --no-pager | grep -q "Linger=yes"; then
   loginctl enable-linger "$(whoami)"
@@ -44,28 +33,34 @@ else
 fi
 echo
 
-# 2) Make sure the ~/.config/systemd/user directory exists
-echo "2) Ensuring user-mode systemd directory at: $USER_SYSTEMD_DIR"
-mkdir -p "$USER_SYSTEMD_DIR"
+# 2) Setup quadlet directory
+QUADLET_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd"
+echo "2) Ensuring quadlet directory at: $QUADLET_DIR"
+mkdir -p "$QUADLET_DIR"
 echo "   ✓ Directory ready."
 echo
 
-# 3) For each container, generate a systemd unit
-echo "3) Generating systemd user units for each container..."
-for cname in "${CONTAINERS[@]}"; do
-
-  # The generated filename is exactly “container-<cname>.service”
-  GENERATED="container-${cname}.service"
-
-  systemctl --user disable --now "$GENERATED" &>/dev/null || true
-  rm -f "$USER_SYSTEMD_DIR/$GENERATED" &>/dev/null || true
-  echo "done."
-done
+# 3) Copy quadlet files
+echo "3) Installing quadlet files..."
+cp quadlets/*.network "$QUADLET_DIR/" 2>/dev/null || true
+cp quadlets/*.container "$QUADLET_DIR/" 2>/dev/null || true
+echo "   ✓ Quadlet files installed."
 echo
 
-cp ./deb/persistent-containers.service "$USER_SYSTEMD_DIR/"
-systemctl --user disable persistent-containers.service
+# 4) Reload systemd daemon to pick up quadlets
+echo "4) Reloading systemd user daemon..."
 systemctl --user daemon-reload
-echo "3) Enabling persistent containers service..."
-systemctl --user enable persistent-containers.service
-echo "   ✓ Service enabled to restart containers on login."
+echo "   ✓ Daemon reloaded."
+echo
+
+# 5) Enable services (quadlets auto-generate these)
+echo "5) Enabling quadlet-based services..."
+systemctl --user enable dnsnet-network.service 2>/dev/null || true
+systemctl --user enable tor-socat.service 2>/dev/null || true
+systemctl --user enable unbound.service 2>/dev/null || true
+systemctl --user enable pi-hole.service 2>/dev/null || true
+echo "   ✓ Services enabled for automatic start on boot."
+echo
+
+echo "Setup complete! Quadlet-based containers will start automatically on boot."
+echo "Note: With quadlets, systemd manages the containers natively - no manual restart needed."

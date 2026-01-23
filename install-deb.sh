@@ -112,20 +112,54 @@ sudo systemctl daemon-reload
 # Enable user lingering for service persistence
 sudo loginctl enable-linger $USER
 
-#Start podman containers
+#Start podman containers using quadlets
 rm -rf nice-dns
 git clone https://github.com/sureserverman/nice-dns.git
 cd nice-dns
-podman network exists dnsnet || \
-  podman network create \
-    --driver bridge \
-    --subnet 172.31.240.248/29 \
-    dnsnet
-podman-compose pull
-PODMAN_COMPOSE_PROVIDER=podman-compose BUILDAH_FORMAT=docker \
-podman-compose --podman-run-args="--health-on-failure=restart" up -d
-./deb/persistent-podman.sh
+
+# Build the images
+echo "Building container images..."
+podman build -t nice-dns-unbound:latest unbound/
+podman build -t nice-dns-pi-hole:latest pihole/
+
+# Pull the tor-socat image
+echo "Pulling tor-socat image..."
+podman pull docker.io/sureserver/tor-socat:latest
+
+# Setup quadlet directory
+QUADLET_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd"
+mkdir -p "$QUADLET_DIR"
+
+# Copy quadlet files
+echo "Installing quadlet files..."
+cp quadlets/*.network "$QUADLET_DIR/"
+cp quadlets/*.container "$QUADLET_DIR/"
+
+# Reload systemd to pick up the new quadlets
+echo "Reloading systemd user daemon..."
+systemctl --user daemon-reload
+
+# Enable and start the services (systemd will create them from quadlets)
+echo "Enabling and starting services..."
+systemctl --user enable --now dnsnet-network.service
+systemctl --user enable --now tor-socat.service
+systemctl --user enable --now unbound.service
+systemctl --user enable --now pi-hole.service
+
+# Configure system DNS
 ./deb/dns-deb.sh
+
 cd -
 rm -rf nice-dns
+
+echo ""
+echo "Installation complete!"
+echo "Services started:"
+echo "  - dnsnet-network.service (network)"
+echo "  - tor-socat.service"
+echo "  - unbound.service"
+echo "  - pi-hole.service"
+echo ""
+echo "Check status with: systemctl --user status pi-hole.service"
+echo "View logs with: journalctl --user -u pi-hole.service -f"
 

@@ -1,0 +1,27 @@
+[Unit]
+Description=Tor SOCAT DNS over TLS bridge
+After=network-online.target dnsnet-network.service
+Wants=network-online.target
+Requires=dnsnet-network.service
+
+[Container]
+Image=docker.io/sureserver/tor-socat:latest
+ContainerName=tor-socat
+AutoUpdate=registry
+Network=dnsnet.network
+IP=172.31.240.252
+DNS=1.1.1.1
+DNS=1.0.0.1
+HealthCmd=dig +short +tls -p 853 @127.0.0.1 cloudflare.com | grep -Eo '\b[0-9.]{7,15}\b' >/dev/null
+HealthInterval=30s
+HealthTimeout=5s
+HealthRetries=3
+HealthStartPeriod=20s
+HealthOnFailure=restart
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target
