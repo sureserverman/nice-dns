@@ -3,11 +3,6 @@ set -euo pipefail
 
 launchctl unload ~/Library/LaunchAgents/org.startpodman.plist || true
 
-# sudo launchctl bootout system/org.startpodman || true
-# sudo launchctl unload /Library/LaunchDaemons/org.startpodman.plist || true
-# sudo rm -f /Library/LaunchDaemons/org.startpodman.plist
-
-
 sudo install -m 755 ./mac/start-podman.sh /usr/local/sbin/start-podman.sh
 install -m 644 ./mac/org.startpodman.plist ~/Library/LaunchAgents/org.startpodman.plist
 

@@ -97,14 +97,8 @@ systemctl --user stop tor-socat.service unbound.service pi-hole.service
 
 Then choose your deployment method:
 
-- **Minimal (no persistence, no web UI)** - Most secure:\
+- **Standard deployment**:\
   `sudo docker compose up -d`
-
-- **With web interface**:\
-  `sudo docker compose -f webinterface-compose.yml up -d`
-
-- **With persistent settings**:\
-  `sudo docker compose -f persistent-settings-compose.yml up -d`
 > 
 
 
