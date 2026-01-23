@@ -10,7 +10,7 @@ fi
 
 
 #Check if there are installed previous versions
-if [ "$(podman ps -a | grep -c "tor-socat\|unbound\|pi-hole")" -gt 0 ]
+if [ command -v podman ] && [ "$(podman ps -a | grep -c "tor-socat\|unbound\|pi-hole")" -gt 0 ]
   then
     #Remove them if exist
 
