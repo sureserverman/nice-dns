@@ -185,15 +185,17 @@ cp quadlets/*.container "$QUADLET_DIR/"
 echo "Reloading systemd user daemon..."
 systemctl --user daemon-reload
 
-# Enable and start the services (systemd will create them from quadlets)
-echo "Enabling and starting services..."
+# Start the services (systemd will create them from quadlets)
+# Note: quadlet-generated services should not be enabled with 'systemctl enable'
+# The [Install] WantedBy directive in the quadlet files handles persistence
+echo "Starting services..."
 for service in dnsnet-network.service tor-socat.service unbound.service pi-hole.service; do
   if systemctl --user is-active --quiet "$service"; then
     echo "  $service is already running, restarting..."
     systemctl --user restart "$service"
   else
     echo "  Starting $service..."
-    systemctl --user enable --now "$service"
+    systemctl --user start "$service"
   fi
 done
 
