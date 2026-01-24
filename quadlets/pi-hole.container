@@ -18,9 +18,9 @@ Environment=DNS1=172.31.240.251
 Environment=DISABLE_GITHUB_UPDATES=true
 HealthCmd=dig -p 53 +short +norecurse +retry=0 @127.0.0.1 pi.hole || exit 1
 HealthInterval=30s
-HealthTimeout=5s
-HealthRetries=3
-HealthStartPeriod=20s
+HealthTimeout=10s
+HealthRetries=5
+HealthStartPeriod=60s
 HealthOnFailure=restart
 
 [Service]

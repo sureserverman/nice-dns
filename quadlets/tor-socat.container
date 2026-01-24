@@ -14,9 +14,9 @@ DNS=1.1.1.1
 DNS=1.0.0.1
 HealthCmd=dig +short +tls -p 853 @127.0.0.1 cloudflare.com | grep -Eo '\b[0-9.]{7,15}\b' >/dev/null
 HealthInterval=30s
-HealthTimeout=5s
-HealthRetries=3
-HealthStartPeriod=20s
+HealthTimeout=10s
+HealthRetries=5
+HealthStartPeriod=120s
 HealthOnFailure=restart
 
 [Service]
