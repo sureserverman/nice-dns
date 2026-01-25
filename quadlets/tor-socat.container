@@ -21,6 +21,9 @@ HealthOnFailure=restart
 
 [Service]
 Restart=always
+RestartSec=5s
+StartLimitIntervalSec=60s
+StartLimitBurst=10
 TimeoutStartSec=300
 
 [Install]
