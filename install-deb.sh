@@ -140,10 +140,10 @@ systemctl --user daemon-reload
 
 # Enable and start the services (systemd will create them from quadlets)
 echo "Enabling and starting services..."
-systemctl --user enable --now dnsnet-network.service
-systemctl --user enable --now tor-socat.service
-systemctl --user enable --now unbound.service
-systemctl --user enable --now pi-hole.service
+systemctl --user start --now dnsnet-network.service
+systemctl --user start --now tor-socat.service
+systemctl --user start --now unbound.service
+systemctl --user start --now pi-hole.service
 
 # Configure system DNS
 ./deb/dns-deb.sh
