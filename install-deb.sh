@@ -121,7 +121,6 @@ podman network exists dnsnet || \
     --driver bridge \
     --subnet 172.31.240.248/29 \
     dnsnet
-podman-compose pull
 PODMAN_COMPOSE_PROVIDER=podman-compose BUILDAH_FORMAT=docker \
 podman-compose --podman-run-args="--health-on-failure=restart" up -d
 ./deb/persistent-podman.sh
