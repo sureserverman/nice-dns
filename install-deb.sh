@@ -120,6 +120,7 @@ podman network exists dnsnet || \
   podman network create \
     --driver bridge \
     --subnet 172.31.240.248/29 \
+    --dns 1.1.1.1 \
     dnsnet
 PODMAN_COMPOSE_PROVIDER=podman-compose BUILDAH_FORMAT=docker \
 podman-compose --podman-run-args="--health-on-failure=restart" up -d
@@ -127,4 +128,3 @@ podman-compose --podman-run-args="--health-on-failure=restart" up -d
 ./deb/dns-deb.sh
 cd -
 rm -rf nice-dns
-
