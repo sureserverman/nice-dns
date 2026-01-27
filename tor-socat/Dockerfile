@@ -1,3 +1,6 @@
 FROM sureserver/tor-socat:latest
 
-COPY etc/resolv.conf /etc/resolv.conf
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
