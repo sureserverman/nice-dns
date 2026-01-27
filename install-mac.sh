@@ -59,6 +59,7 @@ podman network exists dnsnet || \
   podman network create \
     --driver bridge \
     --subnet 172.31.240.248/29 \
+    --dns 1.1.1.1 \
     dnsnet
 
 echo "Launching containers with podman-compose..."
@@ -72,4 +73,3 @@ popd >/dev/null
 rm -rf nice-dns
 
 echo "All done! ⚡"
-
