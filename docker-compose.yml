@@ -29,6 +29,8 @@ services:
   unbound:
     container_name: unbound
     build: unbound/
+    dns:
+      - 1.1.1.1
     networks:
       dnsnet:
         ipv4_address: 172.31.240.251
@@ -40,6 +42,8 @@ services:
   pi-hole:
     container_name: pi-hole
     build: pihole/
+    dns:
+      - 1.1.1.1
     ports:
       - 53:53/tcp
       - 53:53/udp
