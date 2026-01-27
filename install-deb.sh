@@ -10,15 +10,14 @@ fi
 
 
 #Check if there are installed previous versions
-if [ command -v podman ] && [ "$(podman ps -a | grep -c "tor-socat\|unbound\|pi-hole")" -gt 0 ]
-  then
+if command -v podman >/dev/null 2>&1 && [ "$(podman ps -a | grep -c "tor-socat\|unbound\|pi-hole")" -gt 0 ]; then
     #Remove them if exist
 
     echo "nameserver 1.1.1.1" | sudo tee /etc/resolv.conf
     podman rm -f -a || true
     podman image rm -f -a || true
     podman network rm dnsnet || true
-  else
+else
     #Install required software
     sudo apt-get install -yq git podman podman-compose
     # target config path (user-level)
@@ -123,7 +122,10 @@ podman build -t nice-dns-pi-hole:latest pihole/
 
 # Pull the tor-socat image
 echo "Pulling tor-socat image..."
-podman pull docker.io/sureserver/tor-socat:latest
+if ! podman pull docker.io/sureserver/tor-socat:latest; then
+  echo "Failed to pull docker.io/sureserver/tor-socat:latest. Check network/DNS access and retry." >&2
+  exit 1
+fi
 
 # Setup quadlet directory
 QUADLET_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd"
@@ -161,4 +163,3 @@ echo "  - pi-hole.service"
 echo ""
 echo "Check status with: systemctl --user status pi-hole.service"
 echo "View logs with: journalctl --user -u pi-hole.service -f"
-
