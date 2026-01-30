@@ -15,7 +15,7 @@ if [ "$(podman ps -a | grep -c "tor-socat\|unbound\|pi-hole")" -gt 0 ]
   then
     #Remove them if exist
 
-    echo "nameserver 1.1.1.1" | sudo tee /etc/resolv.conf
+    echo "nameserver 9.9.9.9 \nnameserver 1.1.1.1 \nnameserver 1.0.0.1" | sudo tee /etc/resolv.conf
     podman rm -f -a || true
     podman image rm -f -a || true
     podman network rm dnsnet || true
