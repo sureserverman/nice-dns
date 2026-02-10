@@ -11,13 +11,16 @@ fi
 
 
 #Check if there are installed previous versions
-if [ "$(podman ps -a | grep -c "tor-stunnel\|tor-socat\|tor-haproxy\|unbound\|pi-hole")" -gt 0 ]
+NICE_DNS_CONTAINERS="tor-socat|tor-stunnel|tor-haproxy|unbound|pi-hole"
+if [ "$(podman ps -a | grep -c "$NICE_DNS_CONTAINERS")" -gt 0 ]
   then
     #Remove them if exist
 
     echo "nameserver 9.9.9.9 \nnameserver 1.1.1.1 \nnameserver 1.0.0.1" | sudo tee /etc/resolv.conf
-    podman rm -f -a || true
-    podman image rm -f -a || true
+    for name in tor-socat tor-stunnel tor-haproxy unbound pi-hole; do
+      podman rm -f "$name" 2>/dev/null || true
+      podman image rm -f "$name" 2>/dev/null || true
+    done
     podman network rm dnsnet || true
   else
     #Install required software

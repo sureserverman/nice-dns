@@ -19,13 +19,13 @@ EOF
 fi
 
 # 2. Check for existing containers/images/networks
-if podman ps -a --format "{{.Names}}" | grep -Eq "^(tor-socat|unbound|pi-hole)$"; then
+if podman ps -a --format "{{.Names}}" | grep -Eq "^(tor-socat|tor-stunnel|tor-haproxy|unbound|pi-hole)$"; then
   echo "Stopping & removing old containers/images..."
-  for name in pi-hole unbound tor-socat; do
+  for name in pi-hole unbound tor-socat tor-stunnel tor-haproxy; do
     podman stop "$name" 2>/dev/null || true
     podman rm   "$name" 2>/dev/null || true
+    podman image rm -f "$name" 2>/dev/null || true
   done
-  podman image rm -a 2>/dev/null || true
   podman network rm nice-dns-web_dnsnet           2>/dev/null || true
 else
   echo "Installing prerequisites via Homebrew..."
