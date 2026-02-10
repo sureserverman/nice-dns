@@ -2,6 +2,7 @@
 
 # Fail on error and undefined variables
 set -euo pipefail
+BRANCH="${1:-main}"
 
 # Temporarily point DNS to 1.1.1.1 so git clone works during install
 networksetup -listallnetworkservices | sed '1d' | grep -v '^\*' | while read -r svc; do
@@ -55,7 +56,7 @@ fi
 # 3. Clone, network, and bring up the stack
 echo "Cloning nice-dns repo..."
 rm -rf nice-dns
-git clone https://github.com/sureserverman/nice-dns.git
+git clone -b "$BRANCH" https://github.com/sureserverman/nice-dns.git
 pushd nice-dns >/dev/null
 
 echo "Creating podman network..."
