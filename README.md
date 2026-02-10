@@ -61,10 +61,14 @@ All DNS queries leaving your machine are encrypted and routed through Tor.
 
 ```mermaid
 flowchart LR
-    A["Your device"] -- port 53 --> B["Pi-hole\n(ad blocking)"]
-    B --> C["Unbound\n(recursive resolver)"]
-    C -- DNS-over-TLS --> D["Tor proxy\n(socat / stunnel / haproxy)"]
-    D -- ".onion" --> E["Cloudflare\nhidden resolver"]
+    A["Your device"] -- port 53 --> B["Pi-hole
+    (ad blocking)"]
+    B --> C["Unbound
+    (recursive resolver)"]
+    C -- DNS-over-TLS --> D["Tor proxy
+    (socat / stunnel / haproxy)"]
+    D -- ".onion" --> E["Cloudflare
+    hidden resolver"]
 ```
 
 ## Usage
