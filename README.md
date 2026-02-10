@@ -76,9 +76,9 @@ There are three proxy variants to choose from:
 
 | Variant | Proxy container | How it works |
 |---------|----------------|--------------|
-| **tor-socat** (default) | `sureserver/tor-socat` | socat TCP relay through Tor |
+| **tor-haproxy** (default) | `sureserver/tor-haproxy` | haproxy TCP relay through Tor |
+| **tor-socat** | `sureserver/tor-socat` | socat TCP relay through Tor |
 | **tor-stunnel** | `sureserver/tor-stunnel` | stunnel TCP relay through Tor |
-| **tor-haproxy** | `sureserver/tor-haproxy` | haproxy TCP relay through Tor |
 
 ### Prerequisites
 
@@ -93,14 +93,14 @@ automatically by the scripts.
 Install with a one-liner (run **without** `sudo`):
 
 ```bash
-# tor-socat (default)
+# tor-haproxy (default)
 bash -x <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb.sh)
+
+# tor-socat
+bash -x <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb-socat.sh)
 
 # tor-stunnel
 bash -x <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb-stunnel.sh)
-
-# tor-haproxy
-bash -x <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb-haproxy.sh)
 ```
 
 ### macOS
@@ -109,14 +109,14 @@ Homebrew must be installed before running the script. If it is not found the
 script will exit with instructions.
 
 ```bash
-# tor-socat (default)
+# tor-haproxy (default)
 bash -x <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac.sh)
+
+# tor-socat
+bash -x <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac-socat.sh)
 
 # tor-stunnel
 bash -x <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac-stunnel.sh)
-
-# tor-haproxy
-bash -x <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac-haproxy.sh)
 ```
 
 ### Installing from the dev branch
