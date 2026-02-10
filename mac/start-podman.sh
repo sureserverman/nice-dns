@@ -26,4 +26,4 @@ done
 # echo "$(date): Starting containers (restart=always)..." >> ~/Library/Logs/podman-autostart.out 2>&1
 podman restart --all 2>&1
 
-sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate off
+# sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate off

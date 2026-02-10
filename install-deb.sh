@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# set -euo pipefail
+set -euo pipefail
 
 # This script is intended to be run as an unprivileged user. It uses sudo
 # internally for the few commands that require escalation. Running the entire
@@ -12,11 +12,11 @@ fi
 
 #Check if there are installed previous versions
 NICE_DNS_CONTAINERS="tor-socat|tor-stunnel|tor-haproxy|unbound|pi-hole"
-if [ "$(podman ps -a | grep -c "$NICE_DNS_CONTAINERS")" -gt 0 ]
+if [ "$(podman ps -a | grep -Ec "$NICE_DNS_CONTAINERS")" -gt 0 ]
   then
     #Remove them if exist
 
-    echo "nameserver 9.9.9.9 \nnameserver 1.1.1.1 \nnameserver 1.0.0.1" | sudo tee /etc/resolv.conf
+    printf 'nameserver 9.9.9.9\nnameserver 1.1.1.1\nnameserver 1.0.0.1\n' | sudo tee /etc/resolv.conf
     for name in tor-socat tor-stunnel tor-haproxy unbound pi-hole; do
       podman rm -f "$name" 2>/dev/null || true
       podman image rm -f "$name" 2>/dev/null || true
@@ -98,10 +98,10 @@ fi
 
 # Add UID/GID mappings for current user if missing
 if ! grep -q "^$USER:100000:65536" /etc/subuid 2>/dev/null; then
-  sudo usermod --add-subuids 100000-165535 $USER
+  sudo usermod --add-subuids 100000-165535 "$USER"
 fi
 if ! grep -q "^$USER:100000:65536" /etc/subgid 2>/dev/null; then
-  sudo usermod --add-subgids 100000-165535 $USER
+  sudo usermod --add-subgids 100000-165535 "$USER"
 fi
 
 # Enable cgroups v2 delegation for systemd services
@@ -113,7 +113,7 @@ EOF
 sudo systemctl daemon-reload
 
 # Enable user lingering for service persistence
-sudo loginctl enable-linger $USER
+sudo loginctl enable-linger "$USER"
 
 #Start podman containers
 rm -rf nice-dns

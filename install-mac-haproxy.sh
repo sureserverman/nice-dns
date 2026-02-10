@@ -11,7 +11,7 @@ done
 # 1. Ensure Homebrew is installed
 if ! command -v brew &>/dev/null; then
   cat <<EOF
-Homebrew not found!  
+Homebrew not found!
 Please install Homebrew first, e.g.:
 
   /bin/bash -c "\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
@@ -68,7 +68,7 @@ podman network exists dnsnet || \
 
 echo "Launching containers with podman-compose..."
 PODMAN_COMPOSE_PROVIDER=podman-compose BUILDAH_FORMAT=docker \
-podman-compose --podman-run-args="--health-on-failure=restart" up -d
+podman-compose -f compose-haproxy.yaml --podman-run-args="--health-on-failure=restart" up -d
 
 sudo ./mac/dns-mac.sh
 ./mac/mac-rules-persist.sh
