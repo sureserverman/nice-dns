@@ -11,13 +11,6 @@ if [ "$(id -u)" -eq 0 ]; then
 fi
 # ──────────── CONFIGURATION ────────────
 
-# List the exact names of your existing containers:
-CONTAINERS=(
-  "tor-haproxy"
-  "unbound"
-  "pi-hole"
-)
-
 # Where to drop the generated service files:
 USER_SYSTEMD_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
@@ -48,19 +41,6 @@ echo
 echo "2) Ensuring user-mode systemd directory at: $USER_SYSTEMD_DIR"
 mkdir -p "$USER_SYSTEMD_DIR"
 echo "   ✓ Directory ready."
-echo
-
-# 3) For each container, generate a systemd unit
-echo "3) Generating systemd user units for each container..."
-for cname in "${CONTAINERS[@]}"; do
-
-  # The generated filename is exactly “container-<cname>.service”
-  GENERATED="container-${cname}.service"
-
-  systemctl --user disable --now "$GENERATED" &>/dev/null || true
-  rm -f "$USER_SYSTEMD_DIR/$GENERATED" &>/dev/null || true
-  echo "done."
-done
 echo
 
 cp ./deb/persistent-containers.service "$USER_SYSTEMD_DIR/"
