@@ -7,7 +7,7 @@ BRANCH="${1:-main}"
 # Temporarily point DNS to 1.1.1.1 so git clone works during install
 networksetup -listallnetworkservices | sed '1d' | grep -v '^\*' | while read -r svc; do
   sudo networksetup -setdnsservers "$svc" 1.1.1.1 >/dev/null 2>&1 || true
-done
+done || true
 
 # 1. Ensure Homebrew is installed
 if ! command -v brew &>/dev/null; then

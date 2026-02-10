@@ -12,9 +12,9 @@ networks:
 
 services:
 
-  tor-haproxy:
-    container_name: tor-haproxy
-    image: sureserver/tor-haproxy:latest
+  tor-socat:
+    container_name: tor-socat
+    image: sureserver/tor-socat:latest
     networks:
       dnsnet:
         ipv4_address: 172.31.240.252

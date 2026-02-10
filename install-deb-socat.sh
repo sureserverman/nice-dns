@@ -6,7 +6,7 @@ BRANCH="${1:-main}"
 # internally for the few commands that require escalation. Running the entire
 # script with sudo will break the rootless Podman setup.
 if [[ $EUID -eq 0 ]]; then
-  echo "Please run install-deb-haproxy.sh as a regular user, not with sudo." >&2
+  echo "Please run install-deb-socat.sh as a regular user, not with sudo." >&2
   exit 1
 fi
 
@@ -84,7 +84,7 @@ sudo sysctl --system
 CONFIG="/etc/NetworkManager/NetworkManager.conf"
 
 # Check for an uncommented 'dns=dnsmasq' line
-if grep -Eq '^[[:space:]]*dns[[:space:]]*=[[:space:]]*dnsmasq' "$CONFIG"; then
+if [ -f "$CONFIG" ] && grep -Eq '^[[:space:]]*dns[[:space:]]*=[[:space:]]*dnsmasq' "$CONFIG"; then
   echo "Found dns=dnsmasq in $CONFIG – disabling it..."
 
   # Comment out the line
@@ -127,8 +127,8 @@ podman network exists dnsnet || \
     --dns 1.1.1.1 \
     dnsnet
 PODMAN_COMPOSE_PROVIDER=podman-compose BUILDAH_FORMAT=docker \
-podman-compose -f compose-haproxy.yaml --podman-run-args="--health-on-failure=restart" up -d
-./deb/persistent-podman-haproxy.sh
+podman-compose -f compose-socat.yaml --podman-run-args="--health-on-failure=restart" up -d
+./deb/persistent-podman-socat.sh
 ./deb/dns-deb.sh
 cd -
 rm -rf nice-dns

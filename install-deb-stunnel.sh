@@ -84,7 +84,7 @@ sudo sysctl --system
 CONFIG="/etc/NetworkManager/NetworkManager.conf"
 
 # Check for an uncommented 'dns=dnsmasq' line
-if grep -Eq '^[[:space:]]*dns[[:space:]]*=[[:space:]]*dnsmasq' "$CONFIG"; then
+if [ -f "$CONFIG" ] && grep -Eq '^[[:space:]]*dns[[:space:]]*=[[:space:]]*dnsmasq' "$CONFIG"; then
   echo "Found dns=dnsmasq in $CONFIG – disabling it..."
 
   # Comment out the line

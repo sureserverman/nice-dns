@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 # setup-local-dns.sh — idempotent setup for macOS to use local DNS at 127.0.0.1
 
-# set -euo pipefail
-# 
-# ANCHOR_NAME="localdns"
-# ANCHOR_FILE="/etc/pf.anchors/${ANCHOR_NAME}"
-# PF_CONF="/etc/pf.conf"
+set -euo pipefail
 
 # 1. Ensure running as root
 if [[ $EUID -ne 0 ]]; then
@@ -21,7 +17,7 @@ networksetup -listallnetworkservices |\
    while read -r SERVICE; do
       echo " • $SERVICE"
       networksetup -setdnsservers "$SERVICE" 127.0.0.1 >/dev/null
-    done
+    done || true
 
 
 # 3. Remove any old PF redirect rule (if present)

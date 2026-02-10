@@ -13,7 +13,7 @@ fi
 
 # List the exact names of your existing containers:
 CONTAINERS=(
-  "tor-socat"
+  "tor-haproxy"
   "unbound"
   "pi-hole"
 )

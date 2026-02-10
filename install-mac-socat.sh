@@ -7,7 +7,7 @@ BRANCH="${1:-main}"
 # Temporarily point DNS to 1.1.1.1 so git clone works during install
 networksetup -listallnetworkservices | sed '1d' | grep -v '^\*' | while read -r svc; do
   sudo networksetup -setdnsservers "$svc" 1.1.1.1 >/dev/null 2>&1 || true
-done
+done || true
 
 # 1. Ensure Homebrew is installed
 if ! command -v brew &>/dev/null; then
@@ -69,7 +69,7 @@ podman network exists dnsnet || \
 
 echo "Launching containers with podman-compose..."
 PODMAN_COMPOSE_PROVIDER=podman-compose BUILDAH_FORMAT=docker \
-podman-compose -f compose-haproxy.yaml --podman-run-args="--health-on-failure=restart" up -d
+podman-compose -f compose-socat.yaml --podman-run-args="--health-on-failure=restart" up -d
 
 sudo ./mac/dns-mac.sh
 ./mac/mac-rules-persist.sh
