@@ -1,0 +1,54 @@
+name: nice-dns
+
+x-health-defaults: &probe          # central place for timings
+  interval: 30s
+  timeout: 5s
+  retries: 3
+  start_period: 20s
+
+networks:
+  dnsnet:
+    external: true
+
+services:
+
+  tor-stunnel:
+    container_name: tor-stunnel
+    image: sureserver/tor-stunnel:latest
+    networks:
+      dnsnet:
+        ipv4_address: 172.31.240.252
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "dig +short +tls -p 853 @127.0.0.1 cloudflare.com | grep -Eo '\\b[0-9.]{7,15}\\b' >/dev/null"]
+      <<: *probe
+
+  unbound:
+    container_name: unbound
+    build: unbound/
+    networks:
+      dnsnet:
+        ipv4_address: 172.31.240.251
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "dig +short -p 5335 @127.0.0.1 cloudflare.com | grep -Eo '\\b[0-9.]{7,15}\\b' >/dev/null"]
+      <<: *probe
+
+  pi-hole:
+    container_name: pi-hole
+    build: pihole/
+    ports:
+      - 53:53/tcp
+      - 53:53/udp
+      - ${WEBPORT}:80
+    networks:
+      dnsnet:
+        ipv4_address: 172.31.240.250
+    restart: unless-stopped
+    environment:
+    - TZ=Europe/London
+    - DNS1=172.31.240.251
+    - DISABLE_GITHUB_UPDATES=true
+    healthcheck:
+      test: ["CMD-SHELL", "dig -p $(pihole-FTL --config dns.port) +short +norecurse +retry=0 @127.0.0.1 pi.hole || exit 1"]
+      <<: *probe
