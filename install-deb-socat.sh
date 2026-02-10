@@ -128,7 +128,7 @@ podman network exists dnsnet || \
     dnsnet
 PODMAN_COMPOSE_PROVIDER=podman-compose BUILDAH_FORMAT=docker \
 podman-compose -f compose-socat.yaml --podman-run-args="--health-on-failure=restart" up -d
-./deb/persistent-podman-socat.sh
+./deb/persistent-podman.sh
 ./deb/dns-deb.sh
 cd -
 rm -rf nice-dns
