@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+BRANCH="${1:-main}"
 
 # This script is intended to be run as an unprivileged user. It uses sudo
 # internally for the few commands that require escalation. Running the entire
@@ -117,7 +118,7 @@ sudo loginctl enable-linger "$USER"
 
 #Start podman containers
 rm -rf nice-dns
-git clone https://github.com/sureserverman/nice-dns.git
+git clone -b "$BRANCH" https://github.com/sureserverman/nice-dns.git
 cd nice-dns
 podman network exists dnsnet || \
   podman network create \
