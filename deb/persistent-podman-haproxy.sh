@@ -64,7 +64,7 @@ done
 echo
 
 cp ./deb/persistent-containers.service "$USER_SYSTEMD_DIR/"
-systemctl --user disable persistent-containers.service
+systemctl --user disable persistent-containers.service || true
 systemctl --user daemon-reload
 echo "3) Enabling persistent containers service..."
 systemctl --user enable persistent-containers.service

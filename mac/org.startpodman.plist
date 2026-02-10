@@ -9,9 +9,9 @@
     <!-- Run at boot -->
     <key>RunAtLoad</key><true/>
 
-    <!-- Run as your user (replace with short username) -->
+    <!-- Run as your user (replaced at install time) -->
     <key>UserName</key>
-    <string>frank</string>
+    <string>__USERNAME__</string>
 
     <!-- Environment: set PATH and HOME for Podman -->
     <key>EnvironmentVariables</key>
