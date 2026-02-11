@@ -80,12 +80,16 @@ podman network exists dnsnet || \
     dnsnet
 
 echo "Freeing port 53..."
-# Disable Mullvad's local DNS resolver if Mullvad is installed
-if [ -f /Library/LaunchDaemons/net.mullvad.daemon.plist ]; then
-  sudo launchctl setenv TALPID_DISABLE_LOCAL_DNS_RESOLVER 1
+# Disable Mullvad's local DNS resolver by injecting env var into its plist
+MULLVAD_PLIST=/Library/LaunchDaemons/net.mullvad.daemon.plist
+if [ -f "$MULLVAD_PLIST" ]; then
+  if ! grep -q TALPID_DISABLE_LOCAL_DNS_RESOLVER "$MULLVAD_PLIST"; then
+    sudo /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables dict" "$MULLVAD_PLIST" 2>/dev/null || true
+    sudo /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:TALPID_DISABLE_LOCAL_DNS_RESOLVER string 1" "$MULLVAD_PLIST"
+  fi
   sudo launchctl bootout system/net.mullvad.daemon 2>/dev/null || true
   sleep 1
-  sudo launchctl bootstrap system /Library/LaunchDaemons/net.mullvad.daemon.plist 2>/dev/null || true
+  sudo launchctl bootstrap system "$MULLVAD_PLIST" 2>/dev/null || true
   sleep 2
 fi
 # Stop mDNSResponder if it holds port 53
