@@ -83,10 +83,32 @@ There are three proxy variants to choose from:
 ### Prerequisites
 
 - **Debian / Ubuntu**: `curl` (to run the one-liner)
-- **macOS**: `curl` and [Homebrew](https://brew.sh/)
+- **macOS**: `curl`, [Homebrew](https://brew.sh/) and **SIP disabled** (see below)
 
 All other dependencies (`git`, `podman`, `podman-compose`) are installed
 automatically by the scripts.
+
+#### Disabling SIP on macOS
+
+Pi-hole needs port 53, which macOS reserves for its own DNS service
+(`mDNSResponder`). The only reliable way to stop `mDNSResponder` is to
+disable System Integrity Protection (SIP) first.
+
+On modern macOS the system volume is a read-only signed snapshot, so
+disabling SIP does **not** weaken filesystem protections. It only allows
+the installer to unload `mDNSResponder` via `launchctl`.
+
+To disable SIP:
+
+1. Shut down your Mac.
+2. Boot into Recovery Mode (hold the **Power** button on Apple Silicon, or
+   **Cmd-R** on Intel).
+3. Open **Terminal** from the **Utilities** menu.
+4. Run `csrutil disable` and confirm.
+5. Reboot normally and run the install script.
+
+The installer will check SIP status and exit with instructions if it is
+still enabled.
 
 ### Debian / Ubuntu
 

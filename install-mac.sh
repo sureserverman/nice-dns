@@ -4,6 +4,23 @@
 set -euo pipefail
 BRANCH="${1:-main}"
 
+# 0. Require SIP disabled (needed to stop mDNSResponder and free port 53)
+if csrutil status | grep -q "enabled"; then
+  cat <<EOF
+System Integrity Protection (SIP) is enabled.
+Pi-hole needs port 53, which is held by macOS mDNSResponder.
+Disabling SIP lets the installer stop mDNSResponder to free that port.
+
+To disable SIP:
+  1. Shut down your Mac
+  2. Boot into Recovery Mode (hold Power on Apple Silicon / Cmd-R on Intel)
+  3. Open Terminal from the Utilities menu
+  4. Run: csrutil disable
+  5. Reboot and re-run this script
+EOF
+  exit 1
+fi
+
 # Temporarily point DNS to 1.1.1.1 so git clone works during install
 networksetup -listallnetworkservices | sed '1d' | grep -v '^\*' | while read -r svc; do
   sudo networksetup -setdnsservers "$svc" 1.1.1.1 >/dev/null 2>&1 || true
@@ -70,6 +87,10 @@ podman network exists dnsnet || \
     --subnet 172.31.240.248/29 \
     --dns 1.1.1.1 \
     dnsnet
+
+echo "Stopping mDNSResponder to free port 53..."
+sudo launchctl bootout system/com.apple.mDNSResponder 2>/dev/null || true
+sudo launchctl bootout system/com.apple.mDNSResponderHelper 2>/dev/null || true
 
 echo "Launching containers with podman-compose..."
 PODMAN_COMPOSE_PROVIDER=podman-compose BUILDAH_FORMAT=docker \

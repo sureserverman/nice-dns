@@ -22,6 +22,10 @@ until podman info 2>&1; do
     sleep 2
 done
 
+# Stop mDNSResponder to free port 53 for pi-hole
+sudo launchctl bootout system/com.apple.mDNSResponder 2>/dev/null || true
+sudo launchctl bootout system/com.apple.mDNSResponderHelper 2>/dev/null || true
+
 # Start all containers with restart=always
 # echo "$(date): Starting containers (restart=always)..." >> ~/Library/Logs/podman-autostart.out 2>&1
 podman restart --all 2>&1
