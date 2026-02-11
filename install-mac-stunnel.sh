@@ -43,8 +43,11 @@ if podman machine inspect podman-machine-default &>/dev/null; then
   echo "Podman machine already exists, reusing it..."
   podman machine start 2>/dev/null || true
 else
+  echo "Disabling Rosetta (not needed – all images have ARM builds)..."
+  mkdir -p ~/.config/containers
+  printf '[machine]\nrosetta=false\n' > ~/.config/containers/containers.conf
   echo "Initializing podman machine..."
-  podman machine init --rosetta=false
+  podman machine init
   podman machine start
   echo "Modifying podman machine..."
   podman machine ssh \
