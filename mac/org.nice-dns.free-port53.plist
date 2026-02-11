@@ -12,7 +12,7 @@
     <array>
       <string>/bin/bash</string>
       <string>-c</string>
-      <string>/bin/launchctl bootout system/com.apple.mDNSResponder 2>/dev/null; /bin/launchctl bootout system/com.apple.mDNSResponderHelper 2>/dev/null; /bin/launchctl bootout system/net.mullvad.daemon 2>/dev/null; true</string>
+      <string>/bin/launchctl setenv TALPID_DISABLE_LOCAL_DNS_RESOLVER 1; if [ -f /Library/LaunchDaemons/net.mullvad.daemon.plist ]; then /bin/launchctl bootout system/net.mullvad.daemon 2>/dev/null; sleep 1; /bin/launchctl bootstrap system /Library/LaunchDaemons/net.mullvad.daemon.plist 2>/dev/null; fi; /bin/launchctl bootout system/com.apple.mDNSResponder 2>/dev/null; /bin/launchctl bootout system/com.apple.mDNSResponderHelper 2>/dev/null; true</string>
     </array>
 
     <key>KeepAlive</key><false/>
