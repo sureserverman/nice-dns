@@ -4,6 +4,14 @@
 set -euo pipefail
 BRANCH="${1:-main}"
 
+# Restore DNS to DHCP defaults if the script fails after overriding DNS
+restore_dns() {
+  networksetup -listallnetworkservices | sed '1d' | grep -v '^\*' | while read -r svc; do
+    sudo networksetup -setdnsservers "$svc" Empty >/dev/null 2>&1 || true
+  done || true
+}
+trap restore_dns ERR
+
 # Temporarily point DNS to 1.1.1.1 so git clone works during install
 networksetup -listallnetworkservices | sed '1d' | grep -v '^\*' | while read -r svc; do
   sudo networksetup -setdnsservers "$svc" 1.1.1.1 >/dev/null 2>&1 || true
@@ -72,10 +80,17 @@ podman network exists dnsnet || \
     dnsnet
 
 echo "Freeing port 53..."
+# Disable Mullvad's local DNS resolver if Mullvad is installed
+if [ -f /Library/LaunchDaemons/net.mullvad.daemon.plist ]; then
+  sudo launchctl setenv TALPID_DISABLE_LOCAL_DNS_RESOLVER 1
+  sudo launchctl bootout system/net.mullvad.daemon 2>/dev/null || true
+  sleep 1
+  sudo launchctl bootstrap system /Library/LaunchDaemons/net.mullvad.daemon.plist 2>/dev/null || true
+  sleep 2
+fi
+# Stop mDNSResponder if it holds port 53
 sudo launchctl bootout system/com.apple.mDNSResponder 2>/dev/null || true
 sudo launchctl bootout system/com.apple.mDNSResponderHelper 2>/dev/null || true
-sudo launchctl bootout system/net.mullvad.daemon 2>/dev/null || true
-sleep 1
 
 if blocking_pid=$(sudo lsof -t -i UDP:53 2>/dev/null | head -1) && [ -n "$blocking_pid" ]; then
   blocking_name=$(ps -p "$blocking_pid" -o comm= 2>/dev/null || echo "unknown")

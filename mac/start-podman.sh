@@ -40,4 +40,10 @@ log "Podman service is ready."
 # Start all containers
 log "Starting containers..."
 podman restart --all >> "$LOG" 2>&1
+
+# Point DNS to pi-hole
+log "Setting DNS to 127.0.0.1..."
+networksetup -listallnetworkservices | sed '1d' | grep -v '^\*' | while read -r svc; do
+  networksetup -setdnsservers "$svc" 127.0.0.1 2>/dev/null || true
+done
 log "Done."
