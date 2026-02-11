@@ -37,8 +37,6 @@ until podman info >/dev/null 2>&1; do
 done
 log "Podman service is ready."
 
-# Port 53 is freed by the org.nice-dns.free-port53 LaunchDaemon (runs as root)
-
 # Start all containers
 log "Starting containers..."
 podman restart --all >> "$LOG" 2>&1

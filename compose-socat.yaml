@@ -38,8 +38,8 @@ services:
     container_name: pi-hole
     build: pihole/
     ports:
-      - 53:53/tcp
-      - 53:53/udp
+      - 127.0.0.1:53:53/tcp
+      - 127.0.0.1:53:53/udp
       - ${WEBPORT:-8880}:80
     networks:
       dnsnet:
