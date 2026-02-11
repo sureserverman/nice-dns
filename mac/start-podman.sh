@@ -1,33 +1,45 @@
 #!/bin/bash
-# Podman auto-start script for LaunchDaemon
+# Podman auto-start script for LaunchAgent
 
-# Set PATH in case environment from launchd is limited
+LOG=~/Library/Logs/podman-autostart.log
+
+log() { echo "$(date): $*" >> "$LOG"; }
+
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-
 unset SSH_AUTH_SOCK
 
-# Start Podman machine (if not already running)
-# echo "$(date): Starting Podman machine..." >> ~/Library/Logs/podman-autostart.out 2>&1
-podman machine start 2>&1
+# Wait for system to settle after login
+sleep 10
+
+# Start Podman machine with retries
+log "Starting Podman machine..."
+tries=0
+until podman machine start >> "$LOG" 2>&1; do
+    ((tries++))
+    if [ $tries -ge 5 ]; then
+      log "Failed to start Podman machine after $tries attempts."
+      exit 1
+    fi
+    log "Podman machine start failed, retrying ($tries/5)..."
+    sleep 10
+done
 
 # Wait for VM to be responsive
-# echo "$(date): Waiting for Podman service..." >> ~/Library/Logs/podman-autostart.out 2>&1
+log "Waiting for Podman service..."
 tries=0
-until podman info 2>&1; do
+until podman info >/dev/null 2>&1; do
     ((tries++))
-    if [ $tries -ge 30 ]; then 
-      # echo "$(date): Podman service did not become ready in time, exiting." >> ~/Library/Logs/podman-autostart.err 2>&1
+    if [ $tries -ge 30 ]; then
+      log "Podman service did not become ready in time."
       exit 1
     fi
     sleep 2
 done
+log "Podman service is ready."
 
-# Stop mDNSResponder to free port 53 for pi-hole
-sudo launchctl bootout system/com.apple.mDNSResponder 2>/dev/null || true
-sudo launchctl bootout system/com.apple.mDNSResponderHelper 2>/dev/null || true
+# Port 53 is freed by the org.nice-dns.free-port53 LaunchDaemon (runs as root)
 
-# Start all containers with restart=always
-# echo "$(date): Starting containers (restart=always)..." >> ~/Library/Logs/podman-autostart.out 2>&1
-podman restart --all 2>&1
-
-# sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate off
+# Start all containers
+log "Starting containers..."
+podman restart --all >> "$LOG" 2>&1
+log "Done."
