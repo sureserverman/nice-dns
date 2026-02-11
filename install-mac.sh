@@ -71,6 +71,19 @@ podman network exists dnsnet || \
     --dns 1.1.1.1 \
     dnsnet
 
+echo "Freeing port 53..."
+sudo launchctl bootout system/com.apple.mDNSResponder 2>/dev/null || true
+sudo launchctl bootout system/com.apple.mDNSResponderHelper 2>/dev/null || true
+sudo launchctl bootout system/net.mullvad.daemon 2>/dev/null || true
+sleep 1
+
+if blocking_pid=$(sudo lsof -t -i UDP:53 2>/dev/null | head -1) && [ -n "$blocking_pid" ]; then
+  blocking_name=$(ps -p "$blocking_pid" -o comm= 2>/dev/null || echo "unknown")
+  echo "Port 53 is still held by $blocking_name (PID $blocking_pid)."
+  echo "Please quit $blocking_name and re-run this script."
+  exit 1
+fi
+
 echo "Launching containers with podman-compose..."
 PODMAN_COMPOSE_PROVIDER=podman-compose BUILDAH_FORMAT=docker \
 podman-compose --podman-run-args="--health-on-failure=restart" up -d
