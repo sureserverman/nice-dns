@@ -201,10 +201,12 @@ systemctl --user disable --now persistent-containers.service
 sudo systemctl disable --now custom-dns-deb.service
 ```
 
-On **macOS** also unload the launch agent and restore DNS:
+On **macOS** also unload the launch agent/daemon and restore DNS:
 
 ```bash
 launchctl unload ~/Library/LaunchAgents/org.startpodman.plist
+sudo launchctl bootout system/org.nice-dns.free-port53
+sudo rm -f /Library/LaunchDaemons/org.nice-dns.free-port53.plist
 ```
 
 Then reset your DNS servers to their original values (or "Empty" for DHCP)

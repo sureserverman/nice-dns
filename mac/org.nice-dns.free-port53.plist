@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>org.nice-dns.free-port53</string>
+
+    <key>RunAtLoad</key><true/>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/bin/bash</string>
+      <string>-c</string>
+      <string>/bin/launchctl bootout system/com.apple.mDNSResponder 2>/dev/null; /bin/launchctl bootout system/com.apple.mDNSResponderHelper 2>/dev/null; true</string>
+    </array>
+
+    <key>KeepAlive</key><false/>
+  </dict>
+</plist>
