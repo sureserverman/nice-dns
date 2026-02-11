@@ -45,6 +45,7 @@ if podman machine inspect podman-machine-default &>/dev/null; then
 else
   echo "Initializing podman machine..."
   podman machine init
+  podman machine start
   echo "Modifying podman machine..."
   podman machine ssh \
   'echo "net.ipv4.ip_unprivileged_port_start=53" \
