@@ -44,7 +44,7 @@ if podman machine inspect podman-machine-default &>/dev/null; then
   podman machine start 2>/dev/null || true
 else
   echo "Initializing podman machine..."
-  podman machine init
+  podman machine init --rosetta=false
   podman machine start
   echo "Modifying podman machine..."
   podman machine ssh \
