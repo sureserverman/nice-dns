@@ -102,11 +102,11 @@ sudo launchctl bootout system/com.apple.mDNSResponderHelper 2>/dev/null || true
   # exit 1
 # fi
 sudo launchctl bootout system/net.mullvad.daemon 2>/dev/null || true
-sleep 1
+sleep 2
 echo "Launching containers with podman-compose..."
 PODMAN_COMPOSE_PROVIDER=podman-compose BUILDAH_FORMAT=docker \
 podman-compose --podman-run-args="--health-on-failure=restart" up -d
-sleep 2
+sleep 5
 sudo launchctl bootstrap system "$MULLVAD_PLIST" 2>/dev/null || true
 
 sudo ./mac/dns-mac.sh
