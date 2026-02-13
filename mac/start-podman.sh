@@ -37,9 +37,15 @@ until podman info >/dev/null 2>&1; do
 done
 log "Podman service is ready."
 
+sudo launchctl bootout system/net.mullvad.daemon 2>/dev/null || true
+sleep 2
+
 # Start all containers
 log "Starting containers..."
 podman restart --all >> "$LOG" 2>&1
+
+sleep 5
+sudo launchctl bootstrap system "$MULLVAD_PLIST" 2>/dev/null || true
 
 # Point DNS to pi-hole
 log "Setting DNS to 127.0.0.1..."
