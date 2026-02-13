@@ -160,6 +160,17 @@ If you changed `WEBPORT` in `.env`, replace `8880` with your custom port.
 The scripts use `sudo` internally when needed and must be executed as your
 regular user so that rootless Podman and user-mode systemd work correctly.
 
+On macOS, `./mac/mac-rules-persist.sh` now installs and validates the required
+sudoers rule automatically. If you already have an existing install and only
+need to refresh sudoers manually, use:
+
+```bash
+sed "s/__USERNAME__/$(whoami)/" ./mac/start-podman.sudoers | \
+  sudo tee /etc/sudoers.d/start-podman >/dev/null
+sudo chmod 440 /etc/sudoers.d/start-podman
+sudo visudo -cf /etc/sudoers.d/start-podman
+```
+
 ## Uninstall
 
 To remove nice-dns, stop and delete the containers, images and network:

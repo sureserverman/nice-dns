@@ -2,6 +2,7 @@
 # Podman auto-start script for LaunchAgent
 
 LOG=~/Library/Logs/podman-autostart.log
+ROOT_HELPER=/usr/local/sbin/start-podman-root.sh
 
 log() { echo "$(date): $*" >> "$LOG"; }
 
@@ -37,19 +38,21 @@ until podman info >/dev/null 2>&1; do
 done
 log "Podman service is ready."
 
-sudo launchctl bootout system/net.mullvad.daemon 2>/dev/null || true
-sleep 2
+log "Running privileged pre-start actions..."
+if ! sudo -n "$ROOT_HELPER" pre >> "$LOG" 2>&1; then
+  log "Privileged pre-start actions failed. Check sudoers for $ROOT_HELPER."
+  exit 1
+fi
 
 # Start all containers
 log "Starting containers..."
 podman restart --all >> "$LOG" 2>&1
 
 sleep 5
-sudo launchctl bootstrap system "$MULLVAD_PLIST" 2>/dev/null || true
+log "Running privileged post-start actions..."
+if ! sudo -n "$ROOT_HELPER" post >> "$LOG" 2>&1; then
+  log "Privileged post-start actions failed. Check sudoers for $ROOT_HELPER."
+  exit 1
+fi
 
-# Point DNS to pi-hole
-log "Setting DNS to 127.0.0.1..."
-networksetup -listallnetworkservices | sed '1d' | grep -v '^\*' | while read -r svc; do
-  networksetup -setdnsservers "$svc" 127.0.0.1 2>/dev/null || true
-done
 log "Done."

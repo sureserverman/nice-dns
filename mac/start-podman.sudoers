@@ -1,0 +1,7 @@
+# Install with:
+#   sudo install -m 440 ./mac/start-podman.sudoers /etc/sudoers.d/start-podman
+#   sudo visudo -cf /etc/sudoers.d/start-podman
+#
+# Replace __USERNAME__ with the macOS user that runs the LaunchAgent.
+
+__USERNAME__ ALL=(root) NOPASSWD: /usr/local/sbin/start-podman-root.sh pre, /usr/local/sbin/start-podman-root.sh post
