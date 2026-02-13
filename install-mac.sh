@@ -83,10 +83,11 @@ echo "Freeing port 53..."
 # Disable Mullvad's local DNS resolver by injecting env var into its plist
 MULLVAD_PLIST=/Library/LaunchDaemons/net.mullvad.daemon.plist
 if [ -f "$MULLVAD_PLIST" ]; then
-  if ! grep -q TALPID_DISABLE_LOCAL_DNS_RESOLVER "$MULLVAD_PLIST"; then
-    sudo /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables dict" "$MULLVAD_PLIST" 2>/dev/null || true
-    sudo /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:TALPID_DISABLE_LOCAL_DNS_RESOLVER string 1" "$MULLVAD_PLIST"
-  fi
+  # if ! grep -q TALPID_DISABLE_LOCAL_DNS_RESOLVER "$MULLVAD_PLIST"; then
+  #   sudo /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables dict" "$MULLVAD_PLIST" 2>/dev/null || true
+  #   sudo /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:TALPID_DISABLE_LOCAL_DNS_RESOLVER string 1" "$MULLVAD_PLIST"
+  # fi
+  sudo plutil -replace EnvironmentVariables -json '{"TALPID_DISABLE_OFFLINE_MONITOR": "1"}' /Library/LaunchDaemons/net.mullvad.daemon.plist
   sudo launchctl bootout system/net.mullvad.daemon 2>/dev/null || true
   sleep 1
   sudo launchctl bootstrap system "$MULLVAD_PLIST" 2>/dev/null || true
