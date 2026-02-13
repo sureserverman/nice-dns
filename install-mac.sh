@@ -87,7 +87,7 @@ if [ -f "$MULLVAD_PLIST" ]; then
   #   sudo /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables dict" "$MULLVAD_PLIST" 2>/dev/null || true
   #   sudo /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:TALPID_DISABLE_LOCAL_DNS_RESOLVER string 1" "$MULLVAD_PLIST"
   # fi
-  sudo plutil -replace EnvironmentVariables -json '{"TALPID_DISABLE_LOCAL_DNS_RESOLVER": "1"}' /Library/LaunchDaemons/net.mullvad.daemon.plist
+  # sudo plutil -replace EnvironmentVariables -json '{"TALPID_DISABLE_LOCAL_DNS_RESOLVER": "1"}' /Library/LaunchDaemons/net.mullvad.daemon.plist
   sleep 2
 fi
 # Stop mDNSResponder if it holds port 53
