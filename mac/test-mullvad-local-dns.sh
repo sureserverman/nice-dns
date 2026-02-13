@@ -96,9 +96,27 @@ restart_daemon() {
   require_root "$@"
 
   echo "Restarting ${LABEL}..."
-  launchctl bootout system/${LABEL} >/dev/null 2>&1 || true
-  launchctl bootstrap system "$PLIST"
-  echo "Restart done"
+  if launchctl print "system/${LABEL}" >/dev/null 2>&1; then
+    launchctl bootout "system/${LABEL}" >/dev/null 2>&1 || true
+  fi
+
+  if launchctl bootstrap system "$PLIST" >/dev/null 2>&1; then
+    echo "Restart done via bootstrap"
+    return
+  fi
+
+  rc=$?
+  echo "launchctl bootstrap failed (rc=${rc}). Trying enable+kickstart fallback..."
+  launchctl enable "system/${LABEL}" >/dev/null 2>&1 || true
+  if launchctl kickstart -k "system/${LABEL}" >/dev/null 2>&1; then
+    echo "Restart done via kickstart fallback"
+    return
+  fi
+
+  echo "Fallback failed. Diagnostics:"
+  plutil -lint "$PLIST" || true
+  launchctl print "system/${LABEL}" 2>/dev/null | sed -n '1,80p' || true
+  exit "$rc"
 }
 
 MODE="check"
