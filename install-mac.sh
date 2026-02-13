@@ -88,8 +88,6 @@ if [ -f "$MULLVAD_PLIST" ]; then
   #   sudo /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:TALPID_DISABLE_LOCAL_DNS_RESOLVER string 1" "$MULLVAD_PLIST"
   # fi
   sudo plutil -replace EnvironmentVariables -json '{"TALPID_DISABLE_LOCAL_DNS_RESOLVER": "1"}' /Library/LaunchDaemons/net.mullvad.daemon.plist
-  sudo launchctl bootout system/net.mullvad.daemon 2>/dev/null || true
-  sleep 1
   sudo launchctl bootstrap system "$MULLVAD_PLIST" 2>/dev/null || true
   sleep 2
 fi
@@ -103,10 +101,13 @@ sudo launchctl bootout system/com.apple.mDNSResponderHelper 2>/dev/null || true
   # echo "Please quit $blocking_name and re-run this script."
   # exit 1
 # fi
-
+sudo launchctl bootout system/net.mullvad.daemon 2>/dev/null || true
+sleep 1
 echo "Launching containers with podman-compose..."
 PODMAN_COMPOSE_PROVIDER=podman-compose BUILDAH_FORMAT=docker \
 podman-compose --podman-run-args="--health-on-failure=restart" up -d
+sleep 2
+sudo launchctl bootstrap system "$MULLVAD_PLIST" 2>/dev/null || true
 
 sudo ./mac/dns-mac.sh
 ./mac/mac-rules-persist.sh
