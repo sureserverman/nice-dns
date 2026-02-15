@@ -19,6 +19,7 @@ set_local_dns() {
 case "${1:-}" in
   pre)
     launchctl bootout system/net.mullvad.daemon 2>/dev/null || true
+    pfctl -d || true
     sleep 2
     ;;
   post)

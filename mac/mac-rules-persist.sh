@@ -20,3 +20,7 @@ sudo install -m 755 ./mac/start-podman-root.sh /usr/local/sbin/start-podman-root
 sed "s/__USERNAME__/$(whoami)/" ./mac/org.startpodman.plist > ~/Library/LaunchAgents/org.startpodman.plist
 chmod 644 ~/Library/LaunchAgents/org.startpodman.plist
 launchctl load ~/Library/LaunchAgents/org.startpodman.plist
+
+sudo install -m 755 ./mac/mullvad-pfctl-disable-on-connect.sh /usr/local/sbin/mullvad-pfctl-disable-on-connect.sh
+sudo install -m 644 ./mac/com.local.mullvad-pfctl-disable-on-connect.plist /Library/LaunchDaemons/com.local.mullvad-pfctl-disable-on-connect.plist
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.local.mullvad-pfctl-disable-on-connect.plist
