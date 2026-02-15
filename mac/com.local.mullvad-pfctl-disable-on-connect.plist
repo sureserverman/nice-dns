@@ -13,7 +13,7 @@
 	<key>KeepAlive</key>
 	<true/>
 	<key>StartInterval</key>
-	<integer>5</integer>
+	<integer>1</integer>
 	<key>StandardOutPath</key>
 	<string>/var/log/mullvad-pfctl-disable-on-connect.log</string>
 	<key>StandardErrorPath</key>
