@@ -22,8 +22,10 @@ chmod 644 ~/Library/LaunchAgents/org.startpodman.plist
 launchctl load ~/Library/LaunchAgents/org.startpodman.plist
 
 sudo install -m 755 ./mac/mullvad-pfctl-disable-on-connect.sh /usr/local/sbin/mullvad-pfctl-disable-on-connect.sh
+sudo launchctl bootout system/com.local.mullvad-pfctl-disable-on-connect 2>/dev/null || true
 sudo install -m 644 ./mac/com.local.mullvad-pfctl-disable-on-connect.plist /Library/LaunchDaemons/com.local.mullvad-pfctl-disable-on-connect.plist
 sudo launchctl bootstrap system /Library/LaunchDaemons/com.local.mullvad-pfctl-disable-on-connect.plist
 
+sudo launchctl bootout system/com.local.loopbackalias 2>/dev/null || true
 sudo install -m 644 ./mac/com.local.loopbackalias.plist /Library/LaunchDaemons/com.local.loopbackalias.plist
 sudo launchctl bootstrap system /Library/LaunchDaemons/com.local.loopbackalias.plist
