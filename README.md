@@ -65,20 +65,19 @@ flowchart LR
     B --> C["Unbound
     (recursive resolver)"]
     C -- DNS-over-TLS --> D["Tor proxy
-    (socat / stunnel / haproxy)"]
+    (socat / haproxy)"]
     D -- ".onion" --> E["Cloudflare
     hidden resolver"]
 ```
 
 ## Usage
 
-There are three proxy variants to choose from:
+There are two proxy variants to choose from:
 
 | Variant | Proxy container | How it works |
 |---------|----------------|--------------|
 | **tor-haproxy** (default) | `sureserver/tor-haproxy` | haproxy TCP relay through Tor |
 | **tor-socat** | `sureserver/tor-socat` | socat TCP relay through Tor |
-| **tor-stunnel** | `sureserver/tor-stunnel` | stunnel TCP relay through Tor |
 
 ### Prerequisites
 
@@ -98,9 +97,6 @@ bash -x <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main
 
 # tor-socat
 bash -x <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb-socat.sh)
-
-# tor-stunnel
-bash -x <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb-stunnel.sh)
 ```
 
 ### macOS
@@ -114,9 +110,6 @@ bash -x <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main
 
 # tor-socat
 bash -x <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac-socat.sh)
-
-# tor-stunnel
-bash -x <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac-stunnel.sh)
 ```
 
 ### Installing from the dev branch
@@ -176,7 +169,7 @@ sudo visudo -cf /etc/sudoers.d/start-podman
 To remove nice-dns, stop and delete the containers, images and network:
 
 ```bash
-for name in tor-socat tor-stunnel tor-haproxy unbound pi-hole; do
+for name in tor-socat tor-haproxy unbound pi-hole; do
   podman rm -f "$name" 2>/dev/null || true
   podman image rm -f "$name" 2>/dev/null || true
 done
