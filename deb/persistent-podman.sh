@@ -59,6 +59,15 @@ if [ -f "$USER_SYSTEMD_DIR/persistent-containers.service" ]; then
 else
   echo "2) No old persistent-containers.service found (OK)."
 fi
+
+# Remove old manual .service files (from pre-quadlet workaround)
+for svc in tor-haproxy tor-socat unbound pi-hole; do
+  if [ -f "$USER_SYSTEMD_DIR/${svc}.service" ]; then
+    systemctl --user disable "${svc}.service" 2>/dev/null || true
+    systemctl --user stop "${svc}.service" 2>/dev/null || true
+    rm -f "$USER_SYSTEMD_DIR/${svc}.service"
+  fi
+done
 echo
 
 # 3) Install quadlet files
