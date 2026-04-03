@@ -120,15 +120,9 @@ sudo loginctl enable-linger "$USER"
 rm -rf nice-dns
 git clone -b "$BRANCH" https://github.com/sureserverman/nice-dns.git
 cd nice-dns
-podman network exists dnsnet || \
-  podman network create \
-    --driver bridge \
-    --subnet 172.31.240.248/29 \
-    --dns 1.1.1.1 \
-    dnsnet
-PODMAN_COMPOSE_PROVIDER=podman-compose BUILDAH_FORMAT=docker \
-podman-compose --podman-run-args="--health-on-failure=restart" up -d
-./deb/persistent-podman.sh
+BUILDAH_FORMAT=docker podman build -t unbound unbound/
+BUILDAH_FORMAT=docker podman build -t pi-hole pihole/
+./deb/persistent-podman.sh haproxy
 ./deb/dns-deb.sh
 cd -
 rm -rf nice-dns

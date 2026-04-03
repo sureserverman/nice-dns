@@ -1,0 +1,5 @@
+[Network]
+NetworkName=dnsnet
+Driver=bridge
+Subnet=172.31.240.248/29
+DNS=1.1.1.1
