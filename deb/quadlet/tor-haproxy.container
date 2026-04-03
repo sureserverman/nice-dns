@@ -1,0 +1,18 @@
+[Unit]
+Description=Tor HAProxy DNS-over-TLS proxy
+After=nice-dns-network.service
+
+[Container]
+ContainerName=tor-haproxy
+Image=docker.io/sureserver/tor-haproxy:latest
+Network=nice-dns.network
+IP=172.31.240.252
+HealthCmd=dig +short +tls -p 853 @127.0.0.1 cloudflare.com | grep -Eo '\b[0-9.]{7,15}\b' >/dev/null
+HealthInterval=30s
+HealthTimeout=10s
+HealthRetries=5
+HealthStartPeriod=90s
+HealthOnFailure=restart
+
+[Install]
+WantedBy=default.target
