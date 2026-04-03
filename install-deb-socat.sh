@@ -77,6 +77,30 @@ EOF
 fi
 
 
+# Ensure Podman >= 5.3.0 (quadlets broken on mixed cgroup v1+v2 before this)
+MIN_PODMAN="5.3.0"
+CUR_PODMAN=$(podman --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' || echo "0.0.0")
+if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
+  echo "Podman $CUR_PODMAN < $MIN_PODMAN — upgrading via ppa:sejug/podman..."
+  sudo add-apt-repository -y ppa:sejug/podman
+  # Pin PPA above Ubuntu ESM
+  printf 'Package: podman podman-docker\nPin: release o=LP-PPA-sejug-podman\nPin-Priority: 600\n' \
+    | sudo tee /etc/apt/preferences.d/podman-ppa >/dev/null
+  # Remove packages that conflict with the PPA versions
+  sudo dpkg --remove --force-depends \
+    golang-github-containers-common golang-github-containers-image podman-compose 2>/dev/null || true
+  sudo apt-get update -q
+  sudo apt-get install -yq podman
+  # PPA's pasta binary needs AppArmor rules not yet in Ubuntu's profile;
+  # use slirp4netns as the rootless network backend instead
+  CONTAINERS_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/containers/containers.conf"
+  mkdir -p "$(dirname "$CONTAINERS_CONF")"
+  if [ ! -f "$CONTAINERS_CONF" ] || ! grep -q 'default_rootless_network_cmd' "$CONTAINERS_CONF" 2>/dev/null; then
+    printf '[network]\ndefault_rootless_network_cmd = "slirp4netns"\n' >> "$CONTAINERS_CONF"
+  fi
+  echo "Podman upgraded to $(podman --version)."
+fi
+
 echo 'net.ipv4.ip_unprivileged_port_start = 53' | \
   sudo tee /etc/sysctl.d/99-podman-privileged-ports.conf
 sudo sysctl --system
