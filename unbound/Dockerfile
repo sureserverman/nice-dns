@@ -1,4 +1,6 @@
-FROM alpinelinux/unbound:latest
+FROM sureserver/hardened-unbound:latest
 
-RUN apk add --no-cache bind-tools
 ADD --chown=unbound:unbound etc/* /etc/unbound/
+
+# Lock down: remove apk, set strict permissions, remove chown
+RUN $APP_DIR/post-install.sh
