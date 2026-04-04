@@ -94,25 +94,29 @@ if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
   # Pin all PPA packages so the entire container stack resolves from one source
   printf 'Package: *\nPin: release o=LP-PPA-sejug-podman\nPin-Priority: 600\n' \
     | sudo tee /etc/apt/preferences.d/podman-ppa >/dev/null
-  # Ubuntu's podman-compose and PPA's podman both ship podman-compose.1.gz;
-  # divert the man page so both packages can coexist without a file conflict
-  sudo dpkg-divert --add --rename --package podman \
-    --divert /usr/share/man/man1/podman-compose.1.gz.dpkg-divert \
-    /usr/share/man/man1/podman-compose.1.gz 2>/dev/null || true
   sudo apt-get update -q
   sudo apt-get install -yq --fix-broken
   sudo apt-get install -yq --no-install-recommends podman
   echo "Podman upgraded to $(podman --version)."
 fi
 
+# Ubuntu's podman-compose and PPA's podman both ship podman-compose.1.gz;
+# divert the man page so both packages can coexist without a file conflict
+if grep -rqs 'sejug/podman' /etc/apt/sources.list.d/ 2>/dev/null; then
+  sudo dpkg-divert --add --rename --package podman \
+    --divert /usr/share/man/man1/podman-compose.1.gz.dpkg-divert \
+    /usr/share/man/man1/podman-compose.1.gz 2>/dev/null || true
+fi
+
 # pasta is a symlink to passt, so AppArmor applies the passt profile;
 # the passt profile only includes <abstractions/passt>, but pasta needs
 # <abstractions/pasta> (which adds /proc/*/ns/net access etc.)
 # Since pasta's abstraction already includes passt's, just swap the include.
-if [ -f /etc/apparmor.d/usr.bin.passt ] && \
-   grep -q 'include <abstractions/passt>' /etc/apparmor.d/usr.bin.passt && \
-   ! grep -q 'include <abstractions/pasta>' /etc/apparmor.d/usr.bin.passt; then
-  sudo sed -i 's|include <abstractions/passt>|include <abstractions/pasta>|' /etc/apparmor.d/usr.bin.passt
+if [ -f /etc/apparmor.d/usr.bin.passt ]; then
+  if grep -q 'include <abstractions/passt>' /etc/apparmor.d/usr.bin.passt && \
+     ! grep -q 'include <abstractions/pasta>' /etc/apparmor.d/usr.bin.passt; then
+    sudo sed -i 's|include <abstractions/passt>|include <abstractions/pasta>|' /etc/apparmor.d/usr.bin.passt
+  fi
   sudo apparmor_parser -r /etc/apparmor.d/usr.bin.passt
 fi
 
