@@ -25,7 +25,10 @@ if [ "$(podman ps -a | grep -Ec "$NICE_DNS_CONTAINERS")" -gt 0 ]
     podman network rm dnsnet || true
   else
     #Install required software
-    sudo apt-get install -yq git podman podman-compose
+    # Remove packages whose files conflict with newer containers-common
+    sudo dpkg --remove --force-depends \
+      golang-github-containers-common golang-github-containers-image 2>/dev/null || true
+    sudo apt-get install -yq -o Dpkg::Options::="--force-overwrite" git podman podman-compose
     # target config path (user-level)
     CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/containers/registries.conf"
     DIR=$(dirname "$CONFIG")
