@@ -109,27 +109,37 @@ if grep -rqs 'sejug/podman' /etc/apt/sources.list.d/ 2>/dev/null; then
 fi
 
 # pasta is a symlink to passt, so AppArmor applies the passt profile.
-# Two fixes needed for PPA's passt on Ubuntu 24.04+:
-#  1) Swap <abstractions/passt> → <abstractions/pasta> (adds /proc/*/ns/net etc.)
-#  2) Add "allow userns" — Ubuntu's kernel.apparmor_restrict_unprivileged_userns=1
-#     blocks user namespace creation unless the profile explicitly permits it.
+# Ubuntu Noble's stock passt ships profiles written before Podman 5.x
+# rootless-netns. Three structural edits go into the main profile (can't be
+# overridden via local/); all additional rules go into a local override so
+# they survive package upgrades cleanly.
 if [ -f /etc/apparmor.d/usr.bin.passt ]; then
+  # --- structural edits (must touch the main profile) ---
+  # 1) Use the pasta abstraction (adds /proc/*/ns/net, tun, uid_map, etc.)
   if grep -q 'include <abstractions/passt>' /etc/apparmor.d/usr.bin.passt && \
      ! grep -q 'include <abstractions/pasta>' /etc/apparmor.d/usr.bin.passt; then
     sudo sed -i 's|include <abstractions/passt>|include <abstractions/pasta>|' /etc/apparmor.d/usr.bin.passt
   fi
+  # 2) pasta does pivot_root which disconnects paths
   if ! grep -q 'attach_disconnected' /etc/apparmor.d/usr.bin.passt; then
     sudo sed -i 's|/usr/bin/passt{,.avx2} {|/usr/bin/passt{,.avx2} flags=(attach_disconnected) {|' /etc/apparmor.d/usr.bin.passt
   fi
-  if ! grep -q 'allow userns' /etc/apparmor.d/usr.bin.passt; then
-    sudo sed -i '/include <abstractions\/pasta>/a\  allow userns,' /etc/apparmor.d/usr.bin.passt
+  # 3) Enable local override include
+  if ! grep -q 'local/usr.bin.passt' /etc/apparmor.d/usr.bin.passt; then
+    sudo sed -i '/^}$/i\  include if exists <local/usr.bin.passt>' /etc/apparmor.d/usr.bin.passt
   fi
-  if ! grep -q 'ptrace.*crun' /etc/apparmor.d/usr.bin.passt; then
-    sudo sed -i '/allow userns/a\  ptrace (read) peer=crun,' /etc/apparmor.d/usr.bin.passt
-  fi
-  if ! grep -q '@{PROC}/\[0-9\]\*/ns/ ' /etc/apparmor.d/usr.bin.passt; then
-    sudo sed -i '/ptrace (read) peer=crun,/a\  @{PROC}/[0-9]*/ns/ r,' /etc/apparmor.d/usr.bin.passt
-  fi
+
+  # --- local override (survives package upgrades) ---
+  sudo mkdir -p /etc/apparmor.d/local
+  sudo tee /etc/apparmor.d/local/usr.bin.passt > /dev/null <<'EOF'
+# nice-dns: extra rules for Podman 5.x rootless-netns with pasta
+allow userns,
+ptrace (read) peer=crun,
+@{PROC}/[0-9]*/ns/ r,
+@{PROC}/sys/net/ipv4/ip_local_port_range r,
+owner @{run}/user/@{uid}/containers/** rwlk,
+EOF
+
   sudo apparmor_parser -r /etc/apparmor.d/usr.bin.passt
 fi
 
