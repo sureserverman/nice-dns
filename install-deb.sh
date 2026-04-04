@@ -108,14 +108,27 @@ if grep -rqs 'sejug/podman' /etc/apt/sources.list.d/ 2>/dev/null; then
     /usr/share/man/man1/podman-compose.1.gz 2>/dev/null || true
 fi
 
-# pasta is a symlink to passt, so AppArmor applies the passt profile;
-# the passt profile only includes <abstractions/passt>, but pasta needs
-# <abstractions/pasta> (which adds /proc/*/ns/net access etc.)
-# Since pasta's abstraction already includes passt's, just swap the include.
+# pasta is a symlink to passt, so AppArmor applies the passt profile.
+# Two fixes needed for PPA's passt on Ubuntu 24.04+:
+#  1) Swap <abstractions/passt> → <abstractions/pasta> (adds /proc/*/ns/net etc.)
+#  2) Add "allow userns" — Ubuntu's kernel.apparmor_restrict_unprivileged_userns=1
+#     blocks user namespace creation unless the profile explicitly permits it.
 if [ -f /etc/apparmor.d/usr.bin.passt ]; then
   if grep -q 'include <abstractions/passt>' /etc/apparmor.d/usr.bin.passt && \
      ! grep -q 'include <abstractions/pasta>' /etc/apparmor.d/usr.bin.passt; then
     sudo sed -i 's|include <abstractions/passt>|include <abstractions/pasta>|' /etc/apparmor.d/usr.bin.passt
+  fi
+  if ! grep -q 'attach_disconnected' /etc/apparmor.d/usr.bin.passt; then
+    sudo sed -i 's|/usr/bin/passt{,.avx2} {|/usr/bin/passt{,.avx2} flags=(attach_disconnected) {|' /etc/apparmor.d/usr.bin.passt
+  fi
+  if ! grep -q 'allow userns' /etc/apparmor.d/usr.bin.passt; then
+    sudo sed -i '/include <abstractions\/pasta>/a\  allow userns,' /etc/apparmor.d/usr.bin.passt
+  fi
+  if ! grep -q 'ptrace.*crun' /etc/apparmor.d/usr.bin.passt; then
+    sudo sed -i '/allow userns/a\  ptrace (read) peer=crun,' /etc/apparmor.d/usr.bin.passt
+  fi
+  if ! grep -q '@{PROC}/\[0-9\]\*/ns/ ' /etc/apparmor.d/usr.bin.passt; then
+    sudo sed -i '/ptrace (read) peer=crun,/a\  @{PROC}/[0-9]*/ns/ r,' /etc/apparmor.d/usr.bin.passt
   fi
   sudo apparmor_parser -r /etc/apparmor.d/usr.bin.passt
 fi
