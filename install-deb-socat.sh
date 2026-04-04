@@ -11,6 +11,14 @@ if [[ $EUID -eq 0 ]]; then
 fi
 
 
+# Repair package state if a previous install left the PPA with a narrow pin
+if grep -rqs 'sejug/podman' /etc/apt/sources.list.d/ 2>/dev/null; then
+  printf 'Package: *\nPin: release o=LP-PPA-sejug-podman\nPin-Priority: 600\n' \
+    | sudo tee /etc/apt/preferences.d/podman-ppa >/dev/null
+  sudo apt-get update -q
+  sudo apt-get install -yq --fix-broken
+fi
+
 #Check if there are installed previous versions
 NICE_DNS_CONTAINERS="tor-socat|tor-haproxy|unbound|pi-hole"
 if [ "$(podman ps -a | grep -Ec "$NICE_DNS_CONTAINERS")" -gt 0 ]
@@ -25,9 +33,7 @@ if [ "$(podman ps -a | grep -Ec "$NICE_DNS_CONTAINERS")" -gt 0 ]
     podman network rm dnsnet || true
   else
     #Install required software
-    sudo dpkg --remove --force-depends buildah golang-github-containers-common golang-github-containers-image 2>/dev/null || true
-    sudo apt-get install -yq --fix-broken
-    sudo apt-get install -yq --no-install-recommends git podman podman-compose
+    sudo apt-get install -yq --no-install-recommends git podman
     # target config path (user-level)
     CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/containers/registries.conf"
     DIR=$(dirname "$CONFIG")
@@ -85,15 +91,17 @@ CUR_PODMAN=$(podman --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' || echo "0.
 if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
   echo "Podman $CUR_PODMAN < $MIN_PODMAN — upgrading via ppa:sejug/podman..."
   sudo add-apt-repository -y ppa:sejug/podman
-  # Pin PPA above Ubuntu ESM
-  printf 'Package: podman podman-docker\nPin: release o=LP-PPA-sejug-podman\nPin-Priority: 600\n' \
+  # Pin all PPA packages so the entire container stack resolves from one source
+  printf 'Package: *\nPin: release o=LP-PPA-sejug-podman\nPin-Priority: 600\n' \
     | sudo tee /etc/apt/preferences.d/podman-ppa >/dev/null
-  # Remove packages that conflict with the PPA versions
-  sudo dpkg --remove --force-depends \
-    golang-github-containers-common golang-github-containers-image podman-compose 2>/dev/null || true
+  # Ubuntu's podman-compose and PPA's podman both ship podman-compose.1.gz;
+  # divert the man page so both packages can coexist without a file conflict
+  sudo dpkg-divert --add --rename --package podman \
+    --divert /usr/share/man/man1/podman-compose.1.gz.dpkg-divert \
+    /usr/share/man/man1/podman-compose.1.gz 2>/dev/null || true
   sudo apt-get update -q
   sudo apt-get install -yq --fix-broken
-  sudo apt-get install -yq --no-install-recommends podman podman-compose
+  sudo apt-get install -yq --no-install-recommends podman
   # PPA's pasta binary needs AppArmor rules not yet in Ubuntu's profile;
   # use slirp4netns as the rootless network backend instead
   CONTAINERS_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/containers/containers.conf"
