@@ -102,14 +102,18 @@ if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
   sudo apt-get update -q
   sudo apt-get install -yq --fix-broken
   sudo apt-get install -yq --no-install-recommends podman
-  # PPA's pasta binary needs AppArmor rules not yet in Ubuntu's profile;
-  # use slirp4netns as the rootless network backend instead
-  CONTAINERS_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/containers/containers.conf"
-  mkdir -p "$(dirname "$CONTAINERS_CONF")"
-  if [ ! -f "$CONTAINERS_CONF" ] || ! grep -q 'default_rootless_network_cmd' "$CONTAINERS_CONF" 2>/dev/null; then
-    printf '[network]\ndefault_rootless_network_cmd = "slirp4netns"\n' >> "$CONTAINERS_CONF"
-  fi
   echo "Podman upgraded to $(podman --version)."
+fi
+
+# pasta is a symlink to passt, so AppArmor applies the passt profile;
+# the passt profile only includes <abstractions/passt>, but pasta needs
+# <abstractions/pasta> (which adds /proc/*/ns/net access etc.)
+# Since pasta's abstraction already includes passt's, just swap the include.
+if [ -f /etc/apparmor.d/usr.bin.passt ] && \
+   grep -q 'include <abstractions/passt>' /etc/apparmor.d/usr.bin.passt && \
+   ! grep -q 'include <abstractions/pasta>' /etc/apparmor.d/usr.bin.passt; then
+  sudo sed -i 's|include <abstractions/passt>|include <abstractions/pasta>|' /etc/apparmor.d/usr.bin.passt
+  sudo apparmor_parser -r /etc/apparmor.d/usr.bin.passt
 fi
 
 echo 'net.ipv4.ip_unprivileged_port_start = 53' | \
