@@ -25,7 +25,7 @@ if [ "$(podman ps -a | grep -Ec "$NICE_DNS_CONTAINERS")" -gt 0 ]
     podman network rm dnsnet || true
   else
     #Install required software
-    sudo apt-get install -yq git podman podman-compose
+    sudo apt-get install -yq --no-install-recommends git podman podman-compose
     # target config path (user-level)
     CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/containers/registries.conf"
     DIR=$(dirname "$CONFIG")
@@ -90,7 +90,8 @@ if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
   sudo dpkg --remove --force-depends \
     golang-github-containers-common golang-github-containers-image podman-compose 2>/dev/null || true
   sudo apt-get update -q
-  sudo apt-get install -yq podman
+  sudo apt-get install -yq --fix-broken
+  sudo apt-get install -yq --no-install-recommends podman podman-compose
   # PPA's pasta binary needs AppArmor rules not yet in Ubuntu's profile;
   # use slirp4netns as the rootless network backend instead
   CONTAINERS_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/containers/containers.conf"
@@ -144,8 +145,8 @@ sudo loginctl enable-linger "$USER"
 rm -rf nice-dns
 git clone -b "$BRANCH" https://github.com/sureserverman/nice-dns.git
 cd nice-dns
-BUILDAH_FORMAT=docker podman build -t unbound unbound/
-BUILDAH_FORMAT=docker podman build -t pi-hole pihole/
+podman build -t unbound unbound/
+podman build -t pi-hole pihole/
 ./deb/persistent-podman.sh socat
 ./deb/dns-deb.sh
 cd -
