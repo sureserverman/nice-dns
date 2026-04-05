@@ -91,7 +91,7 @@ echo
 # 4) Reload and start services
 echo "4) Reloading systemd and starting services..."
 systemctl --user daemon-reload
-systemctl --user start "tor-${VARIANT}.service"
-systemctl --user start unbound.service
-systemctl --user start pi-hole.service
+systemctl --user restart "tor-${VARIANT}.service"
+systemctl --user restart unbound.service
+systemctl --user restart pi-hole.service
 echo "   ✓ Services started."
