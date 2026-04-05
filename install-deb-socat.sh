@@ -96,6 +96,13 @@ if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
     | sudo tee /etc/apt/preferences.d/podman-ppa >/dev/null
   sudo apt-get update -q
   sudo apt-get install -yq --fix-broken
+  # PPA's containers-common replaces golang-github-containers-{common,image}
+  # from Ubuntu repos; remove them first to avoid dpkg file conflicts
+  for pkg in golang-github-containers-common golang-github-containers-image; do
+    if dpkg -l "$pkg" 2>/dev/null | grep -q '^ii'; then
+      sudo dpkg --remove --force-depends "$pkg"
+    fi
+  done
   sudo apt-get install -yq --no-install-recommends podman
   echo "Podman upgraded to $(podman --version)."
 fi
