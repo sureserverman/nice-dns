@@ -125,9 +125,10 @@ profile passt /usr/bin/passt{,.avx2} flags=(attach_disconnected) {
   # Podman 5.x rootless-netns with pasta
   allow userns,
   ptrace (read) peer=crun,
+  signal (receive) peer=podman,
   @{PROC}/[0-9]*/ns/ r,
   @{PROC}/sys/net/** r,
-  owner @{run}/user/@{uid}/containers/** rwlk,
+  @{run}/user/@{uid}/containers/** rwlk,
 
   owner /tmp/**				w,
   owner @{HOME}/**			w,
