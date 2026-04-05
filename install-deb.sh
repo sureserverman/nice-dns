@@ -103,8 +103,23 @@ if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
       sudo dpkg --remove --force-depends "$pkg"
     fi
   done
-  sudo apt-get install -yq --no-install-recommends podman
+  sudo apt-get install -yq --no-install-recommends podman crun
   echo "Podman upgraded to $(podman --version)."
+fi
+
+# Ensure crun >= 1.14.3 (older versions reject OCI runtime-spec 1.2.x from Podman 5)
+MIN_CRUN="1.14.3"
+CUR_CRUN=$(crun --version 2>/dev/null | grep -oP 'crun version \K\d+\.\d+(\.\d+)?' || echo "0.0.0")
+if ! printf '%s\n%s\n' "$MIN_CRUN" "$CUR_CRUN" | sort -V -C; then
+  echo "crun $CUR_CRUN < $MIN_CRUN — upgrading via ppa:sejug/podman..."
+  if ! grep -rqs 'sejug/podman' /etc/apt/sources.list.d/ 2>/dev/null; then
+    sudo add-apt-repository -y ppa:sejug/podman
+    printf 'Package: *\nPin: release o=LP-PPA-sejug-podman\nPin-Priority: 600\n' \
+      | sudo tee /etc/apt/preferences.d/podman-ppa >/dev/null
+    sudo apt-get update -q
+  fi
+  sudo apt-get install -yq --no-install-recommends crun
+  echo "crun upgraded to $(crun --version 2>&1 | head -1)."
 fi
 
 # Ubuntu's podman-compose and PPA's podman both ship podman-compose.1.gz;
