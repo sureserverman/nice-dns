@@ -185,6 +185,11 @@ sudo systemctl daemon-reload
 # Enable user lingering for service persistence
 sudo loginctl enable-linger "$USER"
 
+# Re-exec the user's systemd manager so it picks up the new cgroup
+# delegation config. daemon-reload only affects PID 1 (system level);
+# the user instance keeps the old settings until re-exec or reboot.
+systemctl --user daemon-reexec
+
 # Pick up subuid/subgid and cgroup delegation changes
 podman system migrate
 
