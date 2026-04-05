@@ -91,6 +91,7 @@ echo
 # 4) Reload and start services
 echo "4) Reloading systemd and starting services..."
 systemctl --user daemon-reload
+systemctl --user restart nice-dns-network.service
 systemctl --user restart "tor-${VARIANT}.service"
 systemctl --user restart unbound.service
 systemctl --user restart pi-hole.service
