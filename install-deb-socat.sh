@@ -185,6 +185,9 @@ sudo systemctl daemon-reload
 # Enable user lingering for service persistence
 sudo loginctl enable-linger "$USER"
 
+# Pick up subuid/subgid and cgroup delegation changes
+podman system migrate
+
 #Start podman containers
 rm -rf nice-dns
 git clone -b "$BRANCH" https://github.com/sureserverman/nice-dns.git
