@@ -16,6 +16,7 @@ HealthOnFailure=restart
 
 [Service]
 Restart=on-failure
+RestartSec=3s
 TimeoutStopSec=70
 
 [Install]
