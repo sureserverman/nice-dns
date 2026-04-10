@@ -1,6 +1,6 @@
 [Unit]
 Description=Tor HAProxy DNS-over-TLS proxy
-After=nice-dns-network.service
+After=nice-dns-network.service podman-user-wait-network-online.service
 
 [Container]
 ContainerName=tor-haproxy
@@ -16,6 +16,7 @@ HealthOnFailure=restart
 
 [Service]
 Restart=on-failure
+RestartSec=3s
 TimeoutStopSec=70
 
 [Install]
