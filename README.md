@@ -1,236 +1,118 @@
 <h1 align="center">
-  <a href="https://github.com/sureserverman/nice-dns">
-    <img src="docs/images/logo.png" alt="Logo" width="284" height="125">
-  </a>
+  <img src="docs/images/logo.png" alt="nice-dns" width="284" height="125"><br>
+  nice-dns
 </h1>
 
-<div align="center">
-  nice-dns
-  <br />
-  <a href="#about"><strong>See how it works »</strong></a>
-  <br />
-  <br />
-  <a href="https://github.com/sureserverman/nice-dns/issues/new?assignees=&labels=bug&template=01_BUG_REPORT.md&title=bug%3A+">Report a Bug</a>
-  ·
-  <a href="https://github.com/sureserverman/nice-dns/issues/new?assignees=&labels=enhancement&template=02_FEATURE_REQUEST.md&title=feat%3A+">Request a Feature</a>
-  ·
-  <a href="https://github.com/sureserverman/nice-dns/issues/new?assignees=&labels=question&template=04_SUPPORT_QUESTION.md&title=support%3A+">Ask a Question</a>
-</div>
+<p align="center">
+  Multi-container DNS stack that routes every query through Tor.<br>
+  <strong>Pi-hole → Unbound → Tor → Cloudflare's hidden resolver.</strong>
+</p>
 
-<div align="center">
-<br />
-
-[![Project license](https://img.shields.io/github/license/sureserverman/nice-dns.svg?style=flat-square)](LICENSE)
-
-[![Pull Requests welcome](https://img.shields.io/badge/PRs-welcome-ff69b4.svg?style=flat-square)](https://github.com/sureserverman/nice-dns/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
-[![code with love by sureserverman](https://img.shields.io/badge/%3C%2F%3E%20with%20%E2%99%A5%20by-sureserverman-ff1414.svg?style=flat-square)](https://github.com/sureserverman)
-
-</div>
-
-<details open="open">
-<summary>Table of Contents</summary>
-
-- [About](#about)
-- [Usage](#usage)
-  - [Prerequisites](#prerequisites)
-  - [Debian / Ubuntu](#debian--ubuntu)
-  - [macOS](#macos)
-  - [Installing from the dev branch](#installing-from-the-dev-branch)
-  - [Re-running the installer](#re-running-the-installer)
-  - [Configuration](#configuration)
-  - [Pi-hole web interface](#pi-hole-web-interface)
-  - [Notes](#notes)
-- [Uninstall](#uninstall)
-- [Roadmap](#roadmap)
-- [Project assistance](#project-assistance)
-- [Authors & contributors](#authors--contributors)
-- [Security](#security)
-- [License](#license)
-
-</details>
+<p align="center">
+  <a href="LICENSE.md"><img src="https://img.shields.io/github/license/sureserverman/nice-dns.svg?style=flat-square" alt="License"></a>
+  <a href="https://github.com/sureserverman/nice-dns/issues"><img src="https://img.shields.io/github/issues/sureserverman/nice-dns.svg?style=flat-square" alt="Issues"></a>
+</p>
 
 ---
 
-## About
+## Quick start
 
-Podman Compose files and all necessary configuration to build a multi-container
-DNS stack with Pi-hole, Unbound and a Tor proxy chained together:
+Run as a **regular user** (not `sudo`). On macOS install [Homebrew](https://brew.sh/) first.
 
-All DNS queries leaving your machine are encrypted and routed through Tor.
+```bash
+# Debian / Ubuntu — tor-haproxy (default)
+bash <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb.sh)
+
+# macOS (requires macOS 26+ on Apple silicon) — tor-haproxy (default)
+bash <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac.sh)
+```
+
+For the `tor-socat` variant, swap the script name to `install-deb-socat.sh` or `install-mac-socat.sh`. Re-running any installer tears down the existing stack and reinstalls cleanly.
+
+Pi-hole admin UI: <http://localhost:8880/admin>
+
+## How it works
 
 ```mermaid
 flowchart LR
-    A["Your device"] -- port 53 --> B["Pi-hole
-    (ad blocking)"]
-    B --> C["Unbound
-    (recursive resolver)"]
-    C -- DNS-over-TLS --> D["Tor proxy
-    (socat / haproxy)"]
-    D -- ".onion" --> E["Cloudflare
-    hidden resolver"]
+    A[Your device] -- port 53 --> B[Pi-hole<br>ad blocking]
+    B --> C[Unbound<br>recursive resolver]
+    C -- DNS-over-TLS --> D[Tor proxy<br>socat / haproxy]
+    D -- .onion --> E[Cloudflare<br>hidden resolver]
 ```
 
-## Usage
+Three containers share the `dnsnet` bridge (`172.31.240.248/29`). Linux drives them with rootless Podman; macOS uses Apple's `container` runtime. All external DNS traffic is DNS-over-TLS inside Tor — your ISP only sees encrypted Tor traffic.
 
-There are two proxy variants to choose from:
+| Variant | Proxy image | Relay |
+|---------|-------------|-------|
+| `tor-haproxy` (default) | `sureserver/tor-haproxy` | haproxy TCP |
+| `tor-socat` | `sureserver/tor-socat` | socat TCP |
 
-| Variant | Proxy container | How it works |
-|---------|----------------|--------------|
-| **tor-haproxy** (default) | `sureserver/tor-haproxy` | haproxy TCP relay through Tor |
-| **tor-socat** | `sureserver/tor-socat` | socat TCP relay through Tor |
+## Configuration
 
-### Prerequisites
+Set the Pi-hole web UI port via `.env` (default `8880`):
 
-- **Debian / Ubuntu**: `curl` (to run the one-liner)
-- **macOS**: `curl` and [Homebrew](https://brew.sh/)
+```ini
+WEBPORT=8880
+```
 
-All other dependencies (`git`, `podman`, `podman-compose`) are installed
-automatically by the scripts.
-
-### Debian / Ubuntu
-
-Install with a one-liner (run **without** `sudo`):
+<details>
+<summary>Install from the <code>dev</code> branch</summary>
 
 ```bash
-# tor-haproxy (default)
-bash -x <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb.sh)
-
-# tor-socat
-bash -x <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb-socat.sh)
+bash <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/dev/install-deb.sh) dev
+bash <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/dev/install-mac.sh) dev
 ```
+</details>
 
-### macOS
+<details>
+<summary>Refresh macOS sudoers manually</summary>
 
-Homebrew must be installed before running the script. If it is not found the
-script will exit with instructions.
+`./mac/persist.sh` does this automatically during install. To redo it by hand:
 
 ```bash
-# tor-haproxy (default)
-bash -x <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac.sh)
-
-# tor-socat
-bash -x <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac-socat.sh)
+sed "s/__USERNAME__/$(whoami)/" ./mac/start-container.sudoers \
+  | sudo tee /etc/sudoers.d/start-container >/dev/null
+sudo chmod 440 /etc/sudoers.d/start-container
+sudo visudo -cf /etc/sudoers.d/start-container
 ```
-
-### Installing from the dev branch
-
-To install from the `dev` branch, replace `main` with `dev` in the URL and pass `dev` as an argument:
-
-```bash
-# Debian / Ubuntu
-bash -x <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/dev/install-deb.sh) dev
-
-# macOS
-bash -x <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/dev/install-mac.sh) dev
-```
-
-### Re-running the installer
-
-Running the install script again will **remove all existing nice-dns
-containers, images and the `dnsnet` network** before performing a fresh
-install. This is the intended upgrade path.
-
-### Configuration
-
-The `.env` file in the repository root sets the Pi-hole web interface port:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `WEBPORT` | `8880` | Host port mapped to the Pi-hole web UI |
-
-### Pi-hole web interface
-
-After installation, the Pi-hole admin dashboard is available at:
-
-```
-http://localhost:8880/admin
-```
-
-If you changed `WEBPORT` in `.env`, replace `8880` with your custom port.
-
-### Notes
-
-The scripts use `sudo` internally when needed and must be executed as your
-regular user so that rootless Podman and user-mode systemd work correctly.
-
-On macOS, `./mac/mac-rules-persist.sh` now installs and validates the required
-sudoers rule automatically. If you already have an existing install and only
-need to refresh sudoers manually, use:
-
-```bash
-sed "s/__USERNAME__/$(whoami)/" ./mac/start-podman.sudoers | \
-  sudo tee /etc/sudoers.d/start-podman >/dev/null
-sudo chmod 440 /etc/sudoers.d/start-podman
-sudo visudo -cf /etc/sudoers.d/start-podman
-```
+</details>
 
 ## Uninstall
 
-To remove nice-dns, stop and delete the containers, images and network:
+<details>
+<summary>Debian / Ubuntu</summary>
 
 ```bash
+systemctl --user disable --now persistent-containers.service
+sudo systemctl disable --now custom-dns-deb.service
 for name in tor-socat tor-haproxy unbound pi-hole; do
   podman rm -f "$name" 2>/dev/null || true
   podman image rm -f "$name" 2>/dev/null || true
 done
 podman network rm dnsnet 2>/dev/null || true
 ```
+</details>
 
-On **Debian / Ubuntu** also remove the systemd services:
-
-```bash
-systemctl --user disable --now persistent-containers.service
-sudo systemctl disable --now custom-dns-deb.service
-```
-
-On **macOS** also unload the launch agent/daemon and restore DNS:
+<details>
+<summary>macOS</summary>
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/org.startpodman.plist
-sudo launchctl bootout system/org.nice-dns.free-port53
-sudo rm -f /Library/LaunchDaemons/org.nice-dns.free-port53.plist
-```
-
-Then reset your DNS servers to their original values (or "Empty" for DHCP)
-using **System Settings > Network** or:
-
-```bash
-networksetup -listallnetworkservices | sed '1d' | grep -v '^\*' | while read -r svc; do
-  sudo networksetup -setdnsservers "$svc" Empty
+launchctl unload ~/Library/LaunchAgents/org.nice-dns.start-container.plist
+rm -f ~/Library/LaunchAgents/org.nice-dns.start-container.plist
+sudo rm -f /etc/sudoers.d/start-container /usr/local/sbin/start-container*.sh
+for name in tor-socat tor-haproxy unbound pi-hole; do
+  container stop "$name" 2>/dev/null || true
+  container rm   "$name" 2>/dev/null || true
 done
+container network rm dnsnet 2>/dev/null || true
+
+# restore DNS to DHCP defaults
+networksetup -listallnetworkservices | sed '1d' | grep -v '^\*' \
+  | while read -r svc; do sudo networksetup -setdnsservers "$svc" Empty; done
 ```
-
-## Roadmap
-
-See the [open issues](https://github.com/sureserverman/nice-dns/issues) for a list of proposed features (and known issues).
-
-- [Top Feature Requests](https://github.com/sureserverman/nice-dns/issues?q=label%3Aenhancement+is%3Aopen+sort%3Areactions-%2B1-desc) (Add your votes using the 👍 reaction)
-- [Top Bugs](https://github.com/sureserverman/nice-dns/issues?q=is%3Aissue+is%3Aopen+label%3Abug+sort%3Areactions-%2B1-desc) (Add your votes using the 👍 reaction)
-- [Newest Bugs](https://github.com/sureserverman/nice-dns/issues?q=is%3Aopen+is%3Aissue+label%3Abug)
-
-## Project assistance
-
-If you want to say **thank you** or/and support active development of nice-dns:
-
-- Add a [GitHub Star](https://github.com/sureserverman/nice-dns) to the project.
-- Tweet about the nice-dns.
-- Write interesting articles about the project on [Dev.to](https://dev.to/), [Medium](https://medium.com/) or your personal blog.
-
-Together, we can make nice-dns **better**!
-
-## Authors & contributors
-
-The original setup of this repository is by [Serverman](https://github.com/sureserverman).
-
-For a full list of all authors and contributors, see [the contributors page](https://github.com/sureserverman/nice-dns/contributors).
-
-## Security
-
-nice-dns follows good practices of security, but 100% security cannot be assured.
-nice-dns is provided **"as is"** without any **warranty**. Use at your own risk.
+</details>
 
 ## License
 
-This project is licensed under the **GPLv3 license**.
-
-See [LICENSE](LICENSE.md) for more information.
+[GPLv3](LICENSE.md) — provided **"as is"**, without warranty. Report issues [here](https://github.com/sureserverman/nice-dns/issues).

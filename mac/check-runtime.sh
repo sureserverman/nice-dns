@@ -5,13 +5,13 @@
 # CLI present), non-zero otherwise. Prints a one-line reason on failure.
 #
 # Usage:
-#   mac-apple/check-apple-runtime.sh             # exits 0/1 silently on success
-#   source mac-apple/check-apple-runtime.sh      # sets NICE_DNS_APPLE_READY=1|0
+#   mac/check-runtime.sh             # exits 0/1 silently on success
+#   source mac/check-runtime.sh      # sets NICE_DNS_READY=1|0
 
 set -euo pipefail
 
 fail() {
-  echo "Apple runtime unavailable: $1" >&2
+  echo "container runtime unavailable: $1" >&2
   return 1
 }
 
@@ -28,11 +28,11 @@ CONTAINER_BIN="$(command -v container 2>/dev/null || true)"
 if [[ -z "$CONTAINER_BIN" && -x /opt/homebrew/bin/container ]]; then
   CONTAINER_BIN=/opt/homebrew/bin/container
 fi
-[[ -n "$CONTAINER_BIN" ]] || fail "Apple container CLI not found (brew install container)" || return 1
+[[ -n "$CONTAINER_BIN" ]] || fail "container CLI not found (brew install container)" || return 1
 
 export CONTAINER_BIN
 
 if (return 0 2>/dev/null); then
-  NICE_DNS_APPLE_READY=1
-  export NICE_DNS_APPLE_READY
+  NICE_DNS_READY=1
+  export NICE_DNS_READY
 fi

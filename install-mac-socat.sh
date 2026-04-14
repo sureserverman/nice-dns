@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # Install nice-dns on macOS using Apple's `container` runtime (tor-socat
-# variant). Mirrors install-mac-apple.sh but pulls sureserver/tor-socat.
+# variant). Mirrors install-mac.sh but pulls sureserver/tor-socat.
 #
-# Usage: ./install-mac-apple-socat.sh [branch]   (default: main)
+# Usage: ./install-mac-socat.sh [branch]   (default: main)
 
 set -euo pipefail
 BRANCH="${1:-main}"
 
 if [[ $EUID -eq 0 ]]; then
-  echo "Run install-mac-apple-socat.sh as a regular user, not sudo." >&2
+  echo "Run install-mac-socat.sh as a regular user, not sudo." >&2
   exit 1
 fi
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-# shellcheck source=mac-apple/check-apple-runtime.sh
-source "$HERE/mac-apple/check-apple-runtime.sh" || exit 1
+# shellcheck source=mac/check-runtime.sh
+source "$HERE/mac/check-runtime.sh" || exit 1
 
 if ! command -v brew >/dev/null; then
   echo "Homebrew not found. Install from https://brew.sh and re-run." >&2
@@ -72,7 +72,7 @@ for i in $(seq 1 30); do
   sleep 5
 done
 
-sudo "$HERE/mac-apple/dns-mac-apple.sh"
-"$HERE/mac-apple/apple-persist.sh" socat
+sudo "$HERE/mac/dns-mac.sh"
+"$HERE/mac/persist.sh" socat
 
 echo "All done. DNS is set to 172.31.240.250 (pi-hole). Web UI: http://172.31.240.250"

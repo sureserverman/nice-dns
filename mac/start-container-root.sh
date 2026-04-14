@@ -1,5 +1,5 @@
 #!/bin/bash
-# Privileged pre/post helper for mac-apple/start-container.sh.
+# Privileged pre/post helper for mac/start-container.sh.
 #
 # pre:  tear down Mullvad (if installed) so it doesn't fight the stack coming
 #       up. No-op if Mullvad isn't present.
