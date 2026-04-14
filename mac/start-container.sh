@@ -4,12 +4,12 @@
 # recreates them in pi-hole → unbound → tor order so the bridge allocator
 # hands out 172.31.240.250/.251/.252 deterministically.
 #
-# Variant is read from /usr/local/etc/nice-dns/apple-variant (haproxy|socat),
+# Variant is read from /usr/local/etc/nice-dns/variant (haproxy|socat),
 # created by the installer. Defaults to haproxy if missing.
 
 set -u
-LOG="${HOME}/Library/Logs/nice-dns-apple.log"
-VARIANT_FILE=/usr/local/etc/nice-dns/apple-variant
+LOG="${HOME}/Library/Logs/nice-dns.log"
+VARIANT_FILE=/usr/local/etc/nice-dns/variant
 ROOT_HELPER=/usr/local/sbin/start-container-root.sh
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -24,7 +24,7 @@ VARIANT=haproxy
 case "$VARIANT" in haproxy|socat) ;; *) VARIANT=haproxy ;; esac
 TOR_IMAGE="docker.io/sureserver/tor-${VARIANT}:latest"
 
-log "starting nice-dns apple runtime (variant=$VARIANT)"
+log "starting nice-dns runtime (variant=$VARIANT)"
 
 # Let the system settle after login before poking container.
 sleep 5

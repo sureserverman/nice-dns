@@ -3,21 +3,21 @@
 # variant). Intended for macOS 26+ on Apple silicon; falls back with a clear
 # diagnostic on unsupported hosts.
 #
-# Usage: ./install-mac-apple.sh [branch]   (default: main)
+# Usage: ./install-mac.sh [branch]   (default: main)
 
 set -euo pipefail
 BRANCH="${1:-main}"
 
 if [[ $EUID -eq 0 ]]; then
-  echo "Run install-mac-apple.sh as a regular user, not sudo." >&2
+  echo "Run install-mac.sh as a regular user, not sudo." >&2
   exit 1
 fi
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 # -- Phase 0: compatibility gate --
-# shellcheck source=mac-apple/check-apple-runtime.sh
-source "$HERE/mac-apple/check-apple-runtime.sh" || exit 1
+# shellcheck source=mac/check-runtime.sh
+source "$HERE/mac/check-runtime.sh" || exit 1
 
 # -- Homebrew + container + Rosetta + git --
 if ! command -v brew >/dev/null; then
@@ -88,7 +88,7 @@ for i in $(seq 1 30); do
 done
 
 # -- Point the system at pi-hole and install the LaunchAgent --
-sudo "$HERE/mac-apple/dns-mac-apple.sh"
-"$HERE/mac-apple/apple-persist.sh" haproxy
+sudo "$HERE/mac/dns-mac.sh"
+"$HERE/mac/persist.sh" haproxy
 
 echo "All done. DNS is set to 172.31.240.250 (pi-hole). Web UI: http://172.31.240.250"

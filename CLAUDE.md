@@ -36,11 +36,13 @@ Four installer scripts, one per (platform x variant) combination:
 | **Debian/Ubuntu** | `install-deb.sh` | `install-deb-socat.sh` |
 | **macOS** | `install-mac.sh` | `install-mac-socat.sh` |
 
-The variant installers are near-identical to the default; they differ only in which compose file is passed to `podman-compose -f`. All accept an optional branch argument (defaults to `main`).
+The variant installers are near-identical to the default; they differ only in which compose file (Linux) or tor image (macOS) they select. All accept an optional branch argument (defaults to `main`).
+
+On Linux, the installers drive `podman-compose`. On macOS, they drive Apple's `container` CLI directly (no compose layer) and require macOS 26+ on Apple silicon.
 
 Installers are idempotent: re-running tears down existing containers/images/network before a fresh install.
 
-**Must run as unprivileged user** (not root/sudo) -- rootless Podman and user-mode systemd require this.
+**Must run as unprivileged user** (not root/sudo) -- rootless Podman and user-mode systemd (Linux) and the per-user Apple `container` runtime (macOS) require this.
 
 ## Platform-Specific Persistence
 
@@ -50,12 +52,14 @@ Installers are idempotent: re-running tears down existing containers/images/netw
 - `custom-dns-deb` - The root script that `custom-dns-deb.service` calls
 
 ### macOS (`mac/`)
-- `mac-rules-persist.sh` - Installs sudoers rules, LaunchDaemons (port 53 freeing, Mullvad pfctl workaround, loopback alias), and a LaunchAgent (`org.startpodman.plist`) for auto-starting the Podman VM + containers
-- `dns-mac.sh` - Sets DNS to `127.0.0.1` on all network services and disables pfctl
-- `start-podman.sh` / `start-podman-root.sh` - LaunchAgent scripts: start Podman VM, run privileged pre/post actions (stop/start Mullvad, set DNS), restart containers
-- `test-mullvad-local-dns.sh` - Diagnostic tool for Mullvad VPN port 53 conflicts
+- `check-runtime.sh` - Phase 0 compatibility gate: verifies arm64 Apple silicon, macOS 26+, and the `container` CLI. Sourced by the installers; exports `CONTAINER_BIN` and `NICE_DNS_READY`
+- `persist.sh [haproxy|socat]` - Installs sudoers rule, `/usr/local/sbin/start-container*.sh` helpers, and the `org.nice-dns.start-container` LaunchAgent. Writes the selected variant to `/usr/local/etc/nice-dns/variant`
+- `dns-mac.sh` - Points every active network service's DNS at the pi-hole bridge IP (172.31.240.250). No loopback alias or pfctl tweaks needed — the Apple `container` bridge subnet is directly routable from the host
+- `start-container.sh` / `start-container-root.sh` - LaunchAgent scripts: bring up `container system`, run privileged pre/post actions (stop/start Mullvad, set DNS), recreate the stack in pi-hole → unbound → tor order
+- `org.nice-dns.start-container.plist` - LaunchAgent template (`__USERNAME__` is replaced at install time)
+- `start-container.sudoers` - Sudoers rule template allowing the LaunchAgent to call the pre/post helper without a password
 
-The macOS flow handles Mullvad VPN integration: temporarily stopping Mullvad to free port 53 during container startup, then restarting it after.
+Because the Apple `container` bridge subnet is directly routable, macOS no longer needs the Podman-era Mullvad pfctl workaround or the loopback-alias+port-forwarding dance. The LaunchAgent still bounces Mullvad across the stack restart to avoid races on daemon ordering.
 
 ## Common Commands
 

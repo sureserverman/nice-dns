@@ -1,8 +1,8 @@
 #!/bin/bash
-# Installs the Apple-runtime LaunchAgent and its privileged helper. Analogous
-# to mac/mac-rules-persist.sh but without the Podman-era pfctl/port-53 assets.
+# Installs the LaunchAgent and its privileged helper for the Apple `container`
+# runtime, without the Podman-era pfctl/port-53 assets.
 #
-# Usage: ./mac-apple/apple-persist.sh [haproxy|socat]
+# Usage: ./mac/persist.sh [haproxy|socat]
 
 set -euo pipefail
 
@@ -15,7 +15,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 
 # -- record selected variant for the LaunchAgent to read --
 sudo install -d -m 755 /usr/local/etc/nice-dns
-echo "$VARIANT" | sudo tee /usr/local/etc/nice-dns/apple-variant >/dev/null
+echo "$VARIANT" | sudo tee /usr/local/etc/nice-dns/variant >/dev/null
 
 # -- sudoers: allow the LaunchAgent to run only the pre/post helper --
 tmp_sudoers="$(mktemp)"
