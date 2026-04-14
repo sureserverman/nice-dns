@@ -1,116 +1,78 @@
 #!/usr/bin/env bash
+# Install nice-dns on macOS using Apple's `container` runtime (tor-socat
+# variant). Mirrors install-mac-apple.sh but pulls sureserver/tor-socat.
+#
+# Usage: ./install-mac-apple-socat.sh [branch]   (default: main)
 
-# Fail on error and undefined variables
 set -euo pipefail
 BRANCH="${1:-main}"
 
-# Restore DNS to DHCP defaults if the script fails after overriding DNS
-restore_dns() {
-  networksetup -listallnetworkservices | sed '1d' | grep -v '^\*' | while read -r svc; do
-    sudo networksetup -setdnsservers "$svc" Empty >/dev/null 2>&1 || true
-  done || true
-}
-trap restore_dns ERR
-
-# Temporarily point DNS to 1.1.1.1 so git clone works during install
-networksetup -listallnetworkservices | sed '1d' | grep -v '^\*' | while read -r svc; do
-  sudo networksetup -setdnsservers "$svc" 1.1.1.1 >/dev/null 2>&1 || true
-done || true
-
-# 1. Ensure Homebrew is installed
-if ! command -v brew &>/dev/null; then
-  cat <<EOF
-Homebrew not found!
-Please install Homebrew first, e.g.:
-
-  /bin/bash -c "\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-After that re-run this script.
-EOF
+if [[ $EUID -eq 0 ]]; then
+  echo "Run install-mac-apple-socat.sh as a regular user, not sudo." >&2
   exit 1
 fi
 
-# 2. Check for existing containers/images/networks
-if podman ps -a --format "{{.Names}}" | grep -Eq "^(tor-socat|tor-haproxy|unbound|pi-hole)$"; then
-  echo "Stopping & removing old containers/images..."
-  for name in pi-hole unbound tor-socat tor-haproxy; do
-    podman stop "$name" 2>/dev/null || true
-    podman rm   "$name" 2>/dev/null || true
-    podman image rm -f "$name" 2>/dev/null || true
-  done
-  podman network rm dnsnet 2>/dev/null || true
-else
-  echo "Installing prerequisites via Homebrew..."
-  brew update
-  brew install git podman podman-compose
+HERE="$(cd "$(dirname "$0")" && pwd)"
 
+# shellcheck source=mac-apple/check-apple-runtime.sh
+source "$HERE/mac-apple/check-apple-runtime.sh" || exit 1
+
+if ! command -v brew >/dev/null; then
+  echo "Homebrew not found. Install from https://brew.sh and re-run." >&2
+  exit 1
 fi
 
-# Initialize & start the Podman VM (reuse existing if present)
-if podman machine inspect podman-machine-default &>/dev/null; then
-  echo "Podman machine already exists, reusing it..."
-  podman machine start 2>/dev/null || true
-else
-  echo "Disabling Rosetta (not needed – all images have ARM builds)..."
-  mkdir -p ~/.config/containers
-  printf '[machine]\nrosetta=false\n' > ~/.config/containers/containers.conf
-  echo "Initializing podman machine..."
-  podman machine init
-  podman machine start
-  echo "Modifying podman machine..."
-  podman machine ssh \
-  'echo "net.ipv4.ip_unprivileged_port_start=53" \
-    | sudo tee /etc/sysctl.d/99-podman-ports.conf && sudo sysctl --system'
-  podman machine stop 2>/dev/null || true
-  podman machine start
+brew update
+for pkg in git container; do
+  brew list --formula "$pkg" >/dev/null 2>&1 || brew install "$pkg"
+done
+
+if ! /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
+  sudo softwareupdate --install-rosetta --agree-to-license
 fi
 
-# 3. Clone, network, and bring up the stack
-echo "Cloning nice-dns repo..."
-rm -rf nice-dns
-git clone -b "$BRANCH" https://github.com/sureserverman/nice-dns.git
-pushd nice-dns >/dev/null
+CONTAINER_BIN="${CONTAINER_BIN:-/opt/homebrew/bin/container}"
+yes | "$CONTAINER_BIN" system start >/dev/null
 
-echo "Creating podman network..."
-podman network exists dnsnet || \
-  podman network create \
-    --driver bridge \
-    --subnet 172.31.240.248/29 \
-    --dns 1.1.1.1 \
-    dnsnet
+for c in pi-hole unbound tor-haproxy tor-socat; do
+  "$CONTAINER_BIN" stop "$c" >/dev/null 2>&1 || true
+  "$CONTAINER_BIN" rm   "$c" >/dev/null 2>&1 || true
+done
+"$CONTAINER_BIN" network rm dnsnet >/dev/null 2>&1 || true
 
-echo "Freeing port 53..."
-# Disable Mullvad's local DNS resolver by injecting env var into its plist
-MULLVAD_PLIST=/Library/LaunchDaemons/net.mullvad.daemon.plist
-if [ -f "$MULLVAD_PLIST" ]; then
-  if ! grep -q TALPID_DISABLE_LOCAL_DNS_RESOLVER "$MULLVAD_PLIST"; then
-    sudo /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables dict" "$MULLVAD_PLIST" 2>/dev/null || true
-    sudo /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:TALPID_DISABLE_LOCAL_DNS_RESOLVER string 1" "$MULLVAD_PLIST"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+git clone -q -b "$BRANCH" https://github.com/sureserverman/nice-dns.git "$WORK/nice-dns"
+cd "$WORK/nice-dns"
+
+"$CONTAINER_BIN" builder start >/dev/null 2>&1 || true
+"$CONTAINER_BIN" build -t unbound unbound/
+"$CONTAINER_BIN" build -t pi-hole pihole/
+
+"$CONTAINER_BIN" network create --subnet 172.31.240.248/29 dnsnet >/dev/null
+
+"$CONTAINER_BIN" run -d --name pi-hole --network dnsnet \
+  -e TZ=Europe/London \
+  -e DNS1=172.31.240.251 \
+  -e DISABLE_GITHUB_UPDATES=true \
+  pi-hole:latest >/dev/null
+
+"$CONTAINER_BIN" run -d --name unbound --network dnsnet unbound:latest >/dev/null
+
+"$CONTAINER_BIN" run -d --name tor-socat --network dnsnet \
+  docker.io/sureserver/tor-socat:latest >/dev/null
+
+echo "Waiting for the DNS chain to come up (Tor bootstrap takes ~30-60s)..."
+for i in $(seq 1 30); do
+  if dig @172.31.240.250 +time=3 +tries=1 +short cloudflare.com 2>/dev/null \
+      | grep -Eq '^[0-9.]+$'; then
+    echo "Chain is resolving."
+    break
   fi
-  sudo launchctl bootout system/net.mullvad.daemon 2>/dev/null || true
-  sleep 1
-  sudo launchctl bootstrap system "$MULLVAD_PLIST" 2>/dev/null || true
-  sleep 2
-fi
-# Stop mDNSResponder if it holds port 53
-sudo launchctl bootout system/com.apple.mDNSResponder 2>/dev/null || true
-sudo launchctl bootout system/com.apple.mDNSResponderHelper 2>/dev/null || true
+  sleep 5
+done
 
-if blocking_pid=$(sudo lsof -t -i UDP:53 2>/dev/null | head -1) && [ -n "$blocking_pid" ]; then
-  blocking_name=$(ps -p "$blocking_pid" -o comm= 2>/dev/null || echo "unknown")
-  echo "Port 53 is still held by $blocking_name (PID $blocking_pid)."
-  echo "Please quit $blocking_name and re-run this script."
-  exit 1
-fi
+sudo "$HERE/mac-apple/dns-mac-apple.sh"
+"$HERE/mac-apple/apple-persist.sh" socat
 
-echo "Launching containers with podman-compose..."
-PODMAN_COMPOSE_PROVIDER=podman-compose BUILDAH_FORMAT=docker \
-podman-compose -f compose-socat.yaml --podman-run-args="--health-on-failure=restart" up -d
-
-sudo ./mac/dns-mac.sh
-./mac/mac-rules-persist.sh
-
-popd >/dev/null
-rm -rf nice-dns
-
-echo "All done! ⚡"
+echo "All done. DNS is set to 172.31.240.250 (pi-hole). Web UI: http://172.31.240.250"
