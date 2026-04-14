@@ -33,7 +33,7 @@ if [ "$(podman ps -a | grep -Ec "$NICE_DNS_CONTAINERS")" -gt 0 ]
     podman network rm dnsnet || true
   else
     #Install required software
-    sudo apt-get install -yq --no-install-recommends git podman
+    sudo apt-get install -yq --no-install-recommends git podman aardvark-dns
     # target config path (user-level)
     CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/containers/registries.conf"
     DIR=$(dirname "$CONFIG")
@@ -179,6 +179,20 @@ if [ -f "$CONFIG" ] && grep -Eq '^[[:space:]]*dns[[:space:]]*=[[:space:]]*dnsmas
   echo "Restarting NetworkManager..."
   sudo systemctl restart NetworkManager
   echo "Done. dnsmasq is now disabled in NetworkManager."
+fi
+
+# Disable systemd-resolved stub listener on port 53 (conflicts with pi-hole)
+if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+  if ! grep -rqs '^[[:space:]]*DNSStubListener[[:space:]]*=[[:space:]]*no' /etc/systemd/resolved.conf /etc/systemd/resolved.conf.d/ 2>/dev/null; then
+    echo "systemd-resolved stub listener is active on port 53 – disabling it..."
+    sudo mkdir -p /etc/systemd/resolved.conf.d
+    sudo tee /etc/systemd/resolved.conf.d/no-stub.conf > /dev/null <<'RESOLVED'
+[Resolve]
+DNSStubListener=no
+RESOLVED
+    sudo systemctl restart systemd-resolved
+    echo "Done. systemd-resolved stub listener disabled."
+  fi
 fi
 
 # Add UID/GID mappings for current user if missing

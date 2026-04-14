@@ -90,3 +90,7 @@ dig @127.0.0.1 cloudflare.com
 - The `pihole/web.Dockerfile` exists as an alternative Pi-hole build that also copies `web/*` config.
 - All health checks use `dig` to verify DNS resolution through the respective service.
 - Container IPs are hardcoded across compose files, Unbound config, and dnsmasq config -- they must stay in sync.
+
+<!-- vault-context:start -->
+@.claude/vault-context.md
+<!-- vault-context:end -->
