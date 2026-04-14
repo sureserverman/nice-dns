@@ -1,0 +1,7 @@
+# Install with:
+#   sudo install -m 440 ./mac-apple/start-container.sudoers /etc/sudoers.d/start-container
+#   sudo visudo -cf /etc/sudoers.d/start-container
+#
+# Replace __USERNAME__ with the macOS user that runs the LaunchAgent.
+
+__USERNAME__ ALL=(root) NOPASSWD: /usr/local/sbin/start-container-root.sh pre, /usr/local/sbin/start-container-root.sh post

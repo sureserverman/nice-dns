@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Install nice-dns on macOS using Apple's `container` runtime (tor-socat
+# variant). Mirrors install-mac-apple.sh but pulls sureserver/tor-socat.
+#
+# Usage: ./install-mac-apple-socat.sh [branch]   (default: main)
+
+set -euo pipefail
+BRANCH="${1:-main}"
+
+if [[ $EUID -eq 0 ]]; then
+  echo "Run install-mac-apple-socat.sh as a regular user, not sudo." >&2
+  exit 1
+fi
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# shellcheck source=mac-apple/check-apple-runtime.sh
+source "$HERE/mac-apple/check-apple-runtime.sh" || exit 1
+
+if ! command -v brew >/dev/null; then
+  echo "Homebrew not found. Install from https://brew.sh and re-run." >&2
+  exit 1
+fi
+
+brew update
+for pkg in git container; do
+  brew list --formula "$pkg" >/dev/null 2>&1 || brew install "$pkg"
+done
+
+if ! /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
+  sudo softwareupdate --install-rosetta --agree-to-license
+fi
+
+CONTAINER_BIN="${CONTAINER_BIN:-/opt/homebrew/bin/container}"
+yes | "$CONTAINER_BIN" system start >/dev/null
+
+for c in pi-hole unbound tor-haproxy tor-socat; do
+  "$CONTAINER_BIN" stop "$c" >/dev/null 2>&1 || true
+  "$CONTAINER_BIN" rm   "$c" >/dev/null 2>&1 || true
+done
+"$CONTAINER_BIN" network rm dnsnet >/dev/null 2>&1 || true
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+git clone -q -b "$BRANCH" https://github.com/sureserverman/nice-dns.git "$WORK/nice-dns"
+cd "$WORK/nice-dns"
+
+"$CONTAINER_BIN" builder start >/dev/null 2>&1 || true
+"$CONTAINER_BIN" build -t unbound unbound/
+"$CONTAINER_BIN" build -t pi-hole pihole/
+
+"$CONTAINER_BIN" network create --subnet 172.31.240.248/29 dnsnet >/dev/null
+
+"$CONTAINER_BIN" run -d --name pi-hole --network dnsnet \
+  -e TZ=Europe/London \
+  -e DNS1=172.31.240.251 \
+  -e DISABLE_GITHUB_UPDATES=true \
+  pi-hole:latest >/dev/null
+
+"$CONTAINER_BIN" run -d --name unbound --network dnsnet unbound:latest >/dev/null
+
+"$CONTAINER_BIN" run -d --name tor-socat --network dnsnet \
+  docker.io/sureserver/tor-socat:latest >/dev/null
+
+echo "Waiting for the DNS chain to come up (Tor bootstrap takes ~30-60s)..."
+for i in $(seq 1 30); do
+  if dig @172.31.240.250 +time=3 +tries=1 +short cloudflare.com 2>/dev/null \
+      | grep -Eq '^[0-9.]+$'; then
+    echo "Chain is resolving."
+    break
+  fi
+  sleep 5
+done
+
+sudo "$HERE/mac-apple/dns-mac-apple.sh"
+"$HERE/mac-apple/apple-persist.sh" socat
+
+echo "All done. DNS is set to 172.31.240.250 (pi-hole). Web UI: http://172.31.240.250"
