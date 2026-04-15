@@ -87,14 +87,18 @@ HERE="$WORK/nice-dns"
 "$CONTAINER_BIN" network create --subnet 172.31.240.248/29 dnsnet >/dev/null
 
 "$CONTAINER_BIN" run -d --name pi-hole --network dnsnet \
+  -c 1 -m 256M \
   -e TZ=Europe/London \
   -e DNS1=172.31.240.251 \
   -e DISABLE_GITHUB_UPDATES=true \
   pi-hole:latest >/dev/null
 
-"$CONTAINER_BIN" run -d --name unbound --network dnsnet unbound:latest >/dev/null
+"$CONTAINER_BIN" run -d --name unbound --network dnsnet \
+  -c 1 -m 256M \
+  unbound:latest >/dev/null
 
 "$CONTAINER_BIN" run -d --name tor-haproxy --network dnsnet \
+  -c 1 -m 256M \
   docker.io/sureserver/tor-haproxy:latest >/dev/null
 
 # -- Wait for the chain (Tor bootstrap) before flipping system DNS --

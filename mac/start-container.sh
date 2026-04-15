@@ -66,6 +66,7 @@ if ! container network create --subnet 172.31.240.248/29 dnsnet >>"$LOG" 2>&1; t
 fi
 
 if ! container run -d --name pi-hole --network dnsnet \
+      -c 1 -m 256M \
       -e TZ=Europe/London \
       -e DNS1=172.31.240.251 \
       -e DISABLE_GITHUB_UPDATES=true \
@@ -74,12 +75,16 @@ if ! container run -d --name pi-hole --network dnsnet \
   exit 1
 fi
 
-if ! container run -d --name unbound --network dnsnet unbound:latest >>"$LOG" 2>&1; then
+if ! container run -d --name unbound --network dnsnet \
+      -c 1 -m 256M \
+      unbound:latest >>"$LOG" 2>&1; then
   log "failed to start unbound"
   exit 1
 fi
 
-if ! container run -d --name "tor-${VARIANT}" --network dnsnet "$TOR_IMAGE" >>"$LOG" 2>&1; then
+if ! container run -d --name "tor-${VARIANT}" --network dnsnet \
+      -c 1 -m 256M \
+      "$TOR_IMAGE" >>"$LOG" 2>&1; then
   log "failed to start tor-${VARIANT}"
   exit 1
 fi
