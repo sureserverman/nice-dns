@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # LaunchAgent entrypoint: bring up the Apple `container` system and the
 # nice-dns stack after login. Idempotent: tears down existing containers and
 # recreates them in pi-hole → unbound → tor order so the bridge allocator

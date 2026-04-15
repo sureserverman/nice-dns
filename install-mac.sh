@@ -45,7 +45,8 @@ teardown() {
   fi
 
   # Restore DNS to DHCP defaults on every active network service.
-  networksetup -listallnetworkservices 2>/dev/null | sed '1d' | grep -v '^\*' \
+  networksetup -listallnetworkservices 2>/dev/null | sed '1d' \
+    | { grep -v '^\*' || true; } \
     | while read -r svc; do
         sudo networksetup -setdnsservers "$svc" Empty 2>/dev/null || true
       done

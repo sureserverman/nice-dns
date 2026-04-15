@@ -179,7 +179,7 @@ APPARMOR
 fi
 
 echo 'net.ipv4.ip_unprivileged_port_start = 53' | \
-  sudo tee /etc/sysctl.d/99-podman-privileged-ports.conf
+  sudo tee /etc/sysctl.d/99-podman-privileged-ports.conf >/dev/null
 sudo sysctl --system
 
 # Disable dns=dnsmasq in NetworkManager if present (conflicts with pi-hole)
@@ -189,17 +189,19 @@ if [ -f "$NM_CONFIG" ] && grep -Eq '^[[:space:]]*dns[[:space:]]*=[[:space:]]*dns
   sudo systemctl restart NetworkManager
 fi
 
-# Add UID/GID mappings for current user if missing
-if ! grep -q "^$USER:100000:65536" /etc/subuid 2>/dev/null; then
+# Add UID/GID mappings for current user if missing. Accept any pre-existing
+# range — usermod --add-sub{u,g}ids fails if the user already has an entry
+# and we have no reason to force our specific range over whatever is there.
+if ! grep -q "^$USER:" /etc/subuid 2>/dev/null; then
   sudo usermod --add-subuids 100000-165535 "$USER"
 fi
-if ! grep -q "^$USER:100000:65536" /etc/subgid 2>/dev/null; then
+if ! grep -q "^$USER:" /etc/subgid 2>/dev/null; then
   sudo usermod --add-subgids 100000-165535 "$USER"
 fi
 
 # Enable cgroups v2 delegation for systemd services
 sudo mkdir -p /etc/systemd/system/user@.service.d
-sudo tee /etc/systemd/system/user@.service.d/delegate.conf << EOF
+sudo tee /etc/systemd/system/user@.service.d/delegate.conf >/dev/null << EOF
 [Service]
 Delegate=cpu cpuset io memory pids
 EOF
@@ -216,15 +218,16 @@ systemctl --user daemon-reexec
 # Pick up subuid/subgid and cgroup delegation changes
 podman system migrate
 
-# Work from an in-tree checkout if present; otherwise fetch a fresh clone.
+# Work from an in-tree checkout if present; otherwise fetch a fresh clone
+# into a scoped temp dir so we never touch any unrelated 'nice-dns/' the
+# user happens to have in their cwd.
 if [[ -d deb/quadlet && -f deb/custom-dns-deb ]]; then
   WORKDIR="$(pwd)"
   CLONED=""
 else
-  rm -rf nice-dns
-  git clone -b "$BRANCH" https://github.com/sureserverman/nice-dns.git
-  WORKDIR="$(pwd)/nice-dns"
-  CLONED="$WORKDIR"
+  CLONED="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-install.XXXXXXXX")"
+  git clone -b "$BRANCH" https://github.com/sureserverman/nice-dns.git "$CLONED/nice-dns"
+  WORKDIR="$CLONED/nice-dns"
 fi
 
 cd "$WORKDIR"

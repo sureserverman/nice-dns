@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Installs the LaunchAgent and its privileged helper for the Apple `container`
 # runtime, without the Podman-era pfctl/port-53 assets.
 #

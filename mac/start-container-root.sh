@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Privileged pre/post helper for mac/start-container.sh.
 #
 # pre:  tear down Mullvad (if installed) so it doesn't fight the stack coming
@@ -17,7 +17,7 @@ MULLVAD_PLIST=/Library/LaunchDaemons/net.mullvad.daemon.plist
 PIHOLE_IP=172.31.240.250
 
 set_local_dns() {
-  networksetup -listallnetworkservices | sed '1d' | grep -v '^\*' | while read -r svc; do
+  networksetup -listallnetworkservices | sed '1d' | { grep -v '^\*' || true; } | while read -r svc; do
     networksetup -setdnsservers "$svc" "$PIHOLE_IP" 2>/dev/null || true
   done
 }

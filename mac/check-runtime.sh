@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Phase 0 compatibility gate for the Apple `container` runtime.
 #
-# Exits 0 if the host is eligible (arm64 Apple silicon, macOS 26+, `container`
-# CLI present), non-zero otherwise. Prints a one-line reason on failure.
+# Sets NICE_DNS_READY=1 and exports CONTAINER_BIN if the host is eligible
+# (arm64 Apple silicon, macOS 26+, `container` CLI present). Otherwise prints
+# a one-line reason on stderr and `return`s with a non-zero status to the
+# caller. Always sourced, never executed directly:
 #
-# Usage:
-#   mac/check-runtime.sh             # exits 0/1 silently on success
-#   source mac/check-runtime.sh      # sets NICE_DNS_READY=1|0
+#   source mac/check-runtime.sh || exit 1
 
 set -euo pipefail
 
