@@ -43,7 +43,7 @@ if ! /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
 fi
 
 CONTAINER_BIN="${CONTAINER_BIN:-/opt/homebrew/bin/container}"
-yes | "$CONTAINER_BIN" system start >/dev/null
+{ yes 2>/dev/null || true; } | "$CONTAINER_BIN" system start >/dev/null
 
 for c in pi-hole unbound tor-haproxy tor-socat; do
   "$CONTAINER_BIN" stop "$c" >/dev/null 2>&1 || true

@@ -52,8 +52,9 @@ fi
 # -- Bring up the runtime + default kernel --
 CONTAINER_BIN="${CONTAINER_BIN:-/opt/homebrew/bin/container}"
 # First-time start prompts [Y/n] for the kata kernel download; feed `yes` so
-# the install is non-interactive.
-yes | "$CONTAINER_BIN" system start >/dev/null
+# the install is non-interactive. The subshell swallows the SIGPIPE that
+# hits `yes` when `container` exits, which would otherwise trip pipefail.
+{ yes 2>/dev/null || true; } | "$CONTAINER_BIN" system start >/dev/null
 
 # -- Teardown any previous nice-dns state --
 for c in pi-hole unbound tor-haproxy tor-socat; do
