@@ -15,7 +15,7 @@
 
 ---
 
-Every DNS query is ad-blocked, recursively resolved, then shipped DNS-over-TLS through a fresh Tor circuit to Cloudflare's `.onion` resolver. Your ISP sees encrypted Tor traffic — nothing else.
+Your ISP sees encrypted Tor traffic — nothing else.
 
 ## Install
 
@@ -41,7 +41,6 @@ install-{deb,mac}.sh [haproxy|socat|uninstall] [branch]
 |-----|---------|
 | `haproxy` *(default)* | Tor proxy via HAProxy — `sureserver/tor-haproxy` |
 | `socat` | Tor proxy via socat — `sureserver/tor-socat`, lighter |
-| `uninstall` | Tear down the stack and exit |
 | `branch` | Git branch to install from (default `main`) |
 
 Example: `... install-deb.sh socat dev`
@@ -91,4 +90,4 @@ Removes quadlets/LaunchAgent, containers, images, the network, and restores syst
 
 ## License
 
-[GPLv3](LICENSE.md) — provided **"as is"**, without warranty. Report issues [here](https://github.com/sureserverman/nice-dns/issues).
+[GPLv3](LICENSE.md). Report issues [here](https://github.com/sureserverman/nice-dns/issues).
