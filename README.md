@@ -4,8 +4,8 @@
 </h1>
 
 <p align="center">
-  Multi-container DNS stack that routes every query through Tor.<br>
-  <strong>Pi-hole → Unbound → Tor → Cloudflare's hidden resolver.</strong>
+  <strong>DNS that never leaves your machine in plaintext.</strong><br>
+  Pi-hole → Unbound → Tor → Cloudflare's hidden resolver.
 </p>
 
 <p align="center">
@@ -15,21 +15,50 @@
 
 ---
 
-## Quick start
+Every DNS query is ad-blocked, recursively resolved, then shipped DNS-over-TLS through a fresh Tor circuit to Cloudflare's `.onion` resolver. Your ISP sees encrypted Tor traffic — nothing else.
 
-Run as a **regular user** (not `sudo`). On macOS install [Homebrew](https://brew.sh/) first.
+## Install
+
+Run as a **regular user** (no `sudo`). macOS needs macOS 26+ on Apple silicon and [Homebrew](https://brew.sh/).
 
 ```bash
-# Debian / Ubuntu — tor-haproxy (default)
+# Debian / Ubuntu
 bash <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb.sh)
 
-# macOS (requires macOS 26+ on Apple silicon) — tor-haproxy (default)
+# macOS
 bash <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac.sh)
 ```
 
-For the `tor-socat` variant, swap the script name to `install-deb-socat.sh` or `install-mac-socat.sh`. Re-running any installer tears down the existing stack and reinstalls cleanly.
+Re-running the installer tears down the existing stack and recreates it cleanly.
 
-Pi-hole admin UI: <http://localhost:8880/admin>
+### Arguments
+
+```
+install-{deb,mac}.sh [haproxy|socat|uninstall] [branch]
+```
+
+| Arg | Meaning |
+|-----|---------|
+| `haproxy` *(default)* | Tor proxy via HAProxy — `sureserver/tor-haproxy` |
+| `socat` | Tor proxy via socat — `sureserver/tor-socat`, lighter |
+| `uninstall` | Tear down the stack and exit |
+| `branch` | Git branch to install from (default `main`) |
+
+Example: `... install-deb.sh socat dev`
+
+## Verify
+
+```bash
+dig @127.0.0.1 cloudflare.com        # Linux
+dig @172.31.240.250 cloudflare.com   # macOS
+```
+
+Pi-hole admin UI:
+
+| OS | URL |
+|----|-----|
+| Linux | <http://localhost:8880/admin> |
+| macOS | <http://172.31.240.250/admin> |
 
 ## How it works
 
@@ -41,77 +70,24 @@ flowchart LR
     D -- .onion --> E[Cloudflare<br>hidden resolver]
 ```
 
-Three containers share the `dnsnet` bridge (`172.31.240.248/29`). Linux drives them with rootless Podman; macOS uses Apple's `container` runtime. All external DNS traffic is DNS-over-TLS inside Tor — your ISP only sees encrypted Tor traffic.
+Three containers share the `dnsnet` bridge (`172.31.240.248/29`):
 
-| Variant | Proxy image | Relay |
-|---------|-------------|-------|
-| `tor-haproxy` (default) | `sureserver/tor-haproxy` | haproxy TCP |
-| `tor-socat` | `sureserver/tor-socat` | socat TCP |
+| Container | IP | Role |
+|-----------|----|------|
+| Pi-hole | `172.31.240.250` | Ad-blocking DNS on port 53; upstream is Unbound |
+| Unbound | `172.31.240.251` | Recursive resolver; DoT upstream to the Tor proxy |
+| Tor proxy | `172.31.240.252` | Tunnels DoT through Tor to Cloudflare's `.onion` |
 
-## Configuration
-
-Set the Pi-hole web UI port via `.env` (default `8880`):
-
-```ini
-WEBPORT=8880
-```
-
-<details>
-<summary>Install from the <code>dev</code> branch</summary>
-
-```bash
-bash <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/dev/install-deb.sh) dev
-bash <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/dev/install-mac.sh) dev
-```
-</details>
-
-<details>
-<summary>Refresh macOS sudoers manually</summary>
-
-`./mac/persist.sh` does this automatically during install. To redo it by hand:
-
-```bash
-sed "s/__USERNAME__/$(whoami)/" ./mac/start-container.sudoers \
-  | sudo tee /etc/sudoers.d/start-container >/dev/null
-sudo chmod 440 /etc/sudoers.d/start-container
-sudo visudo -cf /etc/sudoers.d/start-container
-```
-</details>
+Linux orchestrates the stack with rootless Podman quadlets (user-mode systemd). macOS drives Apple's `container` runtime from a login-triggered LaunchAgent.
 
 ## Uninstall
 
-<details>
-<summary>Debian / Ubuntu</summary>
-
 ```bash
-systemctl --user disable --now persistent-containers.service
-sudo systemctl disable --now custom-dns-deb.service
-for name in tor-socat tor-haproxy unbound pi-hole; do
-  podman rm -f "$name" 2>/dev/null || true
-  podman image rm -f "$name" 2>/dev/null || true
-done
-podman network rm dnsnet 2>/dev/null || true
+bash <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb.sh) uninstall
+bash <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac.sh) uninstall
 ```
-</details>
 
-<details>
-<summary>macOS</summary>
-
-```bash
-launchctl unload ~/Library/LaunchAgents/org.nice-dns.start-container.plist
-rm -f ~/Library/LaunchAgents/org.nice-dns.start-container.plist
-sudo rm -f /etc/sudoers.d/start-container /usr/local/sbin/start-container*.sh
-for name in tor-socat tor-haproxy unbound pi-hole; do
-  container stop "$name" 2>/dev/null || true
-  container rm   "$name" 2>/dev/null || true
-done
-container network rm dnsnet 2>/dev/null || true
-
-# restore DNS to DHCP defaults
-networksetup -listallnetworkservices | sed '1d' | grep -v '^\*' \
-  | while read -r svc; do sudo networksetup -setdnsservers "$svc" Empty; done
-```
-</details>
+Removes quadlets/LaunchAgent, containers, images, the network, and restores system DNS. Shared system tweaks (PPA pin, sysctl, AppArmor, Homebrew packages, Rosetta) are left in place.
 
 ## License
 
