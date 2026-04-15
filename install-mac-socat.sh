@@ -64,6 +64,10 @@ HERE="$WORK/nice-dns"
 "$CONTAINER_BIN" build -t unbound unbound/
 "$CONTAINER_BIN" build -t pi-hole pihole/
 
+# Builder VM isn't needed once images are built; reclaim ~2 GB RAM. It will
+# auto-start again on the next `container build`.
+"$CONTAINER_BIN" builder stop >/dev/null 2>&1 || true
+
 "$CONTAINER_BIN" network create --subnet 172.31.240.248/29 dnsnet >/dev/null
 
 "$CONTAINER_BIN" run -d --name pi-hole --network dnsnet \
