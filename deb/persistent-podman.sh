@@ -79,12 +79,6 @@ cp "$SCRIPT_DIR/quadlet/unbound.container" "$QUADLET_DIR/"
 cp "$SCRIPT_DIR/quadlet/pi-hole.container" "$QUADLET_DIR/"
 cp "$SCRIPT_DIR/quadlet/tor-${VARIANT}.container" "$QUADLET_DIR/"
 
-# Fix dependency ordering for socat variant
-if [ "$VARIANT" = "socat" ]; then
-  sed -i 's/After=tor-haproxy\.service/After=tor-socat.service/' \
-    "$QUADLET_DIR/unbound.container"
-fi
-
 echo "   ✓ Quadlet files installed."
 echo
 

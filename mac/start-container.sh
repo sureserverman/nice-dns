@@ -37,12 +37,14 @@ until container system status >/dev/null 2>&1; do
 done
 log "container system ready"
 
-# 2) Fast path: if the stack is already healthy, there's nothing to do.
-# Matches the deb/quadlet model where containers persist across login/logout
-# and only get rebuilt on actual failure.
-if dig @172.31.240.250 +time=3 +tries=1 +short cloudflare.com 2>/dev/null \
-     | grep -Eq '^[0-9.]+$'; then
-  log "stack already healthy — skipping rebuild"
+# 2) Fast path: if the stack is already healthy AND the running tor variant
+# matches what the plist requested, there's nothing to do. The variant check
+# prevents silently keeping a stale haproxy container when the installer has
+# been re-run with socat (or vice versa).
+if container list 2>/dev/null | grep -qw "tor-${VARIANT}" \
+   && dig @172.31.240.250 +time=3 +tries=1 +short cloudflare.com 2>/dev/null \
+        | grep -Eq '^[0-9.]+$'; then
+  log "stack already healthy (variant=$VARIANT) — skipping rebuild"
   exit 0
 fi
 

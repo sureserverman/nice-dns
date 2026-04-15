@@ -1,6 +1,6 @@
 [Unit]
 Description=Unbound recursive DNS resolver
-After=tor-haproxy.service
+After=tor-haproxy.service tor-socat.service
 
 [Container]
 ContainerName=unbound
