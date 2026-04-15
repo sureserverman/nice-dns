@@ -98,7 +98,7 @@ HERE="$WORK/nice-dns"
   unbound:latest >/dev/null
 
 "$CONTAINER_BIN" run -d --name tor-haproxy --network dnsnet \
-  -c 1 -m 256M \
+  -c 1 -m 512M \
   docker.io/sureserver/tor-haproxy:latest >/dev/null
 
 # -- Wait for the chain (Tor bootstrap) before flipping system DNS --

@@ -83,7 +83,7 @@ if ! container run -d --name unbound --network dnsnet \
 fi
 
 if ! container run -d --name "tor-${VARIANT}" --network dnsnet \
-      -c 1 -m 256M \
+      -c 1 -m 512M \
       "$TOR_IMAGE" >>"$LOG" 2>&1; then
   log "failed to start tor-${VARIANT}"
   exit 1
