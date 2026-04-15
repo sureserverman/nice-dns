@@ -51,7 +51,10 @@ for c in pi-hole unbound tor-haproxy tor-socat; do
 done
 "$CONTAINER_BIN" network rm dnsnet >/dev/null 2>&1 || true
 
-WORK="$(mktemp -d)"
+# Place WORK under $HOME -- Apple Container's builder VM cannot read
+# /var/folders/.../T/ (macOS default $TMPDIR), so a context placed there
+# transfers as 0B and ADD/COPY fail with "lstat: no such file or directory".
+WORK="$(mktemp -d "$HOME/.nice-dns-install.XXXXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 git clone -q -b "$BRANCH" https://github.com/sureserverman/nice-dns.git "$WORK/nice-dns"
 cd "$WORK/nice-dns"

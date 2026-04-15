@@ -64,7 +64,11 @@ done
 "$CONTAINER_BIN" network rm dnsnet >/dev/null 2>&1 || true
 
 # -- Fetch the repo at the requested branch --
-WORK="$(mktemp -d)"
+# Place WORK under $HOME -- Apple Container's builder VM cannot read
+# /var/folders/.../T/ (the macOS default $TMPDIR), so mktemp -d lands in a
+# location the build context transfer can't see, yielding an empty context
+# and "lstat /etc: no such file or directory" during ADD/COPY.
+WORK="$(mktemp -d "$HOME/.nice-dns-install.XXXXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 git clone -q -b "$BRANCH" https://github.com/sureserverman/nice-dns.git "$WORK/nice-dns"
 cd "$WORK/nice-dns"
