@@ -14,8 +14,19 @@ fi
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-# shellcheck source=mac/check-runtime.sh
-source "$HERE/mac/check-runtime.sh" || exit 1
+# When invoked via `bash <(curl ...)` there is no local checkout yet, so fetch
+# the gate script directly from the requested branch.
+if [[ -f "$HERE/mac/check-runtime.sh" ]]; then
+  # shellcheck source=mac/check-runtime.sh
+  source "$HERE/mac/check-runtime.sh" || exit 1
+else
+  _gate="$(mktemp)"
+  curl -fsSL "https://raw.githubusercontent.com/sureserverman/nice-dns/${BRANCH}/mac/check-runtime.sh" -o "$_gate" \
+    || { echo "failed to download compatibility gate" >&2; rm -f "$_gate"; exit 1; }
+  # shellcheck source=/dev/null
+  source "$_gate" || { rm -f "$_gate"; exit 1; }
+  rm -f "$_gate"
+fi
 
 if ! command -v brew >/dev/null; then
   echo "Homebrew not found. Install from https://brew.sh and re-run." >&2
@@ -44,6 +55,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 git clone -q -b "$BRANCH" https://github.com/sureserverman/nice-dns.git "$WORK/nice-dns"
 cd "$WORK/nice-dns"
+HERE="$WORK/nice-dns"
 
 "$CONTAINER_BIN" builder start >/dev/null 2>&1 || true
 "$CONTAINER_BIN" build -t unbound unbound/
