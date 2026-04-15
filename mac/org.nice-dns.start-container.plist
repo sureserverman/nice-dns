@@ -20,6 +20,7 @@
     <key>ProgramArguments</key>
     <array>
       <string>/usr/local/sbin/start-container.sh</string>
+      <string>__VARIANT__</string>
     </array>
 
     <key>AbandonProcessGroup</key><true/>

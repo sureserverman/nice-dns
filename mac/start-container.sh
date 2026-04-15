@@ -4,13 +4,13 @@
 # recreates them in pi-hole → unbound → tor order so the bridge allocator
 # hands out 172.31.240.250/.251/.252 deterministically.
 #
-# Variant is read from /usr/local/etc/nice-dns/variant (haproxy|socat),
-# created by the installer. Defaults to haproxy if missing.
+# Variant ('haproxy' or 'socat') is passed as argv[1] by the LaunchAgent plist.
 
 set -u
 LOG="${HOME}/Library/Logs/nice-dns.log"
-VARIANT_FILE=/usr/local/etc/nice-dns/variant
 ROOT_HELPER=/usr/local/sbin/start-container-root.sh
+VARIANT="${1:-haproxy}"
+TOR_IMAGE="docker.io/sureserver/tor-${VARIANT}:latest"
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 unset SSH_AUTH_SOCK
@@ -19,15 +19,7 @@ log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >>"$LOG"; }
 
 mkdir -p "$(dirname "$LOG")"
 
-VARIANT=haproxy
-[[ -r "$VARIANT_FILE" ]] && VARIANT="$(tr -d '[:space:]' <"$VARIANT_FILE")"
-case "$VARIANT" in haproxy|socat) ;; *) VARIANT=haproxy ;; esac
-TOR_IMAGE="docker.io/sureserver/tor-${VARIANT}:latest"
-
 log "starting nice-dns runtime (variant=$VARIANT)"
-
-# Let the system settle after login before poking container.
-sleep 5
 
 # 1) apiserver + default kernel must be up. `container system start` is
 # idempotent; the first-ever run prompts for the kata kernel download, which
@@ -45,13 +37,22 @@ until container system status >/dev/null 2>&1; do
 done
 log "container system ready"
 
-# 2) Privileged pre-start (e.g. Mullvad teardown). Optional — only runs if
+# 2) Fast path: if the stack is already healthy, there's nothing to do.
+# Matches the deb/quadlet model where containers persist across login/logout
+# and only get rebuilt on actual failure.
+if dig @172.31.240.250 +time=3 +tries=1 +short cloudflare.com 2>/dev/null \
+     | grep -Eq '^[0-9.]+$'; then
+  log "stack already healthy — skipping rebuild"
+  exit 0
+fi
+
+# 3) Privileged pre-start (e.g. Mullvad teardown). Optional — only runs if
 # the helper is installed in sudoers.
 if [[ -x "$ROOT_HELPER" ]]; then
   sudo -n "$ROOT_HELPER" pre >>"$LOG" 2>&1 || log "pre-start helper skipped"
 fi
 
-# 3) Teardown any previous state. Full recreate keeps the allocator
+# 4) Teardown any previous state. Full recreate keeps the allocator
 # deterministic across reboots.
 for c in pi-hole unbound tor-haproxy tor-socat; do
   container stop "$c" >/dev/null 2>&1 || true
@@ -59,7 +60,7 @@ for c in pi-hole unbound tor-haproxy tor-socat; do
 done
 container network rm dnsnet >/dev/null 2>&1 || true
 
-# 4) Recreate network and containers in IP-allocation order.
+# 5) Recreate network and containers in IP-allocation order.
 if ! container network create --subnet 172.31.240.248/29 dnsnet >>"$LOG" 2>&1; then
   log "failed to create dnsnet"
   exit 1
@@ -89,7 +90,7 @@ if ! container run -d --name "tor-${VARIANT}" --network dnsnet \
   exit 1
 fi
 
-# 5) Wait for the chain to resolve before declaring success. Tor bootstrap
+# 6) Wait for the chain to resolve before declaring success. Tor bootstrap
 # typically finishes within ~60s.
 tries=0
 until dig @172.31.240.250 +time=3 +tries=1 +short cloudflare.com 2>/dev/null \
@@ -103,7 +104,7 @@ until dig @172.31.240.250 +time=3 +tries=1 +short cloudflare.com 2>/dev/null \
 done
 log "chain resolving"
 
-# 6) Privileged post-start (set system DNS to pi-hole).
+# 7) Privileged post-start (set system DNS to pi-hole).
 if [[ -x "$ROOT_HELPER" ]]; then
   sudo -n "$ROOT_HELPER" post >>"$LOG" 2>&1 || log "post-start helper failed"
 fi

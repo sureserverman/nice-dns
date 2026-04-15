@@ -13,10 +13,6 @@ esac
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-# -- record selected variant for the LaunchAgent to read --
-sudo install -d -m 755 /usr/local/etc/nice-dns
-echo "$VARIANT" | sudo tee /usr/local/etc/nice-dns/variant >/dev/null
-
 # -- sudoers: allow the LaunchAgent to run only the pre/post helper --
 tmp_sudoers="$(mktemp)"
 trap 'rm -f "$tmp_sudoers"' EXIT
@@ -33,7 +29,8 @@ sudo install -m 755 "$HERE/start-container-root.sh" /usr/local/sbin/start-contai
 AGENT_DST="$HOME/Library/LaunchAgents/org.nice-dns.start-container.plist"
 launchctl unload "$AGENT_DST" 2>/dev/null || true
 mkdir -p "$HOME/Library/LaunchAgents"
-sed "s/__USERNAME__/$(whoami)/" "$HERE/org.nice-dns.start-container.plist" > "$AGENT_DST"
+sed -e "s/__USERNAME__/$(whoami)/" -e "s/__VARIANT__/$VARIANT/" \
+  "$HERE/org.nice-dns.start-container.plist" > "$AGENT_DST"
 chmod 644 "$AGENT_DST"
 launchctl load "$AGENT_DST"
 

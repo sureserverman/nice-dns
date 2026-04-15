@@ -1,49 +1,89 @@
 #!/usr/bin/env bash
-set -euo pipefail
-BRANCH="${1:-main}"
+# Usage: install-deb.sh [haproxy|socat|uninstall] [branch]
+#   first arg defaults to 'haproxy'; 'uninstall' removes the stack and exits.
+#   branch defaults to 'main' and is ignored for 'uninstall'.
 
-# This script is intended to be run as an unprivileged user. It uses sudo
-# internally for the few commands that require escalation. Running the entire
-# script with sudo will break the rootless Podman setup.
+set -euo pipefail
+
+ACTION="${1:-haproxy}"
+BRANCH="${2:-main}"
+
+# Runs as an unprivileged user; rootless Podman + user-mode systemd
+# require this. sudo is used internally for the few privileged steps.
 if [[ $EUID -eq 0 ]]; then
-  echo "Please run install-deb.sh as a regular user, not with sudo." >&2
+  echo "Please run ${0##*/} as a regular user, not with sudo." >&2
   exit 1
 fi
 
+case "$ACTION" in
+  haproxy|socat|uninstall) ;;
+  *) echo "Unknown arg '$ACTION'. Use 'haproxy', 'socat', or 'uninstall'." >&2; exit 1 ;;
+esac
 
-# Repair package state if a previous install left the PPA with a narrow pin
+# Reverse every piece of nice-dns state installed by the script (user-mode
+# quadlets, containers/images/network, the system-level custom-dns-deb unit,
+# and a stale resolv.conf pointer). System-wide tweaks (PPA pin, sysctl,
+# AppArmor, subuid/subgid, cgroup delegation) are left in place — they're
+# harmless and may be shared with other Podman workloads.
+teardown() {
+  # Swap /etc/resolv.conf to public resolvers so apt-get and git still work
+  # during install, and so the host keeps DNS after uninstall.
+  if grep -qxF 'nameserver 127.0.0.1' /etc/resolv.conf 2>/dev/null; then
+    printf 'nameserver 9.9.9.9\nnameserver 1.1.1.1\nnameserver 1.0.0.1\n' \
+      | sudo tee /etc/resolv.conf >/dev/null
+  fi
+
+  # Stop and disable user-mode quadlet services, then remove quadlet files
+  for svc in pi-hole unbound tor-haproxy tor-socat nice-dns-network; do
+    systemctl --user disable --now "${svc}.service" 2>/dev/null || true
+  done
+  rm -f "$HOME/.config/containers/systemd/"{pi-hole,unbound,tor-haproxy,tor-socat}.container \
+        "$HOME/.config/containers/systemd/nice-dns.network"
+  systemctl --user daemon-reload 2>/dev/null || true
+
+  # Containers, images, network
+  for name in tor-socat tor-haproxy unbound pi-hole; do
+    podman rm -f "$name" 2>/dev/null || true
+    podman image rm -f "$name" 2>/dev/null || true
+  done
+  podman network rm dnsnet 2>/dev/null || true
+
+  # System-level custom-dns-deb.service
+  sudo systemctl disable --now custom-dns-deb.service 2>/dev/null || true
+  sudo rm -f /etc/systemd/system/custom-dns-deb.service /usr/bin/custom-dns-deb
+  sudo systemctl daemon-reload
+}
+
+if [[ "$ACTION" == "uninstall" ]]; then
+  teardown
+  echo "nice-dns uninstalled."
+  exit 0
+fi
+
+VARIANT="$ACTION"
+
+# Pin all sejug/podman PPA packages (podman, crun, containers-common, ...) at
+# priority 600 so apt installs the PPA's coherent stack rather than mixing with
+# Ubuntu archive versions. Inert if the PPA isn't added yet.
+printf 'Package: *\nPin: release o=LP-PPA-sejug-podman\nPin-Priority: 600\n' \
+  | sudo tee /etc/apt/preferences.d/podman-ppa >/dev/null
+
+teardown
+
+# Repair package state if a previous install left the PPA half-configured
 if grep -rqs 'sejug/podman' /etc/apt/sources.list.d/ 2>/dev/null; then
-  printf 'Package: *\nPin: release o=LP-PPA-sejug-podman\nPin-Priority: 600\n' \
-    | sudo tee /etc/apt/preferences.d/podman-ppa >/dev/null
   sudo apt-get update -q
   sudo apt-get install -yq --fix-broken
 fi
 
-#Check if there are installed previous versions
-NICE_DNS_CONTAINERS="tor-socat|tor-haproxy|unbound|pi-hole"
-if [ "$(podman ps -a | grep -Ec "$NICE_DNS_CONTAINERS")" -gt 0 ]
-  then
-    #Remove them if exist
+# Base packages
+sudo apt-get install -yq --no-install-recommends git podman aardvark-dns
 
-    printf 'nameserver 9.9.9.9\nnameserver 1.1.1.1\nnameserver 1.0.0.1\n' | sudo tee /etc/resolv.conf
-    for name in tor-socat tor-haproxy unbound pi-hole; do
-      podman rm -f "$name" 2>/dev/null || true
-      podman image rm -f "$name" 2>/dev/null || true
-    done
-    podman network rm dnsnet || true
-  else
-    #Install required software
-    sudo apt-get install -yq --no-install-recommends git podman aardvark-dns
-    # target config path (user-level)
-    CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/containers/registries.conf"
-    DIR=$(dirname "$CONFIG")
-
-    # ensure directory exists
-    mkdir -p "$DIR"
-
-    # if file missing: create from scratch
-    if [[ ! -f "$CONFIG" ]]; then
-      cat > "$CONFIG" <<'EOF'
+# Ensure user-level registries.conf knows about docker.io
+CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/containers/registries.conf"
+mkdir -p "$(dirname "$CONFIG")"
+if [[ ! -f "$CONFIG" ]]; then
+  cat > "$CONFIG" <<'EOF'
 # registries.conf for Podman
 
 unqualified-search-registries = ["docker.io"]
@@ -52,38 +92,22 @@ unqualified-search-registries = ["docker.io"]
 prefix = "docker.io"
 location = "registry-1.docker.io"
 EOF
-      echo "Created new $CONFIG with Docker Hub settings."
-    fi
-
-    # helper to add or update unqualified-search-registries
-    if grep -q '^[[:space:]]*unqualified-search-registries' "$CONFIG"; then
-      if ! grep -q '^[[:space:]]*unqualified-search-registries.*docker.io' "$CONFIG"; then
-        sed -i 's|^[[:space:]]*unqualified-search-registries.*|unqualified-search-registries = ["docker.io"]|' "$CONFIG"
-        echo "Updated unqualified-search-registries to include docker.io"
-      else
-        echo "unqualified-search-registries already includes docker.io"
-      fi
-    else
-      echo 'unqualified-search-registries = ["docker.io"]' >> "$CONFIG"
-      echo "Appended unqualified-search-registries = [\"docker.io\"]"
-    fi
-
-    # helper to add registry block for docker.io
-    if grep -q '^[[:space:]]*prefix[[:space:]]*=[[:space:]]*"docker.io"' "$CONFIG"; then
-      echo "Registry block for docker.io already present"
-    else
-      cat >> "$CONFIG" <<'EOF'
+fi
+if grep -q '^[[:space:]]*unqualified-search-registries' "$CONFIG"; then
+  if ! grep -q '^[[:space:]]*unqualified-search-registries.*docker.io' "$CONFIG"; then
+    sed -i 's|^[[:space:]]*unqualified-search-registries.*|unqualified-search-registries = ["docker.io"]|' "$CONFIG"
+  fi
+else
+  echo 'unqualified-search-registries = ["docker.io"]' >> "$CONFIG"
+fi
+if ! grep -q '^[[:space:]]*prefix[[:space:]]*=[[:space:]]*"docker.io"' "$CONFIG"; then
+  cat >> "$CONFIG" <<'EOF'
 
 [[registry]]
 prefix = "docker.io"
 location = "registry-1.docker.io"
 EOF
-      echo "Appended [[registry]] block for docker.io"
-    fi
-
-    echo "Done updating $CONFIG."
 fi
-
 
 # Ensure Podman >= 5.3.0 (quadlets broken on mixed cgroup v1+v2 before this)
 MIN_PODMAN="5.3.0"
@@ -91,9 +115,6 @@ CUR_PODMAN=$(podman --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' || echo "0.
 if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
   echo "Podman $CUR_PODMAN < $MIN_PODMAN — upgrading via ppa:sejug/podman..."
   sudo add-apt-repository -y ppa:sejug/podman
-  # Pin all PPA packages so the entire container stack resolves from one source
-  printf 'Package: *\nPin: release o=LP-PPA-sejug-podman\nPin-Priority: 600\n' \
-    | sudo tee /etc/apt/preferences.d/podman-ppa >/dev/null
   sudo apt-get update -q
   sudo apt-get install -yq --fix-broken
   # PPA's containers-common replaces golang-github-containers-{common,image}
@@ -104,7 +125,6 @@ if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
     fi
   done
   sudo apt-get install -yq --no-install-recommends podman crun
-  echo "Podman upgraded to $(podman --version)."
 fi
 
 # Ensure crun >= 1.14.3 (older versions reject OCI runtime-spec 1.2.x from Podman 5)
@@ -114,12 +134,9 @@ if ! printf '%s\n%s\n' "$MIN_CRUN" "$CUR_CRUN" | sort -V -C; then
   echo "crun $CUR_CRUN < $MIN_CRUN — upgrading via ppa:sejug/podman..."
   if ! grep -rqs 'sejug/podman' /etc/apt/sources.list.d/ 2>/dev/null; then
     sudo add-apt-repository -y ppa:sejug/podman
-    printf 'Package: *\nPin: release o=LP-PPA-sejug-podman\nPin-Priority: 600\n' \
-      | sudo tee /etc/apt/preferences.d/podman-ppa >/dev/null
     sudo apt-get update -q
   fi
   sudo apt-get install -yq --no-install-recommends crun
-  echo "crun upgraded to $(crun --version 2>&1 | head -1)."
 fi
 
 # Ubuntu's podman-compose and PPA's podman both ship podman-compose.1.gz;
@@ -165,34 +182,11 @@ echo 'net.ipv4.ip_unprivileged_port_start = 53' | \
   sudo tee /etc/sysctl.d/99-podman-privileged-ports.conf
 sudo sysctl --system
 
-CONFIG="/etc/NetworkManager/NetworkManager.conf"
-
-# Check for an uncommented 'dns=dnsmasq' line
-if [ -f "$CONFIG" ] && grep -Eq '^[[:space:]]*dns[[:space:]]*=[[:space:]]*dnsmasq' "$CONFIG"; then
-  echo "Found dns=dnsmasq in $CONFIG – disabling it..."
-
-  # Comment out the line
-  sudo sed -i -E 's|^[[:space:]]*dns[[:space:]]*=[[:space:]]*dnsmasq|#&|' "$CONFIG"
-  echo "Line commented out."
-
-  # Restart NetworkManager
-  echo "Restarting NetworkManager..."
+# Disable dns=dnsmasq in NetworkManager if present (conflicts with pi-hole)
+NM_CONFIG="/etc/NetworkManager/NetworkManager.conf"
+if [ -f "$NM_CONFIG" ] && grep -Eq '^[[:space:]]*dns[[:space:]]*=[[:space:]]*dnsmasq' "$NM_CONFIG"; then
+  sudo sed -i -E 's|^[[:space:]]*dns[[:space:]]*=[[:space:]]*dnsmasq|#&|' "$NM_CONFIG"
   sudo systemctl restart NetworkManager
-  echo "Done. dnsmasq is now disabled in NetworkManager."
-fi
-
-# Disable systemd-resolved stub listener on port 53 (conflicts with pi-hole)
-if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-  if ! grep -rqs '^[[:space:]]*DNSStubListener[[:space:]]*=[[:space:]]*no' /etc/systemd/resolved.conf /etc/systemd/resolved.conf.d/ 2>/dev/null; then
-    echo "systemd-resolved stub listener is active on port 53 – disabling it..."
-    sudo mkdir -p /etc/systemd/resolved.conf.d
-    sudo tee /etc/systemd/resolved.conf.d/no-stub.conf > /dev/null <<'RESOLVED'
-[Resolve]
-DNSStubListener=no
-RESOLVED
-    sudo systemctl restart systemd-resolved
-    echo "Done. systemd-resolved stub listener disabled."
-  fi
 fi
 
 # Add UID/GID mappings for current user if missing
@@ -222,13 +216,30 @@ systemctl --user daemon-reexec
 # Pick up subuid/subgid and cgroup delegation changes
 podman system migrate
 
-#Start podman containers
-rm -rf nice-dns
-git clone -b "$BRANCH" https://github.com/sureserverman/nice-dns.git
-cd nice-dns
+# Work from an in-tree checkout if present; otherwise fetch a fresh clone.
+if [[ -d deb/quadlet && -f deb/custom-dns-deb ]]; then
+  WORKDIR="$(pwd)"
+  CLONED=""
+else
+  rm -rf nice-dns
+  git clone -b "$BRANCH" https://github.com/sureserverman/nice-dns.git
+  WORKDIR="$(pwd)/nice-dns"
+  CLONED="$WORKDIR"
+fi
+
+cd "$WORKDIR"
 podman build -t unbound unbound/
 podman build -t pi-hole pihole/
-./deb/persistent-podman.sh haproxy
-./deb/dns-deb.sh
-cd -
-rm -rf nice-dns
+./deb/persistent-podman.sh "$VARIANT"
+
+# Install and start custom-dns-deb.service
+sudo cp deb/custom-dns-deb.service /etc/systemd/system/custom-dns-deb.service
+sudo install -m 755 deb/custom-dns-deb /usr/bin/custom-dns-deb
+sudo systemctl daemon-reload
+sudo systemctl enable --now custom-dns-deb.service
+sudo systemctl restart custom-dns-deb.service
+
+cd - >/dev/null
+if [[ -n "$CLONED" ]]; then
+  rm -rf "$CLONED"
+fi
