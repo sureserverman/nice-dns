@@ -43,14 +43,15 @@ fi
 EOF
   sudo chmod 755 /etc/NetworkManager/dispatcher.d/90-nice-dns-pin
 
-  while IFS=: read -r uuid; do
+  while IFS=: read -r uuid type; do
     [ -n "$uuid" ] || continue
+    [ "$type" = "loopback" ] && continue
     sudo nmcli connection modify "$uuid" \
       ipv4.ignore-auto-dns yes \
       ipv4.dns "127.0.0.1" \
       ipv6.method disabled \
       ipv6.ignore-auto-dns yes
-  done < <(nmcli -t -f UUID connection show)
+  done < <(nmcli -t -f UUID,TYPE connection show)
 
   sudo systemctl reload NetworkManager 2>/dev/null || sudo systemctl restart NetworkManager
 
