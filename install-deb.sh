@@ -20,6 +20,67 @@ case "$ACTION" in
   *) echo "Unknown arg '$ACTION'. Use 'haproxy', 'socat', or 'uninstall'." >&2; exit 1 ;;
 esac
 
+configure_nm_dns_lockdown() {
+  if ! command -v nmcli >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! systemctl is-active --quiet NetworkManager 2>/dev/null; then
+    return 0
+  fi
+
+  sudo mkdir -p /etc/NetworkManager/conf.d /etc/NetworkManager/dispatcher.d
+  sudo tee /etc/NetworkManager/conf.d/90-nice-dns.conf >/dev/null <<'EOF'
+[main]
+dns=none
+EOF
+  sudo tee /etc/NetworkManager/dispatcher.d/90-nice-dns-pin >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ -x /usr/bin/custom-dns-deb ]; then
+  /usr/bin/custom-dns-deb
+fi
+EOF
+  sudo chmod 755 /etc/NetworkManager/dispatcher.d/90-nice-dns-pin
+
+  while IFS=: read -r uuid; do
+    [ -n "$uuid" ] || continue
+    sudo nmcli connection modify "$uuid" \
+      ipv4.ignore-auto-dns yes \
+      ipv4.dns "127.0.0.1" \
+      ipv6.method disabled \
+      ipv6.ignore-auto-dns yes
+  done < <(nmcli -t -f UUID connection show)
+
+  sudo systemctl reload NetworkManager 2>/dev/null || sudo systemctl restart NetworkManager
+
+  while IFS=: read -r uuid device; do
+    [ -n "$uuid" ] || continue
+    [ -n "$device" ] || continue
+    sudo nmcli connection up "$uuid" >/dev/null 2>&1 || true
+  done < <(nmcli -t -f UUID,DEVICE connection show --active)
+}
+
+configure_ipv6_disable() {
+  sudo tee /etc/sysctl.d/99-nice-dns-disable-ipv6.conf >/dev/null <<'EOF'
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+EOF
+  sudo sysctl --system >/dev/null
+
+  if [ -f /etc/default/grub ] || [ -d /etc/default/grub.d ]; then
+    sudo mkdir -p /etc/default/grub.d
+    sudo tee /etc/default/grub.d/99-nice-dns-ipv6.cfg >/dev/null <<'EOF'
+GRUB_CMDLINE_LINUX="$GRUB_CMDLINE_LINUX ipv6.disable=1"
+EOF
+
+    if command -v update-grub >/dev/null 2>&1; then
+      sudo update-grub
+    fi
+  fi
+}
+
 # Reverse every piece of nice-dns state installed by the script (user-mode
 # quadlets, containers/images/network, the system-level custom-dns-deb unit,
 # and a stale resolv.conf pointer). System-wide tweaks (PPA pin, sysctl,
@@ -51,7 +112,16 @@ teardown() {
   # System-level custom-dns-deb.service
   sudo systemctl disable --now custom-dns-deb.service 2>/dev/null || true
   sudo rm -f /etc/systemd/system/custom-dns-deb.service /usr/bin/custom-dns-deb
+  sudo rm -f /etc/NetworkManager/conf.d/90-nice-dns.conf \
+    /etc/NetworkManager/dispatcher.d/90-nice-dns-pin \
+    /etc/sysctl.d/99-nice-dns-disable-ipv6.conf \
+    /etc/default/grub.d/99-nice-dns-ipv6.cfg
   sudo systemctl daemon-reload
+  sudo systemctl reload NetworkManager 2>/dev/null || true
+  sudo sysctl --system >/dev/null 2>&1 || true
+  if command -v update-grub >/dev/null 2>&1; then
+    sudo update-grub >/dev/null 2>&1 || true
+  fi
 }
 
 if [[ "$ACTION" == "uninstall" ]]; then
@@ -241,6 +311,9 @@ sudo install -m 755 deb/custom-dns-deb /usr/bin/custom-dns-deb
 sudo systemctl daemon-reload
 sudo systemctl enable --now custom-dns-deb.service
 sudo systemctl restart custom-dns-deb.service
+configure_nm_dns_lockdown
+configure_ipv6_disable
+sudo /usr/bin/custom-dns-deb
 
 cd - >/dev/null
 if [[ -n "$CLONED" ]]; then

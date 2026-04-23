@@ -1,6 +1,6 @@
 [Unit]
 Description=Configure system DNS to use 127.0.0.1:53
-After=network.target
+After=NetworkManager.service network-online.target
 Wants=network-online.target
 
 [Service]

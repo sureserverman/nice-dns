@@ -4,4 +4,4 @@
 #
 # Replace __USERNAME__ with the macOS user that runs the LaunchAgent.
 
-__USERNAME__ ALL=(root) NOPASSWD: /usr/local/sbin/start-container-root.sh pre, /usr/local/sbin/start-container-root.sh post
+__USERNAME__ ALL=(root) NOPASSWD: /usr/local/sbin/start-container-root.sh pre, /usr/local/sbin/start-container-root.sh repair-dnsnet, /usr/local/sbin/start-container-root.sh post

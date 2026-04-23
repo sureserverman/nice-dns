@@ -143,14 +143,21 @@ HERE="$WORK/nice-dns"
 
 # -- Wait for the chain (Tor bootstrap) before flipping system DNS --
 echo "Waiting for the DNS chain to come up (Tor bootstrap takes ~30-60s)..."
+healthy=0
 for i in $(seq 1 30); do
   if dig @172.31.240.250 +time=3 +tries=1 +short cloudflare.com 2>/dev/null \
       | grep -Eq '^[0-9.]+$'; then
     echo "Chain is resolving."
+    healthy=1
     break
   fi
   sleep 5
 done
+
+if (( healthy == 0 )); then
+  echo "nice-dns did not come up cleanly; refusing to pin system DNS." >&2
+  exit 1
+fi
 
 # -- Point the system at pi-hole and install the LaunchAgent --
 # start-container-root.sh post also re-bootstraps Mullvad if present;
