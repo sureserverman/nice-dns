@@ -39,3 +39,4 @@ pihole/etc/macvendor.db
 *.pem
 *.key
 !unbound/etc/*.pem
+sec-review-report-20260425-1641.md
