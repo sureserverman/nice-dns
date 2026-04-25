@@ -17,3 +17,25 @@ AGENTS.md
 # ===== AI / Design Plans =====
 docs/plans/
 plans/
+
+# ===== Pi-hole runtime state — never commit =====
+# Pi-hole regenerates these on first container start; committing them leaks
+# private TLS keys, session tokens, blocklist databases, and DNS query history.
+pihole/etc/tls.pem
+pihole/etc/tls.crt
+pihole/etc/tls_ca.crt
+pihole/etc/tls_*.crt
+pihole/etc/cli_pw
+pihole/etc/gravity.db
+pihole/etc/gravity.db-*
+pihole/etc/pihole-FTL.db
+pihole/etc/pihole-FTL.db-*
+pihole/etc/dhcp.leases
+pihole/etc/listsCache/
+pihole/etc/hosts/
+pihole/etc/macvendor.db
+
+# ===== Generic secret / key patterns =====
+*.pem
+*.key
+!unbound/etc/*.pem

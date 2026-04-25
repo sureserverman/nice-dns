@@ -1,0 +1,75 @@
+# Default adlist URLs seeded into Pi-hole on first install by
+# scripts/seed-pihole.sh. Edit this file to add or remove blocklists.
+#
+# Lines beginning with '#' are comments. Blank lines are ignored.
+# Each URL is added via `pihole adlist add <url>`; duplicates are no-ops.
+#
+# After install, manage adlists via the Pi-hole web UI or
+#   docker exec pi-hole pihole adlist add|remove|enable|disable <url>
+
+# Big Steven Black combined hosts file (default for fresh Pi-hole installs)
+https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+
+# Polish Filters Team — Polish-language ad and tracker hosts
+https://raw.githubusercontent.com/PolishFiltersTeam/KADhosts/master/KADhosts.txt
+
+# FadeMind add.Spam — known spam senders
+https://raw.githubusercontent.com/FadeMind/hosts.extras/master/add.Spam/hosts
+
+# v.firebog.net — w3kbl, AdguardDNS, Admiral, Easylist, Easyprivacy,
+# Prigent-Ads, Prigent-Crypto, RPiList-Phishing
+https://v.firebog.net/hosts/static/w3kbl.txt
+https://v.firebog.net/hosts/AdguardDNS.txt
+https://v.firebog.net/hosts/Admiral.txt
+https://v.firebog.net/hosts/Easylist.txt
+https://v.firebog.net/hosts/Easyprivacy.txt
+https://v.firebog.net/hosts/Prigent-Ads.txt
+https://v.firebog.net/hosts/Prigent-Crypto.txt
+https://v.firebog.net/hosts/RPiList-Phishing.txt
+
+# AdAway — mobile ad servers
+https://adaway.org/hosts.txt
+
+# anudeepND blacklist
+https://raw.githubusercontent.com/anudeepND/blacklist/master/adservers.txt
+
+# pgl.yoyo.org — long-running ad-server list
+https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext
+
+# FadeMind UncheckyAds, add.2o7Net, add.Risk
+https://raw.githubusercontent.com/FadeMind/hosts.extras/master/UncheckyAds/hosts
+https://raw.githubusercontent.com/FadeMind/hosts.extras/master/add.2o7Net/hosts
+https://raw.githubusercontent.com/FadeMind/hosts.extras/master/add.Risk/hosts
+
+# bigdargon hostsVN
+https://raw.githubusercontent.com/bigdargon/hostsVN/master/hosts
+
+# crazy-max WindowsSpyBlocker — Windows telemetry endpoints
+https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/spy.txt
+
+# frogeye first-party trackers
+https://hostfiles.frogeye.fr/firstparty-trackers-hosts.txt
+
+# DandelionSprout AntiMalwareHosts
+https://raw.githubusercontent.com/DandelionSprout/adfilt/master/Alternate%20versions%20Anti-Malware%20List/AntiMalwareHosts.txt
+
+# DigitalSide Threat-Intel domains (rotating malware/phish IOCs)
+https://osint.digitalside.it/Threat-Intel/lists/latestdomains.txt
+
+# Mandiant APT1 indicators
+https://bitbucket.org/ethanr/dns-blacklists/raw/8575c9f96e5b4a1308f2f12394abd86d0927a4a0/bad_lists/Mandiant_APT1_Report_Appendix_D.txt
+
+# phishing.army extended phishing list
+https://phishing.army/download/phishing_army_blocklist_extended.txt
+
+# notrack-malware
+https://gitlab.com/quidsup/notrack-blocklists/raw/master/notrack-malware.txt
+
+# Spam404 main blacklist
+https://raw.githubusercontent.com/Spam404/lists/master/main-blacklist.txt
+
+# stalkerware-indicators
+https://raw.githubusercontent.com/AssoEchap/stalkerware-indicators/master/generated/hosts
+
+# urlhaus.abuse.ch — current malware-hosting domains (updates daily)
+https://urlhaus.abuse.ch/downloads/hostfile/

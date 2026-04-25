@@ -62,7 +62,12 @@ VARIANT="$ACTION"
 
 # -- Phase 0: compatibility gate --
 # When invoked via `bash <(curl ...)` there is no local checkout yet, so fetch
-# the gate script directly from the requested branch.
+# the gate script directly from the requested branch and verify its SHA-256
+# before sourcing. The expected hash MUST be bumped whenever check-runtime.sh
+# is edited; the pre-commit hook in scripts/update-check-runtime-sha.sh
+# automates that.
+CHECK_RUNTIME_SHA256='62f80b955124c6f379dc0b71bae81d813d8ba0b64a4c45f5bc1b41a85a075a4e'
+
 if [[ -f "$HERE/mac/check-runtime.sh" ]]; then
   # shellcheck source=mac/check-runtime.sh
   source "$HERE/mac/check-runtime.sh" || exit 1
@@ -70,6 +75,18 @@ else
   _gate="$(mktemp)"
   curl -fsSL "https://raw.githubusercontent.com/sureserverman/nice-dns/${BRANCH}/mac/check-runtime.sh" -o "$_gate" \
     || { echo "failed to download compatibility gate" >&2; rm -f "$_gate"; exit 1; }
+  _gate_sha="$(shasum -a 256 "$_gate" | awk '{print $1}')"
+  if [[ "$_gate_sha" != "$CHECK_RUNTIME_SHA256" ]]; then
+    echo "ERROR: compatibility gate SHA-256 mismatch." >&2
+    echo "  expected: $CHECK_RUNTIME_SHA256" >&2
+    echo "  got:      $_gate_sha" >&2
+    echo "  branch:   $BRANCH" >&2
+    echo "  Refusing to source potentially-tampered code. If you bumped" >&2
+    echo "  check-runtime.sh on purpose, update CHECK_RUNTIME_SHA256 above" >&2
+    echo "  (or run scripts/update-check-runtime-sha.sh to do it)." >&2
+    rm -f "$_gate"
+    exit 1
+  fi
   # shellcheck source=/dev/null
   source "$_gate" || { rm -f "$_gate"; exit 1; }
   rm -f "$_gate"
@@ -137,8 +154,17 @@ HERE="$WORK/nice-dns"
   -c 1 -m 256M \
   unbound:latest >/dev/null
 
+# Fetch default obfs4 bridges from the Tor Project on first install, then
+# pass them into the container. Idempotent: bridges.env is reused on re-runs.
+"$HERE/scripts/fetch-bridges.sh"
+# shellcheck disable=SC1090,SC1091
+. "${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges.env"
+: "${BRIDGE1:?bridges.env did not export BRIDGE1}"
+: "${BRIDGE2:?bridges.env did not export BRIDGE2}"
 "$CONTAINER_BIN" run -d --name "tor-${VARIANT}" --network dnsnet \
   -c 1 -m 512M \
+  -e "BRIDGE1=${BRIDGE1}" \
+  -e "BRIDGE2=${BRIDGE2}" \
   "docker.io/sureserver/tor-${VARIANT}:latest" >/dev/null
 
 # -- Wait for the chain (Tor bootstrap) before flipping system DNS --
@@ -158,6 +184,9 @@ if (( healthy == 0 )); then
   echo "nice-dns did not come up cleanly; refusing to pin system DNS." >&2
   exit 1
 fi
+
+# -- Seed Pi-hole adlists + custom denylist (idempotent) --
+"$HERE/scripts/seed-pihole.sh" container
 
 # -- Point the system at pi-hole and install the LaunchAgent --
 # start-container-root.sh post also re-bootstraps Mullvad if present;

@@ -7,6 +7,7 @@ ContainerName=tor-haproxy
 Image=docker.io/sureserver/tor-haproxy:latest
 Network=nice-dns.network
 IP=172.31.240.252
+EnvironmentFile=%h/.config/nice-dns/bridges.env
 HealthCmd=dig +short +tls -p 853 @127.0.0.1 cloudflare.com | grep -Eo '\b[0-9.]{7,15}\b' >/dev/null
 HealthInterval=30s
 HealthTimeout=10s

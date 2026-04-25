@@ -302,9 +302,17 @@ else
 fi
 
 cd "$WORKDIR"
+# Fetch default obfs4 bridges from the Tor Project on first install. Idempotent
+# — re-running the installer reuses ~/.config/nice-dns/bridges.env. Required by
+# the tor-haproxy / tor-socat containers, which fail-fast if BRIDGE1/BRIDGE2
+# are unset.
+./scripts/fetch-bridges.sh
 podman build -t unbound unbound/
 podman build -t pi-hole pihole/
 ./deb/persistent-podman.sh "$VARIANT"
+# Seed Pi-hole's adlist + denylist on first install. Idempotent — re-running
+# is a no-op for URLs already present in the gravity DB.
+./scripts/seed-pihole.sh podman
 
 # Install and start custom-dns-deb.service
 sudo cp deb/custom-dns-deb.service /etc/systemd/system/custom-dns-deb.service

@@ -8,5 +8,50 @@ Type=oneshot
 ExecStart=/usr/bin/custom-dns-deb
 RemainAfterExit=yes
 
+# --- Hardening ---
+# The script must run as root: it manipulates systemd-resolved state and
+# rewrites /etc/resolv.conf. We can't drop user, but we can confine what
+# "root" inside this unit is allowed to touch.
+ProtectSystem=strict
+ReadWritePaths=/etc /run/systemd /run/resolvconf
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=false
+NoNewPrivileges=true
+
+# Drop every capability except the two the script actually uses:
+#   CAP_DAC_OVERRIDE — write /etc/resolv.conf when its mode is 0644 root:root
+#   CAP_SYS_PTRACE   — needed by some systemctl invocations (set negative if
+#                      not required; remove if you confirm not needed)
+CapabilityBoundingSet=CAP_DAC_OVERRIDE
+AmbientCapabilities=
+
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+
+# The script only talks to systemd over AF_UNIX, no network sockets.
+RestrictAddressFamilies=AF_UNIX
+
+# Filter syscalls to those a system-service typically needs.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @debug @module @raw-io @reboot @swap @cpu-emulation @obsolete
+SystemCallErrorNumber=EPERM
+
+UMask=0077
+
 [Install]
 WantedBy=multi-user.target

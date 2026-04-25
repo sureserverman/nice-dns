@@ -813,7 +813,13 @@
     #
     # Possible values are:
     #     <valid Pi-hole password hash>
-    pwhash = "" ### CHANGED, default = ""
+    # SECURITY NOTE: pwhash MUST stay empty in the committed config so the
+    # admin password is set per-deployment, not shared across every clone.
+    # After install, set the password with:
+    #     docker exec -it pi-hole pihole -a -p '<your-password>'
+    # The previous committed hash was leaked in git history before commit
+    # <fix-commit>; rotate any password derived from it.
+    pwhash = ""
 
     # Pi-hole 2FA TOTP secret. When set to something different than "", 2FA authentication
     # will be enforced for the API and the web interface. This setting is write-only, you
