@@ -13,7 +13,13 @@ RemainAfterExit=yes
 # rewrites /etc/resolv.conf. We can't drop user, but we can confine what
 # "root" inside this unit is allowed to touch.
 ProtectSystem=strict
-ReadWritePaths=/etc /run/systemd /run/resolvconf
+# /etc — script writes /etc/resolv.conf and the date-suffixed backup.
+# /run/systemd — systemctl talks to PID 1 over unix sockets here.
+# /run/resolvconf — present only on hosts using the resolvconf package
+#   (Ubuntu 24.04 with systemd-resolved doesn't have it). Leading "-"
+#   tells systemd to skip if missing instead of failing 226/NAMESPACE.
+ReadWritePaths=/etc /run/systemd
+ReadWritePaths=-/run/resolvconf
 ProtectHome=true
 PrivateTmp=true
 PrivateDevices=true
