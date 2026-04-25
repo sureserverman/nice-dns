@@ -11,12 +11,18 @@ PublishPort=53:53/tcp
 PublishPort=53:53/udp
 PublishPort=8880:80
 Environment=TZ=Europe/London
-Environment=DNS1=172.31.240.251
+# Unbound listens on port 5335; without the explicit #5335 suffix pi-hole
+# would default to port 53 and get connection-refused. (gravity is built
+# into the image so this only affects pihole-FTL's runtime forwarding,
+# not first-start bootstrap.)
+Environment=DNS1=172.31.240.251#5335
 Environment=DISABLE_GITHUB_UPDATES=true
 HealthCmd=dig -p $(pihole-FTL --config dns.port) +short +norecurse +retry=0 @127.0.0.1 pi.hole || exit 1
 HealthInterval=30s
 HealthTimeout=10s
 HealthRetries=5
+# 90s gives pihole-FTL plenty of time to initialize. Gravity is pre-built
+# in the image so no first-start gravity download is required.
 HealthStartPeriod=90s
 HealthOnFailure=restart
 
