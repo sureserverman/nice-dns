@@ -8,7 +8,7 @@
 #   <runtime> = "podman" (Linux) | "container" (macOS Apple Container)
 #
 # Reads URLs from <repo>/pihole/adlists-default.txt and domains from
-# <repo>/pihole/custom-denylist.txt. The repo root is detected from
+# <repo>/pihole/custom-allowlist.txt. The repo root is detected from
 # the script's own directory (parent of scripts/).
 
 set -euo pipefail
@@ -21,7 +21,7 @@ esac
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ADLISTS_FILE="$REPO_ROOT/pihole/adlists-default.txt"
-DENYLIST_FILE="$REPO_ROOT/pihole/custom-denylist.txt"
+DENYLIST_FILE="$REPO_ROOT/pihole/custom-allowlist.txt"
 
 [[ -f "$ADLISTS_FILE" ]] || { echo "ERROR: $ADLISTS_FILE not found" >&2; exit 1; }
 [[ -f "$DENYLIST_FILE" ]] || { echo "ERROR: $DENYLIST_FILE not found" >&2; exit 1; }
@@ -61,7 +61,7 @@ done < <(strip_comments "$ADLISTS_FILE")
 echo "▸ Seeding custom denylist from $(basename "$DENYLIST_FILE")..."
 while IFS= read -r domain; do
     [[ -z "$domain" ]] && continue
-    out="$("$RUNTIME" exec pi-hole pihole denylist add "$domain" 2>&1 || true)"
+    out="$("$RUNTIME" exec pi-hole pihole allow add "$domain" 2>&1 || true)"
     if grep -qiE 'added|inserted' <<<"$out"; then
         added_any=1
         printf '  + %s\n' "$domain"

@@ -1,0 +1,15 @@
+# Domains EXPLICITLY ALLOWED (override anything in the adlists). Seeded into
+# Pi-hole's domainlist table at IMAGE BUILD TIME by pihole/Dockerfile.
+#
+# Pi-hole v6 schema: type=0 in domainlist = exact allowlist (whitelist).
+# (In v5 the polarity was opposite; this file matches v6.)
+#
+# Lines beginning with '#' are comments. Blank lines are ignored.
+# After install, manage entries via the Pi-hole web UI or
+#   docker exec pi-hole pihole allow add|remove <domain>
+
+www.googleadservices.com
+ad.doubleclick.net
+googleads.g.doubleclick.net
+us-central1-adaptive-growth.cloudfunctions.net
+chatgpt.com
