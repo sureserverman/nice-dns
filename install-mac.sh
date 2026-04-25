@@ -185,8 +185,8 @@ if (( healthy == 0 )); then
   exit 1
 fi
 
-# -- Seed Pi-hole adlists + custom denylist (idempotent) --
-"$HERE/scripts/seed-pihole.sh" container
+# Note: pi-hole's gravity DB is built at IMAGE BUILD time (see pihole/Dockerfile),
+# so no post-start seed step is needed.
 
 # -- Point the system at pi-hole and install the LaunchAgent --
 # start-container-root.sh post also re-bootstraps Mullvad if present;

@@ -310,9 +310,8 @@ cd "$WORKDIR"
 podman build -t unbound unbound/
 podman build -t pi-hole pihole/
 ./deb/persistent-podman.sh "$VARIANT"
-# Seed Pi-hole's adlist + denylist on first install. Idempotent — re-running
-# is a no-op for URLs already present in the gravity DB.
-./scripts/seed-pihole.sh podman
+# Note: pi-hole's gravity DB is built at IMAGE BUILD time (see pihole/Dockerfile),
+# so no post-start seed step is needed — pihole-FTL serves DNS immediately.
 
 # Install and start custom-dns-deb.service
 sudo cp deb/custom-dns-deb.service /etc/systemd/system/custom-dns-deb.service
