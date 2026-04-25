@@ -1,0 +1,25 @@
+.git/
+.gitignore
+
+# AI assistant artifacts.
+.claude/
+.cursor/
+.cursorrules
+.aider*
+.copilot/
+CLAUDE.md
+AGENTS.md
+.claude_memory
+
+# Docs / plans.
+docs/
+*.md
+!README.md
+README.md
+
+# Editor / OS.
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

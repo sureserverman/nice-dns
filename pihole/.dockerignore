@@ -1,0 +1,43 @@
+# Anything under .git stays out of the build context. Build context size
+# matters for buildx (it's transferred to the daemon).
+.git/
+.gitignore
+
+# AI assistant artifacts — these have leaked private notes / vault paths
+# in the past. They should never end up in published images.
+.claude/
+.cursor/
+.cursorrules
+.aider*
+.copilot/
+CLAUDE.md
+AGENTS.md
+.claude_memory
+
+# Docs and plans live elsewhere; never needed at build time.
+docs/
+*.md
+!README.md
+README.md
+
+# Editor / OS detritus.
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Pi-hole runtime state — must never be baked into the image.
+# The Dockerfile COPYs etc/* but pihole-FTL regenerates these on first start.
+etc/tls.pem
+etc/tls.crt
+etc/tls_ca.crt
+etc/cli_pw
+etc/gravity.db
+etc/gravity.db-*
+etc/pihole-FTL.db
+etc/pihole-FTL.db-*
+etc/dhcp.leases
+etc/listsCache/
+etc/hosts/
+etc/macvendor.db
