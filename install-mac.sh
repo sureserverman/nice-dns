@@ -132,9 +132,12 @@ cd "$WORK/nice-dns"
 HERE="$WORK/nice-dns"
 
 # -- Build local images --
+# --dns 1.1.1.1 because Apple's container builder VM's default DNS forwarding
+# is unreliable when the host network's DNS is censoring or partial; the
+# pi-hole image build does an upstream pihole -g which needs working DNS.
 "$CONTAINER_BIN" builder start >/dev/null 2>&1 || true
-"$CONTAINER_BIN" build -t unbound unbound/
-"$CONTAINER_BIN" build -t pi-hole pihole/
+"$CONTAINER_BIN" build --dns 1.1.1.1 -t unbound unbound/
+"$CONTAINER_BIN" build --dns 1.1.1.1 -t pi-hole pihole/
 
 # Builder VM isn't needed once images are built; reclaim ~2 GB RAM. It will
 # auto-start again on the next `container build`.
