@@ -160,8 +160,13 @@ HERE="$WORK/nice-dns"
 # Fetch default obfs4 bridges from the Tor Project on first install, then
 # pass them into the container. Idempotent: bridges.env is reused on re-runs.
 "$HERE/scripts/fetch-bridges.sh"
-# shellcheck disable=SC1090,SC1091
-. "${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges.env"
+# bridges.env is written without surrounding quotes for podman --env-file /
+# systemd EnvironmentFile= compatibility (Linux quadlets), so bash `source`
+# can't be used here — it would split on whitespace inside the obfs4 line.
+# Parse the two keys directly with sed instead.
+_bridges_file="${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges.env"
+BRIDGE1="$(sed -n 's/^BRIDGE1=//p' "$_bridges_file")"
+BRIDGE2="$(sed -n 's/^BRIDGE2=//p' "$_bridges_file")"
 : "${BRIDGE1:?bridges.env did not export BRIDGE1}"
 : "${BRIDGE2:?bridges.env did not export BRIDGE2}"
 "$CONTAINER_BIN" run -d --name "tor-${VARIANT}" --network dnsnet \

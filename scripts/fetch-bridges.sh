@@ -3,7 +3,8 @@
 # Fetch two obfs4 bridges from the Tor Project's Moat API on first run, write
 # them to ~/.config/nice-dns/bridges.env. The tor-haproxy and tor-socat
 # containers consume that file via EnvironmentFile= (Linux quadlets) or
-# `set -a; . bridges.env` (install-mac.sh).
+# `sed -n 's/^KEY=//p'` (install-mac.sh — bash `source` is unsafe on values
+# with spaces and no quotes).
 #
 # Idempotent: if the file already exists and contains BRIDGE1 + BRIDGE2, the
 # script exits 0 without touching anything. Re-fetch by `rm`-ing the file.
@@ -79,11 +80,12 @@ if [[ -z "$bridge2" ]]; then
     exit 1
 fi
 
-# Write atomically. NO surrounding quotes on values: podman --env-file does
-# NOT strip quotes (they become part of the value, breaking the obfs4 regex
-# in the container's start.sh). systemd EnvironmentFile= and bash `source`
-# both parse "KEY=value with spaces" correctly without quoting, so unquoted
-# is the only format that works for all three consumers.
+# Write atomically. NO surrounding quotes on values: podman --env-file and
+# systemd EnvironmentFile= both treat quotes as literal characters, which
+# breaks the obfs4 regex in tor-haproxy/tor-socat start.sh. Bash `source`,
+# in contrast, requires quotes around space-containing values — so the Mac
+# install script (install-mac.sh) reads BRIDGE1/BRIDGE2 with `sed`, not
+# `source`, and this unquoted format works for all three consumers.
 umask 077
 tmp="$(mktemp "$BRIDGES_FILE.XXXXXX")"
 {
