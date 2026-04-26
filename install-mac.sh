@@ -146,7 +146,7 @@ HERE="$WORK/nice-dns"
 "$CONTAINER_BIN" run -d --name pi-hole --network dnsnet \
   -c 1 -m 256M \
   -e TZ=Europe/London \
-  -e DNS1=172.31.240.251 \
+  -e DNS1=172.31.240.251#5335 \
   -e DISABLE_GITHUB_UPDATES=true \
   pi-hole:latest >/dev/null
 
