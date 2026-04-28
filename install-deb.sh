@@ -48,9 +48,13 @@ EOF
     case "$type" in
       loopback|tun|vpn) continue ;;
     esac
-    sudo nmcli connection modify "$uuid" \
+    ipv4_method="$(nmcli -g ipv4.method connection show "$uuid" 2>/dev/null || true)"
+    [ "$ipv4_method" = "disabled" ] && continue
+    if ! sudo nmcli connection modify "$uuid" \
       ipv4.ignore-auto-dns yes \
-      ipv4.dns "127.0.0.1"
+      ipv4.dns "127.0.0.1"; then
+      echo "Warning: skipped NetworkManager DNS pin for connection $uuid ($type)." >&2
+    fi
   done < <(nmcli -t -f UUID,TYPE connection show)
 
   sudo systemctl reload NetworkManager 2>/dev/null || sudo systemctl restart NetworkManager
