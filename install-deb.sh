@@ -46,7 +46,7 @@ EOF
   while IFS=: read -r uuid type; do
     [ -n "$uuid" ] || continue
     case "$type" in
-      loopback|tun|vpn) continue ;;
+      bridge|loopback|tun|vpn) continue ;;
     esac
     ipv4_method="$(nmcli -g ipv4.method connection show "$uuid" 2>/dev/null || true)"
     [ "$ipv4_method" = "disabled" ] && continue
