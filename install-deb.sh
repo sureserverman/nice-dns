@@ -317,6 +317,7 @@ cd "$WORKDIR"
 # always succeeds, even on hosts whose default resolver is partial.
 podman build --dns 1.1.1.1 -t unbound unbound/
 podman build --dns 1.1.1.1 -t pi-hole pihole/
+podman pull "docker.io/sureserver/tor-${VARIANT}:latest"
 ./deb/persistent-podman.sh "$VARIANT"
 # Note: pi-hole's gravity DB is built at IMAGE BUILD time (see pihole/Dockerfile),
 # so no post-start seed step is needed — pihole-FTL serves DNS immediately.
