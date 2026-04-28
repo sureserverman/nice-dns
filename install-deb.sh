@@ -45,7 +45,9 @@ EOF
 
   while IFS=: read -r uuid type; do
     [ -n "$uuid" ] || continue
-    [ "$type" = "loopback" ] && continue
+    case "$type" in
+      loopback|tun|vpn) continue ;;
+    esac
     sudo nmcli connection modify "$uuid" \
       ipv4.ignore-auto-dns yes \
       ipv4.dns "127.0.0.1"
