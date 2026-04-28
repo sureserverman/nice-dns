@@ -74,7 +74,15 @@ echo
 echo "3) Installing quadlet files to $QUADLET_DIR ..."
 mkdir -p "$QUADLET_DIR"
 
+# Keep direct script runs variant-clean too. The full installer tears down first,
+# but this helper can be used on its own.
+for svc in tor-haproxy tor-socat; do
+  systemctl --user disable --now "${svc}.service" 2>/dev/null || true
+done
+rm -f "$QUADLET_DIR/tor-haproxy.container" "$QUADLET_DIR/tor-socat.container"
+
 cp "$SCRIPT_DIR/quadlet/nice-dns.network" "$QUADLET_DIR/"
+cp "$SCRIPT_DIR/quadlet/nice-dns.pod" "$QUADLET_DIR/"
 cp "$SCRIPT_DIR/quadlet/unbound.container" "$QUADLET_DIR/"
 cp "$SCRIPT_DIR/quadlet/pi-hole.container" "$QUADLET_DIR/"
 cp "$SCRIPT_DIR/quadlet/tor-${VARIANT}.container" "$QUADLET_DIR/"
@@ -85,8 +93,5 @@ echo
 # 4) Reload and start services
 echo "4) Reloading systemd and starting services..."
 systemctl --user daemon-reload
-systemctl --user restart nice-dns-network.service
-systemctl --user restart "tor-${VARIANT}.service"
-systemctl --user restart unbound.service
-systemctl --user restart pi-hole.service
+systemctl --user restart nice-dns-pod.service
 echo "   ✓ Services started."

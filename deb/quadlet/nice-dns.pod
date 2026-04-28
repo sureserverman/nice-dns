@@ -1,0 +1,18 @@
+[Unit]
+Description=nice-dns DNS stack pod
+After=nice-dns-network.service podman-user-wait-network-online.service
+
+[Pod]
+PodName=nice-dns
+Network=nice-dns.network
+PublishPort=53:53/tcp
+PublishPort=53:53/udp
+PublishPort=8880:80
+ExitPolicy=continue
+
+[Service]
+RestartSec=3s
+TimeoutStopSec=70
+
+[Install]
+WantedBy=default.target

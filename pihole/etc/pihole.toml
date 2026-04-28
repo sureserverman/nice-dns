@@ -10,7 +10,7 @@
   # Possible values are:
   #     array of IP addresses and/or hostnames, optionally with a port (#...)
   upstreams = [
-    "172.31.240.251#5335"
+    "127.0.0.1#5335"
   ] ### CHANGED, default = []
 
   # Use this option to control deep CNAME inspection. Disabling it might be beneficial
@@ -1211,4 +1211,3 @@
 # Configuration statistics:
 # 156 total entries out of which 147 entries are default
 # --> 9 entries are modified
-

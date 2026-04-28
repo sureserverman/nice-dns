@@ -96,14 +96,16 @@ teardown() {
   fi
 
   # Stop and disable user-mode quadlet services, then remove quadlet files
-  for svc in pi-hole unbound tor-haproxy tor-socat nice-dns-network; do
+  for svc in pi-hole unbound tor-haproxy tor-socat nice-dns-pod nice-dns-network; do
     systemctl --user disable --now "${svc}.service" 2>/dev/null || true
   done
   rm -f "$HOME/.config/containers/systemd/"{pi-hole,unbound,tor-haproxy,tor-socat}.container \
+        "$HOME/.config/containers/systemd/nice-dns.pod" \
         "$HOME/.config/containers/systemd/nice-dns.network"
   systemctl --user daemon-reload 2>/dev/null || true
 
   # Containers, images, network
+  podman pod rm -f nice-dns 2>/dev/null || true
   for name in tor-socat tor-haproxy unbound pi-hole; do
     podman rm -f "$name" 2>/dev/null || true
     podman image rm -f "$name" 2>/dev/null || true
