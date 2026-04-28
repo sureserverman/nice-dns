@@ -48,9 +48,7 @@ EOF
     [ "$type" = "loopback" ] && continue
     sudo nmcli connection modify "$uuid" \
       ipv4.ignore-auto-dns yes \
-      ipv4.dns "127.0.0.1" \
-      ipv6.method disabled \
-      ipv6.ignore-auto-dns yes
+      ipv4.dns "127.0.0.1"
   done < <(nmcli -t -f UUID,TYPE connection show)
 
   sudo systemctl reload NetworkManager 2>/dev/null || sudo systemctl restart NetworkManager
