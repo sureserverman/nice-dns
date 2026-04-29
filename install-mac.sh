@@ -193,7 +193,7 @@ if (( healthy == 0 )); then
   exit 1
 fi
 
-# Note: pi-hole's gravity DB is built at IMAGE BUILD time (see pihole/Dockerfile),
+# Note: pi-hole's gravity DB is built at IMAGE BUILD time (see pihole/Containerfile),
 # so no post-start seed step is needed.
 
 # -- Point the system at pi-hole and install the LaunchAgent --
