@@ -131,20 +131,25 @@ git clone -q -b "$BRANCH" https://github.com/sureserverman/nice-dns.git "$WORK/n
 cd "$WORK/nice-dns"
 HERE="$WORK/nice-dns"
 
-# -- macOS-only unbound.conf rewrite (cross-netns) --
+# -- macOS-only unbound.conf + pihole.toml rewrites (cross-netns) --
 # Linux runs pi-hole/unbound/tor-haproxy in a single Podman pod, so they share
-# one network namespace and unbound's stock config (interface 127.0.0.1, allow
-# 127.0.0.0/8, forward-addr 127.0.0.1@853) Just Works. Apple's `container`
-# 0.11.0 has no pod / shared-netns support, so each container gets its own
-# netns and its own IP from `dnsnet`. Patch the cloned tree (NOT the on-disk
-# repo) so the macOS-built image binds on dnsnet, accepts queries from peers,
-# and forwards DoT to tor-haproxy at .252:853. Linux is untouched.
+# one network namespace and the stock configs (interface/upstream all set to
+# 127.0.0.1) Just Work. Apple's `container` 0.11.0 has no pod / shared-netns
+# support, so each container gets its own netns and its own IP from `dnsnet`.
+# Patch the cloned tree (NOT the on-disk repo) so the macOS-built images
+# bind on / forward to the dnsnet peer IPs. Linux is untouched.
 _uconf="$HERE/unbound/etc/unbound.conf"
 sed -i '' -e 's|^    interface: 127\.0\.0\.1$|    interface: 0.0.0.0|' \
           -e 's|^    access-control: 127\.0\.0\.0/8 allow$|    access-control: 127.0.0.0/8 allow\
     access-control: 172.31.240.248/29 allow|' \
           -e 's|^    forward-addr: 127\.0\.0\.1@853#tor\.cloudflare-dns\.com$|    forward-addr: 172.31.240.252@853#tor.cloudflare-dns.com|' \
           "$_uconf"
+
+# pi-hole's bundled pihole.toml hardcodes upstreams = ["127.0.0.1#5335"], which
+# overrides the DNS1 env var. On Linux the loopback IS unbound (shared netns);
+# on macOS unbound is a peer container, so point pi-hole at .251 directly.
+_ptoml="$HERE/pihole/etc/pihole.toml"
+sed -i '' 's|^    "127\.0\.0\.1#5335"$|    "172.31.240.251#5335"|' "$_ptoml"
 
 # -- Build local images --
 # --dns 1.1.1.1 because Apple's container builder VM's default DNS forwarding
