@@ -1,0 +1,59 @@
+# Hardened-base downstream of nice-dns/pihole.
+#
+# Use the sibling installer (install-deb-hardened.sh / install-mac-hardened.sh)
+# which builds this with the repo root as the build context — that lets us
+# reuse pihole/etc/, pihole/adlists-default.txt, and pihole/custom-allowlist.txt
+# without duplicating them.
+#
+# Build command (matches what the installers run):
+#   podman build -t pi-hole -f pihole-hardened/Containerfile .
+#
+# The base image localhost/pi-hole-hardened-base:latest is built first by the
+# installer from the sibling pi-hole-hardened repo (or pulled from Docker Hub
+# once published). It already runs pihole-FTL as uid 1000 with
+# CAP_NET_BIND_SERVICE, ships the v6 admin web UI, and pre-seeds
+# /etc/pihole/versions for the pinned upstream tags.
+FROM localhost/pi-hole-hardened-base:latest
+
+USER root
+
+# --- Layer the nice-dns Pi-hole config on top of the hardened base ---
+# pihole.toml supplies the upstreams/listening/privacy tweaks that the
+# legacy upstream-based image had; the other etc/ files (dnsmasq.conf,
+# logrotate, adlists.list, ...) are managed by pihole-FTL and get
+# rewritten on first boot to match v6.6.1's schema.
+COPY --chown=pihole:pihole pihole/etc/. /etc/pihole/
+
+# --- Build gravity.db at IMAGE BUILD TIME from the URL list ---
+# Same pattern as the legacy Containerfile: blocklist downloads land here
+# (where the host's /etc/resolv.conf during build provides working DNS)
+# rather than at first-container-start (where rootless aardvark-DNS is
+# unreachable from inside the container).
+COPY --chown=pihole:pihole pihole/adlists-default.txt /tmp/adlists.txt
+COPY --chown=pihole:pihole pihole/custom-allowlist.txt /tmp/allowlist.txt
+RUN set -e; \
+    grep -vE '^[[:space:]]*(#|$)' /tmp/adlists.txt > /etc/pihole/adlists.list; \
+    chown pihole:pihole /etc/pihole/adlists.list; \
+    pihole -g; \
+    grep -vE '^[[:space:]]*(#|$)' /tmp/allowlist.txt | while IFS= read -r d; do \
+      pihole-FTL sqlite3 -ni /etc/pihole/gravity.db \
+        "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) \
+         VALUES (0, '$d', 1, 'Seeded at image build time (allowlist)');"; \
+    done; \
+    rm /tmp/adlists.txt /tmp/allowlist.txt
+
+# Lock down the FTL-managed config files copied in above. The hardened base's
+# post-install.sh below re-applies blanket 600/700 permissions, so this is
+# belt-and-braces.
+RUN [ -f /etc/pihole/dns-servers.conf ] && chmod 400 /etc/pihole/dns-servers.conf || true; \
+    [ -f /etc/pihole/dnsmasq.conf ] && chmod 400 /etc/pihole/dnsmasq.conf || true
+
+# Apply the hardened base's lockdown (removes apk + chown, freezes /pihole,
+# /etc/pihole, /var/log/pihole, /opt/pihole, /var/www/html). After this RUN
+# the image is read-only; downstream rebuilds must change the FROM line, not
+# layer on more state.
+RUN /pihole/post-install.sh
+
+USER pihole
+
+# Inherits ENTRYPOINT ["tini", "--"] and CMD ["/bin/start.sh"] from the base.
