@@ -145,11 +145,12 @@ sed -i '' -e 's|^    interface: 127\.0\.0\.1$|    interface: 0.0.0.0|' \
           -e 's|^    forward-addr: 127\.0\.0\.1@853#tor\.cloudflare-dns\.com$|    forward-addr: 172.31.240.252@853#tor.cloudflare-dns.com|' \
           "$_uconf"
 
-# pi-hole's bundled pihole.toml hardcodes upstreams = ["127.0.0.1#5335"], which
-# overrides the DNS1 env var. On Linux the loopback IS unbound (shared netns);
-# on macOS unbound is a peer container, so point pi-hole at .251 directly.
-_ptoml="$HERE/pihole/etc/pihole.toml"
-sed -i '' 's|^    "127\.0\.0\.1#5335"$|    "172.31.240.251#5335"|' "$_ptoml"
+# Note: pi-hole's bundled pihole.toml hardcodes upstreams = ["127.0.0.1#5335"]
+# for the Linux pod path; on macOS unbound is a peer container at .251. We
+# can't sed the toml at build time — pi-hole runs `pihole -g` during image
+# build and pre-flights the configured upstream, which would fail (no unbound
+# yet). Instead, override at runtime via FTLCONF_dns_upstreams (set on the
+# pi-hole container below); see -e FTLCONF_dns_upstreams in the run line.
 
 # -- Build local images --
 # --dns 1.1.1.1 because Apple's container builder VM's default DNS forwarding
@@ -170,6 +171,7 @@ sed -i '' 's|^    "127\.0\.0\.1#5335"$|    "172.31.240.251#5335"|' "$_ptoml"
   -c 1 -m 256M \
   -e TZ=Europe/London \
   -e DNS1=172.31.240.251#5335 \
+  -e FTLCONF_dns_upstreams=172.31.240.251#5335 \
   -e DISABLE_GITHUB_UPDATES=true \
   pi-hole:latest >/dev/null
 
