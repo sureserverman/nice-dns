@@ -1,12 +1,10 @@
 [Unit]
 Description=Tor socat DNS-over-TLS proxy
-After=nice-dns-network.service podman-user-wait-network-online.service
 
 [Container]
 ContainerName=tor-socat
 Image=docker.io/sureserver/tor-socat:latest
-Network=nice-dns.network
-IP=172.31.240.252
+Pod=nice-dns.pod
 EnvironmentFile=%h/.config/nice-dns/bridges.env
 HealthCmd=dig +short +tls -p 853 @127.0.0.1 cloudflare.com | grep -Eo '\b[0-9.]{7,15}\b' >/dev/null
 HealthInterval=30s

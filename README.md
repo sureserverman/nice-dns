@@ -69,15 +69,19 @@ flowchart LR
     D -- .onion --> E[Cloudflare<br>hidden resolver]
 ```
 
-Three containers share the `dnsnet` bridge (`172.31.240.248/29`):
+Linux runs the stack as a rootless Podman pod managed by user-mode systemd
+quadlets. The pod publishes DNS on host port `53` and the Pi-hole UI on host
+port `8880`; inside the pod, the services share a network namespace and talk
+over localhost:
 
-| Container | IP | Role |
-|-----------|----|------|
-| Pi-hole | `172.31.240.250` | Ad-blocking DNS on port 53; upstream is Unbound |
-| Unbound | `172.31.240.251` | Recursive resolver; DoT upstream to the Tor proxy |
-| Tor proxy | `172.31.240.252` | Tunnels DoT through Tor to Cloudflare's `.onion` |
+| Service | Pod-local endpoint | Role |
+|---------|--------------------|------|
+| Pi-hole | `127.0.0.1:53` | Ad-blocking DNS; upstream is Unbound |
+| Unbound | `127.0.0.1:5335` | Recursive resolver; DoT upstream to the Tor proxy |
+| Tor proxy | `127.0.0.1:853` | Tunnels DoT through Tor to Cloudflare's `.onion` |
 
-Linux orchestrates the stack with rootless Podman quadlets (user-mode systemd). macOS drives Apple's `container` runtime from a login-triggered LaunchAgent.
+macOS drives Apple's `container` runtime from a login-triggered LaunchAgent and
+keeps Pi-hole reachable at `172.31.240.250`.
 
 ## Uninstall
 
@@ -86,7 +90,7 @@ bash <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/in
 bash <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac.sh) uninstall
 ```
 
-Removes quadlets/LaunchAgent, containers, images, the network, and restores system DNS. Shared system tweaks (PPA pin, sysctl, AppArmor, Homebrew packages, Rosetta) are left in place.
+Removes quadlets/LaunchAgent, pods, containers, images, the network, and restores system DNS. Shared system tweaks (PPA pin, sysctl, AppArmor, Homebrew packages, Rosetta) are left in place.
 
 ## License
 

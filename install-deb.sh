@@ -45,12 +45,16 @@ EOF
 
   while IFS=: read -r uuid type; do
     [ -n "$uuid" ] || continue
-    [ "$type" = "loopback" ] && continue
-    sudo nmcli connection modify "$uuid" \
+    case "$type" in
+      bridge|loopback|tun|vpn) continue ;;
+    esac
+    ipv4_method="$(nmcli -g ipv4.method connection show "$uuid" 2>/dev/null || true)"
+    [ "$ipv4_method" = "disabled" ] && continue
+    if ! sudo nmcli connection modify "$uuid" \
       ipv4.ignore-auto-dns yes \
-      ipv4.dns "127.0.0.1" \
-      ipv6.method disabled \
-      ipv6.ignore-auto-dns yes
+      ipv4.dns "127.0.0.1"; then
+      echo "Warning: skipped NetworkManager DNS pin for connection $uuid ($type)." >&2
+    fi
   done < <(nmcli -t -f UUID,TYPE connection show)
 
   sudo systemctl reload NetworkManager 2>/dev/null || sudo systemctl restart NetworkManager
@@ -96,14 +100,16 @@ teardown() {
   fi
 
   # Stop and disable user-mode quadlet services, then remove quadlet files
-  for svc in pi-hole unbound tor-haproxy tor-socat nice-dns-network; do
+  for svc in pi-hole unbound tor-haproxy tor-socat nice-dns-pod nice-dns-network; do
     systemctl --user disable --now "${svc}.service" 2>/dev/null || true
   done
   rm -f "$HOME/.config/containers/systemd/"{pi-hole,unbound,tor-haproxy,tor-socat}.container \
+        "$HOME/.config/containers/systemd/nice-dns.pod" \
         "$HOME/.config/containers/systemd/nice-dns.network"
   systemctl --user daemon-reload 2>/dev/null || true
 
   # Containers, images, network
+  podman pod rm -f nice-dns 2>/dev/null || true
   for name in tor-socat tor-haproxy unbound pi-hole; do
     podman rm -f "$name" 2>/dev/null || true
     podman image rm -f "$name" 2>/dev/null || true
@@ -307,10 +313,13 @@ cd "$WORKDIR"
 # the tor-haproxy / tor-socat containers, which fail-fast if BRIDGE1/BRIDGE2
 # are unset.
 ./scripts/fetch-bridges.sh
-podman build -t unbound unbound/
-podman build -t pi-hole pihole/
+# --dns 1.1.1.1 ensures the pi-hole image build's `pihole -g` precheck
+# always succeeds, even on hosts whose default resolver is partial.
+podman build --dns 1.1.1.1 -t unbound unbound/
+podman build --dns 1.1.1.1 -t pi-hole pihole/
+podman pull "docker.io/sureserver/tor-${VARIANT}:latest"
 ./deb/persistent-podman.sh "$VARIANT"
-# Note: pi-hole's gravity DB is built at IMAGE BUILD time (see pihole/Dockerfile),
+# Note: pi-hole's gravity DB is built at IMAGE BUILD time (see pihole/Containerfile),
 # so no post-start seed step is needed — pihole-FTL serves DNS immediately.
 
 # Install and start custom-dns-deb.service

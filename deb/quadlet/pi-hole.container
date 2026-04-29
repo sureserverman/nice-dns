@@ -5,17 +5,13 @@ After=unbound.service
 [Container]
 ContainerName=pi-hole
 Image=localhost/pi-hole:latest
-Network=nice-dns.network
-IP=172.31.240.250
-PublishPort=53:53/tcp
-PublishPort=53:53/udp
-PublishPort=8880:80
+Pod=nice-dns.pod
 Environment=TZ=Europe/London
 # Unbound listens on port 5335; without the explicit #5335 suffix pi-hole
 # would default to port 53 and get connection-refused. (gravity is built
 # into the image so this only affects pihole-FTL's runtime forwarding,
 # not first-start bootstrap.)
-Environment=DNS1=172.31.240.251#5335
+Environment=DNS1=127.0.0.1#5335
 Environment=DISABLE_GITHUB_UPDATES=true
 HealthCmd=dig -p $(pihole-FTL --config dns.port) +short +norecurse +retry=0 @127.0.0.1 pi.hole || exit 1
 HealthInterval=30s

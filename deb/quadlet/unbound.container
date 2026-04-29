@@ -1,12 +1,11 @@
 [Unit]
 Description=Unbound recursive DNS resolver
-After=tor-haproxy.service tor-socat.service
+After=tor-__VARIANT__.service
 
 [Container]
 ContainerName=unbound
 Image=localhost/unbound:latest
-Network=nice-dns.network
-IP=172.31.240.251
+Pod=nice-dns.pod
 HealthCmd=dig +short -p 5335 @127.0.0.1 cloudflare.com | grep -Eo '\b[0-9.]{7,15}\b' >/dev/null
 HealthInterval=30s
 HealthTimeout=10s

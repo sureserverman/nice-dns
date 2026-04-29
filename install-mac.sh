@@ -132,9 +132,12 @@ cd "$WORK/nice-dns"
 HERE="$WORK/nice-dns"
 
 # -- Build local images --
+# --dns 1.1.1.1 because Apple's container builder VM's default DNS forwarding
+# is unreliable when the host network's DNS is censoring or partial; the
+# pi-hole image build does an upstream pihole -g which needs working DNS.
 "$CONTAINER_BIN" builder start >/dev/null 2>&1 || true
-"$CONTAINER_BIN" build -t unbound unbound/
-"$CONTAINER_BIN" build -t pi-hole pihole/
+"$CONTAINER_BIN" build --dns 1.1.1.1 -t unbound unbound/
+"$CONTAINER_BIN" build --dns 1.1.1.1 -t pi-hole pihole/
 
 # Builder VM isn't needed once images are built; reclaim ~2 GB RAM. It will
 # auto-start again on the next `container build`.
@@ -157,13 +160,15 @@ HERE="$WORK/nice-dns"
 # Fetch default obfs4 bridges from the Tor Project on first install, then
 # pass them into the container. Idempotent: bridges.env is reused on re-runs.
 "$HERE/scripts/fetch-bridges.sh"
-# Parse bridges.env without sourcing — values are unquoted (for podman
-# --env-file compatibility) and contain spaces, so shell-sourcing fails.
-BRIDGES_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges.env"
-BRIDGE1="$(sed -n 's/^BRIDGE1=//p' "$BRIDGES_FILE")"
-BRIDGE2="$(sed -n 's/^BRIDGE2=//p' "$BRIDGES_FILE")"
-: "${BRIDGE1:?bridges.env did not contain BRIDGE1}"
-: "${BRIDGE2:?bridges.env did not contain BRIDGE2}"
+# bridges.env is written without surrounding quotes for podman --env-file /
+# systemd EnvironmentFile= compatibility (Linux quadlets), so bash `source`
+# can't be used here — it would split on whitespace inside the obfs4 line.
+# Parse the two keys directly with sed instead.
+_bridges_file="${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges.env"
+BRIDGE1="$(sed -n 's/^BRIDGE1=//p' "$_bridges_file")"
+BRIDGE2="$(sed -n 's/^BRIDGE2=//p' "$_bridges_file")"
+: "${BRIDGE1:?bridges.env did not export BRIDGE1}"
+: "${BRIDGE2:?bridges.env did not export BRIDGE2}"
 "$CONTAINER_BIN" run -d --name "tor-${VARIANT}" --network dnsnet \
   -c 1 -m 512M \
   -e "BRIDGE1=${BRIDGE1}" \
@@ -188,7 +193,7 @@ if (( healthy == 0 )); then
   exit 1
 fi
 
-# Note: pi-hole's gravity DB is built at IMAGE BUILD time (see pihole/Dockerfile),
+# Note: pi-hole's gravity DB is built at IMAGE BUILD time (see pihole/Containerfile),
 # so no post-start seed step is needed.
 
 # -- Point the system at pi-hole and install the LaunchAgent --
