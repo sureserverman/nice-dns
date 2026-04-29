@@ -153,8 +153,12 @@ if grep -rqs 'sejug/podman' /etc/apt/sources.list.d/ 2>/dev/null; then
   sudo apt-get install -yq --fix-broken
 fi
 
-# Base packages
-sudo apt-get install -yq --no-install-recommends git podman aardvark-dns
+# Base packages. catatonit is the pause binary Podman uses when building the
+# pod's infra container (`podman pod create` errors out with "finding pause
+# binary: exec: catatonit: executable file not found in $PATH" without it).
+# Stock Ubuntu Podman pulls catatonit via Recommends; we use --no-install-
+# recommends, so name it explicitly.
+sudo apt-get install -yq --no-install-recommends git podman aardvark-dns catatonit
 
 # Ensure user-level registries.conf knows about docker.io
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/containers/registries.conf"
@@ -186,7 +190,12 @@ location = "registry-1.docker.io"
 EOF
 fi
 
-# Ensure Podman >= 5.3.0 (quadlets broken on mixed cgroup v1+v2 before this)
+# Ensure Podman >= 5.3.0. The .pod quadlet type itself only exists in Podman
+# 5.0+, so a stale 4.x binary will silently ignore deb/quadlet/nice-dns.pod
+# and `systemctl --user restart nice-dns-pod.service` fails with
+# "Unit nice-dns-pod.service not found." Re-check after the upgrade so we
+# fail fast with a clear message instead of bombing out later in
+# persistent-podman.sh.
 MIN_PODMAN="5.3.0"
 CUR_PODMAN=$(podman --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' || echo "0.0.0")
 if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
@@ -202,6 +211,20 @@ if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
     fi
   done
   sudo apt-get install -yq --no-install-recommends podman crun
+  # Re-check that the upgrade actually moved us to >= 5.3.0. The PPA does not
+  # ship every Ubuntu release / arch combo, and apt-get can return success
+  # without changing the binary version (no candidate, version held, etc.).
+  CUR_PODMAN=$(podman --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' || echo "0.0.0")
+  if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
+    echo "ERROR: Podman is still at $CUR_PODMAN after the upgrade attempt." >&2
+    echo "       nice-dns requires Podman >= $MIN_PODMAN (the .pod quadlet" >&2
+    echo "       type was added in Podman 5.0). Check whether ppa:sejug/podman" >&2
+    echo "       has a build for $(lsb_release -cs 2>/dev/null || uname -m):" >&2
+    echo "         apt-cache policy podman" >&2
+    echo "       If no PPA candidate is available for your Ubuntu release/arch," >&2
+    echo "       upgrade to a release that ships Podman 5.x natively (Ubuntu 25.04+)." >&2
+    exit 1
+  fi
 fi
 
 # Ensure crun >= 1.14.3 (older versions reject OCI runtime-spec 1.2.x from Podman 5)

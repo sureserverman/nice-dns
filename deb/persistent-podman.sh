@@ -97,6 +97,44 @@ echo
 
 # 4) Reload and start services
 echo "4) Reloading systemd and starting services..."
+
+# Re-exec the user systemd manager *after* the quadlet files are in place. The
+# top-level installer already runs daemon-reexec earlier, but if Podman was
+# upgraded in the same run the user manager may still hold the old quadlet
+# generator path in its cache. A reexec here is cheap and avoids the
+# "Unit nice-dns-pod.service not found" mystery on fresh installs.
+systemctl --user daemon-reexec
 systemctl --user daemon-reload
+
+# Sanity-check that the quadlet generator actually produced
+# nice-dns-pod.service. If it didn't, restarting the unit fails with a
+# cryptic "Unit ... not found" — surface the real reason instead.
+QUADLET_BIN=""
+for cand in /usr/libexec/podman/quadlet /usr/lib/podman/quadlet /usr/lib/systemd/user-generators/podman-user-generator; do
+  if [ -x "$cand" ]; then
+    QUADLET_BIN="$cand"
+    break
+  fi
+done
+
+GEN_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/systemd/generator"
+if [ ! -e "$GEN_DIR/nice-dns-pod.service" ]; then
+  echo "   ✗ daemon-reload did not generate nice-dns-pod.service." >&2
+  echo "     podman version: $(podman --version 2>&1 || echo 'podman missing')" >&2
+  echo "     quadlet binary: ${QUADLET_BIN:-NOT FOUND}" >&2
+  echo "     quadlet dir   : $QUADLET_DIR" >&2
+  echo "     generator dir : $GEN_DIR" >&2
+  if [ -n "$QUADLET_BIN" ]; then
+    echo "     --- quadlet -dryrun -user output (stderr) ---" >&2
+    "$QUADLET_BIN" -dryrun -user 2>&1 | sed 's/^/     /' >&2 || true
+    echo "     ----------------------------------------------" >&2
+  fi
+  echo "" >&2
+  echo "   .pod quadlets require Podman >= 5.0. If podman --version above" >&2
+  echo "   reports < 5.0, the sejug/podman PPA upgrade in install-deb.sh did" >&2
+  echo "   not produce a candidate for your Ubuntu release/arch." >&2
+  exit 1
+fi
+
 systemctl --user restart nice-dns-pod.service
 echo "   ✓ Services started."
