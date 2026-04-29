@@ -29,8 +29,8 @@ BRIDGE_RE='^obfs4 [^[:space:]]+ [0-9A-Fa-f]{40} cert=[^[:space:]]+ iat-mode=[012
 if [[ -f "$BRIDGES_FILE" ]] \
    && grep -q '^BRIDGE1=' "$BRIDGES_FILE" \
    && grep -q '^BRIDGE2=' "$BRIDGES_FILE"; then
-    bridge1="${BRIDGE1:-$(sed -n 's/^BRIDGE1=//p' "$BRIDGES_FILE" | head -n 1)}"
-    bridge2="${BRIDGE2:-$(sed -n 's/^BRIDGE2=//p' "$BRIDGES_FILE" | head -n 1)}"
+    bridge1="$(sed -n 's/^BRIDGE1=//p' "$BRIDGES_FILE" | head -n 1)"
+    bridge2="$(sed -n 's/^BRIDGE2=//p' "$BRIDGES_FILE" | head -n 1)"
     if [[ "$bridge1" =~ $BRIDGE_RE && "$bridge2" =~ $BRIDGE_RE ]]; then
         echo "▸ Bridges already configured at $BRIDGES_FILE"
         exit 0

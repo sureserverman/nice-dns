@@ -87,6 +87,11 @@ cp "$SCRIPT_DIR/quadlet/unbound.container" "$QUADLET_DIR/"
 cp "$SCRIPT_DIR/quadlet/pi-hole.container" "$QUADLET_DIR/"
 cp "$SCRIPT_DIR/quadlet/tor-${VARIANT}.container" "$QUADLET_DIR/"
 
+# unbound.container ships with __VARIANT__ as a placeholder so its After=
+# names only the Tor proxy variant actually installed. systemd warns about
+# unknown unit names in After= on every daemon-reload otherwise.
+sed -i "s/__VARIANT__/${VARIANT}/g" "$QUADLET_DIR/unbound.container"
+
 echo "   ✓ Quadlet files installed."
 echo
 
