@@ -151,15 +151,41 @@ trap 'rm -rf "$WORK"' EXIT
 
 # Honor an in-tree checkout when present so a clone with the new
 # pihole-hardened/ files is preserved instead of overwritten by a fresh
-# clone of $BRANCH (which may not yet contain those files).
+# clone of $BRANCH (which may not yet contain those files). Whichever path
+# we take, WORK_REPO is a writable copy under $WORK — the macOS-only
+# unbound.conf rewrite below patches it, and we don't want that to touch
+# the user's on-disk checkout.
 if [[ -f "$HERE/pihole-hardened/Containerfile" ]]; then
-  WORK_REPO="$HERE"
+  cp -R "$HERE/." "$WORK/nice-dns"
 else
   git clone -q -b "$BRANCH" https://github.com/sureserverman/nice-dns.git "$WORK/nice-dns"
-  WORK_REPO="$WORK/nice-dns"
 fi
+WORK_REPO="$WORK/nice-dns"
 cd "$WORK_REPO"
 HERE="$WORK_REPO"
+
+# -- macOS-only unbound.conf rewrite (cross-netns) --
+# Linux runs pi-hole/unbound/tor-haproxy in a single Podman pod, so they share
+# one network namespace and unbound's stock config (interface 127.0.0.1, allow
+# 127.0.0.0/8, forward-addr 127.0.0.1@853) Just Works. Apple's `container`
+# 0.11.0 has no pod / shared-netns support, so each container gets its own
+# netns and its own IP from `dnsnet`. Patch the cloned tree (NOT the on-disk
+# repo) so the macOS-built image binds on dnsnet, accepts queries from peers,
+# and forwards DoT to tor-haproxy at .252:853. Linux is untouched.
+# (Ported from install-mac.sh fix facf5c6.)
+_uconf="$HERE/unbound/etc/unbound.conf"
+sed -i '' -e 's|^    interface: 127\.0\.0\.1$|    interface: 0.0.0.0|' \
+          -e 's|^    access-control: 127\.0\.0\.0/8 allow$|    access-control: 127.0.0.0/8 allow\
+    access-control: 172.31.240.248/29 allow|' \
+          -e 's|^    forward-addr: 127\.0\.0\.1@853#tor\.cloudflare-dns\.com$|    forward-addr: 172.31.240.252@853#tor.cloudflare-dns.com|' \
+          "$_uconf"
+
+# Note: pi-hole's bundled pihole.toml hardcodes upstreams = ["127.0.0.1#5335"]
+# for the Linux pod path; on macOS unbound is a peer container at .251. We
+# can't sed the toml at build time — pi-hole runs `pihole -g` during image
+# build and pre-flights the configured upstream, which would fail (no unbound
+# yet). Instead, override at runtime via FTLCONF_dns_upstreams (set on the
+# pi-hole container below). (Ported from install-mac.sh fix b79e3bc.)
 
 # -- Build local images --
 "$CONTAINER_BIN" builder start >/dev/null 2>&1 || true
@@ -179,6 +205,7 @@ build_pihole_hardened_base
   -c 1 -m 256M \
   -e TZ=Europe/London \
   -e DNS1=172.31.240.251#5335 \
+  -e FTLCONF_dns_upstreams=172.31.240.251#5335 \
   -e DISABLE_GITHUB_UPDATES=true \
   pi-hole:latest >/dev/null
 
@@ -199,9 +226,13 @@ BRIDGE2="$(sed -n 's/^BRIDGE2=//p' "$_bridges_file")"
   "docker.io/sureserver/tor-${VARIANT}:latest" >/dev/null
 
 # -- Wait for the chain (Tor bootstrap) before flipping system DNS --
-echo "Waiting for the DNS chain to come up (Tor bootstrap takes ~30-60s)..."
+# 60 * 5s = 300s. First-boot obfs4 bridge bootstrap on a censoring network
+# can take ~4 minutes before the haproxy primary (Cloudflare onion via Tor)
+# marks UP and queries start resolving — 150s was tight enough to fail.
+# (Ported from install-mac.sh fix facf5c6.)
+echo "Waiting for the DNS chain to come up (Tor bootstrap takes 1-4 min)..."
 healthy=0
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
   if dig @172.31.240.250 +time=3 +tries=1 +short cloudflare.com 2>/dev/null \
       | grep -Eq '^[0-9.]+$'; then
     echo "Chain is resolving."

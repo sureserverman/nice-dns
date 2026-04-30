@@ -197,7 +197,12 @@ if grep -rqs 'sejug/podman' /etc/apt/sources.list.d/ 2>/dev/null; then
   sudo apt-get install -yq --fix-broken
 fi
 
-sudo apt-get install -yq --no-install-recommends git podman aardvark-dns
+# Base packages. catatonit is the pause binary Podman uses when building the
+# pod's infra container (`podman pod create` errors out with "finding pause
+# binary: exec: catatonit: executable file not found in $PATH" without it).
+# Stock Ubuntu Podman pulls catatonit via Recommends; we use --no-install-
+# recommends, so name it explicitly. (Ported from install-deb.sh fix 78d4539.)
+sudo apt-get install -yq --no-install-recommends git podman aardvark-dns catatonit
 
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/containers/registries.conf"
 mkdir -p "$(dirname "$CONFIG")"
@@ -241,6 +246,21 @@ if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
     fi
   done
   sudo apt-get install -yq --no-install-recommends podman crun
+  # Re-check that the upgrade actually moved us to >= 5.3.0. The PPA does not
+  # ship every Ubuntu release / arch combo, and apt-get can return success
+  # without changing the binary version (no candidate, version held, etc.).
+  # (Ported from install-deb.sh fix 78d4539.)
+  CUR_PODMAN=$(podman --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' || echo "0.0.0")
+  if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
+    echo "ERROR: Podman is still at $CUR_PODMAN after the upgrade attempt." >&2
+    echo "       nice-dns requires Podman >= $MIN_PODMAN (the .pod quadlet" >&2
+    echo "       type was added in Podman 5.0). Check whether ppa:sejug/podman" >&2
+    echo "       has a build for $(lsb_release -cs 2>/dev/null || uname -m):" >&2
+    echo "         apt-cache policy podman" >&2
+    echo "       If no PPA candidate is available for your Ubuntu release/arch," >&2
+    echo "       upgrade to a release that ships Podman 5.x natively (Ubuntu 25.04+)." >&2
+    exit 1
+  fi
 fi
 
 MIN_CRUN="1.14.3"
