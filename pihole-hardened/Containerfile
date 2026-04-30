@@ -22,7 +22,16 @@ USER root
 # legacy upstream-based image had; the other etc/ files (dnsmasq.conf,
 # logrotate, adlists.list, ...) are managed by pihole-FTL and get
 # rewritten on first boot to match v6.6.1's schema.
+#
+# Save the base's pre-seeded /etc/pihole/versions before the COPY so we
+# can restore it afterwards — pihole/etc/versions in the legacy nice-dns
+# tree was hand-authored for the v6.1 upstream image and would otherwise
+# clobber the hardened base's pin (v6.4.2/v6.5/v6.6.1), making
+# `pihole -v` report stale versions even though the running FTL is v6.6.1.
+RUN cp /etc/pihole/versions /tmp/pihole-base-versions
 COPY --chown=pihole:pihole pihole/etc/. /etc/pihole/
+RUN install -m 600 -o pihole -g pihole /tmp/pihole-base-versions /etc/pihole/versions \
+    && rm /tmp/pihole-base-versions
 
 # --- Build gravity.db at IMAGE BUILD TIME from the URL list ---
 # Same pattern as the legacy Containerfile: blocklist downloads land here
