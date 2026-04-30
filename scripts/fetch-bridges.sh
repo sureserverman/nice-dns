@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
 #
-# Fetch two obfs4 bridges from the Tor Project's Moat API on first run, write
-# them to ~/.config/nice-dns/bridges.env. The tor-haproxy and tor-socat
-# containers consume that file via EnvironmentFile= (Linux quadlets) or
-# `sed -n 's/^KEY=//p'` (install-mac.sh — bash `source` is unsafe on values
-# with spaces and no quotes).
+# Fetch 3 distinct obfs4 bridges from the Tor Project's Moat API and write
+# them as BRIDGE1..BRIDGE3 to ~/.config/nice-dns/bridges.env. The tor-haproxy
+# and tor-socat containers consume that file via EnvironmentFile= (Linux
+# quadlets) or `sed -n 's/^KEY=//p'` (install-mac.sh — bash `source` is unsafe
+# on values with spaces and no quotes).
 #
-# Idempotent: if the file already exists and contains BRIDGE1 + BRIDGE2, the
-# script exits 0 without touching anything. Re-fetch by `rm`-ing the file.
+# Why exactly 3:
+#   - ≥3 distinct primary guards are required for Tor 0.4.8+ to form Conflux
+#     paths on onion-service traffic, which roughly halves cold-query latency
+#     to the Cloudflare DoT .onion (measured ~700 ms vs ~1 s with 2 bridges).
+#   - More than 3 (we tried all ~7 Moat returns) made cold-query latency
+#     WORSE, not better: with NumPrimaryGuards 3 and a larger pool, Tor's
+#     primary-guard rotation widens first-query variance enough to produce
+#     multi-second timeouts in the first ~10 minutes. The theoretical
+#     failover-via-reserves benefit is real but doesn't pay back the cost in
+#     normal operation. start.sh accepts BRIDGE4+ for operators who want to
+#     experiment, but we don't auto-fetch them.
+#
+# Idempotent: if the file already exists and contains ≥3 valid BRIDGE_i
+# lines, the script exits 0 without touching anything. Re-fetch by
+# `rm`-ing the file.
 #
 # The Moat "circumvention/builtin" endpoint returns the same default bridges
 # Tor Browser ships with — public, rotated by the Tor Project, no CAPTCHA, no
@@ -21,21 +34,42 @@ BRIDGES_DIR="$CONFIG_HOME/nice-dns"
 BRIDGES_FILE="$BRIDGES_DIR/bridges.env"
 MOAT_URL="https://bridges.torproject.org/moat/circumvention/builtin"
 BRIDGE_RE='^obfs4 [^[:space:]]+ [0-9A-Fa-f]{40} cert=[^[:space:]]+ iat-mode=[012]$'
+# Cap how many BRIDGE_i lines we'll write. start.sh iterates BRIDGE1..BRIDGE16,
+# but empirically 3 outperforms 7: with NumPrimaryGuards 3 and a larger pool,
+# Tor's primary-guard rotation widens first-query latency variance enough to
+# make multi-second timeouts common in the first ~10 minutes. The theoretical
+# failover-via-reserves benefit is real but doesn't pay back the cost.
+# Operators who want reserves can hand-edit bridges.env to add BRIDGE4+ —
+# start.sh handles them — but we don't auto-fetch them.
+MAX_BRIDGES=3
+# Minimum needed to engage Conflux mode in tor-haproxy/start.sh.
+MIN_BRIDGES=3
 
-# Skip work if the file is already populated with unquoted, container-valid
-# obfs4 lines. Older nice-dns versions wrote shell-quoted values; podman
-# --env-file passes those quotes through literally, which makes the Tor proxy
-# reject BRIDGE1/BRIDGE2 at startup.
-if [[ -f "$BRIDGES_FILE" ]] \
-   && grep -q '^BRIDGE1=' "$BRIDGES_FILE" \
-   && grep -q '^BRIDGE2=' "$BRIDGES_FILE"; then
-    bridge1="$(sed -n 's/^BRIDGE1=//p' "$BRIDGES_FILE" | head -n 1)"
-    bridge2="$(sed -n 's/^BRIDGE2=//p' "$BRIDGES_FILE" | head -n 1)"
-    if [[ "$bridge1" =~ $BRIDGE_RE && "$bridge2" =~ $BRIDGE_RE ]]; then
-        echo "▸ Bridges already configured at $BRIDGES_FILE"
-        exit 0
-    fi
+# Skip work if the file is already populated with ≥ MIN_BRIDGES unquoted,
+# container-valid obfs4 lines. Older nice-dns versions wrote shell-quoted
+# values or only two bridges; both shapes need a refetch — podman --env-file
+# passes quotes through literally (rejected by tor-haproxy's regex), and a
+# 2-bridge file makes Tor fall back to single circuits (Conflux disabled).
+existing_count=0
+if [[ -f "$BRIDGES_FILE" ]]; then
+    for ((j=1; j<=MAX_BRIDGES; j++)); do
+        v="$(sed -n "s/^BRIDGE${j}=//p" "$BRIDGES_FILE" | head -n 1)"
+        [[ -z "$v" ]] && break
+        if [[ ! "$v" =~ $BRIDGE_RE ]]; then
+            existing_count=-1
+            break
+        fi
+        existing_count=$((existing_count + 1))
+    done
+fi
+
+if (( existing_count >= MIN_BRIDGES )); then
+    echo "▸ Bridges already configured at $BRIDGES_FILE ($existing_count entries)"
+    exit 0
+elif (( existing_count == -1 )); then
     echo "▸ Existing bridges at $BRIDGES_FILE are not valid for podman --env-file; refreshing..."
+elif [[ -f "$BRIDGES_FILE" ]]; then
+    echo "▸ Existing $BRIDGES_FILE has only $existing_count bridge(s); refreshing for Conflux + failover support..."
 fi
 
 mkdir -p "$BRIDGES_DIR"
@@ -65,31 +99,32 @@ mapfile -t obfs4_lines < <(printf '%s' "$moat_payload" \
     | grep -oE '"obfs4 [^"]+"' \
     | sed 's/^"//; s/"$//')
 
-if (( ${#obfs4_lines[@]} < 2 )); then
-    echo "ERROR: Moat returned fewer than 2 obfs4 bridges." >&2
+if (( ${#obfs4_lines[@]} < MIN_BRIDGES )); then
+    echo "ERROR: Moat returned fewer than $MIN_BRIDGES obfs4 bridges." >&2
     echo "       Payload: $moat_payload" >&2
     exit 1
 fi
 
-# Pick two distinct bridges. Use the first two — they're already shuffled
-# server-side. If they happen to share a fingerprint, slide to the next.
-bridge1="${obfs4_lines[0]}"
-bridge2=""
-for line in "${obfs4_lines[@]:1}"; do
-    fpr1="$(awk '{print $3}' <<<"$bridge1")"
-    fpr2="$(awk '{print $3}' <<<"$line")"
-    if [[ "$fpr1" != "$fpr2" ]]; then
-        bridge2="$line"
-        break
-    fi
+# Pick up to MAX_BRIDGES distinct, syntactically valid bridges. Moat's
+# response is already shuffled server-side; walk the list and accept any
+# line whose fingerprint hasn't been picked yet.
+picked=()
+picked_fprs=()
+for line in "${obfs4_lines[@]}"; do
+    fpr="$(awk '{print $3}' <<<"$line")"
+    skip=0
+    for seen in "${picked_fprs[@]}"; do
+        if [[ "$fpr" == "$seen" ]]; then skip=1; break; fi
+    done
+    [[ $skip -eq 1 ]] && continue
+    if [[ ! "$line" =~ $BRIDGE_RE ]]; then continue; fi
+    picked+=("$line")
+    picked_fprs+=("$fpr")
+    [[ ${#picked[@]} -eq MAX_BRIDGES ]] && break
 done
 
-if [[ -z "$bridge2" ]]; then
-    echo "ERROR: Moat returned only one unique obfs4 bridge." >&2
-    exit 1
-fi
-if [[ ! "$bridge1" =~ $BRIDGE_RE || ! "$bridge2" =~ $BRIDGE_RE ]]; then
-    echo "ERROR: Moat returned invalid obfs4 bridge syntax." >&2
+if (( ${#picked[@]} < MIN_BRIDGES )); then
+    echo "ERROR: Moat returned fewer than $MIN_BRIDGES distinct, syntactically valid obfs4 bridges." >&2
     exit 1
 fi
 
@@ -106,12 +141,14 @@ tmp="$(mktemp "$BRIDGES_FILE.XXXXXX")"
     printf '# Source: %s (Tor Project built-in obfs4 list)\n' "$MOAT_URL"
     printf "# Re-fetch with: rm '%s' && nice-dns-install rerun\n" "$BRIDGES_FILE"
     printf '# Format: KEY=VALUE  (NO surrounding quotes — podman --env-file does not strip them)\n'
-    printf 'BRIDGE1=%s\n' "$bridge1"
-    printf 'BRIDGE2=%s\n' "$bridge2"
+    for ((i=0; i<${#picked[@]}; i++)); do
+        printf 'BRIDGE%d=%s\n' "$((i+1))" "${picked[i]}"
+    done
 } > "$tmp"
 mv "$tmp" "$BRIDGES_FILE"
 chmod 600 "$BRIDGES_FILE"
 
-echo "✓ Wrote $BRIDGES_FILE (mode 600)"
-echo "  BRIDGE1 fingerprint: $(awk '{print $3}' <<<"$bridge1")"
-echo "  BRIDGE2 fingerprint: $(awk '{print $3}' <<<"$bridge2")"
+echo "✓ Wrote $BRIDGES_FILE (mode 600) with ${#picked[@]} bridges"
+for ((i=0; i<${#picked[@]}; i++)); do
+    echo "  BRIDGE$((i+1)) fingerprint: ${picked_fprs[i]}"
+done

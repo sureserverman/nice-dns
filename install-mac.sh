@@ -187,14 +187,23 @@ sed -i '' -e 's|^    interface: 127\.0\.0\.1$|    interface: 0.0.0.0|' \
 # can't be used here — it would split on whitespace inside the obfs4 line.
 # Parse the two keys directly with sed instead.
 _bridges_file="${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges.env"
-BRIDGE1="$(sed -n 's/^BRIDGE1=//p' "$_bridges_file")"
-BRIDGE2="$(sed -n 's/^BRIDGE2=//p' "$_bridges_file")"
-: "${BRIDGE1:?bridges.env did not export BRIDGE1}"
-: "${BRIDGE2:?bridges.env did not export BRIDGE2}"
+# Collect BRIDGE1..BRIDGE16 from bridges.env. tor-haproxy/start.sh iterates
+# the same range. BRIDGE1 + BRIDGE2 are required; the rest are optional —
+# bridges 3+ enable Conflux (latency) and 4+ act as failover reserves
+# (stability) when a primary obfs4 endpoint goes down.
+_bridge_env_args=()
+for _i in $(seq 1 16); do
+  _v="$(sed -n "s/^BRIDGE${_i}=//p" "$_bridges_file")"
+  [ -z "$_v" ] && break
+  _bridge_env_args+=(-e "BRIDGE${_i}=${_v}")
+done
+if [ "${#_bridge_env_args[@]}" -lt 4 ]; then
+  echo "ERROR: bridges.env exported fewer than 2 BRIDGE_i lines" >&2
+  exit 1
+fi
 "$CONTAINER_BIN" run -d --name "tor-${VARIANT}" --network dnsnet \
   -c 1 -m 512M \
-  -e "BRIDGE1=${BRIDGE1}" \
-  -e "BRIDGE2=${BRIDGE2}" \
+  "${_bridge_env_args[@]}" \
   "docker.io/sureserver/tor-${VARIANT}:latest" >/dev/null
 
 # -- Wait for the chain (Tor bootstrap) before flipping system DNS --
