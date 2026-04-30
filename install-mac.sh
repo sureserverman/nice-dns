@@ -185,25 +185,21 @@ sed -i '' -e 's|^    interface: 127\.0\.0\.1$|    interface: 0.0.0.0|' \
 # bridges.env is written without surrounding quotes for podman --env-file /
 # systemd EnvironmentFile= compatibility (Linux quadlets), so bash `source`
 # can't be used here — it would split on whitespace inside the obfs4 line.
-# Parse the two keys directly with sed instead.
+# Parse the three keys directly with sed instead. The tor-{haproxy,socat}
+# images require exactly 3 obfs4 bridges (Conflux needs ≥3 distinct primary
+# guards; >3 widens latency variance — see commit history).
 _bridges_file="${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges.env"
-# Collect BRIDGE1..BRIDGE16 from bridges.env. tor-haproxy/start.sh iterates
-# the same range. BRIDGE1 + BRIDGE2 are required; the rest are optional —
-# bridges 3+ enable Conflux (latency) and 4+ act as failover reserves
-# (stability) when a primary obfs4 endpoint goes down.
-_bridge_env_args=()
-for _i in $(seq 1 16); do
-  _v="$(sed -n "s/^BRIDGE${_i}=//p" "$_bridges_file")"
-  [ -z "$_v" ] && break
-  _bridge_env_args+=(-e "BRIDGE${_i}=${_v}")
-done
-if [ "${#_bridge_env_args[@]}" -lt 4 ]; then
-  echo "ERROR: bridges.env exported fewer than 2 BRIDGE_i lines" >&2
-  exit 1
-fi
+BRIDGE1="$(sed -n 's/^BRIDGE1=//p' "$_bridges_file")"
+BRIDGE2="$(sed -n 's/^BRIDGE2=//p' "$_bridges_file")"
+BRIDGE3="$(sed -n 's/^BRIDGE3=//p' "$_bridges_file")"
+: "${BRIDGE1:?bridges.env did not export BRIDGE1}"
+: "${BRIDGE2:?bridges.env did not export BRIDGE2}"
+: "${BRIDGE3:?bridges.env did not export BRIDGE3}"
 "$CONTAINER_BIN" run -d --name "tor-${VARIANT}" --network dnsnet \
   -c 1 -m 512M \
-  "${_bridge_env_args[@]}" \
+  -e "BRIDGE1=${BRIDGE1}" \
+  -e "BRIDGE2=${BRIDGE2}" \
+  -e "BRIDGE3=${BRIDGE3}" \
   "docker.io/sureserver/tor-${VARIANT}:latest" >/dev/null
 
 # -- Wait for the chain (Tor bootstrap) before flipping system DNS --
