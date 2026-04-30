@@ -95,7 +95,14 @@ fi
 #   {"obfs4":["obfs4 IP:PORT FPR cert=... iat-mode=N", ...], "snowflake":[...]}
 # We use grep -oE with a regex anchored on the literal "obfs4 " prefix so
 # we don't depend on jq being installed.
-mapfile -t obfs4_lines < <(printf '%s' "$moat_payload" \
+# `while read` instead of `mapfile -t` because macOS ships Bash 3.2 as
+# /bin/bash (GPLv3-avoidance) and the install-mac.sh shebang `#!/usr/bin/env
+# bash` resolves to it; mapfile is a Bash 4+ builtin and would crash the
+# install with "mapfile: command not found" before tor-haproxy starts.
+obfs4_lines=()
+while IFS= read -r _line; do
+    obfs4_lines+=("$_line")
+done < <(printf '%s' "$moat_payload" \
     | grep -oE '"obfs4 [^"]+"' \
     | sed 's/^"//; s/"$//')
 
@@ -127,18 +134,24 @@ picked=()
 picked_fprs=()
 picked_slash24s=()
 
+# Bash 3.2 (which macOS ships as /bin/bash) treats "${arr[@]}" on an empty
+# array as an unset reference under `set -u` and aborts. Bash 4.4+ fixed
+# this. The picked_*/picked_slash24s arrays start empty, so the inner
+# de-duplication loops use `${arr[@]+"${arr[@]}"}` — expands to nothing on
+# the first pass, to the actual elements once any have been appended.
+
 # Pass 1: /24-distinct.
 for line in "${obfs4_lines[@]}"; do
     fpr="$(awk '{print $3}' <<<"$line")"
     [[ "$line" =~ $BRIDGE_RE ]] || continue
     # Skip if we've already picked this fingerprint OR this /24.
     skip=0
-    for seen in "${picked_fprs[@]}"; do
+    for seen in ${picked_fprs[@]+"${picked_fprs[@]}"}; do
         [[ "$fpr" == "$seen" ]] && { skip=1; break; }
     done
     [[ $skip -eq 1 ]] && continue
     s24="$(extract_slash24 "$line")"
-    for seen in "${picked_slash24s[@]}"; do
+    for seen in ${picked_slash24s[@]+"${picked_slash24s[@]}"}; do
         [[ "$s24" == "$seen" ]] && { skip=1; break; }
     done
     [[ $skip -eq 1 ]] && continue
@@ -159,7 +172,7 @@ if (( ${#picked[@]} < MIN_BRIDGES )); then
         fpr="$(awk '{print $3}' <<<"$line")"
         [[ "$line" =~ $BRIDGE_RE ]] || continue
         skip=0
-        for seen in "${picked_fprs[@]}"; do
+        for seen in ${picked_fprs[@]+"${picked_fprs[@]}"}; do
             [[ "$fpr" == "$seen" ]] && { skip=1; break; }
         done
         [[ $skip -eq 1 ]] && continue
