@@ -1,0 +1,596 @@
+#!/usr/bin/env bash
+# nice-dns-health — periodic health-check for the nice-dns DNS chain.
+#
+# Single self-contained script: subcommands manage a 30-min systemd-user
+# timer (Linux) or LaunchAgent (macOS) that re-invokes this same script
+# with `run` to perform the checks. On any failure, a detailed diagnostic
+# dump is written next to the rolling log so the culprit can be tracked
+# down without re-running the failure scenario.
+#
+# Quick start:
+#   ./health/nice-dns-health install      # set up + start the schedule
+#   nice-dns-health status                 # see schedule + last 5 results
+#   nice-dns-health run                    # run a check now
+#   nice-dns-health failures               # list recent failure dumps
+#   nice-dns-health stop                   # pause without uninstalling
+#   nice-dns-health start                  # resume
+#   nice-dns-health uninstall              # remove everything (incl. logs)
+#
+# Logs:
+#   Linux: $HOME/.local/state/nice-dns-health/   (XDG_STATE_HOME)
+#   macOS: $HOME/Library/Logs/nice-dns-health/
+
+set -uo pipefail
+
+# ─────────────────────────────── Paths & constants ──────────────────────────────
+
+PLATFORM="$(uname -s)"
+case "$PLATFORM" in
+  Linux)  IS_LINUX=1 ;;
+  Darwin) IS_LINUX=0 ;;
+  *) echo "nice-dns-health: unsupported platform '$PLATFORM' (need Linux or Darwin)" >&2; exit 2 ;;
+esac
+
+SCRIPT_NAME="nice-dns-health"
+
+if [ "$IS_LINUX" -eq 1 ]; then
+  LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/$SCRIPT_NAME"
+else
+  LOG_DIR="$HOME/Library/Logs/$SCRIPT_NAME"
+fi
+
+# Where to drop the installed copy of this script. Prefer ~/.local/bin so
+# the user can run `nice-dns-health` from PATH, but some hosts have it
+# owned by root (apt/snap-installed xdg-utils does this); fall back to a
+# guaranteed-user-writable path under $LOG_DIR/bin and tell the user.
+INSTALLED_BIN_PRIMARY="$HOME/.local/bin/$SCRIPT_NAME"
+INSTALLED_BIN_FALLBACK="$LOG_DIR/bin/$SCRIPT_NAME"
+
+pick_installed_bin() {
+  # If the primary dir exists and is writable, or doesn't exist and we
+  # can create it, use it. Otherwise fall back.
+  local d
+  d="$(dirname "$INSTALLED_BIN_PRIMARY")"
+  if [ -d "$d" ] && [ -w "$d" ]; then
+    echo "$INSTALLED_BIN_PRIMARY"
+    return
+  fi
+  if [ ! -e "$d" ] && mkdir -p "$d" 2>/dev/null; then
+    echo "$INSTALLED_BIN_PRIMARY"
+    return
+  fi
+  echo "$INSTALLED_BIN_FALLBACK"
+}
+
+INSTALLED_BIN="$(pick_installed_bin)"
+
+ROLL_LOG="$LOG_DIR/health.log"
+ROLL_LOG_MAX_BYTES=$((10 * 1024 * 1024))   # 10 MiB
+FAILURE_KEEP=10                             # keep last N failure dumps
+
+SYSTEMD_UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+SYSTEMD_SVC="$SCRIPT_NAME.service"
+SYSTEMD_TIMER="$SCRIPT_NAME.timer"
+LAUNCHD_LABEL="org.nice-dns.health"
+LAUNCHD_DIR="$HOME/Library/LaunchAgents"
+LAUNCHD_PLIST="$LAUNCHD_DIR/$LAUNCHD_LABEL.plist"
+
+# Containers we expect to find. Tor variant is detected at check time
+# (haproxy or socat), so the array holds the constant names plus a
+# placeholder we replace.
+EXPECTED_FIXED=(pi-hole unbound)
+
+# ─────────────────────────────── Small helpers ──────────────────────────────────
+
+log_to_file() {
+  mkdir -p "$LOG_DIR"
+  printf '%s\n' "$*" >> "$ROLL_LOG"
+}
+
+ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
+
+detect_runtime() {
+  # Container runtime: podman on Linux, Apple `container` on macOS. The
+  # Apple container CLI also exists under `/opt/homebrew/bin/container`
+  # — prefer the absolute path so it works under launchd, where PATH is
+  # minimal.
+  if [ "$IS_LINUX" -eq 1 ] && command -v podman >/dev/null 2>&1; then
+    echo "podman"
+    return
+  fi
+  if [ "$IS_LINUX" -eq 0 ]; then
+    if [ -x /opt/homebrew/bin/container ]; then
+      echo /opt/homebrew/bin/container
+      return
+    fi
+    if command -v container >/dev/null 2>&1; then
+      command -v container
+      return
+    fi
+  fi
+  echo ""
+}
+
+detect_tor_variant() {
+  # Returns "haproxy" or "socat" depending on which tor- container is up,
+  # or empty if neither.
+  local rt="$1" name
+  for name in tor-haproxy tor-socat; do
+    if "$rt" ps --format '{{.Names}}' 2>/dev/null | grep -qxF "$name"; then
+      echo "${name#tor-}"
+      return
+    fi
+  done
+  echo ""
+}
+
+dig_first_a() {
+  # Cross-platform dig with hard-coded short timeouts so a hung Tor circuit
+  # can't stall the whole health check past the systemd/launchd budget.
+  dig @127.0.0.1 +short +time=5 +tries=2 "$1" 2>/dev/null | head -1
+}
+
+# ─────────────────────────────── The check ─────────────────────────────────────
+
+# Fills two globals: FAILED_CHECKS (array of names), CHECK_DETAIL
+# (multiline string, what each check actually returned).
+run_checks() {
+  FAILED_CHECKS=()
+  CHECK_DETAIL=""
+  local rt tor_variant ip
+
+  rt="$(detect_runtime)"
+  if [ -z "$rt" ]; then
+    FAILED_CHECKS+=("runtime-missing")
+    CHECK_DETAIL+="runtime-missing: no podman / container CLI on PATH"$'\n'
+    return
+  fi
+
+  # 1. /etc/resolv.conf points at 127.0.0.1.
+  if grep -qxF 'nameserver 127.0.0.1' /etc/resolv.conf 2>/dev/null; then
+    CHECK_DETAIL+="OK   resolv.conf: nameserver 127.0.0.1 present"$'\n'
+  else
+    FAILED_CHECKS+=("resolv.conf")
+    CHECK_DETAIL+="FAIL resolv.conf: 'nameserver 127.0.0.1' not the active line"$'\n'
+    CHECK_DETAIL+="     current contents:"$'\n'
+    CHECK_DETAIL+="$(sed 's/^/       /' /etc/resolv.conf 2>/dev/null || echo '       (unreadable)')"$'\n'
+  fi
+
+  # 2. Expected containers up. Tor variant is whichever was installed.
+  tor_variant="$(detect_tor_variant "$rt")"
+  local expected=("${EXPECTED_FIXED[@]}")
+  if [ -n "$tor_variant" ]; then
+    expected+=("tor-$tor_variant")
+  else
+    FAILED_CHECKS+=("tor-variant")
+    CHECK_DETAIL+="FAIL tor-variant: neither tor-haproxy nor tor-socat is running"$'\n'
+  fi
+  local missing=()
+  for n in "${expected[@]}"; do
+    if ! "$rt" ps --format '{{.Names}}' 2>/dev/null | grep -qxF "$n"; then
+      missing+=("$n")
+    fi
+  done
+  if [ ${#missing[@]} -eq 0 ]; then
+    CHECK_DETAIL+="OK   containers: ${expected[*]} all running"$'\n'
+  else
+    FAILED_CHECKS+=("containers")
+    CHECK_DETAIL+="FAIL containers: not running -> ${missing[*]}"$'\n'
+  fi
+
+  # 3. Self-resolve `pi.hole` — proves pihole-FTL is alive on :53. The
+  # answer can be 0.0.0.0 (no eth0 IP, e.g. slirp4netns) or a real IP;
+  # either is fine, what matters is that we get exactly one A record.
+  ip="$(dig_first_a pi.hole)"
+  if [ -n "$ip" ] && expr "$ip" : '[0-9.][0-9.]*$' >/dev/null; then
+    CHECK_DETAIL+="OK   pi.hole resolves -> $ip"$'\n'
+  else
+    FAILED_CHECKS+=("ftl-alive")
+    CHECK_DETAIL+="FAIL ftl-alive: dig @127.0.0.1 pi.hole returned: '$ip'"$'\n'
+  fi
+
+  # 4. Real-world domain resolves through the chain.
+  ip="$(dig_first_a cloudflare.com)"
+  if [ -n "$ip" ] \
+      && expr "$ip" : '[0-9.][0-9.]*$' >/dev/null \
+      && [ "$ip" != "0.0.0.0" ]; then
+    CHECK_DETAIL+="OK   cloudflare.com resolves -> $ip"$'\n'
+  else
+    FAILED_CHECKS+=("chain-resolves")
+    CHECK_DETAIL+="FAIL chain-resolves: dig @127.0.0.1 cloudflare.com -> '$ip' (expected real A record)"$'\n'
+  fi
+
+  # 5. Blocklist is active.
+  ip="$(dig_first_a doubleclick.net)"
+  if [ "$ip" = "0.0.0.0" ]; then
+    CHECK_DETAIL+="OK   doubleclick.net sinkholed -> 0.0.0.0"$'\n'
+  else
+    FAILED_CHECKS+=("gravity-blocks")
+    CHECK_DETAIL+="FAIL gravity-blocks: dig @127.0.0.1 doubleclick.net -> '$ip' (expected 0.0.0.0)"$'\n'
+  fi
+}
+
+# Detailed dump invoked when run_checks reports any failure. Writes one
+# self-contained .log next to the rolling log; older dumps beyond
+# FAILURE_KEEP are pruned.
+write_failure_dump() {
+  local now="$1" tor_variant rt
+  rt="$(detect_runtime)"
+  tor_variant="$(detect_tor_variant "${rt:-}")"
+  local f
+  f="$LOG_DIR/failure-$(date '+%Y%m%d-%H%M%S').log"
+  {
+    echo "=== nice-dns-health failure dump $now ==="
+    echo "Platform:       $PLATFORM"
+    echo "Runtime:        ${rt:-(missing)}"
+    echo "Tor variant:    ${tor_variant:-(none detected)}"
+    echo "Failed checks:  ${FAILED_CHECKS[*]}"
+    echo
+    echo "=== Per-check detail ==="
+    printf '%s' "$CHECK_DETAIL"
+    echo
+    echo "=== /etc/resolv.conf ==="
+    cat /etc/resolv.conf 2>&1 | sed 's/^/  /'
+    echo
+    if [ -n "${rt:-}" ]; then
+      echo "=== $rt ps -a ==="
+      "$rt" ps -a 2>&1 | sed 's/^/  /'
+      echo
+      local containers=(pi-hole unbound)
+      [ -n "$tor_variant" ] && containers+=("tor-$tor_variant")
+      for c in "${containers[@]}"; do
+        echo "=== $rt inspect $c (state) ==="
+        "$rt" inspect "$c" --format \
+          '  status={{.State.Status}} health={{if .State.Healthcheck}}{{.State.Healthcheck.Status}}{{else}}none{{end}} restarts={{.RestartCount}} pid={{.State.Pid}}' 2>&1 \
+          | sed 's/^/  /'
+        echo "=== $rt logs --tail 50 $c ==="
+        "$rt" logs --tail 50 "$c" 2>&1 | sed 's/^/  /'
+        echo
+      done
+    fi
+    echo "=== dig +trace @127.0.0.1 cloudflare.com (timeout 8s) ==="
+    dig @127.0.0.1 +time=4 +tries=2 cloudflare.com 2>&1 | sed 's/^/  /' | head -40
+    echo
+    echo "=== dig @127.0.0.1 doubleclick.net ==="
+    dig @127.0.0.1 +time=4 +tries=1 doubleclick.net 2>&1 | sed 's/^/  /' | head -20
+    echo
+    if [ "$IS_LINUX" -eq 1 ]; then
+      echo "=== systemctl --user state ==="
+      systemctl --user list-units \
+          'pi-hole.service' 'unbound.service' 'tor-haproxy.service' 'tor-socat.service' \
+          'nice-dns-pod.service' --no-pager 2>&1 | sed 's/^/  /'
+      echo
+      echo "=== systemctl --user status nice-dns-pod (last 30 log lines) ==="
+      systemctl --user status nice-dns-pod.service --no-pager -n 30 2>&1 | sed 's/^/  /' || true
+      echo
+      echo "=== port 53 owner ==="
+      ss -tunlp 2>/dev/null | awk '$5 ~ /:53$/' | sed 's/^/  /' || true
+      echo
+      echo "=== custom-dns-deb.service ==="
+      systemctl status custom-dns-deb.service --no-pager 2>&1 | head -20 | sed 's/^/  /' || true
+      echo
+      echo "=== journalctl --user -u $SYSTEMD_SVC -n 30 ==="
+      journalctl --user -u "$SYSTEMD_SVC" -n 30 --no-pager 2>&1 | sed 's/^/  /' || true
+    else
+      echo "=== launchctl list | grep nice-dns ==="
+      launchctl list 2>&1 | grep -i 'nice-dns\|org.nice-dns' | sed 's/^/  /' || true
+      echo
+      echo "=== port 53 owner (lsof) ==="
+      lsof -nP -iUDP:53 -iTCP:53 2>/dev/null | sed 's/^/  /' || true
+      echo
+      echo "=== networksetup DNS state ==="
+      while IFS= read -r svc; do
+        [ -z "$svc" ] && continue
+        printf '  %s: ' "$svc"
+        networksetup -getdnsservers "$svc" 2>/dev/null | tr '\n' ' '
+        echo
+      done < <(networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | grep -v '^\*')
+    fi
+  } > "$f" 2>&1
+
+  # Prune older dumps beyond FAILURE_KEEP.
+  # shellcheck disable=SC2012
+  ls -1t "$LOG_DIR"/failure-*.log 2>/dev/null \
+    | tail -n "+$((FAILURE_KEEP + 1))" \
+    | xargs -r rm -f 2>/dev/null \
+    || true
+
+  echo "$f"
+}
+
+rotate_roll_log_if_needed() {
+  [ -f "$ROLL_LOG" ] || return 0
+  local size
+  if [ "$IS_LINUX" -eq 1 ]; then
+    size=$(stat -c %s "$ROLL_LOG" 2>/dev/null || echo 0)
+  else
+    size=$(stat -f %z "$ROLL_LOG" 2>/dev/null || echo 0)
+  fi
+  if [ "$size" -gt "$ROLL_LOG_MAX_BYTES" ]; then
+    mv -f "$ROLL_LOG" "$ROLL_LOG.1"
+  fi
+}
+
+cmd_run() {
+  mkdir -p "$LOG_DIR"
+  rotate_roll_log_if_needed
+  run_checks
+  local now; now="$(ts)"
+  if [ ${#FAILED_CHECKS[@]} -eq 0 ]; then
+    log_to_file "$now OK  all checks passed"
+    return 0
+  fi
+  local dump
+  dump="$(write_failure_dump "$now")"
+  log_to_file "$now FAIL [${FAILED_CHECKS[*]}] -> $dump"
+  return 1
+}
+
+# ─────────────────────────────── install / uninstall ───────────────────────────
+
+write_systemd_units() {
+  mkdir -p "$SYSTEMD_UNIT_DIR"
+  cat > "$SYSTEMD_UNIT_DIR/$SYSTEMD_SVC" <<EOF
+[Unit]
+Description=nice-dns chain health check (one-shot)
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=$INSTALLED_BIN run
+# Don't tie SuccessExitStatus to anything — a non-zero exit (= a failed
+# health check) is a normal outcome we already log. Keeping ExitType
+# default means systemd records the failure in the timer's history,
+# which is helpful for \`systemctl --user list-timers\`.
+EOF
+  cat > "$SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER" <<EOF
+[Unit]
+Description=nice-dns chain health check (every 30 min)
+
+[Timer]
+# OnBootSec gives the stack ~2 min to come up after a reboot before the
+# first check fires; OnUnitActiveSec spaces subsequent runs 30 min apart.
+OnBootSec=2min
+OnUnitActiveSec=30min
+# Run a missed check at most ~30s late (e.g. after suspend/resume) so we
+# don't get a stampede of catch-up runs.
+AccuracySec=30s
+Persistent=true
+Unit=$SYSTEMD_SVC
+
+[Install]
+WantedBy=default.target
+EOF
+}
+
+write_launchd_plist() {
+  mkdir -p "$LAUNCHD_DIR" "$LOG_DIR"
+  cat > "$LAUNCHD_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>$LAUNCHD_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>$INSTALLED_BIN</string>
+      <string>run</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>1800</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <!-- launchd's stdout/stderr capture is per-job; the script writes
+         its own logs to ~/Library/Logs/nice-dns-health/, but anything
+         that escapes (e.g. a syntax error before the rolling-log code
+         runs) still lands here so it's not lost. -->
+    <key>StandardOutPath</key>
+    <string>$LOG_DIR/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>$LOG_DIR/launchd.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+  </dict>
+</plist>
+EOF
+}
+
+# Copy this script to ~/.local/bin so the timer/LaunchAgent points at a
+# stable path even if the nice-dns checkout moves or is deleted.
+install_self() {
+  local self
+  self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  mkdir -p "$(dirname "$INSTALLED_BIN")"
+  if [ "$self" != "$INSTALLED_BIN" ]; then
+    cp "$self" "$INSTALLED_BIN"
+  fi
+  chmod 755 "$INSTALLED_BIN"
+}
+
+cmd_install() {
+  install_self
+  if [ "$IS_LINUX" -eq 1 ]; then
+    write_systemd_units
+    systemctl --user daemon-reload
+    systemctl --user enable --now "$SYSTEMD_TIMER"
+    echo "Installed."
+    echo "  Script:  $INSTALLED_BIN"
+    echo "  Timer:   $SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER"
+    echo "  Logs:    $LOG_DIR/"
+    if [ "$INSTALLED_BIN" != "$INSTALLED_BIN_PRIMARY" ]; then
+      echo
+      echo "Note: $(dirname "$INSTALLED_BIN_PRIMARY") was not user-writable, so the"
+      echo "      script lives at the path above. To call it as plain"
+      echo "      '$SCRIPT_NAME' from your shell, either:"
+      echo "        sudo chown -R \$USER:\$USER $(dirname "$INSTALLED_BIN_PRIMARY")"
+      echo "        cp $INSTALLED_BIN $INSTALLED_BIN_PRIMARY"
+      echo "      or add an alias / PATH entry pointing at $INSTALLED_BIN."
+    fi
+    echo
+    systemctl --user list-timers --no-pager | head -2
+    systemctl --user list-timers --no-pager | grep -F "$SYSTEMD_TIMER" || true
+  else
+    write_launchd_plist
+    # Reload to pick up edits even if the agent was already loaded.
+    launchctl unload "$LAUNCHD_PLIST" 2>/dev/null || true
+    launchctl load -w "$LAUNCHD_PLIST"
+    echo "Installed."
+    echo "  Script:       $INSTALLED_BIN"
+    echo "  LaunchAgent:  $LAUNCHD_PLIST"
+    echo "  Logs:         $LOG_DIR/"
+    if [ "$INSTALLED_BIN" != "$INSTALLED_BIN_PRIMARY" ]; then
+      echo
+      echo "Note: $(dirname "$INSTALLED_BIN_PRIMARY") was not user-writable, so the"
+      echo "      script lives at the path above. Add an alias or symlink to"
+      echo "      run it as plain '$SCRIPT_NAME' from your shell."
+    fi
+    echo
+    launchctl list | grep -F "$LAUNCHD_LABEL" || true
+  fi
+}
+
+cmd_uninstall() {
+  if [ "$IS_LINUX" -eq 1 ]; then
+    systemctl --user disable --now "$SYSTEMD_TIMER" 2>/dev/null || true
+    systemctl --user stop "$SYSTEMD_SVC" 2>/dev/null || true
+    rm -f "$SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER" "$SYSTEMD_UNIT_DIR/$SYSTEMD_SVC"
+    systemctl --user daemon-reload 2>/dev/null || true
+  else
+    launchctl unload "$LAUNCHD_PLIST" 2>/dev/null || true
+    rm -f "$LAUNCHD_PLIST"
+  fi
+  # Remove both possible script locations — survives the case where the
+  # user moved it from the fallback dir to PATH after install, or vice
+  # versa.
+  rm -f "$INSTALLED_BIN_PRIMARY" "$INSTALLED_BIN_FALLBACK"
+  rm -rf "$LOG_DIR"
+  echo "Uninstalled."
+}
+
+cmd_start() {
+  if [ "$IS_LINUX" -eq 1 ]; then
+    systemctl --user start "$SYSTEMD_TIMER"
+    systemctl --user enable "$SYSTEMD_TIMER" 2>/dev/null || true
+    echo "Timer started."
+  else
+    launchctl load -w "$LAUNCHD_PLIST"
+    echo "LaunchAgent loaded."
+  fi
+}
+
+cmd_stop() {
+  if [ "$IS_LINUX" -eq 1 ]; then
+    systemctl --user stop "$SYSTEMD_TIMER"
+    systemctl --user disable "$SYSTEMD_TIMER" 2>/dev/null || true
+    echo "Timer stopped."
+  else
+    launchctl unload "$LAUNCHD_PLIST"
+    echo "LaunchAgent unloaded."
+  fi
+}
+
+cmd_status() {
+  if [ "$IS_LINUX" -eq 1 ]; then
+    echo "=== Timer ==="
+    systemctl --user list-timers --all --no-pager 2>&1 | grep -E "NEXT|$SYSTEMD_TIMER" || true
+    echo
+    echo "=== Last service run ==="
+    systemctl --user status "$SYSTEMD_SVC" --no-pager -n 0 2>&1 | head -8 || true
+  else
+    echo "=== LaunchAgent ==="
+    launchctl list 2>&1 | head -1
+    launchctl list 2>&1 | grep -F "$LAUNCHD_LABEL" || echo "  (not loaded)"
+  fi
+  echo
+  echo "=== Last 5 health.log entries ==="
+  if [ -f "$ROLL_LOG" ]; then
+    tail -5 "$ROLL_LOG"
+  else
+    echo "  (no runs yet)"
+  fi
+  echo
+  echo "=== Recent failure dumps (latest 5) ==="
+  # shellcheck disable=SC2012
+  ls -1t "$LOG_DIR"/failure-*.log 2>/dev/null | head -5 | sed 's/^/  /' \
+    || echo "  (none)"
+}
+
+cmd_logs() {
+  if [ -f "$ROLL_LOG" ]; then
+    cat "$ROLL_LOG"
+  else
+    echo "(no logs yet at $ROLL_LOG)"
+  fi
+}
+
+cmd_failures() {
+  # shellcheck disable=SC2012
+  local list
+  list="$(ls -1t "$LOG_DIR"/failure-*.log 2>/dev/null)"
+  if [ -z "$list" ]; then
+    echo "No failure dumps in $LOG_DIR"
+    return 0
+  fi
+  if [ "${1:-}" = "--last" ]; then
+    local first
+    first="$(printf '%s\n' "$list" | head -1)"
+    cat "$first"
+    return 0
+  fi
+  printf '%s\n' "$list"
+  echo
+  echo "(re-run with: $SCRIPT_NAME failures --last  to print the most recent dump)"
+}
+
+# ─────────────────────────────── usage / dispatch ──────────────────────────────
+
+usage() {
+  cat <<EOF
+Usage: $SCRIPT_NAME <command>
+
+  install     Set up the schedule (every 30 min) and start it.
+              Linux: systemd --user timer.
+              macOS: launchd LaunchAgent (StartInterval=1800).
+  uninstall   Tear down the schedule and remove the script + logs.
+  start       (Re)start the timer / LaunchAgent.
+  stop        Pause the timer / unload the LaunchAgent.
+  status      Show schedule state + last 5 log entries.
+  run         Run a health check now (also called by the timer).
+  logs        Print the rolling log (one line per run).
+  failures    List failure dumps. Add --last to print the most recent.
+
+Logs:
+  Linux: \$XDG_STATE_HOME/$SCRIPT_NAME or ~/.local/state/$SCRIPT_NAME/
+  macOS: ~/Library/Logs/$SCRIPT_NAME/
+
+What it checks:
+  1. /etc/resolv.conf still names 127.0.0.1
+  2. pi-hole, unbound, and tor-{haproxy|socat} containers are running
+  3. dig @127.0.0.1 pi.hole returns an A record (FTL alive)
+  4. dig @127.0.0.1 cloudflare.com returns a real A record (chain works)
+  5. dig @127.0.0.1 doubleclick.net returns 0.0.0.0 (gravity blocks)
+EOF
+}
+
+main() {
+  local cmd="${1:-}"
+  shift || true
+  case "$cmd" in
+    install)    cmd_install "$@" ;;
+    uninstall)  cmd_uninstall "$@" ;;
+    start)      cmd_start "$@" ;;
+    stop)       cmd_stop "$@" ;;
+    status)     cmd_status "$@" ;;
+    run)        cmd_run "$@" ;;
+    logs)       cmd_logs "$@" ;;
+    failures)   cmd_failures "$@" ;;
+    -h|--help|help|"") usage ;;
+    *) echo "$SCRIPT_NAME: unknown command '$cmd'" >&2; usage >&2; exit 2 ;;
+  esac
+}
+
+main "$@"
