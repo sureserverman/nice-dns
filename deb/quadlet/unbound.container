@@ -10,7 +10,11 @@ HealthCmd=dig +short -p 5335 @127.0.0.1 cloudflare.com | grep -Eo '\b[0-9.]{7,15
 HealthInterval=30s
 HealthTimeout=10s
 HealthRetries=5
-HealthStartPeriod=90s
+# unbound forwards via DoT through tor-haproxy → Tor → Cloudflare's hidden
+# resolver, so its first successful query depends on Tor finishing bootstrap.
+# Match tor-haproxy's start period so a slow first-run obfs4 handshake
+# does not trigger a kill-and-retry loop here either.
+HealthStartPeriod=600s
 HealthOnFailure=restart
 
 [Service]
