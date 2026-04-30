@@ -28,6 +28,25 @@ configure_nm_dns_lockdown() {
     return 0
   fi
 
+  # Two pieces are sufficient to keep /etc/resolv.conf pinned at 127.0.0.1
+  # under NetworkManager:
+  #
+  #   1. dns=none — tell NM to stop managing /etc/resolv.conf entirely.
+  #      With this set, per-connection ipv4.dns / ipv4.ignore-auto-dns
+  #      have no observable effect; NM never writes resolv.conf, so
+  #      whatever custom-dns-deb wrote stays.
+  #
+  #   2. dispatcher hook — re-run custom-dns-deb on every NM state change,
+  #      so if anything *else* on the system (cloud-init, dhclient, a
+  #      package upgrade) ever rewrites resolv.conf, the next NM event
+  #      pins it back. Cheap defense-in-depth.
+  #
+  # An earlier version of this function also iterated every active
+  # connection to set ipv4.dns 127.0.0.1 and then re-upped them all. With
+  # dns=none in effect those modifications had no observable behaviour —
+  # and the re-up loop kicked libvirt bridges (virbr0 etc.) into a
+  # deactivate→detach-ports→reactivate cycle that orphaned VM tap
+  # interfaces (vnet0…). Removed.
   sudo mkdir -p /etc/NetworkManager/conf.d /etc/NetworkManager/dispatcher.d
   sudo tee /etc/NetworkManager/conf.d/90-nice-dns.conf >/dev/null <<'EOF'
 [main]
@@ -43,37 +62,7 @@ fi
 EOF
   sudo chmod 755 /etc/NetworkManager/dispatcher.d/90-nice-dns-pin
 
-  while IFS=: read -r uuid type; do
-    [ -n "$uuid" ] || continue
-    case "$type" in
-      bridge|loopback|tun|vpn) continue ;;
-    esac
-    ipv4_method="$(nmcli -g ipv4.method connection show "$uuid" 2>/dev/null || true)"
-    [ "$ipv4_method" = "disabled" ] && continue
-    if ! sudo nmcli connection modify "$uuid" \
-      ipv4.ignore-auto-dns yes \
-      ipv4.dns "127.0.0.1"; then
-      echo "Warning: skipped NetworkManager DNS pin for connection $uuid ($type)." >&2
-    fi
-  done < <(nmcli -t -f UUID,TYPE connection show)
-
   sudo systemctl reload NetworkManager 2>/dev/null || sudo systemctl restart NetworkManager
-
-  # Re-up active connections so the ipv4.dns 127.0.0.1 modify above takes
-  # effect. Filter by TYPE the same way as the modify loop: bringing up a
-  # bridge here triggers NM's deactivate→detach-ports→reactivate cycle,
-  # which orphans every slave (notably libvirt tap interfaces like vnet0
-  # attached to virbr0 — VMs on libvirt's default network silently lose
-  # network until something re-attaches the tap). The bridge connections
-  # weren't modified anyway, so re-upping them is purely harmful.
-  while IFS=: read -r uuid type device; do
-    [ -n "$uuid" ] || continue
-    [ -n "$device" ] || continue
-    case "$type" in
-      bridge|loopback|tun|vpn) continue ;;
-    esac
-    sudo nmcli connection up "$uuid" >/dev/null 2>&1 || true
-  done < <(nmcli -t -f UUID,TYPE,DEVICE connection show --active)
 }
 
 configure_ipv6_disable() {
