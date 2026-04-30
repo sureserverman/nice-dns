@@ -59,11 +59,21 @@ EOF
 
   sudo systemctl reload NetworkManager 2>/dev/null || sudo systemctl restart NetworkManager
 
-  while IFS=: read -r uuid device; do
+  # Re-up active connections so the ipv4.dns 127.0.0.1 modify above takes
+  # effect. Filter by TYPE the same way as the modify loop: bringing up a
+  # bridge here triggers NM's deactivate→detach-ports→reactivate cycle,
+  # which orphans every slave (notably libvirt tap interfaces like vnet0
+  # attached to virbr0 — VMs on libvirt's default network silently lose
+  # network until something re-attaches the tap). The bridge connections
+  # weren't modified anyway, so re-upping them is purely harmful.
+  while IFS=: read -r uuid type device; do
     [ -n "$uuid" ] || continue
     [ -n "$device" ] || continue
+    case "$type" in
+      bridge|loopback|tun|vpn) continue ;;
+    esac
     sudo nmcli connection up "$uuid" >/dev/null 2>&1 || true
-  done < <(nmcli -t -f UUID,DEVICE connection show --active)
+  done < <(nmcli -t -f UUID,TYPE,DEVICE connection show --active)
 }
 
 configure_ipv6_disable() {
