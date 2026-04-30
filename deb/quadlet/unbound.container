@@ -12,9 +12,9 @@ HealthTimeout=10s
 HealthRetries=5
 # unbound forwards via DoT through tor-haproxy → Tor → Cloudflare's hidden
 # resolver, so its first successful query depends on Tor finishing bootstrap.
-# Match tor-haproxy's start period so a slow first-run obfs4 handshake
+# Match tor-haproxy's 180s start period so a slow first-run obfs4 handshake
 # does not trigger a kill-and-retry loop here either.
-HealthStartPeriod=600s
+HealthStartPeriod=180s
 HealthOnFailure=restart
 
 [Service]

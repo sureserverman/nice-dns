@@ -10,14 +10,15 @@ HealthCmd=dig +short +tls -p 853 @127.0.0.1 cloudflare.com | grep -Eo '\b[0-9.]{
 HealthInterval=30s
 HealthTimeout=10s
 HealthRetries=5
-# 600s (10 min) covers cold-cache obfs4 bridge bootstrap on the slow path:
-# one of the built-in bridges typically hangs in TLS handshake for ~5 min
-# before Tor fails over to the second, then climbs through 30→100% over
-# another 1-2 min. With the previous 90s start period + 5×30s retries
-# (~4 min total), HealthOnFailure=restart killed the container mid-
-# bootstrap and the cycle never finished. Steady-state restarts (stuck
-# circuit) still kick in normally — they just don't fire during cold start.
-HealthStartPeriod=600s
+# 180s covers cold-cache obfs4 bridge bootstrap with 3 bridges (Conflux mode).
+# Tor reaches Bootstrapped 100% as soon as ANY of the 3 bridges connects, so
+# the previous 600s window — sized for the 2-bridge case where a single slow
+# obfs4 handshake blocked the whole bootstrap for ~5 min before failover — is
+# overkill. Observed cold-bootstrap healthy times across test runs: 30-90s.
+# 180s = 2× worst observed + buffer; keeps "is the stack broken or just
+# starting?" UX bounded at 3 min. Steady-state restarts (stuck circuit) fire
+# normally outside this window.
+HealthStartPeriod=180s
 HealthOnFailure=restart
 
 [Service]
