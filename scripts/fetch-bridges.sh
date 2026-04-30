@@ -105,23 +105,69 @@ if (( ${#obfs4_lines[@]} < MIN_BRIDGES )); then
     exit 1
 fi
 
-# Pick up to MAX_BRIDGES distinct, syntactically valid bridges. Moat's
-# response is already shuffled server-side; walk the list and accept any
-# line whose fingerprint hasn't been picked yet.
+# Pick up to MAX_BRIDGES distinct, syntactically valid, network-diverse
+# bridges. Moat's shuffle sometimes lands two bridges on the same /24
+# (e.g. 212.83.43.74 and 212.83.43.95 are both Moat-returned built-ins).
+# Tor's Conflux algorithm requires *link-disjoint* paths between the two
+# parallel circuits — sharing a /24 is borderline at best, and in practice
+# we measured cold-query latency rise from ~450 ms to multi-second timeouts
+# when two of three primary guards were on the same /24 (see commit
+# history). Filter to distinct /24s up front.
+#
+# Two-pass: first pass enforces /24-distinct + fingerprint-distinct; if
+# Moat's response somehow doesn't have MAX_BRIDGES /24-distinct entries,
+# the second pass relaxes the /24 constraint so we never end up with
+# fewer than MIN_BRIDGES.
+extract_slash24() {
+    # 'obfs4 IP:PORT FPR cert=...' → first three octets of IP.
+    awk '{split($2, a, ":"); split(a[1], o, "."); print o[1]"."o[2]"."o[3]}' <<<"$1"
+}
+
 picked=()
 picked_fprs=()
+picked_slash24s=()
+
+# Pass 1: /24-distinct.
 for line in "${obfs4_lines[@]}"; do
     fpr="$(awk '{print $3}' <<<"$line")"
+    [[ "$line" =~ $BRIDGE_RE ]] || continue
+    # Skip if we've already picked this fingerprint OR this /24.
     skip=0
     for seen in "${picked_fprs[@]}"; do
-        if [[ "$fpr" == "$seen" ]]; then skip=1; break; fi
+        [[ "$fpr" == "$seen" ]] && { skip=1; break; }
     done
     [[ $skip -eq 1 ]] && continue
-    if [[ ! "$line" =~ $BRIDGE_RE ]]; then continue; fi
+    s24="$(extract_slash24 "$line")"
+    for seen in "${picked_slash24s[@]}"; do
+        [[ "$s24" == "$seen" ]] && { skip=1; break; }
+    done
+    [[ $skip -eq 1 ]] && continue
     picked+=("$line")
     picked_fprs+=("$fpr")
+    picked_slash24s+=("$s24")
     [[ ${#picked[@]} -eq MAX_BRIDGES ]] && break
 done
+
+# Pass 2: if /24-distinct didn't yield enough, fall back to fingerprint-
+# distinct only. Loud comment in the output so an operator inspecting
+# bridges.env later can correlate with any latency complaints.
+if (( ${#picked[@]} < MIN_BRIDGES )); then
+    echo "▸ Moat did not return $MIN_BRIDGES /24-distinct obfs4 bridges (got ${#picked[@]})."
+    echo "  Filling remaining slots without /24-diversity — Conflux may"
+    echo "  occasionally fall back to single-circuit on ill-luck circuit selection."
+    for line in "${obfs4_lines[@]}"; do
+        fpr="$(awk '{print $3}' <<<"$line")"
+        [[ "$line" =~ $BRIDGE_RE ]] || continue
+        skip=0
+        for seen in "${picked_fprs[@]}"; do
+            [[ "$fpr" == "$seen" ]] && { skip=1; break; }
+        done
+        [[ $skip -eq 1 ]] && continue
+        picked+=("$line")
+        picked_fprs+=("$fpr")
+        [[ ${#picked[@]} -eq MAX_BRIDGES ]] && break
+    done
+fi
 
 if (( ${#picked[@]} < MIN_BRIDGES )); then
     echo "ERROR: Moat returned fewer than $MIN_BRIDGES distinct, syntactically valid obfs4 bridges." >&2
