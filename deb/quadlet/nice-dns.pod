@@ -12,7 +12,7 @@ PodName=nice-dns
 Network=nice-dns.network
 PublishPort=53:53/tcp
 PublishPort=53:53/udp
-PublishPort=8880:80
+PublishPort=127.0.0.1:8880:80
 # ExitPolicy is not a recognized [Pod] key in Podman quadlet (5.4.x rejects it
 # with "unsupported key 'ExitPolicy' in group 'Pod'", which silently drops the
 # whole nice-dns-pod.service generation). Pass it through PodmanArgs instead so

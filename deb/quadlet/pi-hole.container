@@ -6,6 +6,7 @@ After=unbound.service
 ContainerName=pi-hole
 Image=localhost/pi-hole:latest
 Pod=nice-dns.pod
+NoNewPrivileges=true
 Environment=TZ=Europe/London
 # Unbound listens on port 5335; without the explicit #5335 suffix pi-hole
 # would default to port 53 and get connection-refused. (gravity is built

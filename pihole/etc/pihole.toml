@@ -191,7 +191,7 @@
   #       configuration file. This is useful if you want to manually configure the
   #       listening mode in auxiliary configuration files. This option is really meant
   #       for advanced users only, support for this option may be limited.
-  listeningMode = "ALL" ### CHANGED, default = "LOCAL"
+  listeningMode = "LOCAL" ### default
 
   # Log DNS queries and replies to pihole.log
   queryLogging = false ### CHANGED, default = true

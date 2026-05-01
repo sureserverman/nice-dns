@@ -6,6 +6,7 @@ After=tor-__VARIANT__.service
 ContainerName=unbound
 Image=localhost/unbound:latest
 Pod=nice-dns.pod
+NoNewPrivileges=true
 HealthCmd=dig +short -p 5335 @127.0.0.1 cloudflare.com | grep -Eo '\b[0-9.]{7,15}\b' >/dev/null
 HealthInterval=30s
 HealthTimeout=10s
