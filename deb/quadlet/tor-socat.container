@@ -5,7 +5,10 @@ Description=Tor socat DNS-over-TLS proxy
 ContainerName=tor-socat
 Image=docker.io/sureserver/tor-socat:latest
 Pod=nice-dns.pod
-NoNewPrivileges=true
+# NoNewPrivileges=true is INTENTIONALLY OMITTED here. Same reason as
+# tor-haproxy.container: the image runs as USER app (uid 1000) and grants
+# socat CAP_NET_BIND_SERVICE via file-cap to bind port 853. no-new-privs
+# strips file-caps at exec.
 EnvironmentFile=%h/.config/nice-dns/bridges.env
 HealthCmd=dig +short +tls -p 853 @127.0.0.1 cloudflare.com | grep -Eo '\b[0-9.]{7,15}\b' >/dev/null
 HealthInterval=30s

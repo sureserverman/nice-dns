@@ -5,7 +5,13 @@ Description=Tor HAProxy DNS-over-TLS proxy
 ContainerName=tor-haproxy
 Image=docker.io/sureserver/tor-haproxy:latest
 Pod=nice-dns.pod
-NoNewPrivileges=true
+# NoNewPrivileges=true is INTENTIONALLY OMITTED here. The image runs as
+# USER app (uid 1000) and grants haproxy CAP_NET_BIND_SERVICE via file-cap
+# (cap_net_bind_service+ep on /usr/sbin/haproxy) so it can bind port 853.
+# no-new-privs strips file-caps at exec, so adding it here causes haproxy
+# to fail with "Permission denied" binding 0.0.0.0:853 and the stack never
+# becomes healthy. Restoring this hardening would require an image-side
+# change (wrap haproxy in `capsh --addamb=cap_net_bind_service`).
 EnvironmentFile=%h/.config/nice-dns/bridges.env
 HealthCmd=dig +short +tls -p 853 @127.0.0.1 cloudflare.com | grep -Eo '\b[0-9.]{7,15}\b' >/dev/null
 HealthInterval=30s
