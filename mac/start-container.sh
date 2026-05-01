@@ -5,7 +5,7 @@
 #
 # Variant ('haproxy' or 'socat') is passed as argv[1] by the LaunchAgent plist.
 
-set -u
+set -euo pipefail
 LOG="${HOME}/Library/Logs/nice-dns.log"
 ROOT_HELPER=/usr/local/sbin/start-container-root.sh
 VARIANT="${1:-haproxy}"
@@ -44,9 +44,10 @@ network_exists() {
 }
 
 latest_overlap_log() {
+  # log show may exit non-zero on no-match; tolerate under pipefail.
   log show --last 2m --style compact \
     --predicate 'subsystem == "com.apple.NetworkSharing" AND eventMessage CONTAINS[c] "overlapping DHCP range"' \
-    2>/dev/null | tail -n 1
+    2>/dev/null | tail -n 1 || true
 }
 
 repair_stale_dnsnet() {
@@ -203,7 +204,7 @@ rebuild_stack() {
 wait_for_chain() {
   local tries=0
   until dns_healthy; do
-    (( tries++ ))
+    tries=$((tries + 1))
     if (( tries >= 30 )); then
       log "chain did not come up within 150s"
       return 1
@@ -223,7 +224,7 @@ log "starting nice-dns runtime (variant=$VARIANT)"
 # the installer handled — this invocation runs non-interactively.
 tries=0
 until container system status >/dev/null 2>&1; do
-  (( tries++ ))
+  tries=$((tries + 1))
   if (( tries >= 10 )); then
     log "container system never came up"
     exit 1
