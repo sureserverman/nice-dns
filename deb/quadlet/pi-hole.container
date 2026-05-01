@@ -6,7 +6,13 @@ After=unbound.service
 ContainerName=pi-hole
 Image=localhost/pi-hole:latest
 Pod=nice-dns.pod
-NoNewPrivileges=true
+# NoNewPrivileges=true is INTENTIONALLY OMITTED here. Pi-hole's entrypoint
+# starts as root, setcaps CAP_CHOWN + CAP_NET_BIND_SERVICE on pihole-FTL,
+# then drops to the `pihole` user (uid 1000) and execs pihole-FTL — which
+# binds port 53 via that file-cap. no-new-privs strips file-caps at exec,
+# so adding it here causes "dnsmasq: failed to create listening socket for
+# port 53: Permission denied" at startup. Same root cause as the matching
+# omission on tor-haproxy.container / tor-socat.container.
 Environment=TZ=Europe/London
 # Unbound listens on port 5335; without the explicit #5335 suffix pi-hole
 # would default to port 53 and get connection-refused. (gravity is built
