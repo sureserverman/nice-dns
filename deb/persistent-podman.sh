@@ -95,6 +95,98 @@ sed -i "s/__VARIANT__/${VARIANT}/g" "$QUADLET_DIR/unbound.container"
 echo "   ✓ Quadlet files installed."
 echo
 
+# 3b) Install boot-time bridge refresh: fetch-bridges.sh into a stable path,
+# plus a systemd user oneshot that runs it with --force on every session
+# start. The tor-{haproxy,socat}.container quadlets pull this in via
+# Wants=/After= so the refresh always lands before EnvironmentFile= is read.
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+BRIDGES_BIN_DIR="$HOME/.local/bin"
+BRIDGES_BIN="$BRIDGES_BIN_DIR/nice-dns-fetch-bridges"
+BRIDGES_UNIT="$USER_SYSTEMD_DIR/nice-dns-fetch-bridges.service"
+
+echo "3b) Installing boot-time bridge refresh service..."
+mkdir -p "$BRIDGES_BIN_DIR" "$USER_SYSTEMD_DIR"
+install -m 755 "$PROJECT_ROOT/scripts/fetch-bridges.sh" "$BRIDGES_BIN"
+
+cat > "$BRIDGES_UNIT" <<EOF
+[Unit]
+Description=nice-dns: refresh fastest obfs4 bridges from Tor Moat
+# Network-online.target on the user manager waits for any network
+# connection before firing — without it the fetch hits curl: "Could not
+# resolve host" on cold boots.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# RemainAfterExit so the unit stays "active" after one successful run per
+# session — Wants= from the tor proxy quadlets won't re-trigger a refetch
+# on container restart, only on a fresh user session / boot.
+RemainAfterExit=yes
+ExecStart=$BRIDGES_BIN --force
+# Don't fail-cascade the stack on a transient Moat outage. We still log
+# the failure (journalctl --user -u nice-dns-fetch-bridges) and the tor
+# proxy keeps using whatever was last written to bridges.env.
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=default.target
+EOF
+
+echo "   ✓ Installed $BRIDGES_BIN and $BRIDGES_UNIT"
+echo
+
+# 3c) Install NetworkManager-wait-online drop-in to fix the pasta-vs-DHCP race.
+#
+# The race: rootless podman invokes pasta to bridge the container netns out to
+# the host. Pasta with --config-net (the podman default) mirrors whichever host
+# interface owns the default route at the instant pasta is spawned. On Ubuntu
+# the user manager pulls in podman containers when network-online.target fires,
+# and stock NetworkManager-wait-online.service runs `nm-online -s -q` — the -s
+# flag means "return as soon as NM finishes its startup phase", NOT "wait for
+# connectivity". So network-online.target fires within ~1s of NM starting,
+# before wlp* / enp* has DHCP. Pasta then mirrors whatever's "up" at that
+# instant — typically libvirt's virbr1 (10.0.2.2/24, no upstream) — and the
+# rootless netns ends up with no default route. Container egress dies; the
+# tor proxy can't reach bridges; the whole stack hangs at boot.
+#
+# Fix: drop -s. Then nm-online waits up to its 30s default for an interface
+# to actually have IP+gateway. Every consumer of network-online.target on
+# this host uses Wants= (soft dep), so a 30s offline timeout never cascade-
+# fails anything — worst case is +30s boot when there's no reachable network.
+#
+# Drop-in is idempotent and skipped on hosts that don't ship the unit.
+echo "3c) Installing NetworkManager-wait-online connectivity-gate drop-in..."
+NM_WAIT_DROPIN_DIR="/etc/systemd/system/NetworkManager-wait-online.service.d"
+NM_WAIT_DROPIN="$NM_WAIT_DROPIN_DIR/10-wait-for-connectivity.conf"
+if ! systemctl cat NetworkManager-wait-online.service >/dev/null 2>&1; then
+  echo "   • NetworkManager-wait-online.service not present; skipping."
+else
+  if [ -f "$NM_WAIT_DROPIN" ] && grep -q '^ExecStart=/usr/bin/nm-online -q$' "$NM_WAIT_DROPIN"; then
+    echo "   • Drop-in already in place; skipping."
+  else
+    echo "   • Writing $NM_WAIT_DROPIN (requires sudo)..."
+    sudo install -d -m 755 "$NM_WAIT_DROPIN_DIR"
+    sudo tee "$NM_WAIT_DROPIN" >/dev/null <<'NMOEOF'
+# Installed by nice-dns/deb/persistent-podman.sh.
+# Drop the -s flag from nm-online so network-online.target waits for ACTUAL
+# IPv4/IPv6 connectivity (an interface with an IP and reachable gateway),
+# not just for NM's startup phase to finish enumerating devices. Without
+# this, rootless podman's pasta races wifi DHCP at boot and ends up with
+# no default route in the container netns. See deb/persistent-podman.sh
+# section 3c for the full diagnosis.
+#
+# Reverse with: sudo systemctl revert NetworkManager-wait-online.service
+[Service]
+ExecStart=
+ExecStart=/usr/bin/nm-online -q
+NMOEOF
+    sudo systemctl daemon-reload
+    echo "   ✓ Installed $NM_WAIT_DROPIN"
+  fi
+fi
+echo
+
 # 4) Reload and start services
 echo "4) Reloading systemd and starting services..."
 
@@ -105,6 +197,12 @@ echo "4) Reloading systemd and starting services..."
 # "Unit nice-dns-pod.service not found" mystery on fresh installs.
 systemctl --user daemon-reexec
 systemctl --user daemon-reload
+
+# Enable the bridge-refresh oneshot so it runs on every default.target boot,
+# not just when the tor proxy quadlet pulls it in via Wants=. Either path
+# works, but explicit enable means the unit appears in systemctl --user
+# list-unit-files and is greppable / auditable.
+systemctl --user enable nice-dns-fetch-bridges.service >/dev/null 2>&1 || true
 
 # Sanity-check that the quadlet generator actually produced
 # nice-dns-pod.service. If it didn't, restarting the unit fails with a

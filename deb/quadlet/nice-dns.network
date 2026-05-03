@@ -3,3 +3,20 @@ NetworkName=dnsnet
 Driver=bridge
 Subnet=172.31.240.248/29
 DNS=1.1.1.1
+
+# Belt-and-suspenders for the pasta-vs-wifi-DHCP race: wait until the
+# host actually has a default route before letting podman create
+# dnsnet. The first container to attach to dnsnet causes pasta to
+# spawn, and pasta with --config-net mirrors whatever interface owns
+# the host's default route at that instant — if there's no default
+# route yet, pasta falls back to libvirt's virbr1 (10.0.2.2/24) and
+# the netns ends up with no upstream. The system-level fix is dropping
+# -s from nm-online (so network-online.target waits for real
+# connectivity); this gate makes nice-dns robust on hosts where that
+# fix isn't in place.
+#
+# 60s is generous: nm-online's own default is 30s. If we hit 60s
+# without a default route, fail fast — the user has bigger problems.
+[Service]
+ExecStartPre=/usr/bin/sh -c 'for i in $(seq 1 60); do ip route show default | grep -q "via " && exit 0; sleep 1; done; echo "no default route after 60s" >&2; exit 1'
+TimeoutStartSec=90s
