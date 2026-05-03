@@ -105,7 +105,28 @@ BRIDGES_BIN="$BRIDGES_BIN_DIR/nice-dns-fetch-bridges"
 BRIDGES_UNIT="$USER_SYSTEMD_DIR/nice-dns-fetch-bridges.service"
 
 echo "3b) Installing boot-time bridge refresh service..."
-mkdir -p "$BRIDGES_BIN_DIR" "$USER_SYSTEMD_DIR"
+mkdir -p "$BRIDGES_BIN_DIR" "$USER_SYSTEMD_DIR" 2>/dev/null || true
+
+# Guard against ~/.local/bin existing but not being writable by $USER.
+# Known footgun: some Debian postinst scripts run as root and `mkdir -p`
+# this directory before chowning anything inside it — leaves ~/.local/bin
+# owned root:root with mode 755, which silently breaks every unprivileged
+# install into that directory (pip --user, pipx, our own fetch-bridges).
+# Self-heal with sudo (the same sudo session §3c needs anyway); if the
+# user has no sudo, fail loud with the exact remediation command.
+if [ ! -w "$BRIDGES_BIN_DIR" ]; then
+  echo "   ! $BRIDGES_BIN_DIR is not writable by $(whoami):"
+  ls -ld "$BRIDGES_BIN_DIR" >&2
+  echo "   • attempting 'sudo chown -R $(id -u):$(id -g)' to fix..."
+  if sudo chown -R "$(id -u):$(id -g)" "$BRIDGES_BIN_DIR"; then
+    echo "   ✓ ownership repaired."
+  else
+    echo "   ✗ chown failed. Re-run after:"  >&2
+    echo "       sudo chown -R $(id -u):$(id -g) $BRIDGES_BIN_DIR" >&2
+    exit 1
+  fi
+fi
+
 install -m 755 "$PROJECT_ROOT/scripts/fetch-bridges.sh" "$BRIDGES_BIN"
 
 cat > "$BRIDGES_UNIT" <<EOF
