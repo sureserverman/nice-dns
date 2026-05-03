@@ -40,3 +40,10 @@ pihole/etc/macvendor.db
 *.key
 !unbound/etc/*.pem
 sec-review-report-20260425-1641.md
+
+# ===== Generated audit / security reports =====
+# Glob the dated filenames /sec-audit and /sec-review write at the repo
+# root. They include path snippets, dep graphs, and CVE listings that
+# change every run — checking them in just creates review noise.
+sec-audit-report-*.md
+sec-review-report-*.md
