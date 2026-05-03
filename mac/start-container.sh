@@ -16,6 +16,11 @@ NETWORK_STATE_DIR="${HOME}/Library/Application Support/com.apple.container/netwo
 PIHOLE_IP=172.31.240.250
 TOR_CONTAINER="tor-${VARIANT}"
 HEALTH_PROBE=cloudflare.com
+BRIDGES_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges.env"
+FETCH_BRIDGES_BIN=/usr/local/sbin/nice-dns-fetch-bridges.sh
+BRIDGE1=""
+BRIDGE2=""
+BRIDGE3=""
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 unset SSH_AUTH_SOCK
@@ -24,6 +29,14 @@ log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >>"$LOG"; }
 run_root_helper() {
   [[ -x "$ROOT_HELPER" ]] || return 1
   sudo -n "$ROOT_HELPER" "$1" >>"$LOG" 2>&1
+}
+
+load_bridges() {
+  [[ -f "$BRIDGES_FILE" ]] || return 1
+  BRIDGE1="$(sed -n 's/^BRIDGE1=//p' "$BRIDGES_FILE" | head -n 1)"
+  BRIDGE2="$(sed -n 's/^BRIDGE2=//p' "$BRIDGES_FILE" | head -n 1)"
+  BRIDGE3="$(sed -n 's/^BRIDGE3=//p' "$BRIDGES_FILE" | head -n 1)"
+  [[ -n "$BRIDGE1" && -n "$BRIDGE2" && -n "$BRIDGE3" ]]
 }
 
 dns_healthy() {
@@ -177,8 +190,25 @@ start_or_create_stack() {
     -c 1 -m 256M \
     unbound:latest || return 1
 
+  # Force-recreate the tor container so it picks up freshly-fetched bridges
+  # via -e BRIDGE*. Apple's runtime bakes env at `container run` and reuses
+  # it on `container start`, so without this drop+rerun an existing tor
+  # container would keep the BRIDGE* values from its original install-time
+  # `container run`. The teardown cost (~10-15s of VM rebuild) is dwarfed
+  # by the per-boot Tor bootstrap that happens either way. pi-hole and
+  # unbound aren't bridge-dependent, so they go through the normal
+  # ensure_container reuse path.
+  if container_exists "$TOR_CONTAINER"; then
+    container stop "$TOR_CONTAINER" >/dev/null 2>&1 || true
+    container rm "$TOR_CONTAINER" >/dev/null 2>&1 || true
+    log "removed existing $TOR_CONTAINER to apply freshly-fetched bridges"
+  fi
+
   ensure_container "$TOR_CONTAINER" \
     -c 1 -m 512M \
+    -e "BRIDGE1=${BRIDGE1}" \
+    -e "BRIDGE2=${BRIDGE2}" \
+    -e "BRIDGE3=${BRIDGE3}" \
     "$TOR_IMAGE" || return 1
 
   return 0
@@ -219,6 +249,26 @@ mkdir -p "$(dirname "$LOG")"
 
 log "starting nice-dns runtime (variant=$VARIANT)"
 
+# 0) Refresh bridges from Tor Moat (latency-probed, fastest /24-distinct 3),
+# then load BRIDGE1/2/3 into shell vars for the `container run -e BRIDGE*`
+# call below. The LaunchAgent only fires on RunAtLoad (login), KeepAlive=
+# false, so this runs once per boot. Atomic-mv in fetch-bridges.sh keeps
+# the previous bridges.env intact on network failure. Apple's runtime bakes
+# -e env at `container run` time and `container start` reuses it — so to
+# apply fresh bridges we recreate the tor container at every boot in
+# start_or_create_stack below. The recreate cost is dwarfed by Tor's
+# per-boot bootstrap, which happens regardless.
+if [[ -x "$FETCH_BRIDGES_BIN" ]]; then
+  log "refreshing bridges via $FETCH_BRIDGES_BIN --force"
+  "$FETCH_BRIDGES_BIN" --force >>"$LOG" 2>&1 \
+    || log "bridge refetch failed — keeping previous bridges.env"
+else
+  log "warning: $FETCH_BRIDGES_BIN not installed; bridges will not refresh on boot"
+fi
+if ! load_bridges; then
+  log "bridges.env missing or incomplete; tor container will fail to start"
+fi
+
 # 1) apiserver + default kernel must be up. `container system start` is
 # idempotent; the first-ever run prompts for the kata kernel download, which
 # the installer handled — this invocation runs non-interactively.
@@ -236,7 +286,9 @@ done
 log "container system ready"
 
 # 2) Fast path: if the stack is already healthy and using the requested tor
-# variant, keep the existing network and containers untouched.
+# variant, keep the existing network and containers untouched. Bridge
+# refresh-and-apply happens at the next host boot via the bind-mount path —
+# no mid-session container churn.
 if container_running "$TOR_CONTAINER" && dns_healthy; then
   run_root_helper post || log "post-start helper failed"
   log "stack already healthy (variant=$VARIANT) — reusing existing state"

@@ -1,5 +1,9 @@
 [Unit]
 Description=Tor socat DNS-over-TLS proxy
+# See tor-haproxy.container for rationale — refresh bridges before reading
+# bridges.env, Wants= so a Moat outage at boot doesn't strand the stack.
+Wants=nice-dns-fetch-bridges.service
+After=nice-dns-fetch-bridges.service
 
 [Container]
 ContainerName=tor-socat

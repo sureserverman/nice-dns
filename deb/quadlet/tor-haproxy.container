@@ -1,5 +1,13 @@
 [Unit]
 Description=Tor HAProxy DNS-over-TLS proxy
+# Refresh bridges from Tor Moat (latency-probed, fastest /24-distinct 3) on
+# every session start, before this container reads bridges.env via
+# EnvironmentFile= below. Wants= (not Requires=) so a transient Moat outage
+# at boot doesn't keep the stack down — the fetch service exits non-zero
+# without touching bridges.env, and we fall back to the previously-written
+# pool. nice-dns-fetch-bridges.service is installed by deb/persistent-podman.sh.
+Wants=nice-dns-fetch-bridges.service
+After=nice-dns-fetch-bridges.service
 
 [Container]
 ContainerName=tor-haproxy

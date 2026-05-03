@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 #
-# Fetch 3 distinct obfs4 bridges from the Tor Project's Moat API and write
-# them as BRIDGE1..BRIDGE3 to ~/.config/nice-dns/bridges.env. The tor-haproxy
-# and tor-socat containers consume that file via EnvironmentFile= (Linux
-# quadlets) or `sed -n 's/^KEY=//p'` (install-mac.sh — bash `source` is unsafe
-# on values with spaces and no quotes).
+# Fetch obfs4 bridges from the Tor Project's Moat API, TCP-probe each
+# returned bridge to measure connect latency from this host, and write the
+# 3 fastest /24-distinct ones as BRIDGE1..BRIDGE3 to
+# ~/.config/nice-dns/bridges.env. The tor-haproxy and tor-socat containers
+# consume that file via EnvironmentFile= (Linux quadlets) or
+# `sed -n 's/^KEY=//p'` (install-mac.sh — bash `source` is unsafe on values
+# with spaces and no quotes).
 #
 # Why exactly 3:
 #   - ≥3 distinct primary guards are required for Tor 0.4.8+ to form Conflux
@@ -29,6 +31,25 @@
 
 set -euo pipefail
 
+# --force/-f bypasses the "skip if bridges.env already has ≥MIN_BRIDGES valid
+# entries" check, so the boot-time refresh service can always re-probe and
+# re-pick the fastest bridges from the current network. Network-failure
+# semantics are unchanged: if the curl/probe fails, the existing bridges.env
+# is kept untouched (we only mv the tmpfile in on success).
+FORCE=0
+for arg in "$@"; do
+    case "$arg" in
+        --force|-f) FORCE=1 ;;
+        -h|--help)
+            echo "Usage: $(basename "$0") [--force]" >&2
+            echo "  --force, -f   Refetch bridges even if a valid bridges.env exists." >&2
+            exit 0 ;;
+        *)
+            echo "ERROR: unknown argument: $arg" >&2
+            exit 2 ;;
+    esac
+done
+
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 BRIDGES_DIR="$CONFIG_HOME/nice-dns"
 BRIDGES_FILE="$BRIDGES_DIR/bridges.env"
@@ -50,26 +71,30 @@ MIN_BRIDGES=3
 # values or only two bridges; both shapes need a refetch — podman --env-file
 # passes quotes through literally (rejected by tor-haproxy's regex), and a
 # 2-bridge file makes Tor fall back to single circuits (Conflux disabled).
-existing_count=0
-if [[ -f "$BRIDGES_FILE" ]]; then
-    for ((j=1; j<=MAX_BRIDGES; j++)); do
-        v="$(sed -n "s/^BRIDGE${j}=//p" "$BRIDGES_FILE" | head -n 1)"
-        [[ -z "$v" ]] && break
-        if [[ ! "$v" =~ $BRIDGE_RE ]]; then
-            existing_count=-1
-            break
-        fi
-        existing_count=$((existing_count + 1))
-    done
-fi
+if (( FORCE == 1 )); then
+    echo "▸ --force given; re-probing bridges regardless of existing $BRIDGES_FILE"
+else
+    existing_count=0
+    if [[ -f "$BRIDGES_FILE" ]]; then
+        for ((j=1; j<=MAX_BRIDGES; j++)); do
+            v="$(sed -n "s/^BRIDGE${j}=//p" "$BRIDGES_FILE" | head -n 1)"
+            [[ -z "$v" ]] && break
+            if [[ ! "$v" =~ $BRIDGE_RE ]]; then
+                existing_count=-1
+                break
+            fi
+            existing_count=$((existing_count + 1))
+        done
+    fi
 
-if (( existing_count >= MIN_BRIDGES )); then
-    echo "▸ Bridges already configured at $BRIDGES_FILE ($existing_count entries)"
-    exit 0
-elif (( existing_count == -1 )); then
-    echo "▸ Existing bridges at $BRIDGES_FILE are not valid for podman --env-file; refreshing..."
-elif [[ -f "$BRIDGES_FILE" ]]; then
-    echo "▸ Existing $BRIDGES_FILE has only $existing_count bridge(s); refreshing for Conflux + failover support..."
+    if (( existing_count >= MIN_BRIDGES )); then
+        echo "▸ Bridges already configured at $BRIDGES_FILE ($existing_count entries)"
+        exit 0
+    elif (( existing_count == -1 )); then
+        echo "▸ Existing bridges at $BRIDGES_FILE are not valid for podman --env-file; refreshing..."
+    elif [[ -f "$BRIDGES_FILE" ]]; then
+        echo "▸ Existing $BRIDGES_FILE has only $existing_count bridge(s); refreshing for Conflux + failover support..."
+    fi
 fi
 
 mkdir -p "$BRIDGES_DIR"
@@ -112,17 +137,76 @@ if (( ${#obfs4_lines[@]} < MIN_BRIDGES )); then
     exit 1
 fi
 
+# --- Latency probe ---
+# TCP-connect time to each bridge's IP:PORT is a cheap proxy for path
+# quality from this host. It is NOT obfs4 throughput (a bridge can answer
+# SYN fast and still be PT-broken or rate-limited), but the bottom of the
+# latency distribution is a strong signal for which bridges are at least
+# routable from here, and "best 3 of 7" is strictly better than "random 3
+# of 7" since we're narrowing — not widening — the primary-guard pool that
+# the comment up top warned about.
+#
+# Implementation note: we use perl (Time::HiRes + IO::Socket::INET, both
+# core modules) for both the timer and the connect. Bash 3.2 on macOS
+# lacks $EPOCHREALTIME (5.0+), GNU `date +%s%N` (BSD date has no %N), and
+# `timeout` is GNU coreutils — perl sidesteps all three. Probes run in
+# parallel; total wall time is bounded by the 5s connect timeout.
+if ! command -v perl >/dev/null 2>&1; then
+    echo "ERROR: perl is required for the bridge latency probe but was not found on PATH." >&2
+    exit 1
+fi
+
+echo "▸ Probing TCP latency to each candidate bridge..."
+
+probe_dir="$(mktemp -d)"
+trap 'rm -rf "$probe_dir"' EXIT
+
+for ((pi=0; pi<${#obfs4_lines[@]}; pi++)); do
+    _line="${obfs4_lines[pi]}"
+    [[ "$_line" =~ $BRIDGE_RE ]] || continue
+    _hp="$(awk '{print $2}' <<<"$_line")"
+    _host="${_hp%:*}"
+    _port="${_hp##*:}"
+    (
+        rtt="$(perl -MIO::Socket::INET -MTime::HiRes=time -e '
+            my ($h, $p) = @ARGV;
+            my $t0 = time;
+            my $s = IO::Socket::INET->new(PeerAddr=>$h, PeerPort=>$p, Proto=>"tcp", Timeout=>5);
+            if ($s) { printf "%d\n", (time-$t0)*1000; close $s; }
+            else    { print "99999\n"; }
+        ' "$_host" "$_port" 2>/dev/null)"
+        [[ -z "$rtt" ]] && rtt=99999
+        printf '%s\t%s\n' "$rtt" "$_line" > "$probe_dir/$pi"
+    ) &
+done
+wait
+
+# Sort ascending by RTT. Unreachable bridges (rtt=99999) naturally sink
+# to the bottom and only get picked if reachable ones don't fill the slots.
+sorted_lines=()
+sorted_rtts=()
+while IFS=$'\t' read -r _rtt _line; do
+    sorted_rtts+=("$_rtt")
+    sorted_lines+=("$_line")
+done < <(cat "$probe_dir"/* 2>/dev/null | sort -n)
+
+if (( ${#sorted_lines[@]} < MIN_BRIDGES )); then
+    echo "ERROR: Latency probe yielded fewer than $MIN_BRIDGES candidates." >&2
+    exit 1
+fi
+
 # Pick up to MAX_BRIDGES distinct, syntactically valid, network-diverse
-# bridges. Moat's shuffle sometimes lands two bridges on the same /24
-# (e.g. 212.83.43.74 and 212.83.43.95 are both Moat-returned built-ins).
-# Tor's Conflux algorithm requires *link-disjoint* paths between the two
-# parallel circuits — sharing a /24 is borderline at best, and in practice
-# we measured cold-query latency rise from ~450 ms to multi-second timeouts
-# when two of three primary guards were on the same /24 (see commit
-# history). Filter to distinct /24s up front.
+# bridges, walking the latency-sorted list fastest-first. Moat's shuffle
+# sometimes lands two bridges on the same /24 (e.g. 212.83.43.74 and
+# 212.83.43.95 are both Moat-returned built-ins). Tor's Conflux algorithm
+# requires *link-disjoint* paths between the two parallel circuits —
+# sharing a /24 is borderline at best, and in practice we measured cold-
+# query latency rise from ~450 ms to multi-second timeouts when two of
+# three primary guards were on the same /24 (see commit history). Filter
+# to distinct /24s up front.
 #
 # Two-pass: first pass enforces /24-distinct + fingerprint-distinct; if
-# Moat's response somehow doesn't have MAX_BRIDGES /24-distinct entries,
+# the latency-sorted list doesn't have MAX_BRIDGES /24-distinct entries,
 # the second pass relaxes the /24 constraint so we never end up with
 # fewer than MIN_BRIDGES.
 extract_slash24() {
@@ -133,6 +217,7 @@ extract_slash24() {
 picked=()
 picked_fprs=()
 picked_slash24s=()
+picked_rtts=()
 
 # Bash 3.2 (which macOS ships as /bin/bash) treats "${arr[@]}" on an empty
 # array as an unset reference under `set -u` and aborts. Bash 4.4+ fixed
@@ -140,8 +225,10 @@ picked_slash24s=()
 # de-duplication loops use `${arr[@]+"${arr[@]}"}` — expands to nothing on
 # the first pass, to the actual elements once any have been appended.
 
-# Pass 1: /24-distinct.
-for line in "${obfs4_lines[@]}"; do
+# Pass 1: /24-distinct, walking the latency-sorted list fastest-first.
+for ((idx=0; idx<${#sorted_lines[@]}; idx++)); do
+    line="${sorted_lines[idx]}"
+    rtt="${sorted_rtts[idx]}"
     fpr="$(awk '{print $3}' <<<"$line")"
     [[ "$line" =~ $BRIDGE_RE ]] || continue
     # Skip if we've already picked this fingerprint OR this /24.
@@ -158,6 +245,7 @@ for line in "${obfs4_lines[@]}"; do
     picked+=("$line")
     picked_fprs+=("$fpr")
     picked_slash24s+=("$s24")
+    picked_rtts+=("$rtt")
     [[ ${#picked[@]} -eq MAX_BRIDGES ]] && break
 done
 
@@ -168,7 +256,9 @@ if (( ${#picked[@]} < MIN_BRIDGES )); then
     echo "▸ Moat did not return $MIN_BRIDGES /24-distinct obfs4 bridges (got ${#picked[@]})."
     echo "  Filling remaining slots without /24-diversity — Conflux may"
     echo "  occasionally fall back to single-circuit on ill-luck circuit selection."
-    for line in "${obfs4_lines[@]}"; do
+    for ((idx=0; idx<${#sorted_lines[@]}; idx++)); do
+        line="${sorted_lines[idx]}"
+        rtt="${sorted_rtts[idx]}"
         fpr="$(awk '{print $3}' <<<"$line")"
         [[ "$line" =~ $BRIDGE_RE ]] || continue
         skip=0
@@ -178,6 +268,7 @@ if (( ${#picked[@]} < MIN_BRIDGES )); then
         [[ $skip -eq 1 ]] && continue
         picked+=("$line")
         picked_fprs+=("$fpr")
+        picked_rtts+=("$rtt")
         [[ ${#picked[@]} -eq MAX_BRIDGES ]] && break
     done
 fi
@@ -209,5 +300,9 @@ chmod 600 "$BRIDGES_FILE"
 
 echo "✓ Wrote $BRIDGES_FILE (mode 600) with ${#picked[@]} bridges"
 for ((i=0; i<${#picked[@]}; i++)); do
-    echo "  BRIDGE$((i+1)) fingerprint: ${picked_fprs[i]}"
+    if [[ "${picked_rtts[i]}" == "99999" ]]; then
+        echo "  BRIDGE$((i+1)) fingerprint: ${picked_fprs[i]} (TCP probe unreachable — kept to satisfy MIN_BRIDGES)"
+    else
+        echo "  BRIDGE$((i+1)) fingerprint: ${picked_fprs[i]} (RTT: ${picked_rtts[i]} ms)"
+    fi
 done

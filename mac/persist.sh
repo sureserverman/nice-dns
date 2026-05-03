@@ -22,8 +22,11 @@ sudo visudo -cf /etc/sudoers.d/start-container
 
 # -- install scripts (ensure /usr/local/sbin exists on fresh macOS) --
 sudo install -d -m 755 /usr/local/sbin
-sudo install -m 755 "$HERE/start-container.sh"      /usr/local/sbin/start-container.sh
-sudo install -m 755 "$HERE/start-container-root.sh" /usr/local/sbin/start-container-root.sh
+sudo install -m 755 "$HERE/start-container.sh"            /usr/local/sbin/start-container.sh
+sudo install -m 755 "$HERE/start-container-root.sh"       /usr/local/sbin/start-container-root.sh
+# fetch-bridges.sh is invoked from start-container.sh at every LaunchAgent
+# fire so the stack always uses the fastest bridges from the current network.
+sudo install -m 755 "$HERE/../scripts/fetch-bridges.sh"   /usr/local/sbin/nice-dns-fetch-bridges.sh
 
 # -- LaunchAgent: start container system + stack at login --
 AGENT_DST="$HOME/Library/LaunchAgents/org.nice-dns.start-container.plist"
