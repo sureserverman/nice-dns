@@ -155,9 +155,11 @@ fi
 # Base packages. catatonit is the pause binary Podman uses when building the
 # pod's infra container (`podman pod create` errors out with "finding pause
 # binary: exec: catatonit: executable file not found in $PATH" without it).
-# Stock Ubuntu Podman pulls catatonit via Recommends; we use --no-install-
-# recommends, so name it explicitly.
-sudo apt-get install -yq --no-install-recommends git podman aardvark-dns catatonit
+# netavark is Podman 5.x's network backend and aardvark-dns is the in-network
+# resolver; both are pulled via Recommends on stock Ubuntu, but we use
+# --no-install-recommends, so name them explicitly. Without netavark, `podman
+# network create dnsnet` fails with "netavark: not found".
+sudo apt-get install -yq --no-install-recommends git podman netavark aardvark-dns catatonit
 
 # Ensure user-level registries.conf knows about docker.io
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/containers/registries.conf"
@@ -209,6 +211,13 @@ if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
       sudo dpkg --remove --force-depends "$pkg"
     fi
   done
+  # Ubuntu's podman-compose and PPA's podman both ship
+  # /usr/share/man/man1/podman-compose.1.gz; divert *before* installing the
+  # PPA podman so dpkg doesn't fail with a file conflict. Must happen before
+  # the `apt-get install podman crun` below.
+  sudo dpkg-divert --add --rename --package podman \
+    --divert /usr/share/man/man1/podman-compose.1.gz.dpkg-divert \
+    /usr/share/man/man1/podman-compose.1.gz 2>/dev/null || true
   sudo apt-get install -yq --no-install-recommends podman crun
   # Re-check that the upgrade actually moved us to >= 5.3.0. The PPA does not
   # ship every Ubuntu release / arch combo, and apt-get can return success
@@ -236,14 +245,6 @@ if ! printf '%s\n%s\n' "$MIN_CRUN" "$CUR_CRUN" | sort -V -C; then
     sudo apt-get update -q
   fi
   sudo apt-get install -yq --no-install-recommends crun
-fi
-
-# Ubuntu's podman-compose and PPA's podman both ship podman-compose.1.gz;
-# divert the man page so both packages can coexist without a file conflict
-if grep -rqs 'sejug/podman' /etc/apt/sources.list.d/ 2>/dev/null; then
-  sudo dpkg-divert --add --rename --package podman \
-    --divert /usr/share/man/man1/podman-compose.1.gz.dpkg-divert \
-    /usr/share/man/man1/podman-compose.1.gz 2>/dev/null || true
 fi
 
 # pasta is a symlink to passt, so AppArmor applies the passt profile.
