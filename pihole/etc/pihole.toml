@@ -1041,7 +1041,17 @@
   #
   # Possible values are:
   #     array of valid dnsmasq config line options
-  dnsmasq_lines = []
+  #
+  # neg-ttl=5 caps the negative-cache TTL (NXDOMAIN / NODATA / SERVFAIL) at 5s.
+  # Without this, dnsmasq's default behaviour caches upstream failures using
+  # the upstream SOA's NEGATIVE-TTL field, often 900s+ on TLD authorities. In
+  # the nice-dns chain that means a single bad query during Tor cold-start
+  # poisons the cache for 15 minutes — every subsequent client retry gets a
+  # near-instant cached SERVFAIL instead of organically retrying upstream once
+  # the .onion is healthy. 5s lets clients self-heal as soon as the chain
+  # recovers, at the cost of a few duplicate upstream queries per minute
+  # during steady-state (negligible on a single-user box).
+  dnsmasq_lines = ["neg-ttl=5"]
 
   # Log additional information about queries and replies to pihole.log
   # When this setting is enabled, the log has extra information at the start of each
