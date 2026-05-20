@@ -15,12 +15,14 @@ ContainerName=unbound
 Image=localhost/unbound:latest
 Pod=nice-dns.pod
 NoNewPrivileges=true
-# See tor-haproxy.container for the rationale on the anchored ^...$ regex.
-HealthCmd=dig +short +tries=1 +time=20 -p 5335 @127.0.0.1 cloudflare.com | grep -m1 -Eq '^([0-9]+\\.){3}[0-9]+$'
+# Port-level check: is unbound listening on 5335? Same rationale as
+# tor-haproxy.container — we test process aliveness here, and let
+# nice-dns-health's chain-resolves check (Stage 5) detect end-to-end
+# failures with its own grace window and graceful restart.
+HealthCmd=nc -z 127.0.0.1 5335
 HealthInterval=30s
-# 25s matches tor-haproxy's HealthTimeout — covers the single 20s dig try
-# plus fork/setup overhead when the upstream DoT path is slow on cold Tor.
-HealthTimeout=25s
+# `nc -z` returns in <100ms. 5s is plenty.
+HealthTimeout=5s
 HealthRetries=5
 # Match tor-haproxy's 60s start period. unbound depends on tor-haproxy for
 # any successful upstream query, but with the wait-for-healthy gate

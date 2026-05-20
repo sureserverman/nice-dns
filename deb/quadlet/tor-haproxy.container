@@ -39,23 +39,22 @@ EnvironmentFile=%h/.config/nice-dns/bridges.env
 # the right state. Cold-start may show a brief SERVFAIL window
 # (seconds) before backup or primary starts answering — but that's
 # strictly better than "service refuses to start."
-# Anchored IPv4 regex (^...$) so the line MUST be a bare dotted-quad. The
-# previous unanchored \b[0-9.]{7,15}\b matched the "127.0.0.1" substring
-# inside dig's "Connection to 127.0.0.1#853 failed" error line — which
-# Alpine's bind-tools dig writes to STDOUT (not stderr) on a closed port,
-# so the healthcheck reported `healthy` before haproxy was even listening.
-# `grep -m1 -Eq` exits 0 on first match, 1 on no matches.
-#
-# `tries=1 time=20`: one attempt, 20s budget. The default `tries=3 time=5`
-# gives up at 15s but in practice does 3 short attempts that don't add
-# anything when ONE upstream is consistently slow — measured backup-via-
-# Tor-exit query times of 5-28s mean a single longer try is more useful
-# than three short ones.
-HealthCmd=dig +short +tls +tries=1 +time=20 -p 853 @127.0.0.1 cloudflare.com | grep -m1 -Eq '^([0-9]+\\.){3}[0-9]+$'
+# Port-level check: is haproxy listening on 853? An earlier design tried
+# `dig +tls @127.0.0.1 ... | grep IPv4` (end-to-end DoT through the Tor
+# chain) but that conflated two failures:
+#   - "tor-haproxy itself is broken" → should restart
+#   - "Tor exit network is congested today" → should NOT restart (a
+#     container restart wipes Tor's bootstrap progress and makes things
+#     worse; observed cycle: container restart every ~3.5 min, each new
+#     Tor bootstrap takes 60-90s, chain never stabilizes).
+# The `chain-resolves` check in nice-dns-health (Stage 5) is the right
+# place to detect "chain not actually resolving" — it has its own grace
+# window and graceful restart path. The container HealthCmd should only
+# answer the narrow question "is the process alive and bound?"
+HealthCmd=nc -z 127.0.0.1 853
 HealthInterval=30s
-# 25s gives the dig command (20s budget) a 5s buffer for fork + setup.
-# Tor-exit DoT queries can take that long when the network is degraded.
-HealthTimeout=25s
+# `nc -z` returns in <100ms whether port is open or closed. 5s is plenty.
+HealthTimeout=5s
 HealthRetries=5
 # 60s covers warm-Tor bootstrap (cached consensus, ~30s) plus the first
 # backend health probe (which goes to backup, ~5s, since primary starts

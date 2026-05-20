@@ -19,11 +19,11 @@ EnvironmentFile=%h/.config/nice-dns/bridges.env
 # real DoT resolution success makes the whole stack fail to start
 # whenever Tor is degraded for >TimeoutStartSec, which is the
 # opposite of the project goal of "resolve via any backend ASAP."
-# See tor-haproxy.container for the rationale on the anchored ^...$ regex.
-HealthCmd=dig +short +tls +tries=1 +time=20 -p 853 @127.0.0.1 cloudflare.com | grep -m1 -Eq '^([0-9]+\\.){3}[0-9]+$'
+# See tor-haproxy.container — same port-level check, same rationale.
+HealthCmd=nc -z 127.0.0.1 853
 HealthInterval=30s
-# 25s matches tor-haproxy's HealthTimeout (single 20s dig try + buffer).
-HealthTimeout=25s
+# `nc -z` returns in <100ms. 5s is plenty.
+HealthTimeout=5s
 HealthRetries=5
 HealthStartPeriod=60s
 HealthOnFailure=restart
