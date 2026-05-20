@@ -25,15 +25,19 @@ HealthCmd=dig +short +tls -p 853 @127.0.0.1 cloudflare.com | grep -Eo '\b[0-9.]{
 HealthInterval=30s
 HealthTimeout=10s
 HealthRetries=5
-# 180s covers cold-cache obfs4 bridge bootstrap with 3 bridges (Conflux mode).
-# Tor reaches Bootstrapped 100% as soon as ANY of the 3 bridges connects, so
-# the previous 600s window — sized for the 2-bridge case where a single slow
-# obfs4 handshake blocked the whole bootstrap for ~5 min before failover — is
-# overkill. Observed cold-bootstrap healthy times across test runs: 30-90s.
-# 180s = 2× worst observed + buffer; keeps "is the stack broken or just
-# starting?" UX bounded at 3 min. Steady-state restarts (stuck circuit) fire
-# normally outside this window.
-HealthStartPeriod=180s
+# 60s covers warm-Tor bootstrap (cached consensus, ~30s) plus the first
+# backend health probe (which goes to backup, ~5s, since primary starts
+# init-state down). Note: container healthy is independent of primary
+# being UP — the haproxy HealthCmd just verifies that *any* backend
+# (primary/backup/fallback) answers a dig, so backup serving during
+# the primary-promotion window counts as healthy. Primary's own
+# promotion to UP takes ≥ 90s on warm Tor (rise 3 × inter 30s) which
+# is intentional ("stable before preferred"). The previous 180s start
+# period was sized for cold obfs4 bootstrap (~90s) + the old rise-2
+# inter-30s promotion (~60s); both are now faster and the start period
+# is deliberately *under* worst-case cold so real boot failures surface
+# as unhealthy instead of being masked.
+HealthStartPeriod=60s
 HealthOnFailure=restart
 
 [Service]

@@ -11,11 +11,12 @@ HealthCmd=dig +short -p 5335 @127.0.0.1 cloudflare.com | grep -Eo '\b[0-9.]{7,15
 HealthInterval=30s
 HealthTimeout=10s
 HealthRetries=5
-# unbound forwards via DoT through tor-haproxy → Tor → Cloudflare's hidden
-# resolver, so its first successful query depends on Tor finishing bootstrap.
-# Match tor-haproxy's 180s start period so a slow first-run obfs4 handshake
-# does not trigger a kill-and-retry loop here either.
-HealthStartPeriod=180s
+# Match tor-haproxy's 60s start period. unbound depends on tor-haproxy for
+# any successful upstream query, but with the wait-for-healthy gate
+# (Stage 2 of the reliability plan) unbound only starts after tor-haproxy
+# is already healthy, so unbound's own start period only needs to cover
+# its internal init (cert load, cache prime) — sub-10s.
+HealthStartPeriod=60s
 HealthOnFailure=restart
 
 [Service]
