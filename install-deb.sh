@@ -98,13 +98,20 @@ teardown() {
       | sudo tee /etc/resolv.conf >/dev/null
   fi
 
-  # Stop and disable user-mode quadlet services, then remove quadlet files
-  for svc in pi-hole unbound tor-haproxy tor-socat nice-dns-pod nice-dns-network; do
+  # Stop and disable user-mode quadlet services, then remove quadlet files.
+  # nice-dns-warmup is here only to clean up after older installs that
+  # shipped the (since-removed) cache pre-seed unit; current installs
+  # never lay it down. Safe to drop from this list once enough cycles
+  # of `uninstall` have run in the wild.
+  for svc in pi-hole unbound tor-haproxy tor-socat nice-dns-pod nice-dns-network nice-dns-warmup; do
     systemctl --user disable --now "${svc}.service" 2>/dev/null || true
   done
   rm -f "$HOME/.config/containers/systemd/"{pi-hole,unbound,tor-haproxy,tor-socat}.container \
         "$HOME/.config/containers/systemd/nice-dns.pod" \
-        "$HOME/.config/containers/systemd/nice-dns.network"
+        "$HOME/.config/containers/systemd/nice-dns.network" \
+        "$HOME/.config/systemd/user/nice-dns-warmup.service" \
+        "$HOME/.local/bin/nice-dns-warmup" \
+        "$HOME/.config/nice-dns/warmup-domains.txt"
   systemctl --user daemon-reload 2>/dev/null || true
 
   # Containers, images, network
