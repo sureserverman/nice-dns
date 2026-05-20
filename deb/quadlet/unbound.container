@@ -1,10 +1,12 @@
 [Unit]
 Description=Unbound recursive DNS resolver
 # Requires= (not just After=) so unbound blocks on tor-haproxy.service
-# reaching Active=active. Combined with tor-haproxy.container's
-# Notify=healthy directive, systemd treats tor-haproxy as active only
-# once its healthcheck passes — so unbound starts with a serving backend
-# already available.
+# reaching Active=active. tor-haproxy reports active as soon as its
+# container is up (Notify= deliberately unset there — see its file for
+# rationale), so unbound starts shortly after haproxy is listening,
+# even if the chain isn't yet resolving end-to-end. unbound's own
+# healthcheck catches the "starting but not serving" window, and
+# pi-hole chains on this same Requires=.
 Requires=tor-__VARIANT__.service
 After=tor-__VARIANT__.service
 
@@ -13,9 +15,12 @@ ContainerName=unbound
 Image=localhost/unbound:latest
 Pod=nice-dns.pod
 NoNewPrivileges=true
-HealthCmd=dig +short -p 5335 @127.0.0.1 cloudflare.com | grep -Eo '\b[0-9.]{7,15}\b' >/dev/null
+# See tor-haproxy.container for the rationale on the anchored ^...$ regex.
+HealthCmd=dig +short +tries=1 +time=20 -p 5335 @127.0.0.1 cloudflare.com | grep -m1 -Eq '^([0-9]+\\.){3}[0-9]+$'
 HealthInterval=30s
-HealthTimeout=10s
+# 25s matches tor-haproxy's HealthTimeout — covers the single 20s dig try
+# plus fork/setup overhead when the upstream DoT path is slow on cold Tor.
+HealthTimeout=25s
 HealthRetries=5
 # Match tor-haproxy's 60s start period. unbound depends on tor-haproxy for
 # any successful upstream query, but with the wait-for-healthy gate

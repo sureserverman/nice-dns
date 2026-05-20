@@ -14,14 +14,16 @@ Pod=nice-dns.pod
 # socat CAP_NET_BIND_SERVICE via file-cap to bind port 853. no-new-privs
 # strips file-caps at exec.
 EnvironmentFile=%h/.config/nice-dns/bridges.env
-# See tor-haproxy.container for rationale. Notify=healthy (podman ≥ 5.2)
-# makes the unit reach Active=active only when the container's healthcheck
-# passes, so dependent services (unbound, pi-hole) wait for a serving
-# backend.
-Notify=healthy
-HealthCmd=dig +short +tls -p 853 @127.0.0.1 cloudflare.com | grep -Eo '\b[0-9.]{7,15}\b' >/dev/null
+# Notify= deliberately not set — see tor-haproxy.container for the
+# full rationale. Short version: tying the unit's Active=active to
+# real DoT resolution success makes the whole stack fail to start
+# whenever Tor is degraded for >TimeoutStartSec, which is the
+# opposite of the project goal of "resolve via any backend ASAP."
+# See tor-haproxy.container for the rationale on the anchored ^...$ regex.
+HealthCmd=dig +short +tls +tries=1 +time=20 -p 853 @127.0.0.1 cloudflare.com | grep -m1 -Eq '^([0-9]+\\.){3}[0-9]+$'
 HealthInterval=30s
-HealthTimeout=10s
+# 25s matches tor-haproxy's HealthTimeout (single 20s dig try + buffer).
+HealthTimeout=25s
 HealthRetries=5
 HealthStartPeriod=60s
 HealthOnFailure=restart

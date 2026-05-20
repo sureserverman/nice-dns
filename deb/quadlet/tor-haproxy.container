@@ -21,20 +21,41 @@ Pod=nice-dns.pod
 # becomes healthy. Restoring this hardening would require an image-side
 # change (wrap haproxy in `capsh --addamb=cap_net_bind_service`).
 EnvironmentFile=%h/.config/nice-dns/bridges.env
-# Stage 2 (reliability plan): only report Active=active to systemd once the
-# container's healthcheck transitions to healthy. Lets dependent services
-# (unbound, pi-hole) use Requires=/After=tor-haproxy.service to actually
-# wait for a serving backend, not just for the haproxy process to start.
-# `Notify=healthy` requires podman ≥ 5.2 (Sep 2024) and maps to
-# `--sdnotify=healthy` — postpones the systemd READY=1 notification until
-# the HealthCmd below reports healthy. The earlier Notify=true +
-# PodmanArgs=--sdnotify=healthy combo didn't work in podman 5.8 because
-# Notify=true emits --sdnotify=container *first* on the CLI and podman's
-# flag parser took the first value, not the last.
-Notify=healthy
-HealthCmd=dig +short +tls -p 853 @127.0.0.1 cloudflare.com | grep -Eo '\b[0-9.]{7,15}\b' >/dev/null
+# Notify= deliberately NOT set. The Stage 2 design (Notify=healthy, so
+# systemd waits for the HealthCmd to pass) was reverted because it
+# gates the unit's Active=active transition on real DoT resolution
+# succeeding through the chain — which on degraded Tor (slow obfs4
+# bridges or congested exit) can take >5 min. With Notify=healthy the
+# whole unit then fails to start, dependent services never come up,
+# and the user-visible result is "no DNS at all" even though Tor and
+# haproxy themselves are running fine.
+#
+# The user's stated goal is "resolve via any backend ASAP," which
+# wants the unit active as soon as the container's processes exist.
+# Dependent services (unbound, pi-hole) still wait via Requires=, but
+# they wait for the *container* to be up, not for end-to-end DNS to
+# work. Their own HealthCmds catch the cases where the chain is still
+# settling, and the latency-aware probe (Stage 7) keeps primary in
+# the right state. Cold-start may show a brief SERVFAIL window
+# (seconds) before backup or primary starts answering — but that's
+# strictly better than "service refuses to start."
+# Anchored IPv4 regex (^...$) so the line MUST be a bare dotted-quad. The
+# previous unanchored \b[0-9.]{7,15}\b matched the "127.0.0.1" substring
+# inside dig's "Connection to 127.0.0.1#853 failed" error line — which
+# Alpine's bind-tools dig writes to STDOUT (not stderr) on a closed port,
+# so the healthcheck reported `healthy` before haproxy was even listening.
+# `grep -m1 -Eq` exits 0 on first match, 1 on no matches.
+#
+# `tries=1 time=20`: one attempt, 20s budget. The default `tries=3 time=5`
+# gives up at 15s but in practice does 3 short attempts that don't add
+# anything when ONE upstream is consistently slow — measured backup-via-
+# Tor-exit query times of 5-28s mean a single longer try is more useful
+# than three short ones.
+HealthCmd=dig +short +tls +tries=1 +time=20 -p 853 @127.0.0.1 cloudflare.com | grep -m1 -Eq '^([0-9]+\\.){3}[0-9]+$'
 HealthInterval=30s
-HealthTimeout=10s
+# 25s gives the dig command (20s budget) a 5s buffer for fork + setup.
+# Tor-exit DoT queries can take that long when the network is degraded.
+HealthTimeout=25s
 HealthRetries=5
 # 60s covers warm-Tor bootstrap (cached consensus, ~30s) plus the first
 # backend health probe (which goes to backup, ~5s, since primary starts
