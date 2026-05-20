@@ -328,21 +328,33 @@ cmd_run() {
   return 1
 }
 
-# ─────────── Full-chain outage detection + auto-restart (Linux only) ──────────
+# ───────────── Full-chain outage detection + graceful tor restart ─────────────
 #
-# The reliability plan's Stage 5b: when chain-resolves has been failing for
-# more than RESTART_GRACE_SECS (default 300s = 5 timer fires at the default
-# 30-min interval is too slow, so this presupposes the user is running the
-# timer at every minute or two — see also `maybe_drop_in_fast_timer`),
-# refresh the obfs4 bridge pool and restart tor-haproxy.
+# When chain-resolves has been failing for more than RESTART_GRACE_SECS,
+# we try to recover. The recovery path is the same on Linux and macOS:
 #
-# Critical invariant: this fires ONLY when chain-resolves fails (i.e.,
-# `dig @127.0.0.1 cloudflare.com` returns no real A record). That's only
-# possible when ALL haproxy backends are simultaneously broken — primary
-# (.onion), backup (1.1.1.1 via Tor exit), and fallback (9.9.9.9 via Tor
-# exit) all failing means Tor's exit + onion paths are both unreachable.
-# A primary-only outage does NOT trigger this — backup keeps the chain
-# resolving and the check passes.
+#   1. fetch-bridges --force            (host-side, refresh obfs4 list)
+#   2. <runtime> exec tor-haproxy \     (in-container, graceful restart)
+#        touch /tmp/tor-restart-flag
+#
+# The container's start.sh watches that flag, kills the tor child, and
+# respawns it. haproxy + the latency-aware probe keep running across
+# the restart — when the new tor finishes bootstrap, haproxy's rise/fall
+# loop notices and routes client traffic back to primary on its own.
+# Strictly better than a full container restart: no haproxy bounce, no
+# admin-socket churn, no probe-primary reset.
+#
+# Fallback: if the in-container exec fails (container missing, runtime
+# unavailable), drop to the per-platform service-level restart so the
+# recovery still happens somehow.
+#
+# Critical invariant: this fires ONLY when `chain-resolves` fails —
+# i.e., `dig @127.0.0.1 cloudflare.com` returns no real A record.
+# That requires ALL haproxy backends to be simultaneously broken:
+# primary (.onion), backup (1.1.1.1 via Tor exit), and fallback (9.9.9.9
+# via Tor exit) all failing means Tor itself isn't routing. A primary-
+# only outage does NOT trigger this — backup keeps the chain resolving
+# and the check passes.
 
 FULL_OUTAGE_FILE="$LOG_DIR/full-outage-since"
 # Override via env for testing: NICE_DNS_RESTART_GRACE_SECS=10 nice-dns-health run
@@ -352,11 +364,57 @@ maybe_clear_full_outage() {
   [ -f "$FULL_OUTAGE_FILE" ] && rm -f "$FULL_OUTAGE_FILE"
 }
 
+# Detect which tor variant container is installed. Prefer running, fall
+# back to the installed quadlet (Linux) — on macOS, only the running
+# state matters because the LaunchAgent doesn't carry a per-variant file.
+detect_installed_tor_variant() {
+  local rt tv
+  rt="$(detect_runtime)"
+  tv="$(detect_tor_variant "${rt:-}")"
+  if [ -z "$tv" ]; then
+    local q="${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd"
+    for v in haproxy socat; do
+      if [ -f "$q/tor-$v.container" ]; then tv="$v"; break; fi
+    done
+  fi
+  echo "$tv"
+}
+
+# Graceful path: ask the running tor-haproxy container to recycle its
+# tor child by touching the restart-flag file. Returns 0 on successful
+# trigger, non-zero on failure to reach the container.
+trigger_graceful_tor_restart() {
+  local rt cname
+  rt="$(detect_runtime)"
+  if [ -z "$rt" ]; then return 1; fi
+  cname="tor-$(detect_tor_variant "$rt")"
+  case "$cname" in tor-) return 1 ;; esac
+  "$rt" exec "$cname" touch /tmp/tor-restart-flag >/dev/null 2>&1
+}
+
+# Platform fallback if the graceful path is unreachable (container down,
+# runtime broken). On Linux this is systemctl --user; on macOS we
+# kickstart the LaunchAgent which re-runs mac/start-container.sh and
+# its own rebuild path.
+trigger_service_restart_fallback() {
+  local tor_variant
+  tor_variant="$(detect_installed_tor_variant)"
+  if [ "$IS_LINUX" -eq 1 ]; then
+    if [ -n "$tor_variant" ]; then
+      systemctl --user restart "tor-$tor_variant.service" >>"$ROLL_LOG" 2>&1
+      return $?
+    fi
+    return 1
+  fi
+  # macOS path: kick the LaunchAgent. -k stops first; the agent's plist
+  # has RunAtLoad so it re-runs start-container.sh on the next load.
+  local uid
+  uid="$(id -u)"
+  launchctl kickstart -k "gui/$uid/org.nice-dns.start-container" >>"$ROLL_LOG" 2>&1
+}
+
 maybe_trigger_chain_restart() {
   local now_human="$1"
-  # Only act on Linux (we restart user-mode systemd services); macOS path
-  # uses launchd and a separate helper we don't drive here.
-  [ "$IS_LINUX" -eq 1 ] || return 0
 
   # Only react to the "no real DNS answer" failure mode — other failures
   # (gravity-blocks, ftl-alive, runtime-missing) want different action.
@@ -381,41 +439,28 @@ maybe_trigger_chain_restart() {
     return 0
   fi
 
-  log_to_file "$now_human full-outage ${age}s >= grace ${RESTART_GRACE_SECS}s, refetching bridges + restarting tor-haproxy"
+  log_to_file "$now_human full-outage ${age}s >= grace ${RESTART_GRACE_SECS}s, refetching bridges + recycling tor"
 
-  # Refetch bridges via the user-installed helper. Best-effort: if Moat is
-  # down too, the previous bridges.env stays and tor-haproxy still gets a
-  # restart, which often clears stuck-circuit failures even without new
-  # bridges.
+  # Refetch bridges via the user-installed helper. Best-effort: if Moat
+  # is down too, the previous bridges.env stays. Bridges fetched here
+  # take effect on the NEXT full container/service restart — the
+  # graceful in-container path below reuses the bridges already in the
+  # tor process's environment.
   if [ -x "$HOME/.local/bin/nice-dns-fetch-bridges" ]; then
     "$HOME/.local/bin/nice-dns-fetch-bridges" --force >>"$ROLL_LOG" 2>&1 || \
-      log_to_file "$now_human fetch-bridges --force failed (continuing with restart)"
+      log_to_file "$now_human fetch-bridges --force failed (continuing)"
   fi
 
-  # Restart tor-haproxy (or tor-socat — restart whichever is the active
-  # variant). dependents (unbound, pi-hole) chain through Requires= so a
-  # tor restart cascades cleanly. We prefer the running-container variant
-  # but fall back to the installed quadlet file, since the container may
-  # already have crashed by the time we get here.
-  local rt tor_variant
-  rt="$(detect_runtime)"
-  tor_variant="$(detect_tor_variant "${rt:-}")"
-  if [ -z "$tor_variant" ]; then
-    local q="${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd"
-    for v in haproxy socat; do
-      if [ -f "$q/tor-$v.container" ]; then
-        tor_variant="$v"
-        break
-      fi
-    done
-  fi
-  if [ -n "$tor_variant" ]; then
-    systemctl --user restart "tor-$tor_variant.service" \
-      >>"$ROLL_LOG" 2>&1 \
-      && log_to_file "$now_human restarted tor-$tor_variant.service" \
-      || log_to_file "$now_human restart of tor-$tor_variant.service failed"
+  # Graceful in-container restart first.
+  if trigger_graceful_tor_restart; then
+    log_to_file "$now_human triggered graceful in-container tor restart"
   else
-    log_to_file "$now_human no tor variant detected; skipping restart"
+    log_to_file "$now_human graceful path unreachable, falling back to service restart"
+    if trigger_service_restart_fallback; then
+      log_to_file "$now_human service-level restart issued"
+    else
+      log_to_file "$now_human service-level restart FAILED — nothing more to try"
+    fi
   fi
 
   # Clear the outage marker so we don't restart again on the very next
