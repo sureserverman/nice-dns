@@ -208,6 +208,51 @@ NMOEOF
 fi
 echo
 
+# 3d) Install cache pre-seed: nice-dns-warmup script + warmup-domains.txt
+#     + a oneshot user service that runs after pi-hole.service is Active.
+#
+# Goal: as soon as the stack reports healthy, run a handful of dig queries
+# against ~/.config/nice-dns/warmup-domains.txt so the user's first
+# browser queries hit pi-hole's cache (0ms) instead of going cold through
+# the .onion (~600ms). Pure latency win; doesn't change which backend
+# serves or how primary is promoted.
+WARMUP_BIN="$BRIDGES_BIN_DIR/nice-dns-warmup"
+WARMUP_UNIT="$USER_SYSTEMD_DIR/nice-dns-warmup.service"
+WARMUP_DOMAINS_DIR="$HOME/.config/nice-dns"
+WARMUP_DOMAINS="$WARMUP_DOMAINS_DIR/warmup-domains.txt"
+
+echo "3d) Installing cache pre-seed warmup service..."
+mkdir -p "$WARMUP_DOMAINS_DIR"
+install -m 755 "$SCRIPT_DIR/nice-dns-warmup" "$WARMUP_BIN"
+install -m 644 "$SCRIPT_DIR/warmup-domains.txt" "$WARMUP_DOMAINS"
+
+cat > "$WARMUP_UNIT" <<EOF
+[Unit]
+Description=nice-dns: pre-seed pi-hole cache with popular domains
+# After the full chain — pi-hole transitively depends on unbound +
+# tor-haproxy via Requires=, so After=pi-hole.service waits for the
+# whole stack to be Active=active. WantedBy=default.target so it runs
+# once per user session boot.
+Wants=pi-hole.service
+After=pi-hole.service
+
+[Service]
+Type=oneshot
+# RemainAfterExit=yes so re-running systemctl --user start nice-dns-warmup
+# is a no-op until next boot (the cache survives unless pi-hole restarts).
+RemainAfterExit=yes
+ExecStart=$WARMUP_BIN
+SuccessExitStatus=0 1
+# Don't loop on failure — a cache miss for one domain isn't actionable.
+Restart=no
+
+[Install]
+WantedBy=default.target
+EOF
+
+echo "   ✓ Installed $WARMUP_BIN, $WARMUP_DOMAINS, and $WARMUP_UNIT"
+echo
+
 # 4) Reload and start services
 echo "4) Reloading systemd and starting services..."
 
@@ -224,6 +269,7 @@ systemctl --user daemon-reload
 # works, but explicit enable means the unit appears in systemctl --user
 # list-unit-files and is greppable / auditable.
 systemctl --user enable nice-dns-fetch-bridges.service >/dev/null 2>&1 || true
+systemctl --user enable nice-dns-warmup.service >/dev/null 2>&1 || true
 
 # Sanity-check that the quadlet generator actually produced
 # nice-dns-pod.service. If it didn't, restarting the unit fails with a
