@@ -14,11 +14,16 @@ Pod=nice-dns.pod
 # socat CAP_NET_BIND_SERVICE via file-cap to bind port 853. no-new-privs
 # strips file-caps at exec.
 EnvironmentFile=%h/.config/nice-dns/bridges.env
+# See tor-haproxy.container for rationale. Notify=healthy (podman ≥ 5.2)
+# makes the unit reach Active=active only when the container's healthcheck
+# passes, so dependent services (unbound, pi-hole) wait for a serving
+# backend.
+Notify=healthy
 HealthCmd=dig +short +tls -p 853 @127.0.0.1 cloudflare.com | grep -Eo '\b[0-9.]{7,15}\b' >/dev/null
 HealthInterval=30s
 HealthTimeout=10s
 HealthRetries=5
-HealthStartPeriod=90s
+HealthStartPeriod=60s
 HealthOnFailure=restart
 
 [Service]

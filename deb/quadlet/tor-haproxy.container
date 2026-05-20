@@ -21,6 +21,17 @@ Pod=nice-dns.pod
 # becomes healthy. Restoring this hardening would require an image-side
 # change (wrap haproxy in `capsh --addamb=cap_net_bind_service`).
 EnvironmentFile=%h/.config/nice-dns/bridges.env
+# Stage 2 (reliability plan): only report Active=active to systemd once the
+# container's healthcheck transitions to healthy. Lets dependent services
+# (unbound, pi-hole) use Requires=/After=tor-haproxy.service to actually
+# wait for a serving backend, not just for the haproxy process to start.
+# `Notify=healthy` requires podman ≥ 5.2 (Sep 2024) and maps to
+# `--sdnotify=healthy` — postpones the systemd READY=1 notification until
+# the HealthCmd below reports healthy. The earlier Notify=true +
+# PodmanArgs=--sdnotify=healthy combo didn't work in podman 5.8 because
+# Notify=true emits --sdnotify=container *first* on the CLI and podman's
+# flag parser took the first value, not the last.
+Notify=healthy
 HealthCmd=dig +short +tls -p 853 @127.0.0.1 cloudflare.com | grep -Eo '\b[0-9.]{7,15}\b' >/dev/null
 HealthInterval=30s
 HealthTimeout=10s

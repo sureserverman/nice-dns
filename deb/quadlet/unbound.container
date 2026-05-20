@@ -1,5 +1,11 @@
 [Unit]
 Description=Unbound recursive DNS resolver
+# Requires= (not just After=) so unbound blocks on tor-haproxy.service
+# reaching Active=active. Combined with tor-haproxy.container's
+# Notify=healthy directive, systemd treats tor-haproxy as active only
+# once its healthcheck passes — so unbound starts with a serving backend
+# already available.
+Requires=tor-__VARIANT__.service
 After=tor-__VARIANT__.service
 
 [Container]

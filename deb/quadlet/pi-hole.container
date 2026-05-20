@@ -1,5 +1,10 @@
 [Unit]
 Description=Pi-hole DNS sinkhole
+# Requires= (not just After=) so pi-hole blocks on unbound.service reaching
+# Active=active. With unbound chained on tor-haproxy and tor-haproxy waiting
+# for healthy, this means pi-hole only starts answering port 53 once the
+# full chain is serving.
+Requires=unbound.service
 After=unbound.service
 
 [Container]
