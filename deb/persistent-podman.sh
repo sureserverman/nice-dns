@@ -131,30 +131,41 @@ install -m 755 "$PROJECT_ROOT/scripts/fetch-bridges.sh" "$BRIDGES_BIN"
 
 cat > "$BRIDGES_UNIT" <<EOF
 [Unit]
-Description=nice-dns: refresh fastest obfs4 bridges from Tor Moat
-# Network-online.target on the user manager waits for any network
-# connection before firing — without it the fetch hits curl: "Could not
-# resolve host" on cold boots.
+Description=nice-dns: select reachable obfs4 bridges (host-side bridge-eval manage)
+# Runs the in-image bridge-eval in "manage" mode: fetches candidates from BOTH
+# Moat builtin AND the rdsys HTTPS distributor (bootstrap-resolved, so it works
+# before the stack's own DNS is up), accumulates them into a persistent pool,
+# tests real obfs4 usability, prunes only the persistently-dead, and writes the
+# reachable set to ~/.config/nice-dns/bridges.env. Runs HOST-SIDE (not in the
+# proxy container) on purpose: the ~150s test must not block haproxy binding
+# :853, or it trips HealthStartPeriod into a restart loop.
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=oneshot
-# RemainAfterExit so the unit stays "active" after one successful run per
-# session — Wants= from the tor proxy quadlets won't re-trigger a refetch
-# on container restart, only on a fresh user session / boot.
+# RemainAfterExit: run once per boot before the proxy (Wants=/After= from the
+# tor quadlets); a container restart won't re-trigger the ~150s manage cycle.
 RemainAfterExit=yes
-ExecStart=$BRIDGES_BIN --force
-# Don't fail-cascade the stack on a transient Moat outage. We still log
-# the failure (journalctl --user -u nice-dns-fetch-bridges) and the tor
-# proxy keeps using whatever was last written to bridges.env.
+# The ~150s usability probe + fetch; give it headroom.
+TimeoutStartSec=360
+# --userns=keep-id so files land owned by this user (systemd reads bridges.env
+# via EnvironmentFile=). --pull=missing: install-deb already pulled the image,
+# but recover if it was removed.
+ExecStart=/usr/bin/podman run --rm --userns=keep-id --pull=missing \\
+  -v %h/.config/nice-dns:/pool \\
+  --entrypoint /bin/bridge-eval \\
+  docker.io/sureserver/tor-${VARIANT}:latest \\
+  -pool /pool/bridge-pool.tsv -out /pool/bridges.env -count 3 -window 150 -grace 20
+# Don't fail-cascade the stack if a run finds no reachable bridges (exit 1):
+# the proxy keeps using whatever was last written to bridges.env.
 SuccessExitStatus=0 1
 
 [Install]
 WantedBy=default.target
 EOF
 
-echo "   ✓ Installed $BRIDGES_BIN and $BRIDGES_UNIT"
+echo "   ✓ Installed $BRIDGES_UNIT (host-side bridge-eval manage, image sureserver/tor-${VARIANT})"
 echo
 
 # 3c) Install NetworkManager-wait-online drop-in to fix the pasta-vs-DHCP race.

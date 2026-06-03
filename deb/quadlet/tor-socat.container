@@ -25,7 +25,12 @@ HealthInterval=30s
 # `nc -z` returns in <100ms. 5s is plenty.
 HealthTimeout=5s
 HealthRetries=5
-HealthStartPeriod=60s
+# 300s, not 60s: a cold obfs4 bootstrap + first onion rendezvous can exceed
+# 60s even on pre-selected reachable bridges. With HealthOnFailure=restart a
+# 60s window kills the container mid-bootstrap → permanent SERVFAIL restart
+# loop. 300s lets the cold start complete (a dead proxy then takes up to 300s
+# to auto-restart — acceptable).
+HealthStartPeriod=300s
 HealthOnFailure=restart
 
 [Service]

@@ -63,12 +63,16 @@ HealthRetries=5
 # (primary/backup/fallback) answers a dig, so backup serving during
 # the primary-promotion window counts as healthy. Primary's own
 # promotion to UP takes ≥ 90s on warm Tor (rise 3 × inter 30s) which
-# is intentional ("stable before preferred"). The previous 180s start
-# period was sized for cold obfs4 bootstrap (~90s) + the old rise-2
-# inter-30s promotion (~60s); both are now faster and the start period
-# is deliberately *under* worst-case cold so real boot failures surface
-# as unhealthy instead of being masked.
-HealthStartPeriod=60s
+# is intentional ("stable before preferred").
+#
+# 300s, not 60s: a cold obfs4 bootstrap + first onion rendezvous can exceed
+# 60s even on pre-selected reachable bridges. With HealthOnFailure=restart a
+# 60s window kills the container MID-bootstrap (nc -z 853 fails because haproxy
+# hasn't bound 853 yet) → it never finishes → permanent SERVFAIL restart loop.
+# 300s lets the cold start complete. Trade-off: a genuinely-dead proxy now
+# takes up to 300s to be auto-restarted (acceptable; the chain-resolves check
+# in nice-dns-health is the real liveness signal).
+HealthStartPeriod=300s
 HealthOnFailure=restart
 
 [Service]
