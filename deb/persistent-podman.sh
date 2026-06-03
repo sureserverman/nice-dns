@@ -266,5 +266,17 @@ if [ ! -e "$GEN_DIR/nice-dns-pod.service" ]; then
   exit 1
 fi
 
+# Select reachable bridges BEFORE the proxy starts. RemainAfterExit means a
+# reinstall (service already active from a prior boot) wouldn't re-trigger the
+# manage cycle via the proxy's Wants=, so restart it explicitly here. Blocks
+# ~2-3 min (fetch both sources + test usability); non-fatal — on failure the
+# proxy keeps whatever bridges.env already exists.
+echo "   • Selecting reachable bridges (host-side bridge-eval; ~2-3 min)..."
+if systemctl --user restart nice-dns-fetch-bridges.service 2>/dev/null; then
+  echo "   ✓ Bridges selected → ~/.config/nice-dns/bridges.env"
+else
+  echo "   ! bridge-eval manage run failed; proxy will use existing bridges.env (if any)." >&2
+fi
+
 systemctl --user restart nice-dns-pod.service
 echo "   ✓ Services started."

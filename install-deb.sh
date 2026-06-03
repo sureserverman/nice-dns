@@ -338,11 +338,11 @@ else
 fi
 
 cd "$WORKDIR"
-# Fetch default obfs4 bridges from the Tor Project on first install. Idempotent
-# — re-running the installer reuses ~/.config/nice-dns/bridges.env. Required by
-# the tor-haproxy / tor-socat containers, which fail-fast if BRIDGE1/BRIDGE2
-# are unset.
-./scripts/fetch-bridges.sh
+# Bridge selection is no longer done here. persistent-podman.sh installs the
+# host-side bridge-eval "manage" service (fetch Moat + rdsys distributor,
+# accumulate a persistent pool, test real obfs4 usability, write the
+# *reachable* set to ~/.config/nice-dns/bridges.env) and runs it once before
+# the stack starts.
 # --dns 1.1.1.1 ensures the pi-hole image build's `pihole -g` precheck
 # always succeeds, even on hosts whose default resolver is partial.
 podman build --dns 1.1.1.1 -t unbound unbound/
