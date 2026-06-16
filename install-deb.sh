@@ -85,6 +85,39 @@ EOF
   fi
 }
 
+# Podman 5.x defaults the network firewall_driver to "nftables", but the
+# netavark nftables driver was only added in netavark 1.9.0. The sejug/podman
+# PPA ships Podman 5.x and aardvark-dns but NOT netavark, so on stock Ubuntu the
+# resolved netavark stays at 1.4.0 (iptables-only). With that skew every rootless
+# podman bridge fails to come up — the pod's infra container exits 125 with
+# "netavark: nftables support presently not available", which cascades into
+# dependency failures on tor/unbound/pi-hole and the whole stack stays down.
+#
+# Pin the rootless firewall_driver to whatever the installed netavark can
+# actually do. Written as a scoped containers.conf.d drop-in: it never touches
+# the system /etc/containers/containers.conf nor the user's own containers.conf,
+# and teardown removes it so a later netavark upgrade isn't shadowed.
+configure_netavark_firewall_driver() {
+  local drop_in nv_ver
+  drop_in="$HOME/.config/containers/containers.conf.d/90-nice-dns-firewall.conf"
+  nv_ver=$(podman info --format '{{.Host.NetworkBackendInfo.Version}}' 2>/dev/null \
+    | grep -oP '\d+\.\d+\.\d+' || echo "0.0.0")
+  # netavark >= 1.9.0 has the nftables driver; leave Podman's default alone.
+  if printf '1.9.0\n%s\n' "$nv_ver" | sort -V -C; then
+    rm -f "$drop_in"
+    return 0
+  fi
+  mkdir -p "$(dirname "$drop_in")"
+  cat > "$drop_in" <<'EOF'
+# Installed by nice-dns. netavark < 1.9.0 has no nftables firewall driver, but
+# Podman 5.x defaults firewall_driver to "nftables" — the mismatch makes every
+# rootless bridge fail with "nftables support presently not available". Pin the
+# driver this netavark can actually use. Removed by `install-deb.sh uninstall`.
+[network]
+firewall_driver = "iptables"
+EOF
+}
+
 # Reverse every piece of nice-dns state installed by the script (user-mode
 # quadlets, containers/images/network, the system-level custom-dns-deb unit,
 # and a stale resolv.conf pointer). System-wide tweaks (PPA pin, sysctl,
@@ -111,7 +144,8 @@ teardown() {
         "$HOME/.config/containers/systemd/nice-dns.network" \
         "$HOME/.config/systemd/user/nice-dns-warmup.service" \
         "$HOME/.local/bin/nice-dns-warmup" \
-        "$HOME/.config/nice-dns/warmup-domains.txt"
+        "$HOME/.config/nice-dns/warmup-domains.txt" \
+        "$HOME/.config/containers/containers.conf.d/90-nice-dns-firewall.conf"
   systemctl --user daemon-reload 2>/dev/null || true
 
   # Containers, images, network
@@ -324,6 +358,10 @@ systemctl --user daemon-reexec
 
 # Pick up subuid/subgid and cgroup delegation changes
 podman system migrate
+
+# Reconcile the rootless firewall driver with the installed netavark's
+# capabilities before the stack starts (see function comment above).
+configure_netavark_firewall_driver
 
 # Work from an in-tree checkout if present; otherwise fetch a fresh clone
 # into a scoped temp dir so we never touch any unrelated 'nice-dns/' the
