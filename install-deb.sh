@@ -309,6 +309,13 @@ profile passt /usr/bin/passt{,.avx2} flags=(attach_disconnected) {
   @{PROC}/[0-9]*/ns/ r,
   @{PROC}/sys/net/** r,
   @{run}/user/@{uid}/containers/** rwlk,
+  # Standalone (non-pod) containers run with --userns=keep-id place their netns
+  # under run/user/<uid>/netns/ rather than the containers/ subtree; pasta must
+  # read that dir to enter the namespace. Without this, the host-side bridge-eval
+  # "manage" job (nice-dns-fetch-bridges.service) dies with pasta "netns dir
+  # open: Permission denied" (exit 126), so bridges.env never refreshes.
+  @{run}/user/@{uid}/netns/ r,
+  @{run}/user/@{uid}/netns/** rwlk,
 
   owner /tmp/**				w,
   owner @{HOME}/**			w,
