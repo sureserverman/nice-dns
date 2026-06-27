@@ -157,9 +157,16 @@ ExecStart=/usr/bin/podman run --rm --userns=keep-id --pull=missing \\
   --entrypoint /bin/bridge-eval \\
   docker.io/sureserver/tor-${VARIANT}:latest \\
   -pool /pool/bridge-pool.tsv -out /pool/bridges.env -count 3 -window 150 -grace 20
-# Don't fail-cascade the stack if a run finds no reachable bridges (exit 1):
-# the proxy keeps using whatever was last written to bridges.env.
+# A run that finds no reachable bridges exits 1; tolerate that so a transient
+# distributor/Tor outage doesn't fail-cascade WHEN a previously-written
+# bridges.env still has usable bridges to fall back on.
 SuccessExitStatus=0 1
+# But if there is nothing to fall back on (no BRIDGE1 in bridges.env), the proxy
+# starts bridgeless and Tor never bootstraps. Surface THAT loudly as a unit
+# failure instead of a silent success, so it shows in \`systemctl --user status\`
+# / the journal. tor-haproxy only Wants= this unit, so a failure here is visible
+# but does not block the proxy from starting.
+ExecStartPost=/usr/bin/sh -c 'grep -q "^BRIDGE1=" %h/.config/nice-dns/bridges.env 2>/dev/null || { echo "nice-dns-fetch-bridges: NO usable bridges selected and no prior bridges.env to fall back on -- tor-haproxy will start WITHOUT bridges and Tor will NOT bootstrap. Likely cause: the bridge fetch could not reach bridges.torproject.org (e.g. a VPN DNS-lockdown such as Mullvad custom DNS=127.0.0.1, or no network). Fix connectivity, then: systemctl --user restart nice-dns-fetch-bridges.service" >&2; exit 1; }'
 
 [Install]
 WantedBy=default.target
