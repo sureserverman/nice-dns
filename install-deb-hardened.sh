@@ -92,12 +92,15 @@ net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
   sudo sysctl --system >/dev/null
 
-  if [ -f /etc/default/grub ] || [ -d /etc/default/grub.d ]; then
-    sudo mkdir -p /etc/default/grub.d
-    sudo tee /etc/default/grub.d/99-nice-dns-ipv6.cfg >/dev/null <<'EOF'
-GRUB_CMDLINE_LINUX="$GRUB_CMDLINE_LINUX ipv6.disable=1"
-EOF
-
+  # sysctl-only on purpose. The kernel cmdline flag ipv6.disable=1 (shipped by
+  # earlier versions as a grub.d drop-in) removes AF_INET6 entirely, so any
+  # software that creates an IPv6 socket fails with EAFNOSUPPORT (os error 97)
+  # — observed bricking Mullvad's userspace WireGuard (gotatun binds ::), which
+  # then fail-closes the whole machine at boot. The sysctl above gives the same
+  # posture (no v6 addresses, no v6 traffic) while keeping sockets creatable.
+  # Remove the legacy drop-in left by previous installs.
+  if [ -f /etc/default/grub.d/99-nice-dns-ipv6.cfg ]; then
+    sudo rm /etc/default/grub.d/99-nice-dns-ipv6.cfg
     if command -v update-grub >/dev/null 2>&1; then
       sudo update-grub
     fi
