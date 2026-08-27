@@ -183,6 +183,7 @@ start_or_create_stack() {
     -c 1 -m 256M \
     -e TZ=Europe/London \
     -e DNS1=172.31.240.251#5335 \
+    -e FTLCONF_dns_upstreams=172.31.240.251#5335 \
     -e DISABLE_GITHUB_UPDATES=true \
     pi-hole:latest || return 1
 
