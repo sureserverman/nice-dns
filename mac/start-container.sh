@@ -13,7 +13,17 @@ TOR_IMAGE="docker.io/sureserver/tor-${VARIANT}:latest"
 NETWORK_NAME=dnsnet
 NETWORK_SUBNET=172.31.240.248/29
 NETWORK_STATE_DIR="${HOME}/Library/Application Support/com.apple.container/networks/${NETWORK_NAME}"
+# Addresses the rest of the stack is wired for. These are not requests —
+# Apple's runtime has no --ip flag (apple/container#282) — they are what the
+# vmnet allocator hands out when the network is created fresh and containers
+# are created in the order below: it allocates sequentially from the subnet
+# base, and .249 is the gateway. Verified deterministic across repeated
+# create/destroy cycles. unbound.conf's forward-addr, pi-hole's upstream, and
+# start-container-root.sh's set_local_dns all hardcode these, so the stack is
+# only correct when the allocator actually produces them.
 PIHOLE_IP=172.31.240.250
+UNBOUND_IP=172.31.240.251
+TOR_IP=172.31.240.252
 TOR_CONTAINER="tor-${VARIANT}"
 HEALTH_PROBE=cloudflare.com
 BRIDGES_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges.env"
@@ -113,6 +123,31 @@ container_running() {
 
 container_exists() {
   container list --all 2>/dev/null | grep -qw "$1"
+}
+
+container_ip() {
+  container inspect "$1" 2>/dev/null \
+    | sed -nE 's@.*"ipv4Address" *: *"([0-9.]+).*@\1@p' | head -n 1
+}
+
+# True only when all three containers are running AND sitting on the addresses
+# the configs hardcode. Apple's allocator assigns sequentially and does not
+# reuse a freed address immediately, so `container start` on an existing
+# container can hand it a different address than it had — which silently
+# repoints unbound at whatever now occupies the old one. Checking is cheap;
+# guessing is what produced a chain wired pi-hole -> itself.
+stack_addressed_correctly() {
+  container_running pi-hole || return 1
+  container_running unbound || return 1
+  container_running "$TOR_CONTAINER" || return 1
+  [[ "$(container_ip pi-hole)"          == "$PIHOLE_IP"  ]] || return 1
+  [[ "$(container_ip unbound)"          == "$UNBOUND_IP" ]] || return 1
+  [[ "$(container_ip "$TOR_CONTAINER")" == "$TOR_IP"     ]] || return 1
+  return 0
+}
+
+log_addresses() {
+  log "addresses: pi-hole=$(container_ip pi-hole) unbound=$(container_ip unbound) ${TOR_CONTAINER}=$(container_ip "$TOR_CONTAINER") (want ${PIHOLE_IP}/${UNBOUND_IP}/${TOR_IP})"
 }
 
 network_exists() {
@@ -231,7 +266,21 @@ ensure_container() {
   fi
 
   if container run -d --name "$name" --network "$NETWORK_NAME" "$@" >>"$LOG" 2>&1; then
-    log "created container $name"
+    # Block until this container has actually been assigned an address before
+    # returning. Addresses are handed out in creation order, so callers must
+    # not race: creating all three back-to-back within the same second was
+    # observed to produce them out of order (pi-hole .252, unbound .250,
+    # tor .251) and silently mis-wire the chain.
+    local tries=0
+    until [[ -n "$(container_ip "$name")" ]]; do
+      tries=$((tries + 1))
+      if (( tries >= 30 )); then
+        log "$name created but never got an address"
+        return 1
+      fi
+      sleep 1
+    done
+    log "created container $name at $(container_ip "$name")"
     return 0
   fi
 
@@ -405,12 +454,40 @@ fi
 # 5) Tor/bootstrap lag is normal. If the default path cannot start the reused
 # stack cleanly, rebuild the stack once. This avoids dnsnet recreation on
 # ordinary logins while still giving the system a single recovery shot.
-if ! start_or_create_stack; then
-  log "default start path failed; attempting one rebuild"
+# 5) Bring the stack up on the addresses the configs are wired for.
+#
+# Apple's runtime offers no way to request an address (apple/container#282),
+# but the vmnet allocator is not arbitrary: on a freshly created network it
+# hands out the subnet sequentially, so creating pi-hole, unbound and tor in
+# that order yields .250/.251/.252 every time. Measured across repeated
+# create/destroy cycles, identical on each. That is the whole guarantee the
+# hardcoded addresses rest on, and it only holds for containers created
+# against a fresh network — `container start` on an existing container may
+# move it, because freed addresses are not reused immediately.
+#
+# So: if everything is already running on the right addresses, leave it
+# completely alone. Otherwise tear down the network and recreate in order,
+# which is the only operation that restores them. There is no middle path —
+# recreating a single container is what scrambles the assignment.
+if stack_addressed_correctly; then
+  log "stack running on expected addresses; leaving it alone"
+else
+  log_addresses
+  log "addresses not as configured; rebuilding stack in allocation order"
   if ! rebuild_stack; then
-    log "rebuild path failed; keeping fail-closed DNS pin"
+    log "rebuild path failed; leaving system resolver untouched"
     exit 1
   fi
+  if ! stack_addressed_correctly; then
+    # Refuse to run a mis-wired chain. unbound would forward to whatever now
+    # holds .252 — which has been observed to be unbound itself — and pi-hole
+    # would forward to whatever holds .251. Both fail in ways that look like
+    # upstream latency rather than a wiring fault.
+    log_addresses
+    log "rebuild did not produce the expected addresses; refusing to continue"
+    exit 1
+  fi
+  log "stack rebuilt on expected addresses"
 fi
 
 # 5a) Let tor finish bootstrapping before judging anything, and judge the
