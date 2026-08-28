@@ -410,8 +410,23 @@ cd "$WORKDIR"
 # reuses a cached base forever — so a reinstall could keep producing images
 # built on a months-old base. "newer" rather than "always" so an unchanged
 # base costs a digest check instead of a full re-download.
-podman build --pull=newer --dns 1.1.1.1 -t unbound unbound/
-podman build --pull=newer --dns 1.1.1.1 -t pi-hole pihole/
+#
+# --no-cache because --pull only governs the FROM base, not the RUN layers.
+# Our RUN steps fetch from the network — pihole/Containerfile runs `pihole -g`
+# for the gravity blocklists and `apk -U upgrade` for security updates,
+# unbound/Containerfile runs post-install.sh — so a replayed layer means an
+# image whose blocklists and package updates are as old as the build that
+# first populated the cache.
+#
+# In practice the teardown above removes the unbound and pi-hole images, and
+# on podman that also invalidates their cached layers, so this was mostly
+# covered already. "Mostly" is the problem: it made freshness a side effect of
+# teardown ordering and of podman's cache-invalidation behaviour rather than
+# something this build actually asks for. Measured on podman 5.8.1 with a
+# probe image whose RUN step records a timestamp: rebuilding while the image
+# still exists replays the cached layer (identical stamp), --no-cache does not.
+podman build --pull=newer --no-cache --dns 1.1.1.1 -t unbound unbound/
+podman build --pull=newer --no-cache --dns 1.1.1.1 -t pi-hole pihole/
 podman pull "docker.io/sureserver/tor-${VARIANT}:latest"
 ./deb/persistent-podman.sh "$VARIANT"
 # Note: pi-hole's gravity DB is built at IMAGE BUILD time (see pihole/Containerfile),
