@@ -18,6 +18,26 @@ TOR_CONTAINER="tor-${VARIANT}"
 HEALTH_PROBE=cloudflare.com
 BRIDGES_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges.env"
 FETCH_BRIDGES_BIN=/usr/local/sbin/nice-dns-fetch-bridges.sh
+# Tor's DataDirectory, bind-mounted so it survives container recreation.
+# The image puts DataDirectory under $DATA_DIR (/app/data), so mounting that
+# one path carries cached-microdesc-consensus, cached-microdescs, the guard
+# selection in `state`, and pt_state for the obfs4 transports — ~50MB that
+# Tor otherwise re-downloads from scratch. A cold bootstrap through obfs4 can
+# exceed 10 minutes on a degraded link, so surviving a recreate is the
+# difference between a stack that comes back and one that doesn't.
+# Paired with the guard-sample pruning in prune_guard_state(): persisting this
+# directory is only safe while stale bridges are cleared out of it.
+# Apple's runtime maps the host owner onto the container's uid, so no
+# chown dance is needed here.
+TOR_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/tor-${VARIANT}"
+# Fingerprint of the bridge triple baked into the running tor container.
+# Apple's runtime bakes -e env at `container run` and reuses it on `container
+# start`, so the only way to apply new bridges is to recreate — but recreating
+# when nothing changed throws away a working Tor for no reason.
+BRIDGE_FP_FILE="${TOR_STATE_DIR}/.bridge-fingerprint"
+# Set when tor fails to bootstrap; makes the *next* run rotate bridges.
+# Bridges are only rotated on evidence they don't work, never on a timer.
+BRIDGE_SENTINEL="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/bootstrap-failed-${VARIANT}"
 BRIDGE1=""
 BRIDGE2=""
 BRIDGE3=""
@@ -37,6 +57,49 @@ load_bridges() {
   BRIDGE2="$(sed -n 's/^BRIDGE2=//p' "$BRIDGES_FILE" | head -n 1)"
   BRIDGE3="$(sed -n 's/^BRIDGE3=//p' "$BRIDGES_FILE" | head -n 1)"
   [[ -n "$BRIDGE1" && -n "$BRIDGE2" && -n "$BRIDGE3" ]]
+}
+
+bridge_fingerprint() {
+  printf '%s\n%s\n%s\n' "$BRIDGE1" "$BRIDGE2" "$BRIDGE3" | shasum -a 256 | cut -d' ' -f1
+}
+
+# Tor's DataDirectory holds two kinds of state with opposite lifetimes:
+#
+#   cached-*  — network consensus and microdescriptors. Independent of which
+#               bridges we use, ~50MB, and the expensive thing to re-fetch.
+#               Always worth keeping.
+#   state     — the *sampled guard set*. Bridge-specific. Bridges that rotate
+#               out are marked listed=0 but stay in the sample, and Tor keeps
+#               retrying them. With NumPrimaryGuards 2 (see the image's torrc)
+#               a sample carrying dead bridges starves the live ones: tor still
+#               reports "bootstrapped" while its circuits carry no data, and
+#               every haproxy backend — including the clearnet ones — fails its
+#               Layer7 check.
+#
+# So persisting the DataDirectory is only safe if the guard sample is dropped
+# whenever the bridge set changes. Keep the caches, discard the sample.
+prune_guard_state() {
+  rm -f "${TOR_STATE_DIR}/tor/state"
+}
+
+tor_bootstrapped() {
+  container logs "$TOR_CONTAINER" 2>&1 | grep -qi 'bootstrapped successfully'
+}
+
+# Bootstrap is judged on tor's own output rather than on end-to-end DNS, so a
+# slow-but-working Tor is not mistaken for a bad bridge set.
+wait_for_tor_bootstrap() {
+  local tries=0
+  until tor_bootstrapped; do
+    tries=$((tries + 1))
+    if (( tries >= 60 )); then
+      log "tor did not bootstrap within 300s"
+      return 1
+    fi
+    sleep 5
+  done
+  log "tor bootstrapped"
+  return 0
 }
 
 dns_healthy() {
@@ -191,26 +254,43 @@ start_or_create_stack() {
     -c 1 -m 256M \
     unbound:latest || return 1
 
-  # Force-recreate the tor container so it picks up freshly-fetched bridges
-  # via -e BRIDGE*. Apple's runtime bakes env at `container run` and reuses
-  # it on `container start`, so without this drop+rerun an existing tor
-  # container would keep the BRIDGE* values from its original install-time
-  # `container run`. The teardown cost (~10-15s of VM rebuild) is dwarfed
-  # by the per-boot Tor bootstrap that happens either way. pi-hole and
-  # unbound aren't bridge-dependent, so they go through the normal
-  # ensure_container reuse path.
-  if container_exists "$TOR_CONTAINER"; then
-    container stop "$TOR_CONTAINER" >/dev/null 2>&1 || true
-    container rm "$TOR_CONTAINER" >/dev/null 2>&1 || true
-    log "removed existing $TOR_CONTAINER to apply freshly-fetched bridges"
+  # Recreate the tor container only when the bridge set actually changed.
+  # Apple's runtime bakes -e env at `container run` and reuses it on
+  # `container start`, so a changed bridge set does require a drop+rerun —
+  # but an unchanged one does not, and recreating regardless was throwing
+  # away a bootstrapped Tor on every boot. pi-hole and unbound aren't
+  # bridge-dependent, so they go through the normal ensure_container reuse
+  # path.
+  mkdir -p "$TOR_STATE_DIR"
+  local want_fp have_fp=""
+  want_fp="$(bridge_fingerprint)"
+  [[ -f "$BRIDGE_FP_FILE" ]] && have_fp="$(cat "$BRIDGE_FP_FILE" 2>/dev/null || true)"
+
+  if container_exists "$TOR_CONTAINER" && [[ -n "$have_fp" && "$want_fp" == "$have_fp" ]]; then
+    log "bridge set unchanged; reusing existing $TOR_CONTAINER"
+  else
+    if container_exists "$TOR_CONTAINER"; then
+      container stop "$TOR_CONTAINER" >/dev/null 2>&1 || true
+      container rm "$TOR_CONTAINER" >/dev/null 2>&1 || true
+      log "removed existing $TOR_CONTAINER to apply changed bridge set"
+    fi
+    if [[ -n "$have_fp" && "$want_fp" != "$have_fp" ]]; then
+      prune_guard_state
+      log "bridge set changed; dropped stale guard sample (consensus cache kept)"
+    fi
   fi
 
   ensure_container "$TOR_CONTAINER" \
     -c 1 -m 512M \
+    -v "${TOR_STATE_DIR}:/app/data" \
     -e "BRIDGE1=${BRIDGE1}" \
     -e "BRIDGE2=${BRIDGE2}" \
     -e "BRIDGE3=${BRIDGE3}" \
     "$TOR_IMAGE" || return 1
+
+  # Record what the running container was actually started with, so the next
+  # boot can tell "same bridges, leave it alone" from "bridges changed".
+  printf '%s\n' "$want_fp" > "$BRIDGE_FP_FILE"
 
   return 0
 }
@@ -250,24 +330,39 @@ mkdir -p "$(dirname "$LOG")"
 
 log "starting nice-dns runtime (variant=$VARIANT)"
 
-# 0) Refresh bridges from Tor Moat (latency-probed, fastest /24-distinct 3),
-# then load BRIDGE1/2/3 into shell vars for the `container run -e BRIDGE*`
-# call below. The LaunchAgent only fires on RunAtLoad (login), KeepAlive=
-# false, so this runs once per boot. Atomic-mv in fetch-bridges.sh keeps
-# the previous bridges.env intact on network failure. Apple's runtime bakes
-# -e env at `container run` time and `container start` reuses it — so to
-# apply fresh bridges we recreate the tor container at every boot in
-# start_or_create_stack below. The recreate cost is dwarfed by Tor's
-# per-boot bootstrap, which happens regardless.
-if [[ -x "$FETCH_BRIDGES_BIN" ]]; then
-  log "refreshing bridges via $FETCH_BRIDGES_BIN --force"
-  "$FETCH_BRIDGES_BIN" --force >>"$LOG" 2>&1 \
-    || log "bridge refetch failed — keeping previous bridges.env"
-else
-  log "warning: $FETCH_BRIDGES_BIN not installed; bridges will not refresh on boot"
-fi
+# 0) Load BRIDGE1/2/3 for the `container run -e BRIDGE*` call below, fetching
+# a new set only when there's a reason to.
+#
+# This used to refetch with --force on every boot. That defeats itself: each
+# rotation invalidates the guard reputation Tor has built up, and (now that
+# the DataDirectory persists) leaves delisted bridges accumulating in tor's
+# sampled guard set until circuits stop carrying data entirely. Bridges do
+# still need to rotate — obfs4 is what gets Tor past a VLESS/REALITY
+# transparent proxy, and individual bridges die — but rotation should be a
+# response to failure, not a scheduled event. So: reuse the known set, and
+# refetch only when it's missing/incomplete or the previous run failed to
+# bootstrap (BRIDGE_SENTINEL, set at the bottom of this script).
+mkdir -p "$(dirname "$BRIDGE_SENTINEL")"
+rotate_bridges=0
 if ! load_bridges; then
-  log "bridges.env missing or incomplete; tor container will fail to start"
+  rotate_bridges=1
+  log "bridges.env missing or incomplete; fetching a set"
+elif [[ -f "$BRIDGE_SENTINEL" ]]; then
+  rotate_bridges=1
+  log "previous run failed to bootstrap; rotating bridges"
+fi
+
+if (( rotate_bridges )); then
+  if [[ -x "$FETCH_BRIDGES_BIN" ]]; then
+    "$FETCH_BRIDGES_BIN" --force >>"$LOG" 2>&1 \
+      || log "bridge refetch failed — keeping previous bridges.env"
+    load_bridges || log "bridges.env still incomplete after fetch; tor will fail to start"
+  else
+    log "warning: $FETCH_BRIDGES_BIN not installed; cannot rotate bridges"
+  fi
+  rm -f "$BRIDGE_SENTINEL"
+else
+  log "reusing existing bridge set (bootstrapped cleanly last run)"
 fi
 
 # 1) apiserver + default kernel must be up. `container system start` is
@@ -316,17 +411,52 @@ if ! start_or_create_stack; then
     log "rebuild path failed; keeping fail-closed DNS pin"
     exit 1
   fi
-elif ! wait_for_chain; then
-  log "default start path unhealthy; attempting one rebuild"
-  if ! rebuild_stack; then
-    log "rebuild path failed; keeping fail-closed DNS pin"
-    exit 1
-  fi
 fi
 
+# 5a) Let tor finish bootstrapping before judging anything, and judge the
+# bridge set on tor's own output rather than on end-to-end DNS. A slow
+# upstream or a cold cache must not be read as "bad bridges" — that
+# misdiagnosis is what made the old unconditional refetch rotate a working
+# set away every boot. Rotation is deferred to the next run so this one
+# still gets to recover on what it has.
+tor_ok=0
+if wait_for_tor_bootstrap; then
+  tor_ok=1
+else
+  touch "$BRIDGE_SENTINEL"
+  log "armed bridge rotation for next run"
+fi
+
+# 5b) A chain fault is only worth a rebuild when tor is the thing that's
+# broken. rebuild_stack tears down and recreates every container, so running
+# it against a bootstrapped tor discards the one piece that is expensive to
+# rebuild and cheap to keep — observed live: a tor that had bootstrapped in
+# 101s and was answering DoT was destroyed by this path, and its replacement
+# then failed to bootstrap at all. If tor is up, leave the stack alone and
+# let the fault surface as an unhealthy chain instead.
 if ! wait_for_chain; then
-  log "rebuild path unhealthy; keeping fail-closed DNS pin"
-  exit 1
+  if (( tor_ok )); then
+    # Deliberately stop here rather than rebuilding *or* pinning. Rebuilding
+    # would discard a working tor. Pinning is not safe yet either: the root
+    # helper's set_local_dns hardcodes PIHOLE_IP=172.31.240.250, but Apple's
+    # runtime reassigns container addresses on every start, so the pin can
+    # point at an address nothing is listening on — that is DNS loss with
+    # none of the privacy benefit. Until the stack learns its own addresses
+    # at runtime, exiting leaves the system resolver untouched.
+    log "chain unhealthy but tor is bootstrapped; not rebuilding (would discard a working tor)"
+    log "not pinning DNS: pin target is hardcoded and container IPs are not stable"
+    exit 1
+  else
+    log "chain unhealthy and tor never bootstrapped; attempting one rebuild"
+    if ! rebuild_stack; then
+      log "rebuild path failed; keeping fail-closed DNS pin"
+      exit 1
+    fi
+    if ! wait_for_chain; then
+      log "rebuild path unhealthy; keeping fail-closed DNS pin"
+      exit 1
+    fi
+  fi
 fi
 
 # 6) Privileged post-start (set system DNS to pi-hole).
