@@ -110,8 +110,28 @@ if ! command -v brew >/dev/null; then
 fi
 
 brew update
+
+# Install what's missing AND upgrade what's outdated. The previous form was
+# `brew list ... || brew install`, which only ever installed: once a host had
+# `container` at any version, every later reinstall kept it. Observed in the
+# wild on a host that had been installed months earlier — still running
+# container 0.11.0 while 1.2.2 was current, i.e. five minor releases of
+# networking and lifecycle fixes behind, with the installer reporting success.
+#
+# `brew outdated --quiet` lists only formulae with a newer version available,
+# so an up-to-date host does no work here.
 for pkg in git container; do
-  brew list --formula "$pkg" >/dev/null 2>&1 || brew install "$pkg"
+  if ! brew list --formula "$pkg" >/dev/null 2>&1; then
+    brew install --formula "$pkg"
+  elif brew outdated --formula --quiet 2>/dev/null | grep -qx "$pkg"; then
+    if [ "$pkg" = container ] && command -v container >/dev/null 2>&1; then
+      # Stop the runtime before its binaries are replaced, so the
+      # launchd-registered apiserver isn't left pointing at a path brew is
+      # about to rewrite. `container system start` below re-registers it.
+      container system stop >/dev/null 2>&1 || true
+    fi
+    brew upgrade --formula "$pkg"
+  fi
 done
 
 # Apple's container builder is arm64 native, but its VM mounts the host's
