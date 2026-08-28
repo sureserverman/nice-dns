@@ -173,9 +173,20 @@ sed -i '' -e 's|^    interface: 127\.0\.0\.1$|    interface: 0.0.0.0|' \
 # without this the builder silently reuses whatever base it cached the first
 # time — so a reinstall months later can still produce an image built on a
 # months-old base while reporting success.
+#
+# --no-cache is the other half, and --pull alone is not enough. The builder's
+# layer cache outlives the images themselves: deleting an image and rebuilding
+# still replays cached RUN layers, so their *output* is whatever the first
+# build produced. That matters here because our RUN steps fetch from the
+# network — pihole/Containerfile runs `pihole -g` to download the gravity
+# blocklists and `apk -U upgrade` to apply security updates, and
+# unbound/Containerfile runs post-install.sh. Cached, a reinstall yields an
+# image whose blocklists and package updates are as old as the first install.
+# The cost is a slower install; the alternative is an installer that claims
+# to have built a current image and hasn't.
 "$CONTAINER_BIN" builder start >/dev/null 2>&1 || true
-"$CONTAINER_BIN" build --pull --dns 1.1.1.1 -t unbound unbound/
-"$CONTAINER_BIN" build --pull --dns 1.1.1.1 -t pi-hole pihole/
+"$CONTAINER_BIN" build --pull --no-cache --dns 1.1.1.1 -t unbound unbound/
+"$CONTAINER_BIN" build --pull --no-cache --dns 1.1.1.1 -t pi-hole pihole/
 
 # Builder VM isn't needed once images are built; reclaim ~2 GB RAM. It will
 # auto-start again on the next `container build`.
