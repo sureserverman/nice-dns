@@ -434,7 +434,15 @@ log "container system ready"
 # variant, keep the existing network and containers untouched. Bridge
 # refresh-and-apply happens at the next host boot via the bind-mount path —
 # no mid-session container churn.
-if container_running "$TOR_CONTAINER" && dns_healthy; then
+#
+# The check used to be `container_running "$TOR_CONTAINER" && dns_healthy`,
+# which asked about tor and nobody else. That exits 0 on a stack that is
+# actually broken: with unbound deleted, pi-hole still answered the probe
+# from cache, so the agent reported "already healthy" and returned without
+# ever recreating it. dns_healthy alone cannot distinguish a working chain
+# from a warm cache in front of a missing one. Require every container to be
+# running on the address the configs are wired for as well.
+if stack_addressed_correctly && dns_healthy; then
   run_root_helper post || log "post-start helper failed"
   log "stack already healthy (variant=$VARIANT) — reusing existing state"
   exit 0
