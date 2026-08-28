@@ -41,6 +41,17 @@ teardown() {
       "$bin" stop "$c" >/dev/null 2>&1 || true
       "$bin" rm   "$c" >/dev/null 2>&1 || true
     done
+    # Drop the images too, not just the containers. Locally built images are
+    # rebuilt below; the pulled tor images are re-pulled. Leaving them behind
+    # is what let a stale tor image survive repeated reinstalls. Both the bare
+    # and registry-qualified names are removed because the local builds are
+    # tagged bare (`-t unbound`) while the tor images carry their full
+    # docker.io/... reference.
+    for i in pi-hole unbound \
+             docker.io/sureserver/tor-haproxy:latest \
+             docker.io/sureserver/tor-socat:latest; do
+      "$bin" image rm "$i" >/dev/null 2>&1 || true
+    done
     "$bin" network rm dnsnet >/dev/null 2>&1 || true
   fi
 
@@ -156,9 +167,15 @@ sed -i '' -e 's|^    interface: 127\.0\.0\.1$|    interface: 0.0.0.0|' \
 # --dns 1.1.1.1 because Apple's container builder VM's default DNS forwarding
 # is unreliable when the host network's DNS is censoring or partial; the
 # pi-hole image build does an upstream pihole -g which needs working DNS.
+#
+# --pull re-fetches the FROM base on every install. Both Containerfiles build
+# on a floating :latest tag (sureserver/hardened-unbound, pihole/pihole), and
+# without this the builder silently reuses whatever base it cached the first
+# time — so a reinstall months later can still produce an image built on a
+# months-old base while reporting success.
 "$CONTAINER_BIN" builder start >/dev/null 2>&1 || true
-"$CONTAINER_BIN" build --dns 1.1.1.1 -t unbound unbound/
-"$CONTAINER_BIN" build --dns 1.1.1.1 -t pi-hole pihole/
+"$CONTAINER_BIN" build --pull --dns 1.1.1.1 -t unbound unbound/
+"$CONTAINER_BIN" build --pull --dns 1.1.1.1 -t pi-hole pihole/
 
 # Builder VM isn't needed once images are built; reclaim ~2 GB RAM. It will
 # auto-start again on the next `container build`.
@@ -195,6 +212,17 @@ BRIDGE3="$(sed -n 's/^BRIDGE3=//p' "$_bridges_file")"
 : "${BRIDGE1:?bridges.env did not export BRIDGE1}"
 : "${BRIDGE2:?bridges.env did not export BRIDGE2}"
 : "${BRIDGE3:?bridges.env did not export BRIDGE3}"
+# The tor proxy is the one image we don't build — it's pulled from Docker Hub.
+# `container run` has no --pull flag and reuses any locally cached copy without
+# consulting the registry, so an install on a host that ever ran nice-dns would
+# silently keep an old image indefinitely. Observed in practice: a host running
+# a four-month-old tor-haproxy (ConfluxEnabled 0, NumPrimaryGuards 2, timeout
+# server 60s) long after those were fixed upstream, which showed up as multi-
+# second cold DNS latency with nothing wrong in this repo. Pull explicitly so
+# every install starts from the current published image; this mirrors what
+# install-deb.sh already does with `podman pull`.
+"$CONTAINER_BIN" image pull "docker.io/sureserver/tor-${VARIANT}:latest"
+
 "$CONTAINER_BIN" run -d --name "tor-${VARIANT}" --network dnsnet \
   -c 1 -m 512M \
   -e "BRIDGE1=${BRIDGE1}" \

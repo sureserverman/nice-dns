@@ -157,6 +157,16 @@ teardown() {
     podman rm -f "$name" 2>/dev/null || true
     podman image rm -f "$name" 2>/dev/null || true
   done
+  # The loop above removes the locally built images (tagged bare: unbound,
+  # pi-hole) but not the pulled tor images: those are stored under their full
+  # docker.io/sureserver/... reference, which a bare name does not match, so
+  # they survived every reinstall. The pull on install refreshes them anyway,
+  # but leaving them here contradicts the "Containers, images, network"
+  # comment above and keeps dead layers on disk after an uninstall.
+  for ref in docker.io/sureserver/tor-haproxy:latest \
+             docker.io/sureserver/tor-socat:latest; do
+    podman image rm -f "$ref" 2>/dev/null || true
+  done
   podman network rm dnsnet 2>/dev/null || true
 
   # System-level custom-dns-deb.service
@@ -393,8 +403,15 @@ cd "$WORKDIR"
 # the stack starts.
 # --dns 1.1.1.1 ensures the pi-hole image build's `pihole -g` precheck
 # always succeeds, even on hosts whose default resolver is partial.
-podman build --dns 1.1.1.1 -t unbound unbound/
-podman build --dns 1.1.1.1 -t pi-hole pihole/
+#
+# --pull=newer re-fetches the FROM base when the registry has a newer one.
+# Both Containerfiles build on a floating :latest tag (sureserver/hardened-
+# unbound, pihole/pihole) and podman build defaults to --pull=missing, which
+# reuses a cached base forever — so a reinstall could keep producing images
+# built on a months-old base. "newer" rather than "always" so an unchanged
+# base costs a digest check instead of a full re-download.
+podman build --pull=newer --dns 1.1.1.1 -t unbound unbound/
+podman build --pull=newer --dns 1.1.1.1 -t pi-hole pihole/
 podman pull "docker.io/sureserver/tor-${VARIANT}:latest"
 ./deb/persistent-podman.sh "$VARIANT"
 # Note: pi-hole's gravity DB is built at IMAGE BUILD time (see pihole/Containerfile),
