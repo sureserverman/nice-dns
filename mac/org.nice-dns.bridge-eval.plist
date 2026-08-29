@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>org.nice-dns.bridge-eval</string>
+
+    <!-- Refresh the bridge selection out-of-band. Deliberately NOT wired into
+         the start-container agent: the usability probe costs ~150s, and
+         measured on this stack, paying it at startup pushed tor bootstrap
+         from ~8s to ~87s. Running it here means the proxy always starts on
+         the bridges already selected, and this improves the next start. -->
+
+    <!-- Once at login, then daily. Bridges rot on the order of days, not
+         minutes, so a tighter interval buys nothing and burns Tor circuits. -->
+    <key>RunAtLoad</key><true/>
+    <key>StartInterval</key>
+    <integer>86400</integer>
+
+    <key>UserName</key>
+    <string>__USERNAME__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/usr/local/sbin/nice-dns-bridge-eval.sh</string>
+      <string>__VARIANT__</string>
+    </array>
+
+    <!-- The script keeps its own rolling log; this catches anything that dies
+         before it gets that far (missing interpreter, bad exec). -->
+    <key>StandardOutPath</key>
+    <string>/Users/__USERNAME__/Library/Logs/nice-dns-bridge-eval.launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/__USERNAME__/Library/Logs/nice-dns-bridge-eval.launchd.log</string>
+
+    <!-- One long-running probe at a time; never restart on exit. -->
+    <key>AbandonProcessGroup</key><true/>
+    <key>KeepAlive</key><false/>
+  </dict>
+</plist>

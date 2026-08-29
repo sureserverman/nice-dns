@@ -27,6 +27,13 @@ sudo install -m 755 "$HERE/start-container-root.sh"       /usr/local/sbin/start-
 # fetch-bridges.sh is invoked from start-container.sh at every LaunchAgent
 # fire so the stack always uses the fastest bridges from the current network.
 sudo install -m 755 "$HERE/../scripts/fetch-bridges.sh"   /usr/local/sbin/nice-dns-fetch-bridges.sh
+# Host-side bridge selection. fetch-bridges.sh deliberately does not rank the
+# pool it writes — a TCP probe cannot tell a working bridge from one that is
+# TCP-open but PT-dead — and the proxy consumes bridges.env as-is, so without
+# this every fetched bridge became a Bridge line, dead ones included. Linux has
+# had the equivalent since deb/persistent-podman.sh grew its
+# nice-dns-fetch-bridges.service unit.
+sudo install -m 755 "$HERE/bridge-eval.sh"                /usr/local/sbin/nice-dns-bridge-eval.sh
 
 # -- LaunchAgent: start container system + stack at login --
 AGENT_DST="$HOME/Library/LaunchAgents/org.nice-dns.start-container.plist"
@@ -37,4 +44,15 @@ sed -e "s/__USERNAME__/$(whoami)/" -e "s/__VARIANT__/$VARIANT/" \
 chmod 644 "$AGENT_DST"
 launchctl load "$AGENT_DST"
 
-echo "LaunchAgent installed (variant=$VARIANT)."
+# -- LaunchAgent: refresh bridge selection out-of-band (login + daily) --
+# Separate from the agent above on purpose. The usability probe takes ~150s;
+# running it inside the proxy at startup was measured to push tor bootstrap
+# from ~8s to ~87s, so it must not sit on the startup path.
+EVAL_DST="$HOME/Library/LaunchAgents/org.nice-dns.bridge-eval.plist"
+launchctl unload "$EVAL_DST" 2>/dev/null || true
+sed -e "s/__USERNAME__/$(whoami)/g" -e "s/__VARIANT__/$VARIANT/" \
+  "$HERE/org.nice-dns.bridge-eval.plist" > "$EVAL_DST"
+chmod 644 "$EVAL_DST"
+launchctl load "$EVAL_DST"
+
+echo "LaunchAgents installed (variant=$VARIANT): start-container + bridge-eval."

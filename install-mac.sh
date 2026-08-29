@@ -27,12 +27,15 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # and the system DNS pin. Homebrew packages (container, git) and Rosetta are
 # left in place — they may be shared with other tools.
 teardown() {
-  AGENT="$HOME/Library/LaunchAgents/org.nice-dns.start-container.plist"
-  launchctl unload "$AGENT" 2>/dev/null || true
-  rm -f "$AGENT"
+  for _a in org.nice-dns.start-container org.nice-dns.bridge-eval; do
+    _p="$HOME/Library/LaunchAgents/${_a}.plist"
+    launchctl unload "$_p" 2>/dev/null || true
+    rm -f "$_p"
+  done
   sudo rm -f /etc/sudoers.d/start-container \
              /usr/local/sbin/start-container.sh \
-             /usr/local/sbin/start-container-root.sh
+             /usr/local/sbin/start-container-root.sh \
+             /usr/local/sbin/nice-dns-bridge-eval.sh
 
   # Container CLI may be absent on a half-installed/fresh host — tolerate.
   local bin="${CONTAINER_BIN:-container}"
