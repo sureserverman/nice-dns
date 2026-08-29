@@ -49,6 +49,7 @@ CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns"
 BRIDGES_FILE="$CONFIG_DIR/bridges.env"
 POOL_FILE="$CONFIG_DIR/bridge-pool.tsv"
 IMAGE="docker.io/sureserver/tor-${VARIANT}:latest"
+NETWORK_NAME=dnsnet
 LOG="${HOME}/Library/Logs/nice-dns-bridge-eval.log"
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -70,6 +71,30 @@ until container system status >/dev/null 2>&1; do
   sleep 6
 done
 
+# This MUST run on the stack's own network, never the default one. Measured on
+# this host 2026-08-29, from a healthy baseline, healing between arms:
+#
+#   4th container with --network dnsnet   -> vmenet 3->4, datapath ok
+#   4th container on the default network  -> vmenet 3->1, datapath WEDGED in 14s
+#
+# Apple's runtime cannot carry containers on two vmnet networks at once:
+# bringing one up on a second network tears down the first network's
+# interfaces. This script used to run with no --network at all, so it landed on
+# `default` and killed dnsnet every time -- which is why the stack died minutes
+# after each install, when the RunAtLoad on this agent fires.
+#
+# So wait for dnsnet rather than falling back to the default network: running
+# without it is precisely the bug.
+tries=0
+until container network list 2>/dev/null | grep -qw "$NETWORK_NAME"; do
+  tries=$((tries + 1))
+  if (( tries >= 10 )); then
+    log "$NETWORK_NAME not present; leaving bridges.env untouched (refusing to run on the default network)"
+    exit 0
+  fi
+  sleep 6
+done
+
 # -pool is what enables manage mode. -window 150 / -grace 20 match the Linux
 # unit so both platforms select on the same criteria.
 #
@@ -80,6 +105,7 @@ done
 # wins; 7 is the practical width of the fetched pool.
 out="$(mktemp)"
 container run --rm \
+  --network "$NETWORK_NAME" \
   -v "${CONFIG_DIR}:/pool" \
   --entrypoint /bin/bridge-eval \
   "$IMAGE" \

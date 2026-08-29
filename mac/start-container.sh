@@ -175,14 +175,22 @@ log_addresses() {
 # to a peer on the same /29. On the host the runtime's vmenet interfaces are
 # all down, where a healthy stack has one up per container.
 #
-# Trigger unknown. Observed twice, both shortly after an install, and cleared
-# both times only by restarting the runtime. It is NOT interface exhaustion:
-# the interface count is a fixed pool that stayed constant in both the healthy
-# and the broken state, and 14 rounds of container create/destroy plus 6 of
-# network create/destroy failed to reproduce it. So this keys on the symptom,
-# which is cheap and unambiguous to test, rather than on a cause we cannot yet
-# name. Recreating containers does not fix it — only the runtime bounce does,
-# which is why this has to run before the recovery paths below.
+# Cause, found 2026-08-29 with mac/debug-monitor.sh: Apple's runtime cannot
+# carry containers on two vmnet networks at once. Bringing one up on a second
+# network tears down the FIRST network's interfaces. Measured from a healthy
+# baseline, healing between arms:
+#
+#   4th container with --network dnsnet   -> vmenet 3->4, datapath ok
+#   4th container on the default network  -> vmenet 3->1, datapath WEDGED in 14s
+#
+# The in-tree trigger was mac/bridge-eval.sh, which ran with no --network and so
+# landed on `default`; its RunAtLoad fires at the end of every install, which is
+# why the stack died minutes after each one. It is now pinned to dnsnet.
+#
+# This stays as a backstop, because the conflict is a property of the runtime
+# rather than of that one script: anything else that starts a container outside
+# dnsnet reproduces it. Recreating containers does not fix it — only the runtime
+# bounce does — which is why this has to run before the recovery paths below.
 #
 # Probe container-to-container across the private subnet rather than out to the
 # internet: it needs no external traffic, and it is independent of bridge health

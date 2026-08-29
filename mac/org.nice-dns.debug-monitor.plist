@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>org.nice-dns.debug-monitor</string>
+
+    <!-- Debug-only. Samples the container datapath continuously and dumps a
+         full snapshot on the healthy->wedged transition, before the self-heal
+         in start-container.sh repairs it and destroys the evidence. Not part
+         of a normal install; remove once the trigger is identified. -->
+
+    <key>RunAtLoad</key><true/>
+    <!-- The script loops forever; restart it if it ever dies. -->
+    <key>KeepAlive</key><true/>
+
+    <key>UserName</key>
+    <string>__USERNAME__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/usr/local/sbin/nice-dns-debug-monitor.sh</string>
+      <string>__VARIANT__</string>
+      <string>20</string>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/Users/__USERNAME__/Library/Logs/nice-dns-debug/monitor.launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/__USERNAME__/Library/Logs/nice-dns-debug/monitor.launchd.log</string>
+  </dict>
+</plist>
