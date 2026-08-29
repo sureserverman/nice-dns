@@ -168,6 +168,58 @@ log_addresses() {
   log "addresses: pi-hole=$(container_ip pi-hole) unbound=$(container_ip unbound) ${TOR_CONTAINER}=$(container_ip "$TOR_CONTAINER") (want ${PIHOLE_IP}/${UNBOUND_IP}/${TOR_IP})"
 }
 
+# Apple's runtime can land in a state where its vmnet datapath is dead while
+# everything above it looks fine. Nothing the checks above ask about notices:
+# the containers run, they hold the right addresses, and tor still reports
+# "Bootstrapped 100%" off its cached consensus — but no traffic moves, not even
+# to a peer on the same /29. On the host the runtime's vmenet interfaces are
+# all down, where a healthy stack has one up per container.
+#
+# Trigger unknown. Observed twice, both shortly after an install, and cleared
+# both times only by restarting the runtime. It is NOT interface exhaustion:
+# the interface count is a fixed pool that stayed constant in both the healthy
+# and the broken state, and 14 rounds of container create/destroy plus 6 of
+# network create/destroy failed to reproduce it. So this keys on the symptom,
+# which is cheap and unambiguous to test, rather than on a cause we cannot yet
+# name. Recreating containers does not fix it — only the runtime bounce does,
+# which is why this has to run before the recovery paths below.
+#
+# Probe container-to-container across the private subnet rather than out to the
+# internet: it needs no external traffic, and it is independent of bridge health
+# and of whether tor bootstrapped, which are the things that normally break.
+network_wedged() {
+  container_running "$TOR_CONTAINER" || return 1
+  container_running unbound          || return 1
+  # Instrument control first. A busybox without a usable `nc -z` would fail
+  # every probe and make a healthy stack look wedged, turning this into a
+  # restart loop. If loopback does not answer, we cannot tell — say no.
+  container exec "$TOR_CONTAINER" nc -w 4 -z 127.0.0.1 853 >/dev/null 2>&1 || return 1
+  # Same subnet, no NAT, no exit traffic. If this fails, the datapath is gone.
+  ! container exec "$TOR_CONTAINER" nc -w 5 -z "$UNBOUND_IP" 5335 >/dev/null 2>&1
+}
+
+# Stop containers first so the runtime tears their interfaces down in order,
+# then bounce the runtime, which is the only thing observed to restore the
+# datapath.
+restart_container_runtime() {
+  local c tries=0
+  for c in pi-hole unbound "$TOR_CONTAINER"; do
+    container stop "$c" >/dev/null 2>&1 || true
+  done
+  container system stop >>"$LOG" 2>&1 || true
+  sleep 8
+  container system start </dev/null >>"$LOG" 2>&1 || true
+  until container system status >/dev/null 2>&1; do
+    tries=$((tries + 1))
+    if (( tries >= 10 )); then
+      log "runtime did not come back after restart"
+      return 1
+    fi
+    sleep 4
+  done
+  return 0
+}
+
 network_exists() {
   container network list 2>/dev/null | grep -qw "$NETWORK_NAME"
 }
@@ -462,6 +514,23 @@ if stack_addressed_correctly && dns_healthy; then
   run_root_helper post || log "post-start helper failed"
   log "stack already healthy (variant=$VARIANT) — reusing existing state"
   exit 0
+fi
+
+# 2a) Self-heal a wedged datapath before doing anything else. Everything below
+# assumes containers can talk to each other; when the runtime's datapath is
+# dead they cannot, and the recovery paths below would churn containers forever
+# without fixing it. Gated strictly on the probe — the runtime is never
+# restarted speculatively, only on positive evidence that container-to-container
+# traffic is dead. The stopped containers are then rebuilt by the
+# address-recovery path below.
+if network_wedged; then
+  log "datapath wedged: ${TOR_CONTAINER} cannot reach unbound at ${UNBOUND_IP}:5335 on the same subnet"
+  if restart_container_runtime; then
+    log "runtime restarted to restore the vmnet datapath; rebuilding stack"
+  else
+    log "runtime restart failed; leaving system resolver untouched"
+    exit 1
+  fi
 fi
 
 # 3) Privileged pre-start (e.g. Mullvad teardown). Optional — only runs if
