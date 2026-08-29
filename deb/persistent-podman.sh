@@ -152,11 +152,15 @@ TimeoutStartSec=360
 # --userns=keep-id so files land owned by this user (systemd reads bridges.env
 # via EnvironmentFile=). --pull=missing: install-deb already pulled the image,
 # but recover if it was removed.
+# -count 7, not 3: bridge COUNT dominates bootstrap time. Measured isolated and
+# alternated, one tor at a time (macOS, 2026-08-29 — the mechanism is tor's
+# parallel descriptor fetch, not runtime-specific, but it was not re-measured
+# here), 3 verified-alive bridges took a 141s median against 41s for 7.
 ExecStart=/usr/bin/podman run --rm --userns=keep-id --pull=missing \\
   -v %h/.config/nice-dns:/pool \\
   --entrypoint /bin/bridge-eval \\
   docker.io/sureserver/tor-${VARIANT}:latest \\
-  -pool /pool/bridge-pool.tsv -out /pool/bridges.env -count 3 -window 150 -grace 20
+  -pool /pool/bridge-pool.tsv -out /pool/bridges.env -count 7 -window 150 -grace 20
 # A run that finds no reachable bridges exits 1; tolerate that so a transient
 # distributor/Tor outage doesn't fail-cascade WHEN a previously-written
 # bridges.env still has usable bridges to fall back on.
