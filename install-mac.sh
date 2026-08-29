@@ -236,16 +236,28 @@ sed -i '' -e 's|^    interface: 127\.0\.0\.1$|    interface: 0.0.0.0|' \
 # bridges.env is written without surrounding quotes for podman --env-file /
 # systemd EnvironmentFile= compatibility (Linux quadlets), so bash `source`
 # can't be used here — it would split on whitespace inside the obfs4 line.
-# Parse the three keys directly with sed instead. The tor-{haproxy,socat}
-# images require exactly 3 obfs4 bridges (Conflux needs ≥3 distinct primary
-# guards; >3 widens latency variance — see commit history).
+# Parse the keys directly with sed instead, taking EVERY BRIDGEn rather than
+# the first three. The image accepts BRIDGE1..16, and >=3 is what Conflux needs
+# for distinct primary guards -- more is better, not worse. Measured on this
+# stack (isolated, alternated, one tor at a time), 3 bridges bootstrapped in a
+# 141s median against 41s for 7, with a much worse tail. bridges.env is ranked
+# fastest-first and that order is preserved here; slots are renumbered
+# contiguously because the image walks BRIDGE1..16 and a gap in the source file
+# would hide everything after it.
 _bridges_file="${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges.env"
-BRIDGE1="$(sed -n 's/^BRIDGE1=//p' "$_bridges_file")"
-BRIDGE2="$(sed -n 's/^BRIDGE2=//p' "$_bridges_file")"
-BRIDGE3="$(sed -n 's/^BRIDGE3=//p' "$_bridges_file")"
-: "${BRIDGE1:?bridges.env did not export BRIDGE1}"
-: "${BRIDGE2:?bridges.env did not export BRIDGE2}"
-: "${BRIDGE3:?bridges.env did not export BRIDGE3}"
+_bridge_args=()
+_nbridges=0
+while IFS= read -r _bline; do
+  [[ -n "$_bline" ]] || continue
+  (( _nbridges < 16 )) || break
+  _nbridges=$(( _nbridges + 1 ))
+  _bridge_args+=( -e "BRIDGE${_nbridges}=${_bline}" )
+done < <(sed -n 's/^BRIDGE[0-9][0-9]*=//p' "$_bridges_file")
+if (( _nbridges < 3 )); then
+  echo "bridges.env yielded $_nbridges bridge(s); need at least 3." >&2
+  exit 1
+fi
+echo "Using $_nbridges obfs4 bridge(s) from bridges.env."
 # The tor proxy is the one image we don't build — it's pulled from Docker Hub.
 # `container run` has no --pull flag and reuses any locally cached copy without
 # consulting the registry, so an install on a host that ever ran nice-dns would
@@ -259,9 +271,7 @@ BRIDGE3="$(sed -n 's/^BRIDGE3=//p' "$_bridges_file")"
 
 "$CONTAINER_BIN" run -d --name "tor-${VARIANT}" --network dnsnet \
   -c 1 -m 512M \
-  -e "BRIDGE1=${BRIDGE1}" \
-  -e "BRIDGE2=${BRIDGE2}" \
-  -e "BRIDGE3=${BRIDGE3}" \
+  "${_bridge_args[@]}" \
   "docker.io/sureserver/tor-${VARIANT}:latest" >/dev/null
 
 # -- Wait for the chain (Tor bootstrap) before flipping system DNS --

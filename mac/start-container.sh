@@ -48,9 +48,11 @@ BRIDGE_FP_FILE="${TOR_STATE_DIR}/.bridge-fingerprint"
 # Set when tor fails to bootstrap; makes the *next* run rotate bridges.
 # Bridges are only rotated on evidence they don't work, never on a timer.
 BRIDGE_SENTINEL="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/bootstrap-failed-${VARIANT}"
-BRIDGE1=""
-BRIDGE2=""
-BRIDGE3=""
+# Every BRIDGEn in bridges.env, as ready-made `container run -e` arguments.
+BRIDGE_ARGS=()
+BRIDGE_COUNT=0
+# The image accepts BRIDGE1..16 (MAX_BRIDGE_SLOTS in its start.sh).
+BRIDGE_MAX_SLOTS=16
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 unset SSH_AUTH_SOCK
@@ -61,16 +63,32 @@ run_root_helper() {
   sudo -n "$ROOT_HELPER" "$1" >>"$LOG" 2>&1
 }
 
+# Read EVERY BRIDGEn, not just the first three. Bridge count dominates tor
+# bootstrap: measured on this stack (isolated, alternated, one tor at a time),
+# 3 bridges took a 141s median against 41s for 7, with a much worse tail --
+# tor fans descriptor fetches out across bridges in parallel. bridges.env is
+# written ranked fastest-first, and file order is preserved here, so slots stay
+# in rank order. Slots are renumbered contiguously because the image walks
+# BRIDGE1..16 and a gap in the source file would hide everything after it.
 load_bridges() {
   [[ -f "$BRIDGES_FILE" ]] || return 1
-  BRIDGE1="$(sed -n 's/^BRIDGE1=//p' "$BRIDGES_FILE" | head -n 1)"
-  BRIDGE2="$(sed -n 's/^BRIDGE2=//p' "$BRIDGES_FILE" | head -n 1)"
-  BRIDGE3="$(sed -n 's/^BRIDGE3=//p' "$BRIDGES_FILE" | head -n 1)"
-  [[ -n "$BRIDGE1" && -n "$BRIDGE2" && -n "$BRIDGE3" ]]
+  BRIDGE_ARGS=()
+  BRIDGE_COUNT=0
+  local line
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    (( BRIDGE_COUNT < BRIDGE_MAX_SLOTS )) || break
+    BRIDGE_COUNT=$(( BRIDGE_COUNT + 1 ))
+    BRIDGE_ARGS+=( -e "BRIDGE${BRIDGE_COUNT}=${line}" )
+  done < <(sed -n 's/^BRIDGE[0-9][0-9]*=//p' "$BRIDGES_FILE")
+  # Fewer than 3 disables Conflux in the image; treat that as no usable set.
+  (( BRIDGE_COUNT >= 3 ))
 }
 
+# Covers the whole set, so going from 3 bridges to 7 counts as a change and
+# correctly triggers the recreate + guard-state prune below.
 bridge_fingerprint() {
-  printf '%s\n%s\n%s\n' "$BRIDGE1" "$BRIDGE2" "$BRIDGE3" | shasum -a 256 | cut -d' ' -f1
+  printf '%s\n' ${BRIDGE_ARGS[@]+"${BRIDGE_ARGS[@]}"} | shasum -a 256 | cut -d' ' -f1
 }
 
 # Tor's DataDirectory holds two kinds of state with opposite lifetimes:
@@ -332,9 +350,7 @@ start_or_create_stack() {
   ensure_container "$TOR_CONTAINER" \
     -c 1 -m 512M \
     -v "${TOR_STATE_DIR}:/app/data" \
-    -e "BRIDGE1=${BRIDGE1}" \
-    -e "BRIDGE2=${BRIDGE2}" \
-    -e "BRIDGE3=${BRIDGE3}" \
+    ${BRIDGE_ARGS[@]+"${BRIDGE_ARGS[@]}"} \
     "$TOR_IMAGE" || return 1
 
   # Record what the running container was actually started with, so the next
@@ -379,7 +395,7 @@ mkdir -p "$(dirname "$LOG")"
 
 log "starting nice-dns runtime (variant=$VARIANT)"
 
-# 0) Load BRIDGE1/2/3 for the `container run -e BRIDGE*` call below, fetching
+# 0) Load every BRIDGEn for the `container run -e BRIDGE*` call below, fetching
 # a new set only when there's a reason to.
 #
 # This used to refetch with --force on every boot. That defeats itself: each
