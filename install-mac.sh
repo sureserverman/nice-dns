@@ -24,8 +24,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 
 # Reverse every piece of nice-dns state installed by the script: the
 # LaunchAgent, sudoers rule, privileged helpers, containers/images/network,
-# and the system DNS pin. Homebrew packages (container, git) and Rosetta are
-# left in place — they may be shared with other tools.
+# and the system DNS pin — plus the Podman-era jobs from installs predating
+# commit 7538f02, which no version of this script had ever removed. Homebrew
+# packages (container, git) and Rosetta are left in place — they may be
+# shared with other tools.
 teardown() {
   for _a in org.nice-dns.start-container org.nice-dns.bridge-eval; do
     _p="$HOME/Library/LaunchAgents/${_a}.plist"
@@ -36,6 +38,49 @@ teardown() {
              /usr/local/sbin/start-container.sh \
              /usr/local/sbin/start-container-root.sh \
              /usr/local/sbin/nice-dns-bridge-eval.sh
+
+  # -- Podman-era purge (installs predating commit 7538f02) --------------
+  # mac/mac-rules-persist.sh installed four root/user jobs that this script
+  # never knew about, so they survived every later reinstall. They are not
+  # merely stale:
+  #   org.nice-dns.free-port53   boots out com.apple.mDNSResponder at every
+  #                              boot, leaving the host with no system
+  #                              resolver at all;
+  #   com.local.mullvad-pfctl-disable-on-connect
+  #                              runs `pfctl -d` once a second, forever
+  #                              (KeepAlive + StartInterval 1);
+  #   com.local.loopbackalias    aliases 127.0.0.53 onto lo0;
+  #   org.startpodman            starts a Podman VM that no longer exists.
+  # Observed in the wild on a host installed pre-7538f02: mDNSResponder had
+  # been dead across reboots and a gvproxy from the old VM still held :53.
+  for _d in org.nice-dns.free-port53 \
+            com.local.loopbackalias \
+            com.local.mullvad-pfctl-disable-on-connect; do
+    sudo launchctl bootout "system/${_d}" 2>/dev/null || true
+    sudo rm -f "/Library/LaunchDaemons/${_d}.plist"
+  done
+  _legacy_agent="$HOME/Library/LaunchAgents/org.startpodman.plist"
+  launchctl unload "$_legacy_agent" 2>/dev/null || true
+  rm -f "$_legacy_agent"
+  sudo rm -f /etc/sudoers.d/start-podman \
+             /usr/local/sbin/start-podman.sh \
+             /usr/local/sbin/start-podman-root.sh \
+             /usr/local/sbin/mullvad-pfctl-disable-on-connect
+  sudo ifconfig lo0 -alias 127.0.0.53 2>/dev/null || true
+
+  # Undo free-port53's damage. bootout only removes the service from the
+  # running domain — the SIP-protected plist is intact, so re-bootstrapping
+  # restores the resolver without a reboot. No-op when it is already loaded.
+  if ! sudo launchctl print system/com.apple.mDNSResponder >/dev/null 2>&1; then
+    sudo launchctl bootstrap system \
+      /System/Library/LaunchDaemons/com.apple.mDNSResponder.plist 2>/dev/null || true
+  fi
+
+  # Stop the old Podman stack if it is still up; gvproxy squats :53 and will
+  # fight the new pi-hole for it.
+  if command -v podman >/dev/null 2>&1; then
+    podman machine stop >/dev/null 2>&1 || true
+  fi
 
   # Container CLI may be absent on a half-installed/fresh host — tolerate.
   local bin="${CONTAINER_BIN:-container}"
