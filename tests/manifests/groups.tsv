@@ -7,3 +7,4 @@
 # A kind=live group must be tier=live. (kind, group) pairs are unique.
 unit	harness-contracts	tests/unit/harness-contracts.sh	local
 unit	fixtures	tests/unit/fixture-tests.sh	local
+unit	measurement	tests/unit/measurement-tests.sh	local

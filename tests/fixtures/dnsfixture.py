@@ -11,6 +11,8 @@ Zone fixture.test. (signed, ECDSAP256SHA256, NSEC):
   tc.fixture.test.           TXT           TC=1 over UDP, full answer over TCP
   unsigned.fixture.test.     insecure delegation (signed NSEC proves no DS)
   host.unsigned.fixture.test A 192.0.2.7   unsigned answer
+  drop.fixture.test.         never answered (client timeout)
+  servfail.fixture.test.     SERVFAIL
   anything else under the zone: NXDOMAIN/NODATA with signed NSEC proofs.
 Names outside the zone are REFUSED.
 
@@ -191,9 +193,13 @@ class Zones:
         rest, do = q[off + 4:], False
         if arcount and len(rest) >= 11 and rest[0] == 0 and struct.unpack("!H", rest[1:3])[0] == T["OPT"]:
             do = bool(struct.unpack("!I", rest[5:9])[0] & 0x8000)
+        if qname == "drop." + ZONE:
+            return None  # measurement fixture: the client must time out
         an, ns, rcode, aa, tc = [], [], 0, 0x0400, 0
         in_child = qname == CHILD or qname.endswith("." + CHILD)
-        if in_child and not (qname == CHILD and qtype == T["DS"]):
+        if qname == "servfail." + ZONE:
+            rcode, aa = 2, 0
+        elif in_child and not (qname == CHILD and qtype == T["DS"]):
             if qname in self.child and qtype in self.child[qname]:
                 an = [self.rr(qname, qtype, r) for r in self.child[qname][qtype]]
             else:

@@ -5,3 +5,5 @@ baseline-contracts	unit	harness-contracts
 baseline	unit	harness-contracts
 baseline-contracts	unit	fixtures
 baseline	unit	fixtures
+baseline-contracts	unit	measurement
+baseline	unit	measurement

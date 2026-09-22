@@ -1,0 +1,15 @@
+# Measurement workloads, parsed as data by tests/live/collect.sh (never sourced).
+# Columns (tab-separated): workload  cache_class  qname_template  qtype
+#   cache_class is the declared expectation: miss | hit | hit-after-idle | after-wake
+#   {nonce} expands to 16 fresh hex digits per query, so a cold query can
+#   never be answered from cache. Names are synthetic and controlled: no
+#   client query history ever enters a sample file.
+#   example.com is IANA-reserved and DNSSEC-signed, so every workload also
+#   exercises validation; random labels return a signed NXDOMAIN, which is a
+#   valid answer, not a failure.
+# Orchestration (priming before warm, the idle pause, the sleep/wake event)
+# belongs to the caller; the collector only labels and times the queries.
+cold	miss	{nonce}.example.com	A
+warm	hit	example.com	A
+idle	hit-after-idle	example.com	A
+wake	after-wake	{nonce}.example.com	A
