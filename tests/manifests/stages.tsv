@@ -3,3 +3,5 @@
 # Every (kind, group) must be registered in groups.tsv. Later tasks append rows.
 baseline-contracts	unit	harness-contracts
 baseline	unit	harness-contracts
+baseline-contracts	unit	fixtures
+baseline	unit	fixtures
