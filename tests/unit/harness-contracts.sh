@@ -221,13 +221,13 @@ t_real_stages_reference_registered_groups() {
   assert_not_match 'UNREGISTERED' "$HC_OUT" "every stage row resolves to a registered group"
 }
 
-t_plan_and_receipt_are_blocked() {
+t_plan_blocked_and_receipt_never_green_without_receipt() {
   hc_run plan baseline --fresh-fixtures --include-slow --live --targets x --matrix all
   assert_rc 4 "$HC_RC" "plan is BLOCKED"
-  assert_match 'not implemented until Task 2\.2' "$HC_OUT" "plan message"
-  hc_run receipt baseline --require-matrix all
-  assert_rc 4 "$HC_RC" "receipt is BLOCKED"
-  assert_match 'BLOCKED' "$HC_OUT" "receipt says BLOCKED"
+  assert_match 'not implemented until Task 2\.3' "$HC_OUT" "plan message"
+  HC_ARTIFACTS="$CASE_DIR/empty-root" hc_run receipt baseline --require-matrix all
+  assert_rc 1 "$HC_RC" "receipt with no receipt present fails"
+  assert_match 'not a pass' "$HC_OUT" "says nothing was verified"
 }
 
 # ─────────────────────────── runner: run identity and artifacts ──────────────

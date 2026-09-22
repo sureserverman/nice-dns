@@ -1,0 +1,12 @@
+# Receipt manifest: installers. Parsed as data by tests/reports/verify.sh (never sourced).
+# Rows (tab-separated):
+#   requires  <receipt>                     a receipt this one must link (by sha256)
+#   scenario  <id>  per-cell|global  <meaning>
+# A receipt naming a scenario that is not declared here fails verification;
+# a declared scenario missing from the receipt (for every required cell when
+# per-cell) fails verification. Add scenarios here, never only in a receipt.
+requires	controller
+scenario	IN-OWNED-RESTORE	per-cell	install, upgrade and uninstall restore exactly the owned DNS state
+scenario	IN-NO-HOST-PUBLIC	per-cell	no lifecycle step points the host resolver at public DNS
+scenario	IN-BOOTSTRAP	global	bootstrap traffic inventoried as declared exceptions
+scenario	IN-BUNDLE	per-cell	installed bundle carries matching controller, transport and rollback generations

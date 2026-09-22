@@ -5,8 +5,8 @@
 #   bash tests/run.sh --list
 #   bash tests/run.sh <unit|integration|live> <group> [options]
 #   bash tests/run.sh stage <name> [options]
-#   bash tests/run.sh plan <name> [options]        BLOCKED until Task 2.2
-#   bash tests/run.sh receipt <name> [options]     BLOCKED until Task 2.2
+#   bash tests/run.sh plan <name> [options]        BLOCKED until Task 2.3
+#   bash tests/run.sh receipt <name> [options]     verify the newest <name> receipt
 #   bash tests/run.sh check-matrix <matrix.tsv>
 #   bash tests/run.sh check-contracts <workflow.md>
 #   bash tests/run.sh check-scenarios              (also run before every stage)
@@ -503,6 +503,38 @@ cmd_list() {
   return "$ND_OK"
 }
 
+# cmd_receipt <name> [--require-* ...]: verify the newest receipt of <name>
+# under <artifact root>/receipts/<name>/<run-id>/receipt.tsv with
+# tests/reports/verify.sh. No receipt is a failure, never a pass.
+cmd_receipt() {
+  local name="${1:-}" root dir latest a
+  set -- "${@:2}"
+  case "$name" in ''|--*) nd_err "usage: run.sh receipt <name> [--require-* ...]"; return "$ND_USAGE" ;; esac
+  local vargs=()
+  while [ $# -gt 0 ]; do
+    [ $# -ge 2 ] || { nd_err "option $1 needs a value"; return "$ND_USAGE"; }
+    case "$1" in
+      --require-matrix|--require-platforms|--require-proxies|--require-entrypoints) vargs+=("$1" "$2") ;;
+      --require-baseline|--require-transport|--require-controller|--require-installers) vargs+=(--require-dep "$2") ;;
+      --require-chain) for a in $(printf '%s' "$2" | tr ',' ' '); do vargs+=(--require-dep "$a"); done ;;
+      *) nd_err "unknown receipt option '$1'"; return "$ND_USAGE" ;;
+    esac
+    shift 2
+  done
+  root="${NICE_DNS_TEST_ARTIFACTS:-${XDG_STATE_HOME:-${HOME:?HOME is unset}/.local/state}/nice-dns-tests}"
+  dir="$root/receipts/$name"
+  latest=""
+  if [ -d "$dir" ]; then
+    latest="$(for a in "$dir"/*/receipt.tsv; do [ -f "$a" ] && printf '%s\n' "$a"; done | LC_ALL=C sort | tail -1)"
+  fi
+  if [ -z "$latest" ]; then
+    nd_err "no $name receipt under $dir; nothing verified (this is not a pass)"
+    return "$ND_FAIL"
+  fi
+  printf 'receipt: %s\n' "$latest"
+  bash "$ND_ROOT/tests/reports/verify.sh" check "$latest" ${vargs[@]+"${vargs[@]}"}
+}
+
 cmd_blocked() {
   local what="$1"
   shift
@@ -510,7 +542,7 @@ cmd_blocked() {
   case "$1" in --*) nd_err "usage: run.sh $what <name> [options]"; return "$ND_USAGE" ;; esac
   shift
   nd_parse_opts "$@" || return $?
-  printf "BLOCKED: '%s' is not implemented until Task 2.2 (scenario and receipt verifier). Nothing was run or verified; this is not a pass.\n" "$what"
+  printf "BLOCKED: '%s' is not implemented until Task 2.3 (live baseline). Nothing was run or verified; this is not a pass.\n" "$what"
   return "$ND_BLOCKED"
 }
 
@@ -709,7 +741,8 @@ main() {
       if [ $# -lt 1 ]; then nd_err "usage: run.sh stage <name> [options]"; return "$ND_USAGE"; fi
       case "$1" in --*) nd_err "usage: run.sh stage <name> [options]"; return "$ND_USAGE" ;; esac
       cmd_stage "$@" ;;
-    plan|receipt) cmd_blocked "$cmd" "$@" ;;
+    plan) cmd_blocked "$cmd" "$@" ;;
+    receipt) cmd_receipt "$@" ;;
     check-matrix)
       [ $# -eq 1 ] || { nd_err "usage: run.sh check-matrix <matrix.tsv>"; return "$ND_USAGE"; }
       cmd_check_matrix "$1" ;;
