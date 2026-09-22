@@ -1,0 +1,24 @@
+# Mandatory Stage 1 variants, parsed as data by tests/run.sh check-scenarios.
+# Columns (tab-separated): variant  meaning
+# Every variant needs at least one active scenario (a real registered case)
+# in scenarios.tsv, referenced as variant:<name>. Never drop one silently.
+tls/good	DoT certificate that matches the authentication name and chains to the fixture CA
+tls/wrongname	DoT certificate for another name from the trusted CA
+tls/expired	DoT certificate past notAfter from the trusted CA
+tls/untrusted	DoT certificate for the right name from an unknown CA
+dnssec/signed	Answer with a valid RRSIG under the fixture anchor
+dnssec/bogus	Answer whose RRSIG the fixture itself corrupts
+dnssec/unsigned	Answer below an insecure delegation proven by signed NSEC
+dnssec/nxdomain	Signed NXDOMAIN with NSEC proof
+dnssec/nodata	Signed NODATA with NSEC proof
+transport/udp-truncated	UDP answer with TC set and no records
+transport/tcp-full	Full answer over TCP after truncation
+transport/out-of-zone-refused	Fixture refuses names outside its zone (never recurses or forwards)
+outcome/ok	Collector records an answered query
+outcome/nxdomain	Collector records NXDOMAIN as a valid answer
+outcome/timeout	Collector records an unanswered query inside the denominator
+outcome/servfail	Collector records SERVFAIL as a failure
+workload/cold	Cold workload (nonce names) is defined
+workload/warm	Warm workload is defined
+workload/idle	Idle workload is defined
+workload/wake	Wake workload is defined

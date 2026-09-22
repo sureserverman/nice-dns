@@ -7,3 +7,5 @@ baseline-contracts	unit	fixtures
 baseline	unit	fixtures
 baseline-contracts	unit	measurement
 baseline	unit	measurement
+baseline-contracts	integration	baseline-contracts
+baseline	integration	baseline-contracts

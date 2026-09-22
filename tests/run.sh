@@ -9,6 +9,7 @@
 #   bash tests/run.sh receipt <name> [options]     BLOCKED until Task 2.2
 #   bash tests/run.sh check-matrix <matrix.tsv>
 #   bash tests/run.sh check-contracts <workflow.md>
+#   bash tests/run.sh check-scenarios              (also run before every stage)
 #   bash tests/run.sh new-run <command words...>   (internal: prints a new run dir)
 #
 # Options: --include-slow --live --fresh-fixtures --reuse-verified-soak
@@ -441,7 +442,12 @@ cmd_stage() {
     nd_err "unknown stage '$name' (it resolves to zero groups in stages.tsv)"
     return "$ND_USAGE"
   fi
-  # Refuse the whole stage before running anything if any tier gate refuses.
+  # Refuse the whole stage before running anything if scenario coverage is
+  # incomplete or any tier gate refuses.
+  if ! cmd_check_scenarios >/dev/null; then
+    nd_err "stage '$name' refused: scenario coverage is incomplete (bash tests/run.sh check-scenarios)"
+    return "$ND_FAIL"
+  fi
   for i in $idxs; do
     nd_tier_gate "$i"; rc=$?
     [ "$rc" -eq 0 ] || return "$rc"
@@ -618,7 +624,77 @@ cmd_check_contracts() {
 
 # ─────────────────────────── dispatch ────────────────────────────────────────
 
-nd_usage() { sed -n '2,33p' "$ND_SELF" | sed 's/^# \{0,1\}//'; }
+# cmd_check_scenarios: scenario coverage (scenarios.tsv) against the
+# mandatory privacy operations (privacy-ops.tsv) and Stage 1 variants
+# (variants.tsv). Every operation needs a row; every variant needs an active
+# row; an active row must name a registered group and an existing t_* case;
+# a deferred row ("-" in kind, group and case) must name a later owner.
+cmd_check_scenarios() {
+  local sc="$ND_MANIFESTS/scenarios.tsv" opsf="$ND_MANIFESTS/privacy-ops.tsv" varf="$ND_MANIFESTS/variants.tsv"
+  local f id cov k g c o extra rest ln=0 errs=0 active=0 deferred=0 idx
+  local ids="|" known_ops="|" known_vars="|" covered="|" vcovered="|" owners=""
+  for f in "$sc" "$opsf" "$varf"; do
+    [ -f "$f" ] || { nd_err "check-scenarios: missing manifest $f"; return "$ND_FAIL"; }
+  done
+  if [ "$ND_G_N" -eq 0 ]; then nd_load_groups || return $?; fi
+  while IFS="$ND_TAB" read -r id rest || [ -n "${id:-}" ]; do
+    case "$id" in ''|'#'*) continue ;; esac
+    known_ops="$known_ops$id|"
+  done <"$opsf"
+  while IFS="$ND_TAB" read -r id rest || [ -n "${id:-}" ]; do
+    case "$id" in ''|'#'*) continue ;; esac
+    known_vars="$known_vars$id|"
+  done <"$varf"
+  while IFS="$ND_TAB" read -r id cov k g c o extra || [ -n "${id:-}" ]; do
+    ln=$((ln + 1))
+    case "$id" in ''|'#'*) continue ;; esac
+    if [ -z "${cov:-}" ] || [ -z "${k:-}" ] || [ -z "${g:-}" ] || [ -z "${c:-}" ] || [ -z "${o:-}" ] || [ -n "${extra:-}" ]; then
+      nd_err "scenarios.tsv:$ln: expected 6 tab-separated fields (scenario covers kind group case owner)"
+      errs=$((errs + 1)); continue
+    fi
+    case "$ids" in *"|$id|"*) nd_err "scenarios.tsv:$ln: duplicate scenario id '$id'"; errs=$((errs + 1)); continue ;; esac
+    ids="$ids$id|"
+    case "$cov" in
+      variant:*)
+        case "$known_vars" in *"|${cov#variant:}|"*) ;; *)
+          nd_err "scenarios.tsv:$ln: unknown variant '${cov#variant:}' (not in variants.tsv)"; errs=$((errs + 1)); continue ;;
+        esac ;;
+      *)
+        case "$known_ops" in *"|$cov|"*) ;; *)
+          nd_err "scenarios.tsv:$ln: unknown operation '$cov' (not in privacy-ops.tsv)"; errs=$((errs + 1)); continue ;;
+        esac ;;
+    esac
+    case "$o" in baseline|transport|controller|installers|qualification) ;; *)
+      nd_err "scenarios.tsv:$ln: unknown owner '$o'"; errs=$((errs + 1)); continue ;;
+    esac
+    if [ "$k" = - ] && [ "$g" = - ] && [ "$c" = - ]; then
+      deferred=$((deferred + 1)); owners="$owners $o:$cov"
+      case "$cov" in variant:*) ;; *) covered="$covered$cov|" ;; esac
+      continue
+    fi
+    if [ "$k" = - ] || [ "$g" = - ] || [ "$c" = - ]; then
+      nd_err "scenarios.tsv:$ln: kind, group and case must all be '-' (deferred) or all be set"; errs=$((errs + 1)); continue
+    fi
+    idx="$(nd_find_group "$k" "$g")" || { nd_err "scenarios.tsv:$ln: scenario $id names unregistered group $k/$g"; errs=$((errs + 1)); continue; }
+    if ! nd_collect "${ND_G_FILE[$idx]}" | grep -qx -- "$c"; then
+      nd_err "scenarios.tsv:$ln: scenario $id names case $c, which $k/$g does not define"; errs=$((errs + 1)); continue
+    fi
+    active=$((active + 1))
+    case "$cov" in variant:*) vcovered="$vcovered${cov#variant:}|" ;; *) covered="$covered$cov|" ;; esac
+  done <"$sc"
+  for id in $(printf '%s' "$known_ops" | tr '|' ' '); do
+    case "$covered" in *"|$id|"*) ;; *) nd_err "privacy operation $id has no scenario row (active or deferred to its owner)"; errs=$((errs + 1)) ;; esac
+  done
+  for id in $(printf '%s' "$known_vars" | tr '|' ' '); do
+    case "$vcovered" in *"|$id|"*) ;; *) nd_err "variant $id has no active scenario (a registered case that exercises it)"; errs=$((errs + 1)) ;; esac
+  done
+  printf 'scenarios: active=%s deferred=%s errors=%s\n' "$active" "$deferred" "$errs"
+  for f in $owners; do printf '  deferred %s -> %s\n' "${f#*:}" "${f%%:*}"; done
+  [ "$errs" -eq 0 ] || return "$ND_FAIL"
+  return "$ND_OK"
+}
+
+nd_usage() { sed -n '2,34p' "$ND_SELF" | sed 's/^# \{0,1\}//'; }
 
 main() {
   local cmd="${1:-}"
@@ -637,6 +713,9 @@ main() {
     check-matrix)
       [ $# -eq 1 ] || { nd_err "usage: run.sh check-matrix <matrix.tsv>"; return "$ND_USAGE"; }
       cmd_check_matrix "$1" ;;
+    check-scenarios)
+      [ $# -eq 0 ] || { nd_err "usage: run.sh check-scenarios"; return "$ND_USAGE"; }
+      cmd_check_scenarios ;;
     check-contracts)
       [ $# -eq 1 ] || { nd_err "usage: run.sh check-contracts <workflow.md>"; return "$ND_USAGE"; }
       cmd_check_contracts "$1" ;;
@@ -646,7 +725,7 @@ main() {
       printf '%s\n' "$ARTIFACT_DIR" ;;
     -h|--help|help) nd_usage ;;
     '') nd_usage >&2; return "$ND_USAGE" ;;
-    *) nd_err "unknown kind or command '$cmd' (kinds: unit integration live; commands: --list stage plan receipt check-matrix check-contracts)"
+    *) nd_err "unknown kind or command '$cmd' (kinds: unit integration live; commands: --list stage plan receipt check-matrix check-contracts check-scenarios)"
        return "$ND_USAGE" ;;
   esac
 }

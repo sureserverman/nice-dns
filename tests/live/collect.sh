@@ -4,7 +4,7 @@
 # Usage:
 #   bash tests/live/collect.sh --resolver ADDR[#PORT] --workload NAME --count N \
 #     --identity FILE --out FILE [--workloads FILE] [--timeout-ms MS]
-#     [--pause-ms MS] [--transport udp|tcp]
+#     [--pause-ms MS] [--transport udp|tcp] [--matrix FILE]
 #
 # Appends one row per attempted query to FILE (schema nice-dns-sample/1),
 # failures included. Query names come only from the workload manifest
@@ -12,7 +12,9 @@
 # digits), so no client query history can enter a sample file. Elapsed time is
 # monotonic (perl Time::HiRes CLOCK_MONOTONIC), in microseconds, around one dig
 # with +tries=1. The identity file (key<TAB>value, parsed as data) must carry
-# target_id platform proxy pihole source_rev images.
+# target_id platform proxy pihole source_rev images, and platform/proxy/pihole
+# must be one of the eight cells in the matrix (default
+# tests/manifests/matrix.tsv), so every sample belongs to a real cell.
 #
 # Exit: 0 every attempt answered (NOERROR or NXDOMAIN); 1 rows written but at
 # least one attempt failed (timeout, SERVFAIL, REFUSED, error); 2 refused
@@ -32,10 +34,11 @@ die() { printf 'collect.sh: %s\n' "$*" >&2; exit 2; }
 
 resolver='' workload='' count='' identity='' out=''
 workloads="$COLLECT_ROOT/tests/manifests/workloads.tsv"
+matrix="$COLLECT_ROOT/tests/manifests/matrix.tsv"
 timeout_ms=5000 pause_ms=0 transport=udp
 while [ $# -gt 0 ]; do
   case "$1" in
-    --resolver|--workload|--count|--identity|--out|--workloads|--timeout-ms|--pause-ms|--transport)
+    --resolver|--workload|--count|--identity|--out|--workloads|--timeout-ms|--pause-ms|--transport|--matrix)
       [ $# -ge 2 ] || die "option $1 needs a value"
       case "$1" in
         --resolver) resolver="$2" ;;
@@ -47,6 +50,7 @@ while [ $# -gt 0 ]; do
         --timeout-ms) timeout_ms="$2" ;;
         --pause-ms) pause_ms="$2" ;;
         --transport) transport="$2" ;;
+        --matrix) matrix="$2" ;;
       esac
       shift 2 ;;
     *) die "unknown option '$1'" ;;
@@ -86,6 +90,16 @@ done <"$identity"
 for k in $IDENTITY_KEYS; do
   eval "[ -n \"\${id_$k}\" ]" || die "identity file $identity has no value for required key '$k'"
 done
+
+[ -f "$matrix" ] || die "matrix not found: $matrix"
+cell_ok=no
+while IFS='	' read -r mp mx mh mextra || [ -n "$mp" ]; do
+  case "$mp" in ''|'#'*) continue ;; esac
+  if [ "$mp" = "$id_platform" ] && [ "$mx" = "$id_proxy" ] && [ "$mh" = "$id_pihole" ] && [ -z "${mextra:-}" ]; then
+    cell_ok=yes
+  fi
+done <"$matrix"
+[ "$cell_ok" = yes ] || die "identity $id_platform/$id_proxy/$id_pihole is not a cell of $matrix"
 
 # Workload: exactly one manifest row; names are templates, never free-form.
 [ -f "$workloads" ] || die "workload manifest not found: $workloads"
