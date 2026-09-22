@@ -185,6 +185,11 @@ t_stage_runs_listed_groups() {
 t_two() { assert_eq b b; }'
   printf 'unit\tga\t%s\tlocal\nunit\tgb\t%s\tlocal\n' "$CASE_DIR/g.sh" "$CASE_DIR/h.sh" >>"$m/groups.tsv"
   printf 'pair\tunit\tga\npair\tunit\tgb\n' >>"$m/stages.tsv"
+  # Every stage checks scenario coverage first: give the synthetic registry
+  # one operation covered by one of its own cases.
+  printf 'TEST-OP\tsynthetic operation\n' >"$m/privacy-ops.tsv"
+  printf '# variant\tmeaning\n' >"$m/variants.tsv"
+  printf 'S-TEST\tTEST-OP\tunit\tga\tt_ok\tbaseline\n' >"$m/scenarios.tsv"
   HC_MANIFESTS="$m" hc_run stage pair
   assert_rc 0 "$HC_RC" "stage of two passing groups"
   assert_match 'collected=3 passed=3 failed=0' "$HC_OUT" "stage aggregates every group"
