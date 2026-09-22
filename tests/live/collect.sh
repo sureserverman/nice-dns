@@ -18,8 +18,8 @@
 #
 # Exit: 0 every attempt answered (NOERROR or NXDOMAIN); 1 rows written but at
 # least one attempt failed (timeout, SERVFAIL, REFUSED, error); 2 refused
-# (usage, unknown workload, incomplete identity, bad existing file) with
-# nothing written.
+# (usage, unknown workload, incomplete identity, bad existing file, a file
+# from another run) with nothing written.
 #
 # Portability: Bash 3.2, BSD/GNU userland, perl and dig (9.x).
 
@@ -125,6 +125,10 @@ if [ -e "$out" ]; then
 fi
 
 run_id="${RUN_ID:-standalone-$(date -u +%Y%m%dT%H%M%SZ)}"
+if [ "$next_id" -gt 1 ]; then
+  prev_runs="$(awk -F '	' 'NR > 2 && !/^#/ { print $1 }' "$out" | sort -u)"
+  [ "$prev_runs" = "$run_id" ] || die "--out holds samples from run '$prev_runs', not '$run_id': one file holds one run"
+fi
 
 nonce() { od -An -N8 -tx1 /dev/urandom | tr -d ' \n'; }
 

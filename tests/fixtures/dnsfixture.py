@@ -18,7 +18,10 @@ Names outside the zone are REFUSED.
 
 Commands:
   dnsfixture.py pki --out DIR     CA + good/wrongname/expired/untrusted leaves
-  dnsfixture.py serve --state DIR [--tls NAME:CERT:KEY ...]
+  dnsfixture.py serve --state DIR [--tls NAME:CERT:KEY ...] [--max-seconds N]
+The server exits by itself when its parent dies (it was orphaned, e.g. a
+SIGKILLed test case that could not run its cleanup trap) or after
+--max-seconds (default 900), so a killed run never leaves a listener behind.
 The serve command writes anchor.bind (delv), anchor.unbound (Unbound
 trust-anchor line) and, once listening, ports.tsv (name<TAB>port).
 """
@@ -272,7 +275,15 @@ def cmd_pki(out):
             os.chmod(os.path.join(out, n), 0o600)
 
 
-def cmd_serve(state, tls):
+def watchdog(max_seconds):
+    owner, deadline = os.getppid(), time.monotonic() + max_seconds
+    while os.getppid() == owner and time.monotonic() < deadline:
+        time.sleep(0.2)
+    os._exit(0)
+
+
+def cmd_serve(state, tls, max_seconds):
+    threading.Thread(target=watchdog, args=(max_seconds,), daemon=True).start()
     os.makedirs(state, mode=0o700, exist_ok=True)
     signer = Signer(state)
     zones = Zones(signer)
@@ -365,12 +376,13 @@ def main():
     s = sub.add_parser("serve")
     s.add_argument("--state", required=True)
     s.add_argument("--tls", action="append", metavar="NAME:CERT:KEY")
+    s.add_argument("--max-seconds", type=int, default=900)
     a = ap.parse_args()
     os.umask(0o077)
     if a.cmd == "pki":
         cmd_pki(a.out)
     else:
-        cmd_serve(a.state, a.tls)
+        cmd_serve(a.state, a.tls, a.max_seconds)
 
 
 if __name__ == "__main__":

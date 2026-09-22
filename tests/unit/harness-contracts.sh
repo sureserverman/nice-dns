@@ -195,6 +195,21 @@ t_two() { assert_eq b b; }'
   assert_match 'collected=3 passed=3 failed=0' "$HC_OUT" "stage aggregates every group"
 }
 
+t_stage_with_one_empty_group_fails() {
+  local m="$CASE_DIR/m"
+  hc_manifests "$m"
+  hc_group_file "$CASE_DIR/g.sh" "$hc_passing_group"
+  hc_group_file "$CASE_DIR/e.sh" '# no cases here'
+  printf 'unit\tga\t%s\tlocal\nunit\tge\t%s\tlocal\n' "$CASE_DIR/g.sh" "$CASE_DIR/e.sh" >>"$m/groups.tsv"
+  printf 'mixed\tunit\tga\nmixed\tunit\tge\n' >>"$m/stages.tsv"
+  printf 'TEST-OP\tsynthetic operation\n' >"$m/privacy-ops.tsv"
+  printf '# variant\tmeaning\n' >"$m/variants.tsv"
+  printf 'S-TEST\tTEST-OP\tunit\tga\tt_ok\tbaseline\n' >"$m/scenarios.tsv"
+  HC_MANIFESTS="$m" hc_run stage mixed
+  assert_nonzero "$HC_RC" "a stage with one empty group is not green even when the other passes"
+  assert_match 'result=fail' "$HC_OUT" "stage result is fail"
+}
+
 t_real_stages_reference_registered_groups() {
   local stages="$NICE_DNS_ROOT/tests/manifests/stages.tsv" n
   assert_file "$stages" "stages manifest exists"

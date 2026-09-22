@@ -200,3 +200,35 @@ t_unbound_anchor_matches_served_key() {
   assert_ne "" "$served" "served DNSKEY"
   assert_eq "$served" "$anchored" "unbound anchor carries the served public key"
 }
+
+t_fixture_exits_when_owner_is_killed() {
+  # A SIGKILLed case cannot run its EXIT trap; the fixture must notice it was
+  # orphaned and exit by itself instead of listening forever.
+  local sub fpid i=0
+  ( fx_start "$CASE_DIR/fx" || exit 1; sleep 300 ) &
+  sub=$!
+  while [ ! -f "$CASE_DIR/fx/ports.tsv" ]; do
+    i=$((i + 1)); [ "$i" -le 200 ] || { kill -9 "$sub"; fail "fixture did not start"; }
+    sleep 0.05
+  done
+  fpid="$(cat "$CASE_DIR/fx/pid")"
+  kill -9 "$sub"
+  wait "$sub" 2>/dev/null
+  i=0
+  while kill -0 "$fpid" 2>/dev/null && [ "$i" -lt 60 ]; do i=$((i + 1)); sleep 0.1; done
+  if kill -0 "$fpid" 2>/dev/null; then
+    kill "$fpid" 2>/dev/null
+    fail "fixture $fpid still alive 6 s after its owner was SIGKILLed"
+  fi
+  assert_eq ok ok "orphaned fixture exited"
+}
+
+t_fixture_has_a_maximum_lifetime() {
+  local fpid i=0
+  FX_MAX_SECONDS=2 fx_start "$CASE_DIR/fx" || fail "fixture did not start"
+  trap 'fx_stop "$CASE_DIR/fx"' EXIT
+  fpid="$(cat "$CASE_DIR/fx/pid")"
+  while kill -0 "$fpid" 2>/dev/null && [ "$i" -lt 60 ]; do i=$((i + 1)); sleep 0.1; done
+  if kill -0 "$fpid" 2>/dev/null; then fail "fixture outlived FX_MAX_SECONDS=2"; fi
+  assert_eq ok ok "fixture stopped at its lifetime"
+}

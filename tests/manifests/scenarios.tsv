@@ -12,10 +12,10 @@ S1-TLS-GOOD	variant:tls/good	unit	fixtures	t_dot_matching_cert_verifies	baseline
 S1-TLS-WRONGNAME	variant:tls/wrongname	unit	fixtures	t_dot_wrong_name_rejected	baseline
 S1-TLS-EXPIRED	variant:tls/expired	unit	fixtures	t_dot_expired_rejected	baseline
 S1-TLS-UNTRUSTED	variant:tls/untrusted	unit	fixtures	t_dot_untrusted_rejected	baseline
-S1-TLS-LIVE	variant:tls/good	unit	fixtures	t_dot_every_variant_serves_without_verification	baseline
+S1-TLS-UNVERIFIED	variant:tls/unverified-serves	unit	fixtures	t_dot_every_variant_serves_without_verification	baseline
 S1-DNSSEC-SIGNED	variant:dnssec/signed	unit	fixtures	t_signed_answer_fully_validates	baseline
-S1-DNSSEC-BOGUS-SERVED	variant:dnssec/bogus	unit	fixtures	t_bogus_is_delivered_by_fixture	baseline
-S1-DNSSEC-BOGUS-REJECTED	variant:dnssec/bogus	unit	fixtures	t_bogus_is_rejected_by_validator	baseline
+S1-DNSSEC-BOGUS-SERVED	variant:dnssec/bogus-served	unit	fixtures	t_bogus_is_delivered_by_fixture	baseline
+S1-DNSSEC-BOGUS-REJECTED	variant:dnssec/bogus-rejected	unit	fixtures	t_bogus_is_rejected_by_validator	baseline
 S1-DNSSEC-UNSIGNED	variant:dnssec/unsigned	unit	fixtures	t_unsigned_delegation_is_insecure	baseline
 S1-DNSSEC-NXDOMAIN	variant:dnssec/nxdomain	unit	fixtures	t_nxdomain_is_validated_negative	baseline
 S1-DNSSEC-NODATA	variant:dnssec/nodata	unit	fixtures	t_nodata_is_validated_negative	baseline
@@ -26,7 +26,7 @@ S1-OUT-OK	variant:outcome/ok	unit	measurement	t_collect_records_every_attempt_wi
 S1-OUT-NXDOMAIN	variant:outcome/nxdomain	unit	measurement	t_collect_servfail_is_failure_and_nxdomain_is_answer	baseline
 S1-OUT-SERVFAIL	variant:outcome/servfail	unit	measurement	t_collect_servfail_is_failure_and_nxdomain_is_answer	baseline
 S1-OUT-TIMEOUT	variant:outcome/timeout	unit	measurement	t_collect_counts_timeouts_in_denominator	baseline
-S1-PIPELINE	variant:outcome/timeout	integration	baseline-contracts	t_fixture_collector_stats_pipeline	baseline
+S1-PIPELINE	variant:pipeline/failures-reach-report	integration	baseline-contracts	t_fixture_collector_stats_pipeline	baseline
 S1-WL-COLD	variant:workload/cold	unit	measurement	t_default_workloads_are_controlled_names	baseline
 S1-WL-WARM	variant:workload/warm	unit	measurement	t_default_workloads_are_controlled_names	baseline
 S1-WL-IDLE	variant:workload/idle	unit	measurement	t_default_workloads_are_controlled_names	baseline

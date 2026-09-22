@@ -93,11 +93,11 @@ t_scenario_rows_are_well_formed() {
 t_stage_refuses_before_running_when_coverage_missing() {
   local out rc
   bc_manifests
-  awk -F '\t' '$2 != "variant:dnssec/bogus"' "$BC_MAN/scenarios.tsv" >"$CASE_DIR/m/scenarios.tsv"
+  awk -F '\t' '$2 != "variant:dnssec/bogus-rejected"' "$BC_MAN/scenarios.tsv" >"$CASE_DIR/m/scenarios.tsv"
   out="$(NICE_DNS_TEST_MANIFESTS="$CASE_DIR/m" bash "$BC_RUN" stage baseline-contracts 2>&1)"
   rc=$?
   assert_nonzero "$rc" "stage with an omitted variant"
-  assert_match 'dnssec/bogus' "$out" "stage refusal names the omitted variant"
+  assert_match 'dnssec/bogus-rejected' "$out" "stage refusal names the omitted variant"
   assert_not_match '^== ' "$out" "no group ran"
 }
 
@@ -160,4 +160,17 @@ t_contracts_ops_and_scenarios_agree() {
     assert_match "\\[$op\\]" "$(cat "$NICE_DNS_ROOT/docs/workflows/dns-lifecycle.md")" "$op tagged in the workflow contract"
     assert_match "	$op	" "$(cat "$BC_MAN/scenarios.tsv")" "$op has a scenario row"
   done
+}
+
+t_each_scenario_names_a_distinct_property() {
+  # One variant = one property: a variant may not be carried by two different
+  # cases, or deleting either case would go unnoticed.
+  local dup
+  dup="$(awk -F '\t' '!/^#/ && $2 ~ /^variant:/ && $5 != "-" { if (($2) in c && c[$2] != $5) print $2; c[$2] = $5 }' "$BC_MAN/scenarios.tsv")"
+  assert_eq "" "$dup" "variants carried by more than one case"
+}
+
+t_no_generated_files_tracked() {
+  assert_eq "" "$(git -C "$NICE_DNS_ROOT" ls-files | grep -E '(^|/)__pycache__/|\.py[co]$')" "compiled Python is not tracked"
+  assert_match '__pycache__' "$(cat "$NICE_DNS_ROOT/.gitignore")" ".gitignore excludes __pycache__"
 }

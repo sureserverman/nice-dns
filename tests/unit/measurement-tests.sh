@@ -265,9 +265,36 @@ t_stats_rejects_bad_input() {
 t_stats_groups_by_workload() {
   local f="$CASE_DIR/v.tsv" out
   mt_vector "$f" 1 2 3
-  sed 's/	w	miss	/	other	hit	/' "$f" | tail -n +3 >>"$f"
+  sed 's/	w	miss	/	other	hit	/' "$f" | tail -n +3 | awk -F '\t' -v OFS='\t' '{ $2 = $2 + 3; print }' >>"$f"
   out="$(bash "$MT_STATS" "$f")"
   assert_match '^w	' "$out" "row for workload w"
   assert_match '^other	' "$out" "row for workload other"
   assert_eq 2 "$(printf '%s\n' "$out" | tail -n +2 | wc -l | tr -d ' ')" "one row per workload"
+}
+
+t_stats_rejects_missing_rows() {
+  local f="$CASE_DIR/v.tsv" out
+  mt_vector "$f" 1 2 3 4 5
+  awk -F '\t' '$2 != "3"' "$f" >"$f.gap"
+  out="$(bash "$MT_STATS" "$f.gap" 2>&1)"
+  assert_nonzero $? "a file with a missing sample row is never a result"
+  assert_match 'missing' "$out" "refusal names the gap"
+}
+
+t_stats_rejects_mixed_runs() {
+  local f="$CASE_DIR/v.tsv" out
+  mt_vector "$f" 1 2 3
+  awk -F '\t' -v OFS='\t' 'NR > 2 && $2 == "3" { $1 = "other" } { print }' "$f" >"$f.mix"
+  out="$(bash "$MT_STATS" "$f.mix" 2>&1)"
+  assert_nonzero $? "one sample file holds one run"
+  assert_match 'run' "$out" "refusal names the run mix"
+}
+
+t_collect_refuses_append_from_another_run() {
+  mt_start
+  RUN_ID=run-a mt_collect fx-warm 1
+  assert_rc 0 "$MT_RC" "first run"
+  RUN_ID=run-b mt_collect fx-warm 1
+  assert_eq 2 "$MT_RC" "appending a different run is refused"
+  assert_eq 1 "$(mt_rows | wc -l | tr -d ' ')" "nothing appended"
 }

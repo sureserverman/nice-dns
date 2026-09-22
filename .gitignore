@@ -47,3 +47,7 @@ sec-review-report-20260425-1641.md
 # change every run — checking them in just creates review noise.
 sec-audit-report-*.md
 sec-review-report-*.md
+
+# ===== Python bytecode (test fixtures) =====
+__pycache__/
+*.py[co]

@@ -2,12 +2,16 @@
 # Columns (tab-separated): variant  meaning
 # Every variant needs at least one active scenario (a real registered case)
 # in scenarios.tsv, referenced as variant:<name>. Never drop one silently.
+# One variant = one property: a variant is carried by exactly one case, so
+# deleting a case cannot hide behind a sibling that proves something else.
 tls/good	DoT certificate that matches the authentication name and chains to the fixture CA
 tls/wrongname	DoT certificate for another name from the trusted CA
 tls/expired	DoT certificate past notAfter from the trusted CA
 tls/untrusted	DoT certificate for the right name from an unknown CA
+tls/unverified-serves	Every DoT variant answers an unverifying client, so each rejection is certificate-caused
 dnssec/signed	Answer with a valid RRSIG under the fixture anchor
-dnssec/bogus	Answer whose RRSIG the fixture itself corrupts
+dnssec/bogus-served	The fixture itself serves the answer with a corrupted RRSIG
+dnssec/bogus-rejected	An independent validator rejects that served answer as bogus
 dnssec/unsigned	Answer below an insecure delegation proven by signed NSEC
 dnssec/nxdomain	Signed NXDOMAIN with NSEC proof
 dnssec/nodata	Signed NODATA with NSEC proof
@@ -18,6 +22,7 @@ outcome/ok	Collector records an answered query
 outcome/nxdomain	Collector records NXDOMAIN as a valid answer
 outcome/timeout	Collector records an unanswered query inside the denominator
 outcome/servfail	Collector records SERVFAIL as a failure
+pipeline/failures-reach-report	Fixture -> collector -> stats keeps every failed attempt in the report
 workload/cold	Cold workload (nonce names) is defined
 workload/warm	Warm workload is defined
 workload/idle	Idle workload is defined

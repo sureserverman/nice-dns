@@ -10,7 +10,10 @@
 #   p{50,95,99}_support supported when attempted*(100-p)/100 >= 10, else
 #                       exploratory (too few samples beyond the percentile)
 # Failures always stay in the denominators. n/a means no answered attempts.
-# Exit 2 on a missing/unknown schema, a malformed row, or zero samples.
+# A file holds one run: sample_id must run 1..N in order under one run_id, so
+# a deleted or filtered row is refused rather than shrinking the denominator.
+# Exit 2 on a missing/unknown schema, a malformed row, a missing row, mixed
+# runs, or zero samples.
 #
 # Portability: Bash 3.2, POSIX awk (no asort) and sort.
 
@@ -34,7 +37,7 @@ flat="$(awk -F '\t' -v ncol="$NCOL" -v inf="$INF" '
   !hdr {
     if (NF != ncol) { printf "stats.sh: header has %d columns, expected %d\n", NF, ncol > "/dev/stderr"; bad = 1; exit }
     for (i = 1; i <= NF; i++) col[$i] = i
-    if (!("workload" in col) || !("elapsed_us" in col) || !("outcome" in col)) { print "stats.sh: header lacks workload/elapsed_us/outcome column" > "/dev/stderr"; bad = 1; exit }
+    if (!("workload" in col) || !("elapsed_us" in col) || !("outcome" in col) || !("sample_id" in col) || !("run_id" in col)) { print "stats.sh: header lacks run_id/sample_id/workload/elapsed_us/outcome column" > "/dev/stderr"; bad = 1; exit }
     hdr = 1; next
   }
   {
@@ -42,6 +45,9 @@ flat="$(awk -F '\t' -v ncol="$NCOL" -v inf="$INF" '
     w = $col["workload"]; o = $col["outcome"]; e = $col["elapsed_us"]
     if (e !~ /^[0-9]+$/) { printf "stats.sh: line %d elapsed_us is not an integer\n", NR > "/dev/stderr"; bad = 1; exit }
     n++
+    if ($col["sample_id"] != n) { printf "stats.sh: line %d has sample_id %s where %d was expected: missing or reordered rows\n", NR, $col["sample_id"], n > "/dev/stderr"; bad = 1; exit }
+    if (n == 1) run = $col["run_id"]
+    else if ($col["run_id"] != run) { printf "stats.sh: line %d belongs to run %s, not %s: one file holds one run\n", NR, $col["run_id"], run > "/dev/stderr"; bad = 1; exit }
     if (o == "ok" || o == "nxdomain") { print w "\tok\t" e; print w "\tall\t" e }
     else { print w "\tfail\t" (o == "timeout" ? "timeout" : "other"); print w "\tall\t" inf }
   }
