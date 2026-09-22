@@ -51,3 +51,6 @@ sec-review-report-*.md
 # ===== Python bytecode (test fixtures) =====
 __pycache__/
 *.py[co]
+
+# ===== Local test targets (sub-plan 01 Task 2.1) — never commit =====
+tests/live/targets.env

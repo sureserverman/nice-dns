@@ -9,3 +9,4 @@ baseline-contracts	unit	measurement
 baseline	unit	measurement
 baseline-contracts	integration	baseline-contracts
 baseline	integration	baseline-contracts
+baseline	integration	target-guards
