@@ -1,0 +1,12 @@
+# Eight-cell runtime matrix (master plan, ARCH-09). Validated by
+# `bash tests/run.sh check-matrix tests/manifests/matrix.tsv`.
+# CPU-architecture build support is a separate inventory, not a cell here.
+# platform	proxy	pihole
+linux	haproxy	standard
+linux	haproxy	hardened
+linux	socat	standard
+linux	socat	hardened
+macos	haproxy	standard
+macos	haproxy	hardened
+macos	socat	standard
+macos	socat	hardened

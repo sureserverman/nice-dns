@@ -1,0 +1,8 @@
+# Test group registry, parsed as data by tests/run.sh (never sourced).
+# Columns (tab-separated): kind  group  file  tier
+#   kind: unit | integration | live
+#   tier: local (default-safe) | slow (needs --include-slow) | live (needs --live --targets)
+#   file: path relative to the nice-dns checkout (absolute paths allowed for
+#         temporary registries); the file defines t_* case functions.
+# A kind=live group must be tier=live. (kind, group) pairs are unique.
+unit	harness-contracts	tests/unit/harness-contracts.sh	local
