@@ -44,7 +44,8 @@ datapath_ok() {
   container exec "$TOR_CONTAINER" nc -w 5 -z "$UNBOUND_IP" 5335 >/dev/null 2>&1
 }
 
-container_running() { container list 2>/dev/null | grep -qw "$1"; }
+# ID column only: a whole-line `grep -w` also matches image names.
+container_running() { container list 2>/dev/null | awk -v n="$1" 'NR > 1 && $1 == n { f = 1 } END { exit !f }'; }
 dns_ok() { dig @"$PIHOLE_IP" +time=3 +tries=1 +short cloudflare.com 2>/dev/null | grep -Eq '^[0-9.]+$'; }
 
 # Primary service + its DNS, so a host network reconfiguration is visible in the
