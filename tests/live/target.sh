@@ -435,6 +435,9 @@ case "$NICE_DNS_OP" in
       for c in pi-hole unbound tor-haproxy tor-socat; do
         st=$(ctl inspect "$c" --format '{{.State.Status}}	{{.State.Health.Status}}	{{.State.Health.FailingStreak}}' 2>/dev/null) || continue
         printf '%s\n' "$st" | awk -F '\t' -v c="$c" '{ printf "health\tpodman:%s\t%s\tstate=%s streak=%s\n", c, ($2 == "" ? "none" : $2), $1, ($3 == "" ? "-" : $3) }'
+        # The runtime's retained check history: start time and exit code of each.
+        hl=$(ctl inspect "$c" --format '{{range .State.Health.Log}}{{.Start}} rc={{.ExitCode}}; {{end}}' 2>/dev/null)
+        [ -n "$hl" ] && printf 'health_log\tpodman:%s\t%s\n' "$c" "$hl"
       done
     else
       launchctl list | awk '/nice-dns/ { printf "health\tlaunchd:%s\tlast_exit=%s\tpid=%s\n", $3, $2, $1 }'

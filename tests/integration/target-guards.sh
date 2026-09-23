@@ -441,6 +441,7 @@ t_linux_health_observes_healthchecks_without_running_them() {
   assert_rc 0 "$TG_RC" "health: $TG_OUT"
   assert_match '^health	nice-dns-health	(absent|pass|fail)	' "$TG_OUT" "health tool verdict recorded"
   assert_not_match 'healthcheck run|(^| )(stop|start|restart|kill|rm) ' "$(cat "$FAKE_LOG")" "health never invokes or changes a container"
+  assert_match '^podman inspect [a-z-]+ --format \{\{range \.State\.Health\.Log\}\}' "$(cat "$FAKE_LOG")" "check history read from inspect"
 }
 
 
