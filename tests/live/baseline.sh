@@ -156,7 +156,13 @@ collect() {
 answered() { awk -F '\t' 'NR > 2 && ($17 == "ok" || $17 == "nxdomain") { n++ } END { print n + 0 }' "$1"; }
 attempts() { awk -F '\t' 'NR > 2 { n++ } END { print n + 0 }' "$1"; }
 
-containers_of() { awk -F '\t' '$1 == "section" { s = $2; next } s == "containers" { print $1 "\t" $2 "\t" $3 }' "$1" | LC_ALL=C sort; }
+# The stack's own containers only: the product also runs short-lived ones
+# (macOS bridge-eval's anonymous probe container on dnsnet) that are not
+# state a restore owns.
+containers_of() {
+  awk -F '\t' '$1 == "section" { s = $2; next }
+    s == "containers" && ($1 == "pi-hole" || $1 == "unbound" || $1 == "tor-haproxy" || $1 == "tor-socat") { print $1 "\t" $2 "\t" $3 }' "$1" | LC_ALL=C sort
+}
 
 identify() {
   # identify CONFIG DIR: identity.tsv + cell.tsv from a config dump; 1 when

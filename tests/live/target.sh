@@ -488,6 +488,9 @@ case "$NICE_DNS_OP" in
       macos/hardened) inst=install-mac-hardened.sh ;;
       *) echo "no installer for $plat/$NICE_DNS_PIHOLE" >&2; exit 2 ;;
     esac
+    # A non-login ssh shell lacks Homebrew's bin dir, which the macOS
+    # installers need (brew, container); a login shell would have it.
+    if [ "$plat" = macos ]; then PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$PATH"; export PATH; fi
     w=$(mktemp -d "$HOME/.nice-dns-harness-install.XXXXXX") || exit 1
     trap 'rm -rf "$w"' EXIT
     git clone -q https://github.com/sureserverman/nice-dns.git "$w/nice-dns" </dev/null || exit 1

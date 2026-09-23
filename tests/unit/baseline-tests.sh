@@ -35,7 +35,8 @@ case "$op" in
   validate) printf 'fakelin\tlinux\tssh-l\t2026-09-22\nfakemac\tmacos\tssh-m\t2026-09-22\n' ;;
   snapshot)
     mkdir -p "$ARTIFACT_DIR/targets/$alias_"
-    { printf 'machine_id\tm-%s\nplatform\t%s\n' "$alias_" "$plat"; containers; } >"$ARTIFACT_DIR/targets/$alias_/snapshot.tsv" ;;
+    { printf 'machine_id\tm-%s\nplatform\t%s\n' "$alias_" "$plat"; containers
+      if [ -n "${FAKE_TRANSIENT:-}" ]; then printf 'db004885-a77b\trunning\t172.31.240.253/29\n'; fi; } >"$ARTIFACT_DIR/targets/$alias_/snapshot.tsv" ;;
   config)
     addr=''; [ -f "$FAKE_STATE/thawed-$alias_" ] && addr="${FAKE_AFTER_ADDR:-}"
     printf 'machine_id\tm-%s\nplatform\t%s\n' "$alias_" "$plat"
@@ -139,6 +140,17 @@ t_stopped_tor_fails_restored_even_if_queries_answer() {
   bt_run fakelin
   assert_rc 1 "$BT_RC" "tor still stopped after restore"
   assert_match '^BL-RESTORED	fail	' "$BT_OBS" "BL-RESTORED fails on tor state alone"
+}
+
+t_transient_product_container_is_not_restore_state() {
+  # bridge-eval's anonymous probe container runs at snapshot time and is gone
+  # afterwards; the stack itself is unchanged, so the target is restored.
+  bt_setup
+  FAKE_TRANSIENT=1; export FAKE_TRANSIENT
+  bt_run fakelin
+  assert_rc 0 "$BT_RC" "transient container ignored: $(cat "$CASE_DIR/run.log")"
+  assert_match '^BL-RESTORED	pass	' "$BT_OBS" "BL-RESTORED passes"
+  assert_not_match 'db004885' "$(cat "$ARTIFACT_DIR/baseline/fakelin/containers-before.tsv")" "only stack containers compared"
 }
 
 t_changed_container_address_fails_restored() {

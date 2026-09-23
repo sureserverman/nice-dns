@@ -481,4 +481,5 @@ t_install_cell_maps_each_cell_to_its_installer() {
   assert_match 'macos/hardened\) inst=install-mac-hardened\.sh' "$script" "macos hardened"
   assert_match 'git -C "\$w/nice-dns" checkout -q "\$NICE_DNS_SOURCE_SHA"' "$script" "installs the pinned commit"
   assert_match 'install-mac\.sh installs origin/main, which is not' "$script" "install-mac.sh (clones main itself) is refused unless main is the pinned commit"
+  assert_match 'if \[ "\$plat" = macos \]; then PATH="/opt/homebrew/bin:' "$script" "macOS installers get Homebrew on PATH (ssh shells are not login shells)"
 }
