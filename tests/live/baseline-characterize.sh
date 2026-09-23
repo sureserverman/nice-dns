@@ -41,7 +41,7 @@ bc_characterize() {
     assert_match "^$s	pass	" "$(cat "$d/observations.tsv")" "$s observed"
   done
   assert_eq 0 "$(cat "$d"/samples-*.tsv | grep -Ec 'Bridge |cert=|pwhash')" "no bridge lines or credential hashes in samples"
-  assert_eq 0 "$(grep -Ec 'Bridge |cert=|pwhash' "$d"/config*.tsv)" "no bridge lines or credential hashes in configs"
+  assert_eq 0 "$(cat "$d"/config*.tsv | grep -Ec 'Bridge |cert=|pwhash')" "no bridge lines or credential hashes in configs"
 }
 
 t_characterize_linux_cell() { bc_characterize linux; }
