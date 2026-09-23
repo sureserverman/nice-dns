@@ -146,6 +146,14 @@ build_pihole_hardened_base() {
 # legacy variant after the hardened one (or vice-versa) starts from a clean
 # image set every time.
 teardown() {
+  # Remove the resolv.conf pinners before swapping resolv.conf below. The
+  # NetworkManager dispatcher hook re-runs custom-dns-deb on any NM event and
+  # otherwise writes 127.0.0.1 back in the window before the removals further
+  # down (seen 14 s after the swap, with no stack left to answer), so every
+  # apt/git/pull in the install then fails to resolve.
+  sudo systemctl disable --now custom-dns-deb.service 2>/dev/null || true
+  sudo rm -f /etc/NetworkManager/dispatcher.d/90-nice-dns-pin /usr/bin/custom-dns-deb
+
   if grep -qxF 'nameserver 127.0.0.1' /etc/resolv.conf 2>/dev/null; then
     printf 'nameserver 9.9.9.9\nnameserver 1.1.1.1\nnameserver 1.0.0.1\n' \
       | sudo tee /etc/resolv.conf >/dev/null

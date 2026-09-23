@@ -127,6 +127,14 @@ EOF
 # AppArmor, subuid/subgid, cgroup delegation) are left in place — they're
 # harmless and may be shared with other Podman workloads.
 teardown() {
+  # Remove the resolv.conf pinners before swapping resolv.conf below. The
+  # NetworkManager dispatcher hook re-runs custom-dns-deb on any NM event and
+  # otherwise writes 127.0.0.1 back in the window before the removals further
+  # down (seen 14 s after the swap, with no stack left to answer), so every
+  # apt/git/pull in the install then fails to resolve.
+  sudo systemctl disable --now custom-dns-deb.service 2>/dev/null || true
+  sudo rm -f /etc/NetworkManager/dispatcher.d/90-nice-dns-pin /usr/bin/custom-dns-deb
+
   # Swap /etc/resolv.conf to public resolvers so apt-get and git still work
   # during install, and so the host keeps DNS after uninstall.
   if grep -qxF 'nameserver 127.0.0.1' /etc/resolv.conf 2>/dev/null; then
