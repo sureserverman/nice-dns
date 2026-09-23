@@ -48,6 +48,13 @@ BRIDGE_FP_FILE="${TOR_STATE_DIR}/.bridge-fingerprint"
 # Set when tor fails to bootstrap; makes the *next* run rotate bridges.
 # Bridges are only rotated on evidence they don't work, never on a timer.
 BRIDGE_SENTINEL="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/bootstrap-failed-${VARIANT}"
+# Held for the whole run of this script, and by nice-dns-bridge-eval.sh around
+# its throwaway container. Both scripts are RunAtLoad agents, so at login they
+# start in the same second. Measured 2026-09-21 and reproduced 2026-09-23: the
+# bridge-eval container, created while the stack was still stopped, took .250
+# and pinned dnsnet, so the rebuild could neither delete the network nor get
+# the addresses the configs hardcode. Keep the path in sync with bridge-eval.sh.
+STACK_LOCK="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/stack.lock"
 # Every BRIDGEn in bridges.env, as ready-made `container run -e` arguments.
 BRIDGE_ARGS=()
 BRIDGE_COUNT=0
@@ -135,12 +142,16 @@ dns_healthy() {
     | grep -Eq '^[0-9.]+$'
 }
 
+# Match the ID column exactly. `grep -w NAME` over the whole line also matched
+# the IMAGE column: an anonymous bridge-eval container running
+# sureserver/tor-haproxy made "tor-haproxy" look running, so ensure_container
+# skipped creating it and the stack came up without tor (2026-09-21).
 container_running() {
-  container list 2>/dev/null | grep -qw "$1"
+  container list 2>/dev/null | awk -v n="$1" 'NR > 1 && $1 == n { f = 1 } END { exit !f }'
 }
 
 container_exists() {
-  container list --all 2>/dev/null | grep -qw "$1"
+  container list --all 2>/dev/null | awk -v n="$1" 'NR > 1 && $1 == n { f = 1 } END { exit !f }'
 }
 
 container_ip() {
@@ -229,7 +240,30 @@ restart_container_runtime() {
 }
 
 network_exists() {
-  container network list 2>/dev/null | grep -qw "$NETWORK_NAME"
+  container network list 2>/dev/null | awk -v n="$NETWORK_NAME" 'NR > 1 && $1 == n { f = 1 } END { exit !f }'
+}
+
+# mkdir is atomic; the pid inside lets a crashed holder's lock be taken over.
+acquire_stack_lock() {
+  local tries=0 holder
+  mkdir -p "$(dirname "$STACK_LOCK")"
+  until mkdir "$STACK_LOCK" 2>/dev/null; do
+    holder="$(cat "$STACK_LOCK/pid" 2>/dev/null || true)"
+    if [[ -n "$holder" ]] && ! kill -0 "$holder" 2>/dev/null; then
+      log "taking over stack lock from dead pid $holder"
+      rm -rf "$STACK_LOCK"
+      continue
+    fi
+    tries=$((tries + 1))
+    if (( tries == 1 )); then log "waiting for stack lock (held by pid ${holder:-?})"; fi
+    if (( tries >= 120 )); then
+      log "stack lock still held by pid ${holder:-?} after 600s; giving up"
+      return 1
+    fi
+    sleep 5
+  done
+  printf '%s\n' "$$" >"$STACK_LOCK/pid"
+  trap 'rm -rf "$STACK_LOCK"' EXIT
 }
 
 latest_overlap_log() {
@@ -420,18 +454,36 @@ start_or_create_stack() {
   return 0
 }
 
+# Only a fresh network hands out .250/.251/.252 in creation order, so every
+# step here is checked: continuing past a failed removal is what rebuilt the
+# stack on a network something else still held (2026-09-21).
 rebuild_stack() {
-  local c
+  local c tries
   for c in pi-hole unbound tor-haproxy tor-socat; do
     if container_exists "$c"; then
-      container stop "$c" >/dev/null 2>&1 || true
-      container rm "$c" >/dev/null 2>&1 || true
+      container stop "$c" >>"$LOG" 2>&1 || true
+      container rm "$c" >>"$LOG" 2>&1 || true
+      if container_exists "$c"; then
+        log "could not remove $c; not rebuilding on a network it still holds"
+        return 1
+      fi
     fi
   done
 
-  if network_exists; then
-    container network rm "$NETWORK_NAME" >>"$LOG" 2>&1 || true
-  fi
+  tries=0
+  while network_exists; do
+    if container network rm "$NETWORK_NAME" >>"$LOG" 2>&1; then
+      break
+    fi
+    tries=$((tries + 1))
+    if (( tries >= 6 )); then
+      log "dnsnet still has attached containers after 30s; not rebuilding on it:"
+      container list --all >>"$LOG" 2>&1 || true
+      return 1
+    fi
+    log "dnsnet busy, retry $tries/6"
+    sleep 5
+  done
 
   ensure_network_present || return 1
   start_or_create_stack
@@ -454,6 +506,7 @@ wait_for_chain() {
 mkdir -p "$(dirname "$LOG")"
 
 log "starting nice-dns runtime (variant=$VARIANT)"
+acquire_stack_lock || exit 1
 
 # 0) Load every BRIDGEn for the `container run -e BRIDGE*` call below, fetching
 # a new set only when there's a reason to.

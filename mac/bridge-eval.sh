@@ -51,6 +51,9 @@ POOL_FILE="$CONFIG_DIR/bridge-pool.tsv"
 IMAGE="docker.io/sureserver/tor-${VARIANT}:latest"
 NETWORK_NAME=dnsnet
 LOG="${HOME}/Library/Logs/nice-dns-bridge-eval.log"
+# Shared with start-container.sh (keep the path in sync); see stack_ready below.
+STACK_LOCK="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/stack.lock"
+TOR_CONTAINER="tor-${VARIANT}"
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
@@ -85,15 +88,58 @@ done
 #
 # So wait for dnsnet rather than falling back to the default network: running
 # without it is precisely the bug.
+#
+# And it must not run until the stack itself is up on its addresses. The
+# allocator hands dnsnet out sequentially from .250, so a container created
+# while pi-hole, unbound and tor are stopped takes .250 and pins the network:
+# at login (both agents are RunAtLoad) that made start-container's rebuild fail
+# to delete dnsnet and hand pi-hole/unbound the wrong addresses (2026-09-21,
+# reproduced 2026-09-23). With all three running, this one gets .253.
+container_ip() {
+  container inspect "$1" 2>/dev/null \
+    | sed -nE 's@.*"ipv4Address" *: *"([0-9.]+).*@\1@p' | head -n 1
+}
+stack_ready() {
+  container network list 2>/dev/null | awk -v n="$NETWORK_NAME" 'NR > 1 && $1 == n { f = 1 } END { exit !f }' || return 1
+  [[ "$(container_ip pi-hole)" == 172.31.240.250 ]] || return 1
+  [[ "$(container_ip unbound)" == 172.31.240.251 ]] || return 1
+  [[ "$(container_ip "$TOR_CONTAINER")" == 172.31.240.252 ]] || return 1
+}
+
 tries=0
-until container network list 2>/dev/null | grep -qw "$NETWORK_NAME"; do
+until stack_ready; do
   tries=$((tries + 1))
-  if (( tries >= 10 )); then
-    log "$NETWORK_NAME not present; leaving bridges.env untouched (refusing to run on the default network)"
+  if (( tries >= 60 )); then
+    log "stack not up on its addresses after 360s; leaving bridges.env untouched (refusing to take one of its addresses)"
     exit 0
   fi
   sleep 6
 done
+
+# Hold the stack lock while our container exists, so start-container cannot
+# begin a rebuild underneath it; re-check readiness once we hold it.
+mkdir -p "$(dirname "$STACK_LOCK")"
+tries=0
+until mkdir "$STACK_LOCK" 2>/dev/null; do
+  holder="$(cat "$STACK_LOCK/pid" 2>/dev/null || true)"
+  if [[ -n "$holder" ]] && ! kill -0 "$holder" 2>/dev/null; then
+    rm -rf "$STACK_LOCK"
+    continue
+  fi
+  tries=$((tries + 1))
+  # start-container holds it through tor bootstrap and the chain check (up to ~450s at login).
+  if (( tries >= 120 )); then
+    log "stack lock held by pid ${holder:-?} for 600s; leaving bridges.env untouched"
+    exit 0
+  fi
+  sleep 5
+done
+printf '%s\n' "$$" >"$STACK_LOCK/pid"
+trap 'rm -rf "$STACK_LOCK"' EXIT
+if ! stack_ready; then
+  log "stack changed while waiting for the lock; leaving bridges.env untouched"
+  exit 0
+fi
 
 # -pool is what enables manage mode. -window 150 / -grace 20 match the Linux
 # unit so both platforms select on the same criteria.
