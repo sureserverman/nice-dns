@@ -77,8 +77,10 @@ case "$op" in
   restore) : ;;
   install-cell)
     shift 2
-    while [ $# -gt 0 ]; do case "$1" in --cell) want="$2" ;; --source-sha) sha="$2" ;; esac; shift 2; done
+    hsha=-
+    while [ $# -gt 0 ]; do case "$1" in --cell) want="$2" ;; --source-sha) sha="$2" ;; --hardened-sha) hsha="$2" ;; esac; shift 2; done
     printf 'install %s %s\n' "$want" "$sha" >>"$FAKE_STATE/installs"
+    printf '%s %s\n' "$want" "$hsha" >>"$FAKE_STATE/hardened-pins"
     [ "$want" = "${FAKE_INSTALL_FAIL:-}" ] && { echo "installer failed" >&2; exit 1; }
     [ -n "${FAKE_INSTALL_IGNORES_CELL:-}" ] || printf '%s\n' "$want" >"$FAKE_STATE/cell-$alias_"
     printf 'installer_exit\t0\n' ;;
@@ -247,6 +249,9 @@ t_matrix_installs_every_platform_cell_and_ends_on_the_original() {
     assert_match "^cell	linux/${c%-*}/${c#*-}$" "$(cat "$ARTIFACT_DIR/baseline/fakelin-$c/cell.tsv")" "cell $c characterized as itself"
   done
   assert_eq "socat/standard" "$(cat "$FAKE_STATE/cell-fakelin")" "target ends on its original cell"
+  h="$(git -C "$NICE_DNS_ROOT/../pi-hole-hardened" rev-parse HEAD)"
+  assert_eq "haproxy/hardened $h|socat/hardened $h" "$(grep hardened "$FAKE_STATE/hardened-pins" | sort | paste -sd'|' -)" "hardened cells pinned to the sibling HEAD"
+  assert_eq 2 "$(grep -c ' -$' "$FAKE_STATE/hardened-pins")" "standard cells carry no sibling pin"
 }
 
 t_matrix_failed_install_fails_and_other_cells_still_run() {

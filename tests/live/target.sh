@@ -38,7 +38,12 @@
 #                    --source-sha SHA (install-mac.sh clones main itself, so
 #                    it is refused unless origin/main is that commit). The
 #                    installer's output is streamed back; it may carry bridge
-#                    lines, so keep it out of portable evidence.
+#                    lines, so keep it out of portable evidence. Hardened
+#                    cells also need the pi-hole-hardened sibling, which has
+#                    no public source (no GitHub repo, no Docker Hub image):
+#                    --hardened-sha SHA must equal this checkout's sibling
+#                    ../pi-hole-hardened HEAD, whose `git archive` is sent
+#                    inline and unpacked next to the clone.
 #
 # Targets file: TSV data, never sourced; owned by the user, not a symlink and
 # not group/world-writable. One row per target:
@@ -83,10 +88,10 @@ if [ "$op" != validate ]; then
   [ $# -gt 0 ] && shift
   case "$alias_" in ''|-*) die "usage: target.sh $op ALIAS --targets FILE" ;; esac
 fi
-targets='' component='' c_workload='' c_count='' c_timeout=5000 c_pause=0 c_identity='' i_cell='' i_sha=''
+targets='' component='' c_workload='' c_count='' c_timeout=5000 c_pause=0 c_identity='' i_cell='' i_sha='' i_hsha=''
 while [ $# -gt 0 ]; do
   case "$1" in
-    --targets|--component|--workload|--count|--timeout-ms|--pause-ms|--identity|--cell|--source-sha)
+    --targets|--component|--workload|--count|--timeout-ms|--pause-ms|--identity|--cell|--source-sha|--hardened-sha)
       [ $# -ge 2 ] || die "option $1 needs a value"
       case "$1" in
         --targets) targets="$2" ;;
@@ -97,6 +102,7 @@ while [ $# -gt 0 ]; do
         --pause-ms) c_pause="$2" ;;
         --identity) c_identity="$2" ;;
         --cell) i_cell="$2" ;;
+        --hardened-sha) i_hsha="$2" ;;
         --source-sha) i_sha="$2" ;;
       esac
       shift 2 ;;
@@ -107,8 +113,8 @@ done
 if [ "$op" != collect ] && [ -n "$c_workload$c_count$c_identity" ]; then
   die "--workload/--count/--identity are only valid for collect"
 fi
-if [ "$op" != install-cell ] && [ -n "$i_cell$i_sha" ]; then
-  die "--cell/--source-sha are only valid for install-cell"
+if [ "$op" != install-cell ] && [ -n "$i_cell$i_sha$i_hsha" ]; then
+  die "--cell/--source-sha/--hardened-sha are only valid for install-cell"
 fi
 
 # ─── targets file (data only) ────────────────────────────────────────────────
@@ -180,6 +186,15 @@ if [ "$op" = install-cell ]; then
     *) die "install-cell needs --cell haproxy|socat/standard|hardened" ;; esac
   [[ "$i_sha" =~ ^[0-9a-f]{40}$ ]] || die "install-cell needs --source-sha <40-hex commit>"
   INSTALL_ENV="NICE_DNS_PROXY=${i_cell%/*} NICE_DNS_PIHOLE=${i_cell#*/} NICE_DNS_SOURCE_SHA=$i_sha"
+  HSIB="$(cd "$ND_CHECKOUT/.." && pwd -P)/pi-hole-hardened"
+  if [ "${i_cell#*/}" = hardened ]; then
+    [[ "$i_hsha" =~ ^[0-9a-f]{40}$ ]] || die "a hardened cell needs --hardened-sha <40-hex pi-hole-hardened commit>"
+    [ "$(git -C "$HSIB" rev-parse HEAD 2>/dev/null)" = "$i_hsha" ] \
+      || die "--hardened-sha $i_hsha is not the HEAD of $HSIB"
+    INSTALL_ENV="$INSTALL_ENV NICE_DNS_HARDENED_SHA=$i_hsha"
+  else
+    [ -z "$i_hsha" ] || die "--hardened-sha is only for hardened cells"
+  fi
 fi
 ID_ENV=''
 if [ "$op" = collect ]; then
@@ -261,7 +276,9 @@ preconnect_guards() {
 # (collect first prepends the bundle: collect.sh and its two manifests, copied
 # verbatim from this checkout into a remote temporary directory).
 remote_run() {
-  { if [ "$op" = collect ]; then remote_bundle || exit 1; fi; remote_script; } \
+  { if [ "$op" = collect ]; then remote_bundle || exit 1; fi
+    if [ "$op" = install-cell ] && [ -n "$i_hsha" ]; then hardened_bundle || exit 1; fi
+    remote_script; } \
     | ssh "${SSH_OPTS[@]}" "$T_SSH" "$1 /bin/sh -s"
 }
 
@@ -278,6 +295,15 @@ remote_bundle() {
     cat "$ND_CHECKOUT/$f"
     printf '%s\n' "$BUNDLE_EOF"
   done
+}
+
+hardened_bundle() {
+  # The pi-hole-hardened tree at the pinned commit, base64 tar.gz, decoded
+  # into ND_HARDENED_TGZ on the target.
+  printf '%s\n' 'ND_HARDENED_TGZ=$(mktemp "${TMPDIR:-/tmp}/nice-dns-hardened.XXXXXX") || exit 1' \
+    "{ base64 -d 2>/dev/null || base64 -D; } >\"\$ND_HARDENED_TGZ\" <<'$BUNDLE_EOF'"
+  git -C "$HSIB" archive --format=tar "$i_hsha" | gzip -9 | base64 || return 1
+  printf '%s\n' "$BUNDLE_EOF"
 }
 
 remote_script() {
@@ -497,6 +523,12 @@ case "$NICE_DNS_OP" in
     git -C "$w/nice-dns" checkout -q "$NICE_DNS_SOURCE_SHA" </dev/null || { echo "commit $NICE_DNS_SOURCE_SHA not found" >&2; exit 1; }
     if [ "$inst" = install-mac.sh ] && [ "$(git -C "$w/nice-dns" rev-parse origin/main)" != "$NICE_DNS_SOURCE_SHA" ]; then
       echo "install-mac.sh installs origin/main, which is not $NICE_DNS_SOURCE_SHA; refusing" >&2; exit 2
+    fi
+    if [ "$NICE_DNS_PIHOLE" = hardened ]; then
+      [ -s "${ND_HARDENED_TGZ:-}" ] || { echo "hardened cell without the pi-hole-hardened archive" >&2; exit 2; }
+      mkdir "$w/pi-hole-hardened" && tar -xzf "$ND_HARDENED_TGZ" -C "$w/pi-hole-hardened" || exit 1
+      rm -f "$ND_HARDENED_TGZ"
+      printf 'hardened_sha\t%s\n' "$NICE_DNS_HARDENED_SHA"
     fi
     printf 'install_cell\t%s/%s\ninstaller\t%s\nsource_sha\t%s\nstarted_utc\t%s\n' "$NICE_DNS_PROXY" "$NICE_DNS_PIHOLE" "$inst" \
       "$(git -C "$w/nice-dns" rev-parse HEAD)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"

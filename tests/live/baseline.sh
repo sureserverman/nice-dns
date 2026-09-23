@@ -320,7 +320,7 @@ complete() {
 # ─── matrix ──────────────────────────────────────────────────────────────────
 
 cmd_matrix() {
-  local alias_="${1:-}" targets='' sha='' platform M cells c orig got label rc=0 ready
+  local alias_="${1:-}" targets='' sha='' platform M cells c orig got label rc=0 ready hargs
   [ $# -gt 0 ] && shift
   case "$alias_" in ''|-*) die "usage: baseline.sh matrix ALIAS --targets FILE --source-sha SHA" ;; esac
   while [ $# -gt 0 ]; do
@@ -359,7 +359,9 @@ cmd_matrix() {
   for c in $cells; do
     label="$ALIAS-${c%/*}-${c#*/}"
     say "installing $PLATFORM/$c on $ALIAS"
-    if ! t snapshot >>"$M/$label.log" 2>&1 || ! t install-cell --cell "$c" --source-sha "$sha" >"$M/install-$label.log" 2>&1; then
+    hargs=()
+    case "$c" in */hardened) hargs=(--hardened-sha "$(git -C "$BL_ROOT/../pi-hole-hardened" rev-parse HEAD 2>/dev/null)") ;; esac
+    if ! t snapshot >>"$M/$label.log" 2>&1 || ! t install-cell --cell "$c" --source-sha "$sha" "${hargs[@]}" >"$M/install-$label.log" 2>&1; then
       printf '%s\tinstall-failed\t%s\n' "$c" "install-$label.log" >>"$M/cells.tsv"; rc=1; continue
     fi
     if ! ready="$(wait_ready "$label")"; then

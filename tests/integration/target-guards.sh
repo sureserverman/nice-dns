@@ -467,9 +467,9 @@ t_install_cell_needs_snapshot_valid_cell_and_pinned_commit() {
   tg probe lin1 --targets "$CASE_DIR/targets.env" --cell socat/standard
   assert_rc 2 "$TG_RC" "--cell on another operation refused"
   : >"$FAKE_LOG"
-  tg install-cell lin1 --targets "$CASE_DIR/targets.env" --cell socat/hardened --source-sha "$sha"
+  tg install-cell lin1 --targets "$CASE_DIR/targets.env" --cell haproxy/standard --source-sha "$sha"
   assert_rc 0 "$TG_RC" "install after snapshot: $TG_OUT"
-  assert_match "NICE_DNS_OP=install-cell NICE_DNS_PROXY=socat NICE_DNS_PIHOLE=hardened NICE_DNS_SOURCE_SHA=$sha " "$(cat "$FAKE_LOG")" "install sent as data words"
+  assert_match "NICE_DNS_OP=install-cell NICE_DNS_PROXY=haproxy NICE_DNS_PIHOLE=standard NICE_DNS_SOURCE_SHA=$sha " "$(cat "$FAKE_LOG")" "install sent as data words"
 }
 
 t_install_cell_maps_each_cell_to_its_installer() {
@@ -482,4 +482,39 @@ t_install_cell_maps_each_cell_to_its_installer() {
   assert_match 'git -C "\$w/nice-dns" checkout -q "\$NICE_DNS_SOURCE_SHA"' "$script" "installs the pinned commit"
   assert_match 'install-mac\.sh installs origin/main, which is not' "$script" "install-mac.sh (clones main itself) is refused unless main is the pinned commit"
   assert_match 'if \[ "\$plat" = macos \]; then PATH="/opt/homebrew/bin:' "$script" "macOS installers get Homebrew on PATH (ssh shells are not login shells)"
+}
+
+t_hardened_install_needs_the_pinned_local_sibling() {
+  local sha=0123456789abcdef0123456789abcdef01234567 hsha
+  hsha="$(git -C "$NICE_DNS_ROOT/../pi-hole-hardened" rev-parse HEAD)"
+  tg_setup
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  : >"$FAKE_LOG"
+  tg install-cell lin1 --targets "$CASE_DIR/targets.env" --cell socat/hardened --source-sha "$sha"
+  assert_rc 2 "$TG_RC" "hardened cell without --hardened-sha refused"
+  tg install-cell lin1 --targets "$CASE_DIR/targets.env" --cell socat/hardened --source-sha "$sha" --hardened-sha "$sha"
+  assert_rc 2 "$TG_RC" "a hardened sha that is not the sibling's HEAD refused"
+  assert_match 'is not the HEAD of' "$TG_OUT" "refusal names the sibling"
+  tg install-cell lin1 --targets "$CASE_DIR/targets.env" --cell socat/standard --source-sha "$sha" --hardened-sha "$hsha"
+  assert_rc 2 "$TG_RC" "--hardened-sha on a standard cell refused"
+  assert_eq 0 "$(tg_sent)" "nothing sent for any refused install"
+  tg install-cell lin1 --targets "$CASE_DIR/targets.env" --cell socat/hardened --source-sha "$sha" --hardened-sha "$hsha"
+  assert_rc 0 "$TG_RC" "hardened install with the sibling HEAD: $TG_OUT"
+  assert_match "NICE_DNS_PIHOLE=hardened NICE_DNS_SOURCE_SHA=$sha NICE_DNS_HARDENED_SHA=$hsha" "$(cat "$FAKE_LOG")" "pinned sibling sent as a data word"
+}
+
+t_hardened_bundle_decodes_to_the_sibling_tree() {
+  # The inline archive, decoded exactly as the remote script does, is the
+  # sibling's tree at the pinned commit.
+  local hsha d="$CASE_DIR/unpack"
+  hsha="$(git -C "$NICE_DNS_ROOT/../pi-hole-hardened" rev-parse HEAD)"
+  sed -n '/^BUNDLE_EOF=/p; /^hardened_bundle() {/,/^}/p' "$TG" >"$CASE_DIR/fn.sh"
+  HSIB="$(cd "$NICE_DNS_ROOT/.." && pwd -P)/pi-hole-hardened" i_hsha="$hsha" \
+    bash -c '. "$1"; hardened_bundle' _ "$CASE_DIR/fn.sh" >"$CASE_DIR/bundle.sh"
+  assert_rc 0 $? "bundle generated"
+  TMPDIR="$CASE_DIR" sh -c '. "$1"; mkdir "$2" && tar -xzf "$ND_HARDENED_TGZ" -C "$2"' _ "$CASE_DIR/bundle.sh" "$d"
+  assert_rc 0 $? "bundle decodes and unpacks"
+  assert_file "$d/Dockerfile" "Dockerfile unpacked"
+  assert_file "$d/post-install.sh" "post-install.sh unpacked (the installer's sibling test)"
+  assert_eq "$(git -C "$NICE_DNS_ROOT/../pi-hole-hardened" show "$hsha:Dockerfile" | cksum)" "$(cksum <"$d/Dockerfile")" "content is the pinned commit's"
 }
