@@ -247,12 +247,18 @@ observe() {
   collect cold 5 "$D/samples-after.tsv" || say "post-restore samples incomplete"
   containers_of "$D/snapshot-before.tsv" >"$D/containers-before.tsv"
   containers_of "$D/config-after.tsv" >"$D/containers-after.tsv"
+  # Restored = the state before the fault. A cell that answered uncached
+  # queries before it must answer again after the thaw; one that answered
+  # none before (a stack that never became ready) is not required to.
+  local before_ok after_ok
+  before_ok="$(answered "$D/samples-cold.tsv" 2>/dev/null || echo 0)"
+  after_ok=$(( $(answered "$D/samples-after.tsv" 2>/dev/null || echo 0) + $(answered "$D/samples-recovery.tsv" 2>/dev/null || echo 0) ))
   if cmp -s "$D/containers-before.tsv" "$D/containers-after.tsv" \
       && [ -s "$D/containers-before.tsv" ] \
       && [ -n "$(kv tor_state "$D/config-after.tsv")" ] \
       && ! printf ' %s ' "$(kv tor_state "$D/config-after.tsv")" | grep -q ' T ' \
-      && [ $(( $(answered "$D/samples-after.tsv" 2>/dev/null || echo 0) + $(answered "$D/samples-recovery.tsv" 2>/dev/null || echo 0) )) -ge 1 ]; then
-    record BL-RESTORED pass containers-after.tsv "containers equal the snapshot; after the thaw: recovery answered=$(answered "$D/samples-recovery.tsv")/$(attempts "$D/samples-recovery.tsv"), post-restore cold answered=$(answered "$D/samples-after.tsv")/5; first recovery answer at attempt ${first:-none}"
+      && { [ "$after_ok" -ge 1 ] || [ "${before_ok:-0}" -eq 0 ]; }; then
+    record BL-RESTORED pass containers-after.tsv "containers equal the snapshot; cold answered before the fault=$before_ok/$N_COLD; after the thaw: recovery answered=$(answered "$D/samples-recovery.tsv")/$(attempts "$D/samples-recovery.tsv"), post-restore cold answered=$(answered "$D/samples-after.tsv")/5; first recovery answer at attempt ${first:-none}"
   else
     record BL-RESTORED fail containers-after.tsv "target not back to its snapshot state (see containers-before/after.tsv, samples-after.tsv)"
   fi
@@ -323,7 +329,7 @@ complete() {
 # ─── matrix ──────────────────────────────────────────────────────────────────
 
 cmd_matrix() {
-  local alias_="${1:-}" targets='' sha='' platform M cells c orig got label rc=0 ready hargs
+  local alias_="${1:-}" targets='' sha='' platform M cells c orig got label rc=0 ready hargs never
   [ $# -gt 0 ] && shift
   case "$alias_" in ''|-*) die "usage: baseline.sh matrix ALIAS --targets FILE --source-sha SHA" ;; esac
   while [ $# -gt 0 ]; do
@@ -367,9 +373,10 @@ cmd_matrix() {
     if ! t snapshot >>"$M/$label.log" 2>&1 || ! t install-cell --cell "$c" --source-sha "$sha" "${hargs[@]}" >"$M/install-$label.log" 2>&1; then
       printf '%s\tinstall-failed\t%s\n' "$c" "install-$label.log" >>"$M/cells.tsv"; rc=1; continue
     fi
-    if ! ready="$(wait_ready "$label")"; then
-      printf '%s\tnot-ready\t%s\n' "$c" "$ready" >>"$M/cells.tsv"; rc=1; continue
-    fi
+    # A cell that never answers is still observed (a baseline records the
+    # product as it is); the finding goes into the cell's own findings.
+    never=''
+    if ! ready="$(wait_ready "$label")"; then never="$ready"; fi
     if ! bash "$0" characterize "$ALIAS" --targets "$TARGETS" --label "$label" >>"$M/$label.log" 2>&1; then
       printf '%s\tobservation-incomplete\t%s\n' "$c" "$ready" >>"$M/cells.tsv"; rc=1; continue
     fi
@@ -377,7 +384,13 @@ cmd_matrix() {
     if [ "$got" != "$PLATFORM/$c" ]; then
       printf '%s\twrong-cell-installed\t%s\n' "$c" "$got" >>"$M/cells.tsv"; rc=1; continue
     fi
-    printf '%s\tobserved\t%s\n' "$c" "$ready" >>"$M/cells.tsv"
+    if [ -n "$never" ]; then
+      printf 'never-ready\tno uncached query answered within %ss of the install (%s)\n' "$READY_SECS" "$never" \
+        >>"$ARTIFACT_DIR/baseline/$label/findings.tsv"
+      printf '%s\tobserved-never-ready\t%s\n' "$c" "$never" >>"$M/cells.tsv"
+    else
+      printf '%s\tobserved\t%s\n' "$c" "$ready" >>"$M/cells.tsv"
+    fi
   done
   t config >"$M/final-config.tsv" 2>>"$M/original-config.err"
   mkdir -p "$M/final"

@@ -65,6 +65,7 @@ case "$op" in
       if [ "$frozen" = yes ] && [ "$w" = cold ] && [ -z "${FAKE_ANSWERS_WHILE_FROZEN:-}" ]; then o=timeout r=- e=5000000 rc=3; fi
       if [ -f "$FAKE_STATE/thawed-$alias_" ] && [ "$w" = cold ] && [ "$n" = 5 ] && [ -n "${FAKE_POST_RESTORE_MISS:-}" ]; then o=timeout r=- e=5000000 rc=3; fi
       if [ -f "$FAKE_STATE/thawed-$alias_" ] && [ "$w" = cold ] && [ -n "${FAKE_NEVER_AFTER_THAW:-}" ]; then o=timeout r=- e=5000000 rc=3; fi
+      if [ "$cell" = "${FAKE_DEAD_CELL:-}" ]; then o=timeout r=- e=5000000 rc=3; fi
       printf '%s\t%s\t2026-09-23T00:00:00Z\t%s\t%s\tmiss\t%s\t%s\t%s\t%s\tx\ti\t127.0.0.1#53\tudp\tq.example.com\tA\t%s\t%s\t5000\n' \
         "$RUN_ID" "$i" "$e" "$w" "$alias_" "$plat" "$proxy" "$pihole" "$o" "$r"
       i=$((i + 1))
@@ -299,4 +300,18 @@ t_matrix_refuses_unpinned_source_and_unknown_original() {
   bash "$BT_BASELINE" matrix fakelin --targets "$CASE_DIR/targets.env" --source-sha "$SHA40" >/dev/null 2>&1
   assert_rc 2 $? "an unidentifiable current cell cannot be returned to"
   assert_no_path "$FAKE_STATE/installs" "nothing installed"
+}
+
+t_matrix_cell_that_never_answers_is_observed_as_such() {
+  # A stack whose Tor never bootstraps is the product as it is: it is
+  # characterized (every attempt a failure), not skipped.
+  bt_setup
+  FAKE_DEAD_CELL=haproxy/hardened; export FAKE_DEAD_CELL
+  bash "$BT_BASELINE" matrix fakelin --targets "$CASE_DIR/targets.env" --source-sha "$SHA40" >"$CASE_DIR/m.log" 2>&1
+  assert_rc 0 $? "matrix with a dead cell: $(tail -n 20 "$CASE_DIR/m.log")"
+  assert_match '^haproxy/hardened	observed-never-ready	' "$(cat "$ARTIFACT_DIR/baseline-matrix/fakelin/cells.tsv")" "dead cell observed and marked"
+  assert_match '^never-ready	' "$(cat "$ARTIFACT_DIR/baseline/fakelin-haproxy-hardened/findings.tsv")" "finding recorded in the cell"
+  assert_match '^BL-COLD	pass	samples-cold.tsv	attempted=3 answered=0$' "$(cat "$ARTIFACT_DIR/baseline/fakelin-haproxy-hardened/observations.tsv")" "failures observed, not dropped"
+  assert_match '^BL-RESTORED	pass	.*cold answered before the fault=0/3' "$(cat "$ARTIFACT_DIR/baseline/fakelin-haproxy-hardened/observations.tsv")" "restored to its pre-fault (non-answering) state"
+  assert_eq 3 "$(grep -c '	observed	' "$ARTIFACT_DIR/baseline-matrix/fakelin/cells.tsv")" "the other cells are ordinary observations"
 }
