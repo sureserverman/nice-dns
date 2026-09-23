@@ -507,3 +507,16 @@ t_inventory_unknown_mode_rejected() {
   hc_inventory nonsense
   assert_rc 2 "$HC_RC" "unknown inventory mode"
 }
+
+t_relative_targets_path_reaches_live_cases() {
+  # Cases run with their case dir as cwd, so a --targets path relative to
+  # the caller's directory must reach them as an absolute path.
+  local m="$CASE_DIR/m" w="$CASE_DIR/work"
+  hc_manifests "$m"
+  mkdir -p "$w/sub"
+  printf 'data\n' >"$w/sub/targets.env"
+  hc_group_file "$CASE_DIR/live.sh" 't_reads_targets() { assert_match "^/" "$NICE_DNS_OPT_TARGETS" "absolute"; assert_file "$NICE_DNS_OPT_TARGETS" "targets file visible from the case"; }'
+  printf 'live\tlivegrp\t%s\tlive\n' "$CASE_DIR/live.sh" >>"$m/groups.tsv"
+  (cd "$w" && HC_MANIFESTS="$m" hc_run live livegrp --live --targets sub/targets.env && printf '%s\n' "$HC_RC" >"$CASE_DIR/rc")
+  assert_eq 0 "$(cat "$CASE_DIR/rc")" "relative --targets from the caller's cwd: $(cat "$CASE_DIR/hc-run.out")"
+}

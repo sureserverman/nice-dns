@@ -214,6 +214,11 @@ nd_parse_opts() {
         case "$2" in --*) nd_err "option $1 needs a value, got '$2'"; return "$ND_USAGE" ;; esac
         name="$(nd_opt_name "$1")"
         printf -v "NICE_DNS_OPT_$name" '%s' "$2"
+        # Cases run in their own case dir: a file path must not depend on
+        # the caller's cwd.
+        if [ "$1" = --targets ]; then
+          case "$2" in /*) ;; *) printf -v "NICE_DNS_OPT_$name" '%s/%s' "$PWD" "$2" ;; esac
+        fi
         export "NICE_DNS_OPT_$name"
         shift 2 ;;
       *) nd_err "unknown option '$1'"; return "$ND_USAGE" ;;
