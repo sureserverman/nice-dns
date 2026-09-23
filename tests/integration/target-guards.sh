@@ -535,3 +535,43 @@ t_source_bundle_decodes_to_the_pinned_tree() {
   assert_file "$d/deb/quadlet/nice-dns.pod" "in-tree marker the Linux installers look for"
   assert_eq "$(git -C "$NICE_DNS_ROOT" show "$sha:install-deb.sh" | cksum)" "$(cksum <"$d/install-deb.sh")" "content is the pinned commit's"
 }
+
+t_state_files_are_owner_only_even_standalone() {
+  tg_setup
+  TG_OUT="$(umask 022; bash "$TG" snapshot lin1 --targets "$CASE_DIR/targets.env" 2>&1)"; TG_RC=$?
+  assert_rc 0 "$TG_RC" "snapshot under umask 022: $TG_OUT"
+  local f m
+  for f in "$ARTIFACT_DIR/targets/lin1" "$ARTIFACT_DIR/targets/lin1/receipt.tsv" "$ARTIFACT_DIR/targets/lin1/ops.tsv" "$ARTIFACT_DIR/targets/lin1/snapshot.tsv"; do
+    m="$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f")"
+    case "$m" in 600|700) ;; *) fail "$f has mode $m, expected owner-only" ;; esac
+  done
+  assert_eq 1 1 "all state paths owner-only"
+}
+
+t_failed_bundle_is_never_sent() {
+  # A bundle that cannot be built must stop remote_run before ssh starts.
+  sed -n '/^BUNDLE_EOF=/p; /^remote_run() {/,/^}/p; /^build_payload() {/,/^}/p; /^hardened_bundle() {/,/^}/p' "$TG" >"$CASE_DIR/fn.sh"
+  cat >>"$CASE_DIR/fn.sh" <<'FN'
+ssh() { printf 'SENT\n' >>"$SSH_MARK"; cat >/dev/null; }
+remote_script() { printf 'echo remote\n'; }
+source_bundle() { return 0; }
+FN
+  : >"$CASE_DIR/sent"
+  HSIB="$(cd "$NICE_DNS_ROOT/.." && pwd -P)/pi-hole-hardened" SSH_MARK="$CASE_DIR/sent" \
+    bash -c '. "$1"; op=install-cell i_hsha=0000000000000000000000000000000000000000 SSH_OPTS=(); T_SSH=x; remote_run "NICE_DNS_OP=install-cell"' _ "$CASE_DIR/fn.sh" >"$CASE_DIR/out" 2>&1
+  assert_rc 2 $? "a failed archive (unknown object) is a refusal: $(cat "$CASE_DIR/out")"
+  assert_eq "" "$(cat "$CASE_DIR/sent")" "ssh never started"
+  assert_match 'nothing was sent' "$(cat "$CASE_DIR/out")" "says nothing was sent"
+}
+
+t_collect_refused_by_the_collector_is_exit_2() {
+  tg_setup
+  tg_remote_tools Linux
+  printf '#!/bin/sh\nprintf ";; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1\\n"\n' >"$CASE_DIR/rbin/dig"
+  chmod 755 "$CASE_DIR/rbin/dig"
+  # A proxy value that is valid data but no matrix cell: collect.sh refuses.
+  printf 'target_id\tlin1\nplatform\tlinux\nproxy\tnginx\npihole\tstandard\nsource_rev\tabc\nimages\tx=y\n' >"$CASE_DIR/identity.tsv"
+  RUN_ID=run-refused-1; export RUN_ID
+  tg collect lin1 --targets "$CASE_DIR/targets.env" --workload cold --count 1 --identity "$CASE_DIR/identity.tsv"
+  assert_rc 2 "$TG_RC" "collector refusal surfaces as refused (2), not failed (1): $TG_OUT"
+}

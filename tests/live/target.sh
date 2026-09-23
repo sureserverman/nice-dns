@@ -72,6 +72,9 @@
 # Portability: Bash 3.2, BSD/GNU userland; remote side is /bin/sh.
 
 set -u
+# State, receipts and payloads are owner-only even when run standalone
+# (tests/run.sh sets the same umask for the harness).
+umask 077
 
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
@@ -281,12 +284,29 @@ preconnect_guards() {
 # remote_run <env-prefix> : sends the op's constant script to /bin/sh -s
 # (collect first prepends the bundle: collect.sh and its two manifests, copied
 # verbatim from this checkout into a remote temporary directory).
+# The whole payload is built and checked before ssh starts, so a bundle that
+# fails is never half-sent (a pipeline would report only ssh's status). Not
+# `set -o pipefail` file-wide: guards such as `local_addresses | grep -Fxq`
+# must not turn a SIGPIPE'd producer into a false negative.
 remote_run() {
-  { if [ "$op" = collect ]; then remote_bundle || exit 1; fi
-    if [ "$op" = install-cell ]; then source_bundle || exit 1; fi
-    if [ "$op" = install-cell ] && [ -n "$i_hsha" ]; then hardened_bundle || exit 1; fi
-    remote_script; } \
-    | ssh "${SSH_OPTS[@]}" "$T_SSH" "$1 /bin/sh -s"
+  local payload rc
+  payload="$(mktemp "${TMPDIR:-/tmp}/nice-dns-payload.XXXXXX")" || return 1
+  if ! build_payload >"$payload"; then
+    rm -f "$payload"
+    printf 'target.sh: could not build the remote payload; nothing was sent\n' >&2
+    return 2
+  fi
+  ssh "${SSH_OPTS[@]}" "$T_SSH" "$1 /bin/sh -s" <"$payload"
+  rc=$?
+  rm -f "$payload"
+  return "$rc"
+}
+
+build_payload() {
+  if [ "$op" = collect ]; then remote_bundle || return 1; fi
+  if [ "$op" = install-cell ]; then source_bundle || return 1; fi
+  if [ "$op" = install-cell ] && [ -n "$i_hsha" ]; then hardened_bundle || return 1; fi
+  remote_script
 }
 
 BUNDLE_EOF=__NICE_DNS_BUNDLE_EOF__
@@ -308,7 +328,7 @@ source_bundle() {
   # nice-dns at the pinned commit, base64 tar.gz, decoded into ND_SOURCE_TGZ.
   printf '%s\n' 'ND_SOURCE_TGZ=$(mktemp "${TMPDIR:-/tmp}/nice-dns-source.XXXXXX") || exit 1' \
     "{ base64 -d 2>/dev/null || base64 -D; } >\"\$ND_SOURCE_TGZ\" <<'$BUNDLE_EOF'"
-  git -C "$ND_CHECKOUT" archive --format=tar "$i_sha" | gzip -9 | base64 || return 1
+  ( set -o pipefail; git -C "$ND_CHECKOUT" archive --format=tar "$i_sha" | gzip -9 | base64 ) || return 1
   printf '%s\n' "$BUNDLE_EOF"
 }
 
@@ -317,7 +337,7 @@ hardened_bundle() {
   # into ND_HARDENED_TGZ on the target.
   printf '%s\n' 'ND_HARDENED_TGZ=$(mktemp "${TMPDIR:-/tmp}/nice-dns-hardened.XXXXXX") || exit 1' \
     "{ base64 -d 2>/dev/null || base64 -D; } >\"\$ND_HARDENED_TGZ\" <<'$BUNDLE_EOF'"
-  git -C "$HSIB" archive --format=tar "$i_hsha" | gzip -9 | base64 || return 1
+  ( set -o pipefail; git -C "$HSIB" archive --format=tar "$i_hsha" | gzip -9 | base64 ) || return 1
   printf '%s\n' "$BUNDLE_EOF"
 }
 
@@ -386,6 +406,8 @@ health_tool() {
 }
 tor_states() {
   # One process-state letter per tor pid in the proxy container (T = stopped).
+  # Field 3 of /proc/PID/stat is the state only while comm (field 2) has no
+  # space; it is the literal "(tor)" here.
   ctl_exec "$1" sh -c 'for p in $(pgrep -x tor); do awk "{ print \$3 }" /proc/$p/stat; done' | tr '\n' ' ' | sed 's/ $//'
 }
 case "$NICE_DNS_OP" in
@@ -618,7 +640,9 @@ case "$op" in
     preconnect_guards
     probe_identity probe
     remote_run "NICE_DNS_OP=collect NICE_DNS_WORKLOAD=$c_workload NICE_DNS_COUNT=$c_count NICE_DNS_TIMEOUT_MS=$c_timeout NICE_DNS_PAUSE_MS=$c_pause NICE_DNS_RUN_ID=$RUN_ID$ID_ENV"
-    case $? in 0) exit 0 ;; 1) exit 3 ;; *) exit 1 ;; esac ;;
+    # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
+    # or nothing written); anything else (ssh 255, ...) = the operation failed.
+    case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
   sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \

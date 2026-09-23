@@ -4,6 +4,7 @@
 #
 # Usage:
 #   bash tests/live/baseline.sh characterize ALIAS --targets FILE [--label NAME]
+#        [--product-sha SHA] [--hardened-sha SHA] [--install-source WORD]
 #   bash tests/live/baseline.sh matrix ALIAS --targets FILE --source-sha SHA
 #   bash tests/live/baseline.sh receipt --out DIR CELLDIR...
 #
@@ -22,7 +23,13 @@
 #                             an uncached query answered after the thaw
 #                             (recovery or post-restore samples: a target
 #                             that answered 10/30 cold before the fault may
-#                             miss 5 in a row after it)
+#                             miss 5 in a row after it). A cell whose complete
+#                             pre-fault cold sample answered nothing (it never
+#                             became ready) is not required to answer after;
+#                             with no complete pre-fault sample it is.
+# --product-sha/--hardened-sha/--install-source name the installed product in
+# identity.tsv (source_rev) and cell.tsv; without them source_rev is this
+# checkout's HEAD (the deployed stack's source is then unknown).
 # into $ARTIFACT_DIR/baseline/NAME/ (NAME defaults to ALIAS). A scenario is "pass" when its
 # observation is complete; product behaviour is recorded, not judged, in
 # findings.tsv (e.g. health reporting healthy while upstream is dead). The
@@ -83,16 +90,27 @@ cmd_characterize() {
   local alias_="${1:-}" targets='' platform label=''
   [ $# -gt 0 ] && shift
   case "$alias_" in ''|-*) die "usage: baseline.sh characterize ALIAS --targets FILE [--label NAME]" ;; esac
+  PRODUCT_SHA='' HARDENED_SHA='' INSTALL_SOURCE=''
   while [ $# -gt 0 ]; do
     case "$1" in
-      --targets|--label)
+      --targets|--label|--product-sha|--hardened-sha|--install-source)
         [ $# -ge 2 ] || die "$1 needs a value"
-        if [ "$1" = --targets ]; then targets="$2"; else label="$2"; fi
+        case "$1" in
+          --targets) targets="$2" ;;
+          --label) label="$2" ;;
+          --product-sha) PRODUCT_SHA="$2" ;;
+          --hardened-sha) HARDENED_SHA="$2" ;;
+          --install-source) INSTALL_SOURCE="$2" ;;
+        esac
         shift 2 ;;
       *) die "unknown option '$1'" ;;
     esac
   done
   label="${label:-$alias_}"
+  for v in "$PRODUCT_SHA" "$HARDENED_SHA"; do
+    [ -z "$v" ] || [[ "$v" =~ ^[0-9a-f]{40}$ ]] || die "--product-sha/--hardened-sha must be full commit ids"
+  done
+  [ -z "$INSTALL_SOURCE" ] || [[ "$INSTALL_SOURCE" =~ ^[a-z0-9-]{1,64}$ ]] || die "--install-source must be a lowercase word"
   [[ "$label" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || die "--label must be a lowercase word"
   [ -n "$targets" ] || die "missing --targets FILE"
   case "${ARTIFACT_DIR:-}" in /*) ;; *) die "ARTIFACT_DIR must be the run's absolute artifact dir" ;; esac
@@ -175,7 +193,7 @@ identify() {
   proxy="${pc#tor-}"
   pihole="$(kv pihole_variant "$cfg")"
   images="$(awk -F '\t' '$1 == "image" { printf "%s%s=%s", (n++ ? "," : ""), $2, $4 }' "$cfg")"
-  src="$(GIT_OPTIONAL_LOCKS=0 git -C "$BL_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+  src="${PRODUCT_SHA:-$(GIT_OPTIONAL_LOCKS=0 git -C "$BL_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)}"
   n="$(awk -F '\t' '$1 == "image" && $4 ~ /^sha256:[0-9a-f]{64}$/' "$cfg" | grep -c .)"
   ID_NOTE="proxy='$pc' pihole='$pihole' image digests=$n of 3"
   if [ -z "$pc" ] || [ "$n" -ne 3 ] || { [ "$pihole" != standard ] && [ "$pihole" != hardened ]; } \
@@ -187,6 +205,8 @@ identify() {
     printf 'source_rev\t%s\nimages\t%s\n' "$src" "$images"
   } >"$dir/identity.tsv"
   printf 'cell\t%s/%s/%s\ntarget\t%s\nimage_gen\t%s\n' "$PLATFORM" "$proxy" "$pihole" "$ALIAS" "$images" >"$dir/cell.tsv"
+  printf 'product_sha\t%s\nhardened_sha\t%s\ninstall_source\t%s\n' "${PRODUCT_SHA:-unknown}" \
+    "${HARDENED_SHA:--}" "${INSTALL_SOURCE:-unknown}" >>"$dir/cell.tsv"
   ID_NOTE="$PLATFORM/$proxy/$pihole images=$images"
   return 0
 }
@@ -251,13 +271,18 @@ observe() {
   # queries before it must answer again after the thaw; one that answered
   # none before (a stack that never became ready) is not required to.
   local before_ok after_ok
-  before_ok="$(answered "$D/samples-cold.tsv" 2>/dev/null || echo 0)"
+  # "Answered nothing before" needs a complete pre-fault sample; with none
+  # (collect failed) the pre-fault state is unknown and an answer is required.
+  before_ok=unknown
+  if [ -f "$D/samples-cold.tsv" ] && [ "$(attempts "$D/samples-cold.tsv")" -eq "$N_COLD" ]; then
+    before_ok="$(answered "$D/samples-cold.tsv")"
+  fi
   after_ok=$(( $(answered "$D/samples-after.tsv" 2>/dev/null || echo 0) + $(answered "$D/samples-recovery.tsv" 2>/dev/null || echo 0) ))
   if cmp -s "$D/containers-before.tsv" "$D/containers-after.tsv" \
       && [ -s "$D/containers-before.tsv" ] \
       && [ -n "$(kv tor_state "$D/config-after.tsv")" ] \
       && ! printf ' %s ' "$(kv tor_state "$D/config-after.tsv")" | grep -q ' T ' \
-      && { [ "$after_ok" -ge 1 ] || [ "${before_ok:-0}" -eq 0 ]; }; then
+      && { [ "$after_ok" -ge 1 ] || [ "$before_ok" = 0 ]; }; then
     record BL-RESTORED pass containers-after.tsv "containers equal the snapshot; cold answered before the fault=$before_ok/$N_COLD; after the thaw: recovery answered=$(answered "$D/samples-recovery.tsv")/$(attempts "$D/samples-recovery.tsv"), post-restore cold answered=$(answered "$D/samples-after.tsv")/5; first recovery answer at attempt ${first:-none}"
   else
     record BL-RESTORED fail containers-after.tsv "target not back to its snapshot state (see containers-before/after.tsv, samples-after.tsv)"
@@ -292,6 +317,7 @@ judge_severed() {
         [ "$cold" -eq 0 ] && finding health-false-green "$src stayed $v while 0/$N_SEV uncached queries were answered" ;;
       healthy:*|pass:*) finding health-detects "$src went $b -> $v with upstream dead" ;;
       unhealthy:*|fail:*) finding health-not-discriminating "$src was already $b on the working chain (severed: $v)" ;;
+      :*) finding health-source-appeared "$src reported $v with upstream dead but gave no verdict before the fault" ;;
     esac
   done < <(awk -F '\t' '$1 == "health"' "$D/health-severed.tsv")
   [ "$(kv tor_state "$D/config-severed.tsv")" = T ] \
@@ -329,7 +355,7 @@ complete() {
 # ─── matrix ──────────────────────────────────────────────────────────────────
 
 cmd_matrix() {
-  local alias_="${1:-}" targets='' sha='' platform M cells c orig got label rc=0 ready hargs never
+  local alias_="${1:-}" targets='' sha='' platform M cells c orig got label rc=0 ready hargs never pargs
   [ $# -gt 0 ] && shift
   case "$alias_" in ''|-*) die "usage: baseline.sh matrix ALIAS --targets FILE --source-sha SHA" ;; esac
   while [ $# -gt 0 ]; do
@@ -370,14 +396,19 @@ cmd_matrix() {
     say "installing $PLATFORM/$c on $ALIAS"
     hargs=()
     case "$c" in */hardened) hargs=(--hardened-sha "$(git -C "$BL_ROOT/../pi-hole-hardened" rev-parse HEAD 2>/dev/null)") ;; esac
-    if ! t snapshot >>"$M/$label.log" 2>&1 || ! t install-cell --cell "$c" --source-sha "$sha" "${hargs[@]}" >"$M/install-$label.log" 2>&1; then
+    if ! t snapshot >>"$M/$label.log" 2>&1 || ! t install-cell --cell "$c" --source-sha "$sha" ${hargs[@]+"${hargs[@]}"} >"$M/install-$label.log" 2>&1; then
       printf '%s\tinstall-failed\t%s\n' "$c" "install-$label.log" >>"$M/cells.tsv"; rc=1; continue
     fi
     # A cell that never answers is still observed (a baseline records the
     # product as it is); the finding goes into the cell's own findings.
     never=''
     if ! ready="$(wait_ready "$label")"; then never="$ready"; fi
-    if ! bash "$0" characterize "$ALIAS" --targets "$TARGETS" --label "$label" >>"$M/$label.log" 2>&1; then
+    pargs=(--product-sha "$sha" --install-source inline-archive)
+    # install-mac.sh clones GitHub main itself; target.sh only lets it run when
+    # this checkout's origin/main is the pinned commit.
+    [ "$PLATFORM/${c#*/}" = macos/standard ] && pargs=(--product-sha "$sha" --install-source github-main-verified)
+    [ ${#hargs[@]} -gt 0 ] && pargs+=(--hardened-sha "${hargs[1]}")
+    if ! bash "$0" characterize "$ALIAS" --targets "$TARGETS" --label "$label" "${pargs[@]}" >>"$M/$label.log" 2>&1; then
       printf '%s\tobservation-incomplete\t%s\n' "$c" "$ready" >>"$M/cells.tsv"; rc=1; continue
     fi
     got="$(kv cell "$ARTIFACT_DIR/baseline/$label/cell.tsv")"
@@ -499,6 +530,9 @@ freeze_targets() {
     printf 'rule\tsecurity-absolute: no latency target is met by weakening TLS, DNSSEC or the no-direct-resolver guarantees\n'
     for cd in "$@"; do
       key="$(kv cell "$cd/cell.tsv")"
+      # A cell observed while it never answered is not a baseline to hold a
+      # candidate to; it is named here so no consumer mistakes it for one.
+      grep -q '^never-ready	' "$cd/findings.tsv" 2>/dev/null && printf 'never-ready\t%s\n' "$key"
       for w in cold warm; do
         f="$cd/samples-$w.stats.tsv"
         [ -f "$f" ] || return 1

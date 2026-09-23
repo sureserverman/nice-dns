@@ -53,12 +53,15 @@ case "$op" in
     printf 'machine_id\tm-%s\nsection\thealth\n' "$alias_"
     v="${FAKE_HEALTH:-healthy}"
     [ "$frozen" = no ] && [ -n "${FAKE_HEALTH_BEFORE:-}" ] && v="$FAKE_HEALTH_BEFORE"
-    printf 'health\tpodman:unbound\t%s\tstate=running streak=0\n' "$v" ;;
+    printf 'health\tpodman:unbound\t%s\tstate=running streak=0\n' "$v"
+    [ "$frozen" = yes ] && [ -n "${FAKE_EXTRA_SEVERED_SOURCE:-}" ] && printf 'health\tpodman:newcomer\thealthy\t-\n'
+    : ;;
   collect)
     shift 2
     while [ $# -gt 0 ]; do case "$1" in --workload) w="$2" ;; --count) n="$2" ;; esac; shift 2; done
     printf '# schema\tnice-dns-sample/1\n'
     printf 'run_id\tsample_id\tutc_start\telapsed_us\tworkload\tcache_class\ttarget_id\tplatform\tproxy\tpihole\tsource_rev\timages\tresolver\ttransport\tqname\tqtype\toutcome\trcode\ttimeout_ms\n'
+    if [ -n "${FAKE_COLD_BROKEN:-}" ] && [ "$w" = cold ] && [ "$n" = 3 ]; then exit 2; fi
     rc=0 i=1
     while [ "$i" -le "$n" ]; do
       o=ok r=NOERROR e=1500
@@ -314,4 +317,50 @@ t_matrix_cell_that_never_answers_is_observed_as_such() {
   assert_match '^BL-COLD	pass	samples-cold.tsv	attempted=3 answered=0$' "$(cat "$ARTIFACT_DIR/baseline/fakelin-haproxy-hardened/observations.tsv")" "failures observed, not dropped"
   assert_match '^BL-RESTORED	pass	.*cold answered before the fault=0/3' "$(cat "$ARTIFACT_DIR/baseline/fakelin-haproxy-hardened/observations.tsv")" "restored to its pre-fault (non-answering) state"
   assert_eq 3 "$(grep -c '	observed	' "$ARTIFACT_DIR/baseline-matrix/fakelin/cells.tsv")" "the other cells are ordinary observations"
+}
+
+t_matrix_records_the_installed_product_in_each_cell() {
+  local h
+  bt_setup
+  bash "$BT_BASELINE" matrix fakelin --targets "$CASE_DIR/targets.env" --source-sha "$SHA40" >"$CASE_DIR/m.log" 2>&1
+  assert_rc 0 $? "matrix: $(tail -n 5 "$CASE_DIR/m.log")"
+  h="$(git -C "$NICE_DNS_ROOT/../pi-hole-hardened" rev-parse HEAD)"
+  assert_match "^product_sha	$SHA40$" "$(cat "$ARTIFACT_DIR/baseline/fakelin-socat-standard/cell.tsv")" "product pin in the cell"
+  assert_match '^install_source	inline-archive$' "$(cat "$ARTIFACT_DIR/baseline/fakelin-socat-standard/cell.tsv")" "linux cells install the inline archive"
+  assert_match "^hardened_sha	$h$" "$(cat "$ARTIFACT_DIR/baseline/fakelin-socat-hardened/cell.tsv")" "hardened sibling pin in the cell"
+  assert_match '^hardened_sha	-$' "$(cat "$ARTIFACT_DIR/baseline/fakelin-socat-standard/cell.tsv")" "standard cells carry no sibling pin"
+  assert_match "^source_rev	$SHA40$" "$(cat "$ARTIFACT_DIR/baseline/fakelin-socat-standard/identity.tsv")" "samples name the installed product"
+}
+
+t_unknown_pre_fault_state_still_requires_an_answer() {
+  # With no complete pre-fault cold sample, "answered nothing before" is not
+  # known; a target that answers nothing after the thaw is not restored.
+  bt_setup
+  FAKE_COLD_BROKEN=1 FAKE_NEVER_AFTER_THAW=1; export FAKE_COLD_BROKEN FAKE_NEVER_AFTER_THAW
+  bt_run fakelin
+  assert_rc 1 "$BT_RC" "incomplete observation"
+  assert_match '^BL-COLD	fail	' "$BT_OBS" "BL-COLD fails"
+  assert_match '^BL-RESTORED	fail	' "$BT_OBS" "BL-RESTORED is not waved through on missing data"
+}
+
+t_never_ready_cells_are_named_in_the_frozen_targets() {
+  local g r cells=""
+  bt_setup
+  FAKE_DEAD_CELL=haproxy/hardened; export FAKE_DEAD_CELL
+  bash "$BT_BASELINE" matrix fakelin --targets "$CASE_DIR/targets.env" --source-sha "$SHA40" >"$CASE_DIR/m.log" 2>&1
+  for d in "$ARTIFACT_DIR"/baseline/*/cell.tsv; do cells="$cells $(dirname "$d")"; done
+  g="$CASE_DIR/global"; mkdir -p "$g"; : >"$g/BL-STAGE.txt"; : >"$g/BL-INVENTORY.txt"
+  # shellcheck disable=SC2086
+  r="$(NICE_DNS_BASELINE_GLOBAL_DIR="$g" bash "$BT_BASELINE" receipt --out "$CASE_DIR/receipt" $cells 2>"$CASE_DIR/r.err")"
+  assert_rc 0 $? "receipt: $(cat "$CASE_DIR/r.err")"
+  assert_match '^never-ready	linux/haproxy/hardened$' "$(cat "$CASE_DIR/receipt/BL-TARGETS.txt")" "dead cell named in the frozen targets"
+  assert_eq 1 "$(grep -c '^never-ready	' "$CASE_DIR/receipt/BL-TARGETS.txt")" "only the dead cell"
+}
+
+t_health_source_seen_only_while_severed_is_a_finding() {
+  bt_setup
+  FAKE_EXTRA_SEVERED_SOURCE=1; export FAKE_EXTRA_SEVERED_SOURCE
+  bt_run fakelin
+  assert_rc 0 "$BT_RC" "observation complete"
+  assert_match '^health-source-appeared	podman:newcomer' "$BT_FIND" "no health source is silently dropped"
 }
