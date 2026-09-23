@@ -442,3 +442,42 @@ t_linux_health_observes_healthchecks_without_running_them() {
   assert_match '^health	nice-dns-health	(absent|pass|fail)	' "$TG_OUT" "health tool verdict recorded"
   assert_not_match 'healthcheck run|(^| )(stop|start|restart|kill|rm) ' "$(cat "$FAKE_LOG")" "health never invokes or changes a container"
 }
+
+
+t_install_cell_needs_snapshot_valid_cell_and_pinned_commit() {
+  local v sha=0123456789abcdef0123456789abcdef01234567
+  tg_setup
+  tg install-cell lin1 --targets "$CASE_DIR/targets.env" --cell socat/standard --source-sha "$sha"
+  assert_nonzero "$TG_RC" "install without a snapshot"
+  assert_eq 0 "$(tg_sent)" "nothing sent without a snapshot"
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  for v in socat haproxy/x 'socat/standard;id' ''; do
+    : >"$FAKE_LOG"
+    tg install-cell lin1 --targets "$CASE_DIR/targets.env" --cell "$v" --source-sha "$sha"
+    assert_rc 2 "$TG_RC" "cell [$v] refused"
+    assert_eq 0 "$(tg_sent)" "nothing sent for cell [$v]"
+  done
+  for v in main 0123abc "$sha;id" ''; do
+    : >"$FAKE_LOG"
+    tg install-cell lin1 --targets "$CASE_DIR/targets.env" --cell socat/standard --source-sha "$v"
+    assert_rc 2 "$TG_RC" "source [$v] refused"
+    assert_eq 0 "$(tg_sent)" "nothing sent for source [$v]"
+  done
+  tg probe lin1 --targets "$CASE_DIR/targets.env" --cell socat/standard
+  assert_rc 2 "$TG_RC" "--cell on another operation refused"
+  : >"$FAKE_LOG"
+  tg install-cell lin1 --targets "$CASE_DIR/targets.env" --cell socat/hardened --source-sha "$sha"
+  assert_rc 0 "$TG_RC" "install after snapshot: $TG_OUT"
+  assert_match "NICE_DNS_OP=install-cell NICE_DNS_PROXY=socat NICE_DNS_PIHOLE=hardened NICE_DNS_SOURCE_SHA=$sha " "$(cat "$FAKE_LOG")" "install sent as data words"
+}
+
+t_install_cell_maps_each_cell_to_its_installer() {
+  local script
+  script="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG")"
+  assert_match 'linux/standard\) inst=install-deb\.sh' "$script" "linux standard"
+  assert_match 'linux/hardened\) inst=install-deb-hardened\.sh' "$script" "linux hardened"
+  assert_match 'macos/standard\) inst=install-mac\.sh' "$script" "macos standard"
+  assert_match 'macos/hardened\) inst=install-mac-hardened\.sh' "$script" "macos hardened"
+  assert_match 'git -C "\$w/nice-dns" checkout -q "\$NICE_DNS_SOURCE_SHA"' "$script" "installs the pinned commit"
+  assert_match 'install-mac\.sh installs origin/main, which is not' "$script" "install-mac.sh (clones main itself) is refused unless main is the pinned commit"
+}

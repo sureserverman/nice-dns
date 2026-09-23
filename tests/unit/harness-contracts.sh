@@ -221,10 +221,14 @@ t_real_stages_reference_registered_groups() {
   assert_not_match 'UNREGISTERED' "$HC_OUT" "every stage row resolves to a registered group"
 }
 
-t_plan_blocked_and_receipt_never_green_without_receipt() {
+t_plan_never_green_without_live_targets_nor_without_receipt() {
   hc_run plan baseline --fresh-fixtures --include-slow --live --targets x --matrix all
-  assert_rc 4 "$HC_RC" "plan is BLOCKED"
-  assert_match 'not implemented until Task 2\.3' "$HC_OUT" "plan message"
+  assert_rc 3 "$HC_RC" "plan baseline with a missing targets file is NOT RUN"
+  assert_match 'NOT RUN' "$HC_OUT" "plan says nothing ran"
+  hc_run plan baseline --fresh-fixtures --include-slow --matrix all
+  assert_rc 3 "$HC_RC" "plan baseline without --live is NOT RUN"
+  hc_run plan nosuchplan
+  assert_rc 2 "$HC_RC" "unknown plan is a usage error"
   HC_ARTIFACTS="$CASE_DIR/empty-root" hc_run receipt baseline --require-matrix all
   assert_rc 1 "$HC_RC" "receipt with no receipt present fails"
   assert_match 'not a pass' "$HC_OUT" "says nothing was verified"
@@ -519,4 +523,25 @@ t_relative_targets_path_reaches_live_cases() {
   printf 'live\tlivegrp\t%s\tlive\n' "$CASE_DIR/live.sh" >>"$m/groups.tsv"
   (cd "$w" && HC_MANIFESTS="$m" hc_run live livegrp --live --targets sub/targets.env && printf '%s\n' "$HC_RC" >"$CASE_DIR/rc")
   assert_eq 0 "$(cat "$CASE_DIR/rc")" "relative --targets from the caller's cwd: $(cat "$CASE_DIR/hc-run.out")"
+}
+
+
+t_plan_runs_its_rows_in_order_and_fails_on_any_failure() {
+  local m="$CASE_DIR/m"
+  hc_manifests "$m"
+  printf '# plan\tkind\tgroup\n' >"$m/plans.tsv"
+  cp "$NICE_DNS_ROOT/tests/manifests/scenarios.tsv" "$NICE_DNS_ROOT/tests/manifests/variants.tsv" "$m/"
+  hc_group_file "$CASE_DIR/a.sh" 't_a() { assert_eq 1 1; printf a >>"$ARTIFACT_DIR/order"; }'
+  hc_group_file "$CASE_DIR/b.sh" 't_b() { assert_eq 1 "${HC_B_OK:-1}" "b"; printf b >>"$ARTIFACT_DIR/order"; }'
+  printf 'unit\tpa\t%s\tlocal\nunit\tpb\t%s\tlocal\n' "$CASE_DIR/a.sh" "$CASE_DIR/b.sh" >>"$m/groups.tsv"
+  printf 'p1\tunit\tpa\np1\tunit\tpb\n' >>"$m/plans.tsv"
+  # check-scenarios needs every group the real scenarios name.
+  awk -F '\t' '!/^#/ && NF == 4' "$NICE_DNS_ROOT/tests/manifests/groups.tsv" |
+    awk -F '\t' -v r="$NICE_DNS_ROOT" 'BEGIN { OFS = "\t" } { if ($3 !~ /^\//) $3 = r "/" $3; print }' >>"$m/groups.tsv"
+  HC_MANIFESTS="$m" hc_run plan p1
+  assert_rc 0 "$HC_RC" "plan of two passing groups: $HC_OUT"
+  assert_eq ab "$(cat "$(printf '%s\n' "$HC_OUT" | sed -n 's/^run_id=[^ ]* artifacts=\([^ ]*\) plan=p1$/\1/p')/order")" "rows run in order"
+  HC_B_OK=0; export HC_B_OK
+  HC_MANIFESTS="$m" hc_run plan p1
+  assert_rc 1 "$HC_RC" "one failing row fails the plan"
 }

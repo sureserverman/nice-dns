@@ -32,6 +32,13 @@
 #                    upstream is dead; a detached remote timer thaws it after
 #                    NICE_DNS_FREEZE_MAX_SECS (default 900) whatever happens here
 #   thaw-upstream    SIGCONT that tor process
+#   install-cell     reinstall the stack as --cell PROXY/PIHOLE with the
+#                    product's own installer (install-{deb,mac}{,-hardened}.sh)
+#                    from a fresh clone of nice-dns checked out at
+#                    --source-sha SHA (install-mac.sh clones main itself, so
+#                    it is refused unless origin/main is that commit). The
+#                    installer's output is streamed back; it may carry bridge
+#                    lines, so keep it out of portable evidence.
 #
 # Targets file: TSV data, never sourced; owned by the user, not a symlink and
 # not group/world-writable. One row per target:
@@ -62,7 +69,7 @@ set -u
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
 ND_CHECKOUT="$(cd "$(dirname "$0")/../.." && pwd -P)"
@@ -76,10 +83,10 @@ if [ "$op" != validate ]; then
   [ $# -gt 0 ] && shift
   case "$alias_" in ''|-*) die "usage: target.sh $op ALIAS --targets FILE" ;; esac
 fi
-targets='' component='' c_workload='' c_count='' c_timeout=5000 c_pause=0 c_identity=''
+targets='' component='' c_workload='' c_count='' c_timeout=5000 c_pause=0 c_identity='' i_cell='' i_sha=''
 while [ $# -gt 0 ]; do
   case "$1" in
-    --targets|--component|--workload|--count|--timeout-ms|--pause-ms|--identity)
+    --targets|--component|--workload|--count|--timeout-ms|--pause-ms|--identity|--cell|--source-sha)
       [ $# -ge 2 ] || die "option $1 needs a value"
       case "$1" in
         --targets) targets="$2" ;;
@@ -89,6 +96,8 @@ while [ $# -gt 0 ]; do
         --timeout-ms) c_timeout="$2" ;;
         --pause-ms) c_pause="$2" ;;
         --identity) c_identity="$2" ;;
+        --cell) i_cell="$2" ;;
+        --source-sha) i_sha="$2" ;;
       esac
       shift 2 ;;
     *) die "unknown option '$1'" ;;
@@ -97,6 +106,9 @@ done
 [ -n "$targets" ] || die "missing --targets FILE"
 if [ "$op" != collect ] && [ -n "$c_workload$c_count$c_identity" ]; then
   die "--workload/--count/--identity are only valid for collect"
+fi
+if [ "$op" != install-cell ] && [ -n "$i_cell$i_sha" ]; then
+  die "--cell/--source-sha are only valid for install-cell"
 fi
 
 # ─── targets file (data only) ────────────────────────────────────────────────
@@ -162,6 +174,13 @@ RE_RUNID='^[A-Za-z0-9._-]{1,64}$'
 freeze_max="${NICE_DNS_FREEZE_MAX_SECS:-900}"
 case "$freeze_max" in ''|*[!0-9]*) die "NICE_DNS_FREEZE_MAX_SECS must be an integer" ;; esac
 [ "$freeze_max" -ge 60 ] && [ "$freeze_max" -le 1800 ] || die "NICE_DNS_FREEZE_MAX_SECS must be 60..1800"
+INSTALL_ENV=''
+if [ "$op" = install-cell ]; then
+  case "$i_cell" in haproxy/standard|haproxy/hardened|socat/standard|socat/hardened) ;;
+    *) die "install-cell needs --cell haproxy|socat/standard|hardened" ;; esac
+  [[ "$i_sha" =~ ^[0-9a-f]{40}$ ]] || die "install-cell needs --source-sha <40-hex commit>"
+  INSTALL_ENV="NICE_DNS_PROXY=${i_cell%/*} NICE_DNS_PIHOLE=${i_cell#*/} NICE_DNS_SOURCE_SHA=$i_sha"
+fi
 ID_ENV=''
 if [ "$op" = collect ]; then
   [[ "$c_workload" =~ $RE_WORD ]] || die "collect needs --workload NAME (lowercase word)"
@@ -206,7 +225,8 @@ local_addresses() {
 
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=yes -o UpdateHostKeys=no
   -o ForwardAgent=no -o ForwardX11=no -o ClearAllForwardings=yes
-  -o PermitLocalCommand=no -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=15)
+  -o PermitLocalCommand=no -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=15
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=6)
 
 preconnect_guards() {
   local cfg host port name kh files f fps='' line
@@ -457,6 +477,27 @@ case "$NICE_DNS_OP" in
     s=$(tor_states "$NICE_DNS_COMPONENT")
     printf 'tor_state\t%s\n' "$s"
     [ "$rc" -eq 0 ] && [ -n "$s" ] && case " $s " in *" T "*) false ;; *) true ;; esac ;;
+  install-cell)
+    case "$plat/$NICE_DNS_PIHOLE" in
+      linux/standard) inst=install-deb.sh ;;
+      linux/hardened) inst=install-deb-hardened.sh ;;
+      macos/standard) inst=install-mac.sh ;;
+      macos/hardened) inst=install-mac-hardened.sh ;;
+      *) echo "no installer for $plat/$NICE_DNS_PIHOLE" >&2; exit 2 ;;
+    esac
+    w=$(mktemp -d "$HOME/.nice-dns-harness-install.XXXXXX") || exit 1
+    trap 'rm -rf "$w"' EXIT
+    git clone -q https://github.com/sureserverman/nice-dns.git "$w/nice-dns" </dev/null || exit 1
+    git -C "$w/nice-dns" checkout -q "$NICE_DNS_SOURCE_SHA" </dev/null || { echo "commit $NICE_DNS_SOURCE_SHA not found" >&2; exit 1; }
+    if [ "$inst" = install-mac.sh ] && [ "$(git -C "$w/nice-dns" rev-parse origin/main)" != "$NICE_DNS_SOURCE_SHA" ]; then
+      echo "install-mac.sh installs origin/main, which is not $NICE_DNS_SOURCE_SHA; refusing" >&2; exit 2
+    fi
+    printf 'install_cell\t%s/%s\ninstaller\t%s\nsource_sha\t%s\nstarted_utc\t%s\n' "$NICE_DNS_PROXY" "$NICE_DNS_PIHOLE" "$inst" \
+      "$(git -C "$w/nice-dns" rev-parse HEAD)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    (cd "$w/nice-dns" && bash "./$inst" "$NICE_DNS_PROXY" main) </dev/null 2>&1
+    rc=$?
+    printf 'finished_utc\t%s\ninstaller_exit\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc"
+    exit $rc ;;
   sever-upstream) ctl stop "$NICE_DNS_COMPONENT" ;;
   heal-upstream) ctl start "$NICE_DNS_COMPONENT" ;;
   restore)
@@ -527,7 +568,7 @@ case "$op" in
     probe_identity probe
     remote_run "NICE_DNS_OP=collect NICE_DNS_WORKLOAD=$c_workload NICE_DNS_COUNT=$c_count NICE_DNS_TIMEOUT_MS=$c_timeout NICE_DNS_PAUSE_MS=$c_pause NICE_DNS_RUN_ID=$RUN_ID$ID_ENV"
     case $? in 0) exit 0 ;; 1) exit 3 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"
@@ -535,7 +576,9 @@ case "$op" in
     probe_identity probe
     [ "$(kv machine_id "$(cat "$STATE/receipt.tsv")")" = "$PROBE_MID" ] \
       || die "snapshot for $alias_ is of machine $(kv machine_id "$(cat "$STATE/receipt.tsv")"), target now reports $PROBE_MID"
-    if [ "$op" = restore ]; then
+    if [ "$op" = install-cell ]; then
+      remote_run "NICE_DNS_OP=install-cell $INSTALL_ENV"; rc=$?
+    elif [ "$op" = restore ]; then
       names=''
       for c in $(awk -F '\t' '$1 == "section" { s = $2; next } s == "containers" && $2 == "running" { print $1 }' "$STATE/snapshot.tsv"); do
         case " $COMPONENTS " in *" $c "*) names="$names $c" ;; esac

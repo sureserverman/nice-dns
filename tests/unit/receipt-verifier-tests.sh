@@ -103,7 +103,7 @@ t_each_missing_scenario_fails() {
     assert_nonzero "$RV_RC" "receipt without one $sc row"
     assert_match "$sc" "$RV_OUT" "failure names $sc"
   done
-  assert_eq 7 "$n" "all baseline scenarios exercised"
+  assert_eq 8 "$n" "all baseline scenarios exercised"
 }
 
 t_skipped_or_blocked_cell_fails_under_full_matrix() {

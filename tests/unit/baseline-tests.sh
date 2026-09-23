@@ -23,11 +23,13 @@ printf '%s %s\n' "$op" "$*" >>"$FAKE_LOG"
 plat="${FAKE_PLATFORM:-linux}"
 [ "$alias_" = fakemac ] && plat=macos
 frozen=no; [ -f "$FAKE_STATE/frozen-$alias_" ] && frozen=yes
+cell="$(cat "$FAKE_STATE/cell-$alias_" 2>/dev/null || echo "${FAKE_ORIGINAL_CELL:-socat/standard}")"
+proxy="${cell%/*}" pihole="${cell#*/}"
 hex=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 containers() {
   printf 'section\tcontainers\n'
   printf 'pi-hole\trunning\t172.31.240.250\nunbound\trunning\t172.31.240.251\n'
-  printf 'tor-socat\trunning\t%s\n' "${1:-172.31.240.252}"
+  printf 'tor-%s\trunning\t%s\n' "$proxy" "${1:-172.31.240.252}"
 }
 case "$op" in
   validate) printf 'fakelin\tlinux\tssh-l\t2026-09-22\nfakemac\tmacos\tssh-m\t2026-09-22\n' ;;
@@ -41,10 +43,10 @@ case "$op" in
     printf 'section\timages\n'
     printf 'image\tpi-hole\tpi-hole:latest\tsha256:%s\n' "$hex"
     printf 'image\tunbound\tunbound:latest\tsha256:%s\n' "$hex"
-    [ -n "${FAKE_TWO_DIGESTS:-}" ] || printf 'image\ttor-socat\ttor-socat:latest\tsha256:%s\n' "$hex"
+    [ -n "${FAKE_TWO_DIGESTS:-}" ] || printf 'image\ttor-%s\ttor-%s:latest\tsha256:%s\n' "$proxy" "$proxy" "$hex"
     printf 'started\tunbound\t2026-09-23T00:00:00Z\n'
-    printf 'pihole_variant\tstandard\npihole_upstream\tserver=172.31.240.251#5335\n'
-    printf 'unbound_conf\tforward-zone:\nproxy_component\ttor-socat\n'
+    printf 'pihole_variant\t%s\npihole_upstream\tserver=172.31.240.251#5335\n' "$pihole"
+    printf 'unbound_conf\tforward-zone:\nproxy_component\ttor-%s\n' "$proxy"
     if [ "$frozen" = yes ]; then printf 'tor_state\tT\n'; else printf 'tor_state\tS\n'; fi ;;
   health)
     printf 'machine_id\tm-%s\nsection\thealth\n' "$alias_"
@@ -60,8 +62,8 @@ case "$op" in
     while [ "$i" -le "$n" ]; do
       o=ok r=NOERROR e=1500
       if [ "$frozen" = yes ] && [ "$w" = cold ] && [ -z "${FAKE_ANSWERS_WHILE_FROZEN:-}" ]; then o=timeout r=- e=5000000 rc=3; fi
-      printf '%s\t%s\t2026-09-23T00:00:00Z\t%s\t%s\tmiss\t%s\t%s\tsocat\tstandard\tx\ti\t127.0.0.1#53\tudp\tq.example.com\tA\t%s\t%s\t5000\n' \
-        "$RUN_ID" "$i" "$e" "$w" "$alias_" "$plat" "$o" "$r"
+      printf '%s\t%s\t2026-09-23T00:00:00Z\t%s\t%s\tmiss\t%s\t%s\t%s\t%s\tx\ti\t127.0.0.1#53\tudp\tq.example.com\tA\t%s\t%s\t5000\n' \
+        "$RUN_ID" "$i" "$e" "$w" "$alias_" "$plat" "$proxy" "$pihole" "$o" "$r"
       i=$((i + 1))
     done
     exit "$rc" ;;
@@ -72,6 +74,13 @@ case "$op" in
     [ -n "${FAKE_THAW_BROKEN:-}" ] || rm -f "$FAKE_STATE/frozen-$alias_"
     : >"$FAKE_STATE/thawed-$alias_"; printf 'tor_state\tS\n' ;;
   restore) : ;;
+  install-cell)
+    shift 2
+    while [ $# -gt 0 ]; do case "$1" in --cell) want="$2" ;; --source-sha) sha="$2" ;; esac; shift 2; done
+    printf 'install %s %s\n' "$want" "$sha" >>"$FAKE_STATE/installs"
+    [ "$want" = "${FAKE_INSTALL_FAIL:-}" ] && { echo "installer failed" >&2; exit 1; }
+    [ -n "${FAKE_INSTALL_IGNORES_CELL:-}" ] || printf '%s\n' "$want" >"$FAKE_STATE/cell-$alias_"
+    printf 'installer_exit\t0\n' ;;
   *) echo "fake: unknown op $op" >&2; exit 2 ;;
 esac
 FAKE
@@ -81,9 +90,10 @@ FAKE
   NICE_DNS_TARGET_ADAPTER="$CASE_DIR/bin/target.sh" FAKE_STATE="$(mktemp -d "$CASE_DIR/state.XXXX")"
   FAKE_LOG="$CASE_DIR/fake.log" ARTIFACT_DIR="$(mktemp -d "$CASE_DIR/art.XXXX")" RUN_ID=run-unit-1
   NICE_DNS_BASELINE_COLD=3 NICE_DNS_BASELINE_WARM=4 NICE_DNS_BASELINE_SEVER_SECS=1
-  NICE_DNS_BASELINE_SEVERED_COUNT=2 NICE_DNS_BASELINE_RECOVERY_COUNT=2
+  NICE_DNS_BASELINE_SEVERED_COUNT=2 NICE_DNS_BASELINE_RECOVERY_COUNT=2 NICE_DNS_BASELINE_READY_SECS=1
   export NICE_DNS_TARGET_ADAPTER FAKE_STATE FAKE_LOG ARTIFACT_DIR RUN_ID NICE_DNS_BASELINE_COLD \
-    NICE_DNS_BASELINE_WARM NICE_DNS_BASELINE_SEVER_SECS NICE_DNS_BASELINE_SEVERED_COUNT NICE_DNS_BASELINE_RECOVERY_COUNT
+    NICE_DNS_BASELINE_WARM NICE_DNS_BASELINE_SEVER_SECS NICE_DNS_BASELINE_SEVERED_COUNT NICE_DNS_BASELINE_RECOVERY_COUNT \
+    NICE_DNS_BASELINE_READY_SECS
   : >"$FAKE_LOG"
 }
 
@@ -203,7 +213,53 @@ t_receipt_from_two_cells_verifies_and_detects_tampering() {
   assert_rc 0 $? "representative receipt verifies: $(cat "$CASE_DIR/verify.log")"
   bash "$NICE_DNS_ROOT/tests/reports/verify.sh" check "$r" --require-matrix all >/dev/null 2>&1
   assert_rc 1 $? "two cells never satisfy the eight-cell matrix"
+  assert_match '^coverage	2 cells$' "$(cat "$CASE_DIR/receipt/BL-TARGETS.txt")" "targets name their coverage"
+  assert_match '^target	linux	cold	timeout_rate_max=0\.0000	p95_all_us_max=1500$' "$(cat "$CASE_DIR/receipt/BL-TARGETS.txt")" "linux cold target frozen from the cell's stats"
+  assert_match '^scenario	BL-TARGETS	-	pass	BL-TARGETS.txt	' "$(cat "$r")" "targets are a receipt scenario"
   printf 'x\n' >>"$CASE_DIR/receipt/cells/linux-socat-standard/samples-cold.tsv"
   bash "$NICE_DNS_ROOT/tests/reports/verify.sh" check "$r" --require-matrix representative >/dev/null 2>&1
   assert_rc 1 $? "a tampered sample file fails verification"
+}
+
+
+SHA40=0123456789abcdef0123456789abcdef01234567
+
+t_matrix_installs_every_platform_cell_and_ends_on_the_original() {
+  bt_setup
+  bash "$BT_BASELINE" matrix fakelin --targets "$CASE_DIR/targets.env" --source-sha "$SHA40" >"$CASE_DIR/m.log" 2>&1
+  assert_rc 0 $? "matrix: $(tail -n 20 "$CASE_DIR/m.log")"
+  assert_eq 4 "$(grep -c "^install .* $SHA40$" "$FAKE_STATE/installs")" "four installs at the pinned commit"
+  assert_eq "install socat/standard $SHA40" "$(tail -n 1 "$FAKE_STATE/installs")" "the original cell is installed last"
+  assert_eq 4 "$(grep -c '	observed	' "$ARTIFACT_DIR/baseline-matrix/fakelin/cells.tsv")" "four cells observed"
+  for c in haproxy-standard haproxy-hardened socat-standard socat-hardened; do
+    assert_match "^cell	linux/${c%-*}/${c#*-}$" "$(cat "$ARTIFACT_DIR/baseline/fakelin-$c/cell.tsv")" "cell $c characterized as itself"
+  done
+  assert_eq "socat/standard" "$(cat "$FAKE_STATE/cell-fakelin")" "target ends on its original cell"
+}
+
+t_matrix_failed_install_fails_and_other_cells_still_run() {
+  bt_setup
+  FAKE_INSTALL_FAIL=haproxy/hardened; export FAKE_INSTALL_FAIL
+  bash "$BT_BASELINE" matrix fakelin --targets "$CASE_DIR/targets.env" --source-sha "$SHA40" >"$CASE_DIR/m.log" 2>&1
+  assert_rc 1 $? "a cell that did not install fails the matrix"
+  assert_match '^haproxy/hardened	install-failed	' "$(cat "$ARTIFACT_DIR/baseline-matrix/fakelin/cells.tsv")" "the failed cell is named"
+  assert_eq 3 "$(grep -c '	observed	' "$ARTIFACT_DIR/baseline-matrix/fakelin/cells.tsv")" "the other three still observed"
+}
+
+t_matrix_wrong_installed_cell_is_not_observed() {
+  bt_setup
+  FAKE_INSTALL_IGNORES_CELL=1; export FAKE_INSTALL_IGNORES_CELL
+  bash "$BT_BASELINE" matrix fakelin --targets "$CASE_DIR/targets.env" --source-sha "$SHA40" >"$CASE_DIR/m.log" 2>&1
+  assert_rc 1 $? "an installer that installed another cell fails"
+  assert_eq 3 "$(grep -c '	wrong-cell-installed	' "$ARTIFACT_DIR/baseline-matrix/fakelin/cells.tsv")" "each mismatched cell named"
+}
+
+t_matrix_refuses_unpinned_source_and_unknown_original() {
+  bt_setup
+  bash "$BT_BASELINE" matrix fakelin --targets "$CASE_DIR/targets.env" --source-sha main >/dev/null 2>&1
+  assert_rc 2 $? "a branch name is not a pinned commit"
+  FAKE_TWO_DIGESTS=1; export FAKE_TWO_DIGESTS
+  bash "$BT_BASELINE" matrix fakelin --targets "$CASE_DIR/targets.env" --source-sha "$SHA40" >/dev/null 2>&1
+  assert_rc 2 $? "an unidentifiable current cell cannot be returned to"
+  assert_no_path "$FAKE_STATE/installs" "nothing installed"
 }

@@ -3,7 +3,8 @@
 # ARCH-09). Observes; never repairs.
 #
 # Usage:
-#   bash tests/live/baseline.sh characterize ALIAS --targets FILE
+#   bash tests/live/baseline.sh characterize ALIAS --targets FILE [--label NAME]
+#   bash tests/live/baseline.sh matrix ALIAS --targets FILE --source-sha SHA
 #   bash tests/live/baseline.sh receipt --out DIR CELLDIR...
 #
 # characterize runs, against the cell the target currently runs (no
@@ -19,15 +20,24 @@
 #   restore, snapshot, cold   BL-RESTORED: containers, states and addresses
 #                             equal the first snapshot, tor not stopped, and
 #                             an uncached query answers
-# into $ARTIFACT_DIR/baseline/ALIAS/. A scenario is "pass" when its
+# into $ARTIFACT_DIR/baseline/NAME/ (NAME defaults to ALIAS). A scenario is "pass" when its
 # observation is complete; product behaviour is recorded, not judged, in
 # findings.tsv (e.g. health reporting healthy while upstream is dead). The
 # upstream is always thawed and the snapshot's containers restarted on exit,
 # including on error or interrupt; target.sh's remote dead-man timer thaws
 # tor even if this process is killed.
 #
+# matrix installs every cell of ALIAS's platform (tests/manifests/matrix.tsv)
+# with target.sh install-cell at SHA, the cell ALIAS ran before last so the
+# target ends on it, waits for the first answered uncached query after each
+# install (NICE_DNS_BASELINE_READY_SECS, default 1500) and characterizes each
+# cell as label ALIAS-PROXY-PIHOLE. Install logs stay in
+# $ARTIFACT_DIR/baseline-matrix/ALIAS/ and never enter a receipt (installer
+# output can carry bridge lines).
+#
 # receipt assembles a nice-dns-receipt/1 "baseline" receipt from cell dirs
-# (plus BL-STAGE and BL-INVENTORY evidence) for tests/reports/verify.sh.
+# (plus BL-STAGE and BL-INVENTORY evidence) for tests/reports/verify.sh, and
+# freezes the per-platform targets from those cells into BL-TARGETS.txt.
 #
 # Environment (all optional): NICE_DNS_BASELINE_COLD (30), _WARM (100),
 #   _SEVER_SECS (120, the wait before the severed observation: three podman
@@ -67,15 +77,20 @@ num() {
 # ─── characterize ────────────────────────────────────────────────────────────
 
 cmd_characterize() {
-  local alias_="${1:-}" targets='' platform
+  local alias_="${1:-}" targets='' platform label=''
   [ $# -gt 0 ] && shift
-  case "$alias_" in ''|-*) die "usage: baseline.sh characterize ALIAS --targets FILE" ;; esac
+  case "$alias_" in ''|-*) die "usage: baseline.sh characterize ALIAS --targets FILE [--label NAME]" ;; esac
   while [ $# -gt 0 ]; do
     case "$1" in
-      --targets) [ $# -ge 2 ] || die "--targets needs a value"; targets="$2"; shift 2 ;;
+      --targets|--label)
+        [ $# -ge 2 ] || die "$1 needs a value"
+        if [ "$1" = --targets ]; then targets="$2"; else label="$2"; fi
+        shift 2 ;;
       *) die "unknown option '$1'" ;;
     esac
   done
+  label="${label:-$alias_}"
+  [[ "$label" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || die "--label must be a lowercase word"
   [ -n "$targets" ] || die "missing --targets FILE"
   case "${ARTIFACT_DIR:-}" in /*) ;; *) die "ARTIFACT_DIR must be the run's absolute artifact dir" ;; esac
   [ -n "${RUN_ID:-}" ] || die "RUN_ID must be set (tests/run.sh sets it)"
@@ -90,9 +105,9 @@ cmd_characterize() {
   TMO="$(num NICE_DNS_BASELINE_TIMEOUT_MS 5000)"
 
   ALIAS="$alias_" TARGETS="$targets" PLATFORM="$platform"
-  D="$ARTIFACT_DIR/baseline/$alias_"
+  D="$ARTIFACT_DIR/baseline/$label"
   [ -L "$ARTIFACT_DIR/baseline" ] || [ -L "$D" ] && die "baseline state path is a symlink"
-  [ -e "$D" ] && die "$D already exists: one characterization per alias per run"
+  [ -e "$D" ] && die "$D already exists: one characterization per label per run"
   mkdir -p "$D" || die "cannot create $D"
   : >"$D/observations.tsv"
   : >"$D/findings.tsv"
@@ -143,8 +158,32 @@ attempts() { awk -F '\t' 'NR > 2 { n++ } END { print n + 0 }' "$1"; }
 
 containers_of() { awk -F '\t' '$1 == "section" { s = $2; next } s == "containers" { print $1 "\t" $2 "\t" $3 }' "$1" | LC_ALL=C sort; }
 
+identify() {
+  # identify CONFIG DIR: identity.tsv + cell.tsv from a config dump; 1 when
+  # the dump does not identify a complete cell (sets ID_NOTE).
+  local cfg="$1" dir="$2" proxy pihole images src n pc
+  pc="$(kv proxy_component "$cfg")"
+  proxy="${pc#tor-}"
+  pihole="$(kv pihole_variant "$cfg")"
+  images="$(awk -F '\t' '$1 == "image" { printf "%s%s=%s", (n++ ? "," : ""), $2, $4 }' "$cfg")"
+  src="$(GIT_OPTIONAL_LOCKS=0 git -C "$BL_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+  n="$(awk -F '\t' '$1 == "image" && $4 ~ /^sha256:[0-9a-f]{64}$/' "$cfg" | grep -c .)"
+  ID_NOTE="proxy='$pc' pihole='$pihole' image digests=$n of 3"
+  if [ -z "$pc" ] || [ "$n" -ne 3 ] || { [ "$pihole" != standard ] && [ "$pihole" != hardened ]; } \
+      || ! grep -q '^unbound_conf	' "$cfg" || ! grep -q '^pihole_upstream	' "$cfg"; then
+    return 1
+  fi
+  {
+    printf 'target_id\t%s\nplatform\t%s\nproxy\t%s\npihole\t%s\n' "$ALIAS" "$PLATFORM" "$proxy" "$pihole"
+    printf 'source_rev\t%s\nimages\t%s\n' "$src" "$images"
+  } >"$dir/identity.tsv"
+  printf 'cell\t%s/%s/%s\ntarget\t%s\nimage_gen\t%s\n' "$PLATFORM" "$proxy" "$pihole" "$ALIAS" "$images" >"$dir/cell.tsv"
+  ID_NOTE="$PLATFORM/$proxy/$pihole images=$images"
+  return 0
+}
+
 observe() {
-  local proxy pihole images src n a first
+  local a first
   say "characterizing $ALIAS ($PLATFORM) into $D"
 
   # ── BL-CONFIG ──
@@ -152,22 +191,11 @@ observe() {
   cp "$ARTIFACT_DIR/targets/$ALIAS/snapshot.tsv" "$D/snapshot-before.tsv"
   t config >"$D/config.tsv" 2>"$D/config.err" || { record BL-CONFIG fail config.err "config failed"; return 1; }
   PROXY_C="$(kv proxy_component "$D/config.tsv")"
-  proxy="${PROXY_C#tor-}"
-  pihole="$(kv pihole_variant "$D/config.tsv")"
-  images="$(awk -F '\t' '$1 == "image" { printf "%s%s=%s", (n++ ? "," : ""), $2, $4 }' "$D/config.tsv")"
-  src="$(GIT_OPTIONAL_LOCKS=0 git -C "$BL_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
-  n="$(awk -F '\t' '$1 == "image" && $4 ~ /^sha256:[0-9a-f]{64}$/' "$D/config.tsv" | grep -c .)"
-  if [ -z "$PROXY_C" ] || [ "$n" -ne 3 ] || { [ "$pihole" != standard ] && [ "$pihole" != hardened ]; } \
-      || ! grep -q '^unbound_conf	' "$D/config.tsv" || ! grep -q '^pihole_upstream	' "$D/config.tsv"; then
-    record BL-CONFIG fail config.tsv "incomplete: proxy='$PROXY_C' pihole='$pihole' image digests=$n of 3"
+  if ! identify "$D/config.tsv" "$D"; then
+    record BL-CONFIG fail config.tsv "incomplete: $ID_NOTE"
     return 1
   fi
-  {
-    printf 'target_id\t%s\nplatform\t%s\nproxy\t%s\npihole\t%s\n' "$ALIAS" "$PLATFORM" "$proxy" "$pihole"
-    printf 'source_rev\t%s\nimages\t%s\n' "$src" "$images"
-  } >"$D/identity.tsv"
-  printf 'cell\t%s/%s/%s\ntarget\t%s\nimage_gen\t%s\n' "$PLATFORM" "$proxy" "$pihole" "$ALIAS" "$images" >"$D/cell.tsv"
-  record BL-CONFIG pass config.tsv "$PLATFORM/$proxy/$pihole images=$images"
+  record BL-CONFIG pass config.tsv "$ID_NOTE"
 
   # ── BL-COLD / BL-WARM on a working chain ──
   if collect cold "$N_COLD" "$D/samples-cold.tsv"; then
@@ -283,6 +311,95 @@ complete() {
   [ "$missing" -eq 0 ]
 }
 
+# ─── matrix ──────────────────────────────────────────────────────────────────
+
+cmd_matrix() {
+  local alias_="${1:-}" targets='' sha='' platform M cells c orig got label rc=0 ready
+  [ $# -gt 0 ] && shift
+  case "$alias_" in ''|-*) die "usage: baseline.sh matrix ALIAS --targets FILE --source-sha SHA" ;; esac
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --targets|--source-sha)
+        [ $# -ge 2 ] || die "$1 needs a value"
+        if [ "$1" = --targets ]; then targets="$2"; else sha="$2"; fi
+        shift 2 ;;
+      *) die "unknown option '$1'" ;;
+    esac
+  done
+  [ -n "$targets" ] || die "missing --targets FILE"
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "--source-sha must be a full commit id"
+  case "${ARTIFACT_DIR:-}" in /*) ;; *) die "ARTIFACT_DIR must be the run's absolute artifact dir" ;; esac
+  [ -n "${RUN_ID:-}" ] || die "RUN_ID must be set (tests/run.sh sets it)"
+  platform="$(bash "$TGT" validate --targets "$targets" | awk -F '\t' -v a="$alias_" '$1 == a { print $2 }')"
+  [ -n "$platform" ] || die "alias '$alias_' is not in $targets"
+  ALIAS="$alias_" TARGETS="$targets" PLATFORM="$platform"
+  READY_SECS="$(num NICE_DNS_BASELINE_READY_SECS 1500)"
+  TMO="$(num NICE_DNS_BASELINE_TIMEOUT_MS 5000)"
+  M="$ARTIFACT_DIR/baseline-matrix/$alias_"
+  [ -e "$M" ] && die "$M already exists"
+  mkdir -p "$M" || die "cannot create $M"
+  : >"$M/cells.tsv"
+
+  # The cell the target runs now is installed last, so the target ends on it.
+  t config >"$M/original-config.tsv" 2>"$M/original-config.err" || die "cannot read $ALIAS's current config"
+  mkdir -p "$M/original"
+  identify "$M/original-config.tsv" "$M/original" || die "cannot identify $ALIAS's current cell ($ID_NOTE); nothing to return it to"
+  orig="$(kv cell "$M/original/cell.tsv")"; orig="${orig#*/}"
+  cells="$(awk -F '\t' -v p="$PLATFORM" '!/^#/ && $1 == p { print $2 "/" $3 }' "$BL_ROOT/tests/manifests/matrix.tsv")"
+  printf '%s\n' "$cells" | grep -Fxq -- "$orig" || die "current cell $orig is not in the matrix"
+  cells="$(printf '%s\n' "$cells" | grep -Fxv -- "$orig"; printf '%s\n' "$orig")"
+  say "matrix for $ALIAS ($PLATFORM): $(printf '%s ' $cells)(ends on $orig)"
+
+  for c in $cells; do
+    label="$ALIAS-${c%/*}-${c#*/}"
+    say "installing $PLATFORM/$c on $ALIAS"
+    if ! t snapshot >>"$M/$label.log" 2>&1 || ! t install-cell --cell "$c" --source-sha "$sha" >"$M/install-$label.log" 2>&1; then
+      printf '%s\tinstall-failed\t%s\n' "$c" "install-$label.log" >>"$M/cells.tsv"; rc=1; continue
+    fi
+    if ! ready="$(wait_ready "$label")"; then
+      printf '%s\tnot-ready\t%s\n' "$c" "$ready" >>"$M/cells.tsv"; rc=1; continue
+    fi
+    if ! bash "$0" characterize "$ALIAS" --targets "$TARGETS" --label "$label" >>"$M/$label.log" 2>&1; then
+      printf '%s\tobservation-incomplete\t%s\n' "$c" "$ready" >>"$M/cells.tsv"; rc=1; continue
+    fi
+    got="$(kv cell "$ARTIFACT_DIR/baseline/$label/cell.tsv")"
+    if [ "$got" != "$PLATFORM/$c" ]; then
+      printf '%s\twrong-cell-installed\t%s\n' "$c" "$got" >>"$M/cells.tsv"; rc=1; continue
+    fi
+    printf '%s\tobserved\t%s\n' "$c" "$ready" >>"$M/cells.tsv"
+  done
+  t config >"$M/final-config.tsv" 2>>"$M/original-config.err"
+  mkdir -p "$M/final"
+  if identify "$M/final-config.tsv" "$M/final" && [ "$(kv cell "$M/final/cell.tsv")" = "$PLATFORM/$orig" ]; then
+    say "$ALIAS ends on its original cell $PLATFORM/$orig"
+  else
+    say "$ALIAS does not end on its original cell $PLATFORM/$orig ($ID_NOTE)"; rc=1
+  fi
+  cat "$M/cells.tsv" >&2
+  return "$rc"
+}
+
+wait_ready() {
+  # wait_ready LABEL: poll one uncached query every 15 s until one is
+  # answered; prints "ready_after_s=N attempts=K" (or the timeout note).
+  local dir="$M/ready-$1" start now k=0 f
+  mkdir -p "$dir"
+  start="$(date +%s)"
+  while :; do
+    k=$((k + 1))
+    if t config >"$dir/config.tsv" 2>/dev/null && identify "$dir/config.tsv" "$dir"; then
+      f="$dir/attempt-$k.tsv"
+      t collect --workload cold --count 1 --identity "$dir/identity.tsv" --timeout-ms "$TMO" >"$f" 2>/dev/null
+      if [ "$(answered "$f")" -ge 1 ]; then
+        now="$(date +%s)"; printf 'ready_after_s=%s attempts=%s\n' "$((now - start))" "$k"; return 0
+      fi
+    fi
+    now="$(date +%s)"
+    if [ $((now - start)) -ge "$READY_SECS" ]; then printf 'not ready after %ss (%s attempts)\n' "$READY_SECS" "$k"; return 1; fi
+    sleep 15
+  done
+}
+
 # ─── receipt ─────────────────────────────────────────────────────────────────
 
 cmd_receipt() {
@@ -321,6 +438,8 @@ cmd_receipt() {
     cp "$a" "$out/$s.txt"
     printf 'scenario\t%s\t-\tpass\t%s.txt\t%s\t-\n' "$s" "$s" "$(sha "$out/$s.txt")" >>"$r"
   done
+  freeze_targets "$out/BL-TARGETS.txt" "$@" || die "cannot freeze targets"
+  printf 'scenario\tBL-TARGETS\t-\tpass\tBL-TARGETS.txt\t%s\t-\n' "$(sha "$out/BL-TARGETS.txt")" >>"$r"
   for cd in "$@"; do
     [ -f "$cd/cell.tsv" ] && [ -f "$cd/observations.tsv" ] || die "$cd is not a characterized cell dir"
     key="$(kv cell "$cd/cell.tsv")"; gen="$(kv image_gen "$cd/cell.tsv")"
@@ -343,8 +462,41 @@ cmd_receipt() {
   printf '%s\n' "$r"
 }
 
+freeze_targets() {
+  # freeze_targets OUT CELLDIR...: the baseline each later candidate is held
+  # to (master plan, Acceptance targets), frozen before any tuning.
+  local out="$1" cd key w f
+  shift
+  {
+    printf '# nice-dns baseline targets, frozen from this receipt before tuning (sub-plan 05 compares against them)\n'
+    printf 'coverage\t%s cells\n' "$#"
+    printf 'rule\tno-timeout-regression: per cell and workload, a candidate timeout_rate must not exceed the baseline timeout_rate\n'
+    printf 'rule\timprove-problem-class: per platform, at least one previously problematic cold/idle/post-wake class improves beyond measured variability (interleaved runs, same workload)\n'
+    printf 'rule\tsecurity-absolute: no latency target is met by weakening TLS, DNSSEC or the no-direct-resolver guarantees\n'
+    for cd in "$@"; do
+      key="$(kv cell "$cd/cell.tsv")"
+      for w in cold warm; do
+        f="$cd/samples-$w.stats.tsv"
+        [ -f "$f" ] || return 1
+        awk -F '\t' -v k="$key" -v w="$w" 'NR > 1 && $1 == w {
+          printf "cell\t%s\t%s\tattempted=%s\ttimeout_rate=%s\tfailure_rate=%s\tp50_all_us=%s\tp95_all_us=%s\tp99_all_us=%s\tp95_support=%s\n", k, w, $2, $7, $6, $11, $12, $13, $15 }' "$f"
+      done
+    done
+  } >"$out.tmp" || return 1
+  awk -F '\t' '$1 == "cell" { split($2, c, "/"); p = c[1]; w = $3
+      sub(/^timeout_rate=/, "", $5); t = $5; sub(/^p95_all_us=/, "", $8); q = $8
+      key = p "\t" w
+      if (!(key in tmax) || t + 0 > tmax[key] + 0) tmax[key] = t
+      if (q == "inf" || q == "n/a") qmax[key] = q
+      else if (!(key in qmax) || (qmax[key] != "inf" && qmax[key] != "n/a" && q + 0 > qmax[key] + 0)) qmax[key] = q }
+    END { for (k in tmax) printf "target\t%s\ttimeout_rate_max=%s\tp95_all_us_max=%s\n", k, tmax[k], qmax[k] }' "$out.tmp" |
+    LC_ALL=C sort >>"$out.tmp"
+  mv "$out.tmp" "$out"
+}
+
 case "${1:-}" in
   characterize) shift; cmd_characterize "$@" ;;
+  matrix) shift; cmd_matrix "$@" ;;
   receipt) shift; cmd_receipt "$@" ;;
-  *) die "usage: baseline.sh characterize ALIAS --targets FILE | receipt --out DIR CELLDIR..." ;;
+  *) die "usage: baseline.sh characterize ALIAS --targets FILE [--label NAME] | matrix ALIAS --targets FILE --source-sha SHA | receipt --out DIR CELLDIR..." ;;
 esac

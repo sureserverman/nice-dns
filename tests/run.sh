@@ -5,7 +5,7 @@
 #   bash tests/run.sh --list
 #   bash tests/run.sh <unit|integration|live> <group> [options]
 #   bash tests/run.sh stage <name> [options]
-#   bash tests/run.sh plan <name> [options]        BLOCKED until Task 2.3
+#   bash tests/run.sh plan <name> [options]        rows of plans.tsv (plan-scope)
 #   bash tests/run.sh receipt <name> [options]     verify the newest <name> receipt
 #   bash tests/run.sh check-matrix <matrix.tsv>
 #   bash tests/run.sh check-contracts <workflow.md>
@@ -425,40 +425,45 @@ cmd_group() {
   nd_finish "$rc"
 }
 
-cmd_stage() {
-  local name="$1" s k g extra ln=0 idx idxs="" seen="" rc worst=0 i
-  shift
+cmd_stage() { nd_composite stage stages.tsv "$@"; }
+cmd_plan() { nd_composite plan plans.tsv "$@"; }
+
+# nd_composite <stage|plan> <manifest> <name> [options]: run every group the
+# manifest lists for <name>, in order, as one run.
+nd_composite() {
+  local what="$1" mf="$2" name="$3" s k g extra ln=0 idx idxs="" seen="" rc worst=0 i
+  shift 3
   nd_load_groups || return $?
   nd_parse_opts "$@" || return $?
-  [ -f "$ND_MANIFESTS/stages.tsv" ] || { nd_err "stage list not found: $ND_MANIFESTS/stages.tsv"; return "$ND_USAGE"; }
+  [ -f "$ND_MANIFESTS/$mf" ] || { nd_err "$what list not found: $ND_MANIFESTS/$mf"; return "$ND_USAGE"; }
   while IFS="$ND_TAB" read -r s k g extra || [ -n "${s:-}" ]; do
     ln=$((ln + 1))
     case "$s" in ''|'#'*) continue ;; esac
     [ "$s" = "$name" ] || continue
     if [ -z "$k" ] || [ -z "$g" ] || [ -n "${extra:-}" ]; then
-      nd_err "stages.tsv:$ln: expected 3 tab-separated fields (stage kind group)"; return "$ND_USAGE"
+      nd_err "$mf:$ln: expected 3 tab-separated fields ($what kind group)"; return "$ND_USAGE"
     fi
-    case "$seen" in *"|$k/$g|"*) nd_err "stages.tsv:$ln: $k/$g listed twice in stage '$name'"; return "$ND_USAGE" ;; esac
+    case "$seen" in *"|$k/$g|"*) nd_err "$mf:$ln: $k/$g listed twice in $what '$name'"; return "$ND_USAGE" ;; esac
     seen="$seen|$k/$g|"
-    idx="$(nd_prepare_group "$k" "$g")" || { nd_err "stage '$name' (stages.tsv:$ln) names unregistered or unusable group $k/$g"; return "$ND_USAGE"; }
+    idx="$(nd_prepare_group "$k" "$g")" || { nd_err "$what '$name' ($mf:$ln) names unregistered or unusable group $k/$g"; return "$ND_USAGE"; }
     idxs="$idxs $idx"
-  done <"$ND_MANIFESTS/stages.tsv"
+  done <"$ND_MANIFESTS/$mf"
   if [ -z "$idxs" ]; then
-    nd_err "unknown stage '$name' (it resolves to zero groups in stages.tsv)"
+    nd_err "unknown $what '$name' (it resolves to zero groups in $mf)"
     return "$ND_USAGE"
   fi
-  # Refuse the whole stage before running anything if scenario coverage is
+  # Refuse the whole run before running anything if scenario coverage is
   # incomplete or any tier gate refuses.
   if ! cmd_check_scenarios >/dev/null; then
-    nd_err "stage '$name' refused: scenario coverage is incomplete (bash tests/run.sh check-scenarios)"
+    nd_err "$what '$name' refused: scenario coverage is incomplete (bash tests/run.sh check-scenarios)"
     return "$ND_FAIL"
   fi
   for i in $idxs; do
     nd_tier_gate "$i"; rc=$?
     [ "$rc" -eq 0 ] || return "$rc"
   done
-  nd_new_run tests/run.sh stage "$name" "$@" || return $?
-  printf 'run_id=%s artifacts=%s stage=%s\n' "$RUN_ID" "$ARTIFACT_DIR" "$name"
+  nd_new_run tests/run.sh "$what" "$name" "$@" || return $?
+  printf 'run_id=%s artifacts=%s %s=%s\n' "$RUN_ID" "$ARTIFACT_DIR" "$what" "$name"
   for i in $idxs; do
     printf '== %s/%s ==\n' "${ND_G_KIND[$i]}" "${ND_G_NAME[$i]}"
     nd_run_group_index "$i" || worst=1
@@ -538,17 +543,6 @@ cmd_receipt() {
   fi
   printf 'receipt: %s\n' "$latest"
   bash "$ND_ROOT/tests/reports/verify.sh" check "$latest" ${vargs[@]+"${vargs[@]}"}
-}
-
-cmd_blocked() {
-  local what="$1"
-  shift
-  if [ $# -lt 1 ]; then nd_err "usage: run.sh $what <name> [options]"; return "$ND_USAGE"; fi
-  case "$1" in --*) nd_err "usage: run.sh $what <name> [options]"; return "$ND_USAGE" ;; esac
-  shift
-  nd_parse_opts "$@" || return $?
-  printf "BLOCKED: '%s' is not implemented until Task 2.3 (live baseline). Nothing was run or verified; this is not a pass.\n" "$what"
-  return "$ND_BLOCKED"
 }
 
 # ─────────────────────────── validators ──────────────────────────────────────
@@ -746,7 +740,10 @@ main() {
       if [ $# -lt 1 ]; then nd_err "usage: run.sh stage <name> [options]"; return "$ND_USAGE"; fi
       case "$1" in --*) nd_err "usage: run.sh stage <name> [options]"; return "$ND_USAGE" ;; esac
       cmd_stage "$@" ;;
-    plan) cmd_blocked "$cmd" "$@" ;;
+    plan)
+      if [ $# -lt 1 ]; then nd_err "usage: run.sh plan <name> [options]"; return "$ND_USAGE"; fi
+      case "$1" in --*) nd_err "usage: run.sh plan <name> [options]"; return "$ND_USAGE" ;; esac
+      cmd_plan "$@" ;;
     receipt) cmd_receipt "$@" ;;
     check-matrix)
       [ $# -eq 1 ] || { nd_err "usage: run.sh check-matrix <matrix.tsv>"; return "$ND_USAGE"; }

@@ -12,3 +12,4 @@ scenario	BL-COLD	per-cell	cold workload samples and their stats aggregate
 scenario	BL-WARM	per-cell	warm workload samples and their stats aggregate
 scenario	BL-SEVERED	per-cell	upstream severed with local listeners alive: DNS outcome and existing health verdict recorded
 scenario	BL-RESTORED	per-cell	target returned to its snapshot state after the fault
+scenario	BL-TARGETS	global	per-cell and per-platform latency and timeout targets frozen from this receipt before tuning
