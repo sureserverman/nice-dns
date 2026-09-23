@@ -331,3 +331,114 @@ t_symlinked_state_files_refused() {
     assert_eq "" "$(cat "$CASE_DIR/victim-$f")" "nothing written through $f"
   done
 }
+
+# ─── Task 2.3 operations: config, health, collect, freeze/thaw ───────────────
+
+tg_identity() {
+  # tg_identity <images-value> [platform] [target]: a collect identity file.
+  printf 'target_id\t%s\nplatform\t%s\nproxy\thaproxy\npihole\tstandard\nsource_rev\tabc123\nimages\t%s\n' \
+    "${3:-lin1}" "${2:-linux}" "$1" >"$CASE_DIR/identity.tsv"
+}
+
+t_freeze_and_thaw_need_snapshot_and_upstream_component() {
+  local c
+  tg_setup
+  tg freeze-upstream lin1 --targets "$CASE_DIR/targets.env" --component tor-haproxy
+  assert_nonzero "$TG_RC" "freeze without a snapshot"
+  assert_match 'no restore snapshot' "$TG_OUT" "refusal names the missing snapshot"
+  assert_eq 0 "$(tg_sent)" "nothing sent without a snapshot"
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  for c in unbound pi-hole 'tor-socat;id' ''; do
+    : >"$FAKE_LOG"
+    tg freeze-upstream lin1 --targets "$CASE_DIR/targets.env" --component "$c"
+    assert_nonzero "$TG_RC" "freeze component '$c' refused"
+    assert_eq 0 "$(tg_sent)" "nothing sent for '$c'"
+  done
+  for c in 5 59 1801 abc; do
+    : >"$FAKE_LOG"
+    TG_OUT="$(NICE_DNS_FREEZE_MAX_SECS="$c" bash "$TG" freeze-upstream lin1 --targets "$CASE_DIR/targets.env" --component tor-socat 2>&1)"; TG_RC=$?
+    assert_rc 2 "$TG_RC" "freeze maximum '$c' refused"
+    assert_eq 0 "$(tg_sent)" "nothing sent for maximum '$c'"
+  done
+  : >"$FAKE_LOG"
+  tg freeze-upstream lin1 --targets "$CASE_DIR/targets.env" --component tor-socat
+  assert_rc 0 "$TG_RC" "freeze after snapshot: $TG_OUT"
+  assert_match 'NICE_DNS_OP=freeze-upstream NICE_DNS_COMPONENT=tor-socat NICE_DNS_FREEZE_MAX=900 ' "$(cat "$FAKE_LOG")" "freeze sent with the default dead-man maximum"
+  tg thaw-upstream lin1 --targets "$CASE_DIR/targets.env" --component tor-socat
+  assert_rc 0 "$TG_RC" "thaw after snapshot: $TG_OUT"
+}
+
+t_collect_refuses_unsafe_parameters() {
+  local v
+  tg_setup
+  RUN_ID=run-1; export RUN_ID
+  # Identity values travel as words of the ssh command: no shell syntax.
+  for v in 'a;id' 'a$(id)' 'a b' 'a|id' 'a`id`' 'a&id' "a'b" 'a"b' 'a>b' ''; do
+    tg_identity "$v"
+    : >"$FAKE_LOG"
+    tg collect lin1 --targets "$CASE_DIR/targets.env" --workload cold --count 1 --identity "$CASE_DIR/identity.tsv"
+    assert_rc 2 "$TG_RC" "identity images value [$v] refused"
+    assert_eq 0 "$(tg_sent)" "nothing sent for identity value [$v]"
+  done
+  tg_identity 'pi-hole=sha256:ab,unbound=sha256:cd'
+  for v in 'Cold' 'cold;id' '' '-x'; do
+    : >"$FAKE_LOG"
+    tg collect lin1 --targets "$CASE_DIR/targets.env" --workload "$v" --count 1 --identity "$CASE_DIR/identity.tsv"
+    assert_nonzero "$TG_RC" "workload [$v] refused"
+    assert_eq 0 "$(tg_sent)" "nothing sent for workload [$v]"
+  done
+  for v in 0 abc 100000 '1;id'; do
+    tg collect lin1 --targets "$CASE_DIR/targets.env" --workload cold --count "$v" --identity "$CASE_DIR/identity.tsv"
+    assert_rc 2 "$TG_RC" "count [$v] refused"
+  done
+  tg_identity 'pi-hole=sha256:ab' macos
+  tg collect lin1 --targets "$CASE_DIR/targets.env" --workload cold --count 1 --identity "$CASE_DIR/identity.tsv"
+  assert_rc 2 "$TG_RC" "identity platform that is not the target's refused"
+  tg_identity 'pi-hole=sha256:ab' linux other
+  tg collect lin1 --targets "$CASE_DIR/targets.env" --workload cold --count 1 --identity "$CASE_DIR/identity.tsv"
+  assert_rc 2 "$TG_RC" "identity for another alias refused"
+  tg_identity 'pi-hole=sha256:ab'
+  TG_OUT="$(RUN_ID='r;id' bash "$TG" collect lin1 --targets "$CASE_DIR/targets.env" --workload cold --count 1 --identity "$CASE_DIR/identity.tsv" 2>&1)"; TG_RC=$?
+  assert_rc 2 "$TG_RC" "unsafe RUN_ID refused"
+  tg probe lin1 --targets "$CASE_DIR/targets.env" --workload cold
+  assert_rc 2 "$TG_RC" "collect options on another operation refused"
+}
+
+t_collect_runs_collector_on_target_and_maps_failures() {
+  local out
+  tg_setup
+  tg_remote_tools Linux
+  printf '#!/bin/sh\nprintf ";; ->>HEADER<<- opcode: QUERY, status: %%s, id: 1\\n" "${FAKE_DIG_STATUS:-NOERROR}"\n' >"$CASE_DIR/rbin/dig"
+  chmod 755 "$CASE_DIR/rbin/dig"
+  tg_identity 'pi-hole=sha256:ab,unbound=sha256:cd,tor-haproxy=sha256:ef'
+  RUN_ID=run-collect-1; export RUN_ID
+  tg collect lin1 --targets "$CASE_DIR/targets.env" --workload cold --count 3 --identity "$CASE_DIR/identity.tsv"
+  assert_rc 0 "$TG_RC" "all attempts answered: $TG_OUT"
+  out="$(printf '%s\n' "$TG_OUT" | grep -v '^collect.sh:')"
+  assert_match '^# schema	nice-dns-sample/1$' "$out" "samples on stdout"
+  assert_eq 3 "$(printf '%s\n' "$out" | grep -c '^run-collect-1	')" "one row per attempt"
+  assert_match '	127\.0\.0\.1#53	udp	[0-9a-f]{16}\.example\.com	A	ok	NOERROR	' "$out" "linux resolves through the Pi-hole listener"
+  assert_match 'NICE_DNS_ID_IMAGES=pi-hole=sha256:ab,unbound=sha256:cd,tor-haproxy=sha256:ef' "$(cat "$FAKE_LOG")" "identity sent as data words"
+  FAKE_DIG_STATUS=SERVFAIL; export FAKE_DIG_STATUS
+  tg collect lin1 --targets "$CASE_DIR/targets.env" --workload cold --count 2 --identity "$CASE_DIR/identity.tsv"
+  assert_rc 3 "$TG_RC" "failed attempts are data (exit 3), not an error"
+  assert_eq 2 "$(printf '%s\n' "$TG_OUT" | grep -c '	servfail	SERVFAIL	')" "failures kept as rows"
+  assert_eq "" "$(find "$TMPDIR" -maxdepth 1 -name 'nice-dns-collect.*')" "remote bundle dir removed"
+}
+
+t_remote_script_never_reads_secret_sources() {
+  local script
+  script="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG" | grep -v "^[[:space:]]*#")"
+  assert_match 'NICE_DNS_OP' "$script" "extracted the remote script"
+  assert_not_match 'torrc|\.Env|printenv|environ|Bridge|pwhash|webpassword|ps -o[^|]*args' "$script" \
+    "no tor arguments, container env, torrc or Pi-hole credentials are read"
+}
+
+t_linux_health_observes_healthchecks_without_running_them() {
+  tg_setup
+  tg_remote_tools Linux
+  tg health lin1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "health: $TG_OUT"
+  assert_match '^health	nice-dns-health	(absent|pass|fail)	' "$TG_OUT" "health tool verdict recorded"
+  assert_not_match 'healthcheck run|(^| )(stop|start|restart|kill|rm) ' "$(cat "$FAKE_LOG")" "health never invokes or changes a container"
+}

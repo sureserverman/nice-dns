@@ -14,6 +14,24 @@
 #                    while Pi-hole and Unbound keep listening
 #   heal-upstream    start that container again
 #   restore          start every allow-listed container the snapshot saw running
+#   config           read-only effective configuration: image references and
+#                    digests, Pi-hole variant and upstreams, Unbound config,
+#                    proxy listeners/backends, health tooling, DNS owner.
+#                    Filtered at the source: never process arguments, env,
+#                    torrc or pihole.toml secrets (bridge lines, the web-login hash).
+#   health           the verdict of the target's existing health mechanisms:
+#                    runtime healthcheck state (observed, never invoked) and
+#                    the installed nice-dns-health, run with its recovery
+#                    grace forced out of reach so it can only log
+#   collect          run tests/live/collect.sh on the target against its
+#                    client resolver (Pi-hole): --workload W --count N
+#                    [--timeout-ms MS] [--pause-ms MS] --identity FILE;
+#                    samples on stdout
+#   freeze-upstream  SIGSTOP the tor process inside --component, so every
+#                    listener (Pi-hole, Unbound, the proxy) stays up while
+#                    upstream is dead; a detached remote timer thaws it after
+#                    NICE_DNS_FREEZE_MAX_SECS (default 900) whatever happens here
+#   thaw-upstream    SIGCONT that tor process
 #
 # Targets file: TSV data, never sourced; owned by the user, not a symlink and
 # not group/world-writable. One row per target:
@@ -35,7 +53,8 @@
 # boundary and are not overridden; the remote machine-id check, not the
 # ssh -G hostname, is the authoritative "not this machine" guard.
 #
-# Exit: 0 done; 1 the remote operation failed; 2 refused (nothing mutating sent).
+# Exit: 0 done; 1 the remote operation failed; 2 refused (nothing mutating sent);
+#   3 collect wrote samples but at least one attempt failed (data, not an error).
 # Portability: Bash 3.2, BSD/GNU userland; remote side is /bin/sh.
 
 set -u
@@ -43,9 +62,10 @@ set -u
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
+ND_CHECKOUT="$(cd "$(dirname "$0")/../.." && pwd -P)"
 
 op="${1:-}"
 [ $# -gt 0 ] && shift
@@ -56,17 +76,28 @@ if [ "$op" != validate ]; then
   [ $# -gt 0 ] && shift
   case "$alias_" in ''|-*) die "usage: target.sh $op ALIAS --targets FILE" ;; esac
 fi
-targets='' component=''
+targets='' component='' c_workload='' c_count='' c_timeout=5000 c_pause=0 c_identity=''
 while [ $# -gt 0 ]; do
   case "$1" in
-    --targets|--component)
+    --targets|--component|--workload|--count|--timeout-ms|--pause-ms|--identity)
       [ $# -ge 2 ] || die "option $1 needs a value"
-      if [ "$1" = --targets ]; then targets="$2"; else component="$2"; fi
+      case "$1" in
+        --targets) targets="$2" ;;
+        --component) component="$2" ;;
+        --workload) c_workload="$2" ;;
+        --count) c_count="$2" ;;
+        --timeout-ms) c_timeout="$2" ;;
+        --pause-ms) c_pause="$2" ;;
+        --identity) c_identity="$2" ;;
+      esac
       shift 2 ;;
     *) die "unknown option '$1'" ;;
   esac
 done
 [ -n "$targets" ] || die "missing --targets FILE"
+if [ "$op" != collect ] && [ -n "$c_workload$c_count$c_identity" ]; then
+  die "--workload/--count/--identity are only valid for collect"
+fi
 
 # ─── targets file (data only) ────────────────────────────────────────────────
 
@@ -115,13 +146,41 @@ load_targets "$targets"
 [ "$op" = validate ] && exit 0
 
 case "$op" in
-  sever-upstream|heal-upstream)
+  sever-upstream|heal-upstream|freeze-upstream|thaw-upstream)
     case " $UPSTREAM_COMPONENTS " in
       *" $component "*) [ -n "$component" ] || die "--component is required" ;;
       *) die "component '$component' is not an upstream component (allowed: $UPSTREAM_COMPONENTS)" ;;
     esac ;;
-  *) [ -z "$component" ] || die "--component is only valid for sever-upstream/heal-upstream" ;;
+  *) [ -z "$component" ] || die "--component is only valid for sever/heal/freeze/thaw-upstream" ;;
 esac
+
+# collect parameters travel as NAME=value words in the ssh command, so every
+# value is checked against a narrow character set here, before connecting.
+RE_WORD='^[a-z0-9][a-z0-9-]{0,31}$'
+RE_IDVAL='^[A-Za-z0-9._:@,/+=-]{1,512}$'
+RE_RUNID='^[A-Za-z0-9._-]{1,64}$'
+freeze_max="${NICE_DNS_FREEZE_MAX_SECS:-900}"
+case "$freeze_max" in ''|*[!0-9]*) die "NICE_DNS_FREEZE_MAX_SECS must be an integer" ;; esac
+[ "$freeze_max" -ge 60 ] && [ "$freeze_max" -le 1800 ] || die "NICE_DNS_FREEZE_MAX_SECS must be 60..1800"
+ID_ENV=''
+if [ "$op" = collect ]; then
+  [[ "$c_workload" =~ $RE_WORD ]] || die "collect needs --workload NAME (lowercase word)"
+  [[ "$c_count" =~ ^[1-9][0-9]{0,4}$ ]] || die "collect needs --count 1..99999"
+  [[ "$c_timeout" =~ ^[1-9][0-9]{3,5}$ ]] || die "--timeout-ms must be 1000..999999"
+  [[ "$c_pause" =~ ^[0-9]{1,6}$ ]] || die "--pause-ms must be 0..999999"
+  [[ "${RUN_ID:-}" =~ $RE_RUNID ]] || die "collect needs RUN_ID (the run's id) in the environment"
+  [ -n "$c_identity" ] && [ -f "$c_identity" ] && [ ! -L "$c_identity" ] || die "collect needs --identity FILE (a regular file)"
+  for k in target_id platform proxy pihole source_rev images; do
+    v="$(awk -F '\t' -v k="$k" '$1 == k { print $2; n++ } END { if (n != 1) exit 1 }' "$c_identity")" \
+      || die "identity file needs exactly one '$k' row"
+    [[ "$v" =~ $RE_IDVAL ]] || die "identity value for '$k' has unexpected characters"
+    ID_ENV="$ID_ENV NICE_DNS_ID_$(printf '%s' "$k" | tr a-z A-Z)=$v"
+    case "$k" in
+      target_id) [ "$v" = "$alias_" ] || die "identity target_id '$v' is not the alias '$alias_'" ;;
+      platform) [ "$v" = "$T_PLATFORM" ] || die "identity platform '$v' is not the target's '$T_PLATFORM'" ;;
+    esac
+  done
+fi
 
 # ─── this machine ────────────────────────────────────────────────────────────
 
@@ -178,9 +237,27 @@ preconnect_guards() {
     || die "host key mismatch for $name: known_hosts has $(printf '%s' "$fps" | tr '\n' ' '), targets file pins $T_KEY"
 }
 
-# remote_run <env-prefix> : sends the op's constant script to /bin/sh -s.
+# remote_run <env-prefix> : sends the op's constant script to /bin/sh -s
+# (collect first prepends the bundle: collect.sh and its two manifests, copied
+# verbatim from this checkout into a remote temporary directory).
 remote_run() {
-  remote_script | ssh "${SSH_OPTS[@]}" "$T_SSH" "$1 /bin/sh -s"
+  { if [ "$op" = collect ]; then remote_bundle || exit 1; fi; remote_script; } \
+    | ssh "${SSH_OPTS[@]}" "$T_SSH" "$1 /bin/sh -s"
+}
+
+BUNDLE_EOF=__NICE_DNS_BUNDLE_EOF__
+remote_bundle() {
+  local f
+  printf '%s\n' 'ND_BUNDLE=$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-collect.XXXXXX") || exit 1' \
+    'trap '"'"'rm -rf "$ND_BUNDLE"'"'"' EXIT' \
+    'mkdir -p "$ND_BUNDLE/tests/live" "$ND_BUNDLE/tests/manifests" || exit 1'
+  for f in tests/live/collect.sh tests/manifests/workloads.tsv tests/manifests/matrix.tsv; do
+    [ -f "$ND_CHECKOUT/$f" ] || { printf 'target.sh: bundle file %s missing\n' "$f" >&2; return 1; }
+    if grep -q "$BUNDLE_EOF" "$ND_CHECKOUT/$f"; then printf 'target.sh: %s contains the bundle delimiter\n' "$f" >&2; return 1; fi
+    printf "cat >\"\$ND_BUNDLE/%s\" <<'%s'\n" "$f" "$BUNDLE_EOF"
+    cat "$ND_CHECKOUT/$f"
+    printf '%s\n' "$BUNDLE_EOF"
+  done
 }
 
 remote_script() {
@@ -190,45 +267,196 @@ if [ "$(uname -s)" = Darwin ]; then
   plat=macos
   mid=$(ioreg -rd1 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformUUID/ { print $4 }')
   C=$(command -v container || ls /opt/homebrew/bin/container /usr/local/bin/container 2>/dev/null | head -1)
+  RESOLVER='172.31.240.250#53'
+  HEALTH_LOG="$HOME/Library/Logs/nice-dns-health/health.log"
 else
   plat=linux
   mid=$(cat /etc/machine-id 2>/dev/null)
   C=podman
+  RESOLVER='127.0.0.1#53'
+  HEALTH_LOG="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-health/health.log"
+  # systemctl --user over ssh has no session bus address otherwise.
+  XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"; export XDG_RUNTIME_DIR
 fi
 ctl() { "$C" "$@"; }
+# exec never reads this script's stdin (the script itself arrives on it).
+ctl_exec() { "$C" exec "$@" </dev/null; }
+sha_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 containers() {
-  if [ "$plat" = macos ]; then ctl list --all | awk 'NR > 1 { printf "%s\t%s\n", $1, $5 }'
-  else ctl ps -a --format '{{.Names}}\t{{.State}}'
+  # name <TAB> state <TAB> address (or -)
+  if [ "$plat" = macos ]; then
+    ctl list --all | awk 'NR > 1 { ip = "-"; for (i = 6; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\//) ip = $i; printf "%s\t%s\t%s\n", $1, $5, ip }'
+  else
+    for n in $(ctl ps -a --format '{{.Names}}'); do
+      ctl inspect "$n" --format '{{.Name}}	{{.State.Status}}	{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null |
+        awk -F '\t' '{ printf "%s\t%s\t%s\n", $1, $2, ($3 == "" ? "-" : $3) }'
+    done
   fi
+}
+running() { containers | awk -F '\t' -v c="$1" '$1 == c && $2 == "running" { f = 1 } END { exit !f }'; }
+identity() {
+  printf 'machine_id\t%s\nhostname\t%s\nplatform\t%s\n' "$mid" "$(hostname)" "$plat"
+  if [ "$plat" = macos ]; then
+    printf 'os\tmacOS %s\nruntime\t%s\n' "$(sw_vers -productVersion)" "$(ctl --version 2>&1 | head -1)"
+  else
+    printf 'os\t%s\nruntime\t%s\n' "$(. /etc/os-release && echo "$PRETTY_NAME")" "$(podman --version)"
+  fi
+}
+dns_owner() {
+  if [ "$plat" = macos ]; then
+    networksetup -listallnetworkservices | tail -n +2 | sed 's/^\*//' | while IFS= read -r svc; do
+      printf '%s\t%s\n' "$svc" "$(networksetup -getdnsservers "$svc" | tr '\n' ' ')"
+    done
+    printf 'section\tagents\n'
+    launchctl list | awk '/nice-dns/'
+  else
+    printf 'resolv.conf\t%s\n' "$(readlink -f /etc/resolv.conf)"
+    grep '^nameserver' /etc/resolv.conf
+    printf 'systemd-resolved\t%s\n' "$(systemctl is-active systemd-resolved 2>&1)"
+    printf 'section\tunits\n'
+    systemctl --user list-units --plain --no-legend --all 'pi-hole*' 'unbound*' 'tor-*' 'nice-dns*' 2>&1
+  fi
+}
+health_tool() {
+  for t in "$HOME/.local/bin/nice-dns-health" "${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-health/bin/nice-dns-health"; do
+    [ -x "$t" ] && { printf '%s\n' "$t"; return 0; }
+  done
+  return 1
+}
+tor_states() {
+  # One process-state letter per tor pid in the proxy container (T = stopped).
+  ctl_exec "$1" sh -c 'for p in $(pgrep -x tor); do awk "{ print \$3 }" /proc/$p/stat; done' | tr '\n' ' ' | sed 's/ $//'
 }
 case "$NICE_DNS_OP" in
   probe|snapshot)
-    printf 'machine_id\t%s\nhostname\t%s\nplatform\t%s\n' "$mid" "$(hostname)" "$plat"
-    if [ "$plat" = macos ]; then
-      printf 'os\tmacOS %s\nruntime\t%s\n' "$(sw_vers -productVersion)" "$(ctl --version 2>&1 | head -1)"
-    else
-      printf 'os\t%s\nruntime\t%s\n' "$(. /etc/os-release && echo "$PRETTY_NAME")" "$(podman --version)"
-    fi
+    identity
     printf 'section\tcontainers\n'
     containers
     if [ "$NICE_DNS_OP" = snapshot ]; then
       printf 'section\timages\n'
       if [ "$plat" = macos ]; then ctl image list 2>&1; else podman images --digests --format '{{.Repository}}:{{.Tag}}\t{{.Digest}}'; fi
       printf 'section\tdns\n'
-      if [ "$plat" = macos ]; then
-        networksetup -listallnetworkservices | tail -n +2 | sed 's/^\*//' | while IFS= read -r svc; do
-          printf '%s\t%s\n' "$svc" "$(networksetup -getdnsservers "$svc" | tr '\n' ' ')"
-        done
-        printf 'section\tagents\n'
-        launchctl list | awk '/nice-dns/'
-      else
-        printf 'resolv.conf\t%s\n' "$(readlink -f /etc/resolv.conf)"
-        grep '^nameserver' /etc/resolv.conf
-        printf 'systemd-resolved\t%s\n' "$(systemctl is-active systemd-resolved 2>&1)"
-        printf 'section\tunits\n'
-        systemctl --user list-units --plain --no-legend --all 'pi-hole*' 'unbound*' 'tor-*' 'nice-dns*' 2>&1
-      fi
+      dns_owner
     fi ;;
+  config)
+    identity
+    printf 'section\tcontainers\n'
+    containers
+    printf 'section\timages\n'
+    for c in pi-hole unbound tor-haproxy tor-socat; do
+      if [ "$plat" = macos ]; then
+        j=$(ctl inspect "$c" 2>/dev/null | tr ',' '\n' | sed 's#\\/#/#g') || continue
+        ref=$(printf '%s\n' "$j" | sed -n 's/.*"reference"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+        dg=$(printf '%s\n' "$j" | sed -n 's/.*"digest"[[:space:]]*:[[:space:]]*"\(sha256:[0-9a-f]*\)".*/\1/p' | head -1)
+      else
+        line=$(ctl inspect "$c" --format '{{.ImageName}} {{.ImageDigest}}' 2>/dev/null) || continue
+        ref=${line% *} dg=${line##* }
+      fi
+      [ -n "$ref$dg" ] && printf 'image\t%s\t%s\t%s\n' "$c" "${ref:--}" "${dg:--}"
+    done
+    if [ "$plat" = macos ]; then
+      ctl list --all | awk 'NR > 1 && $5 == "running" { printf "started\t%s\t%s\n", $1, $NF }'
+    else
+      for c in pi-hole unbound tor-haproxy tor-socat; do
+        s=$(ctl inspect "$c" --format '{{.State.StartedAt}}' 2>/dev/null) && printf 'started\t%s\t%s\n' "$c" "$s"
+      done
+    fi
+    printf 'section\tpihole\n'
+    if running pi-hole; then
+      printf 'pihole_variant\t%s\n' "$(ctl_exec pi-hole sh -c 'test -e /pihole/post-install.sh && echo hardened || echo standard')"
+      ctl_exec pi-hole sh -c 'grep -h "^server=" /etc/pihole/dnsmasq.conf /etc/dnsmasq.d/*.conf 2>/dev/null; sed -n "/^[[:space:]]*upstreams[[:space:]]*=/,/]/p" /etc/pihole/pihole.toml 2>/dev/null | sed "s/[[:space:]]###.*//" | tr -d "\n" | sed "s/  */ /g"; echo' |
+        sed 's/^[[:space:]]*/pihole_upstream	/'
+      printf 'pihole_version\t%s\n' "$(ctl_exec pi-hole sh -c 'pihole-FTL --version 2>/dev/null | head -1')"
+    fi
+    printf 'section\tunbound\n'
+    if running unbound; then
+      printf 'unbound_version\t%s\n' "$(ctl_exec unbound sh -c 'unbound -V 2>&1 | head -1')"
+      ctl_exec unbound sh -c 'grep -v "^[[:space:]]*#" /etc/unbound/unbound.conf | grep -v "^[[:space:]]*$"' |
+        sed 's/^/unbound_conf	/'
+    fi
+    printf 'section\tproxy\n'
+    for c in tor-haproxy tor-socat; do
+      running "$c" || continue
+      printf 'proxy_component\t%s\n' "$c"
+      printf 'tor_version\t%s\n' "$(ctl_exec "$c" sh -c 'tor --version 2>/dev/null | head -1')"
+      printf 'tor_state\t%s\n' "$(tor_states "$c")"
+      # Never tor's own arguments or torrc: they carry bridge certificates.
+      if [ "$c" = tor-haproxy ]; then
+        ctl_exec "$c" sh -c 'grep -E "^[[:space:]]*(frontend|backend|bind|server|default_backend|use_backend|timeout)[[:space:]]" /etc/haproxy/haproxy.cfg' |
+          sed 's/^[[:space:]]*/proxy_conf	/'
+      else
+        ctl_exec "$c" sh -c 'for p in $(pgrep -x socat); do tr "\000" " " </proc/$p/cmdline; echo; done' |
+          sed 's/^/proxy_conf	/'
+      fi
+    done
+    printf 'section\thealth-config\n'
+    if t=$(health_tool); then printf 'health_tool\t%s\t%s\n' "$t" "$(sha_of "$t")"; else printf 'health_tool\tabsent\t-\n'; fi
+    if [ "$plat" = macos ]; then
+      for p in "$HOME"/Library/LaunchAgents/org.nice-dns.*.plist; do
+        [ -f "$p" ] || continue
+        printf 'launchd_agent\t%s\tStartInterval=%s\tKeepAlive=%s\n' "$(basename "$p" .plist)" \
+          "$(plutil -extract StartInterval raw -o - "$p" 2>/dev/null || echo -)" \
+          "$(plutil -extract KeepAlive raw -o - "$p" 2>/dev/null || echo -)"
+      done
+    else
+      for c in pi-hole unbound tor-haproxy tor-socat; do
+        hc=$(ctl inspect "$c" --format '{{.Config.Healthcheck}}' 2>/dev/null) || continue
+        oa=$(ctl inspect "$c" --format '{{.Config.HealthcheckOnFailureAction}}' 2>/dev/null) || oa=unknown
+        printf 'healthcheck\t%s\t%s\ton_failure=%s\n' "$c" "$hc" "${oa:-none}"
+      done
+      systemctl --user list-timers --all --no-legend 2>/dev/null | awk '/nice-dns/ { print "timer\t" $0 }'
+    fi
+    printf 'section\tdns\n'
+    dns_owner ;;
+  health)
+    identity
+    printf 'section\thealth\n'
+    if [ "$plat" = linux ]; then
+      for c in pi-hole unbound tor-haproxy tor-socat; do
+        st=$(ctl inspect "$c" --format '{{.State.Status}}	{{.State.Health.Status}}	{{.State.Health.FailingStreak}}' 2>/dev/null) || continue
+        printf '%s\n' "$st" | awk -F '\t' -v c="$c" '{ printf "health\tpodman:%s\t%s\tstate=%s streak=%s\n", c, ($2 == "" ? "none" : $2), $1, ($3 == "" ? "-" : $3) }'
+      done
+    else
+      launchctl list | awk '/nice-dns/ { printf "health\tlaunchd:%s\tlast_exit=%s\tpid=%s\n", $3, $2, $1 }'
+    fi
+    if t=$(health_tool); then
+      # A huge grace keeps the tool's own recovery path unreachable: it logs only.
+      NICE_DNS_RESTART_GRACE_SECS=2147483647 "$t" run </dev/null >/dev/null 2>&1; rc=$?
+      last=$(tail -n 1 "$HEALTH_LOG" 2>/dev/null | sed -n 's/.*\(\[[^]]*\]\).*/\1/p')
+      if [ "$rc" -eq 0 ]; then v=pass; else v=fail; fi
+      printf 'health\tnice-dns-health\t%s\trc=%s failed=%s\n' "$v" "$rc" "${last:--}"
+    else
+      printf 'health\tnice-dns-health\tabsent\t-\n'
+    fi ;;
+  collect)
+    {
+      printf 'target_id\t%s\nplatform\t%s\nproxy\t%s\n' "$NICE_DNS_ID_TARGET_ID" "$NICE_DNS_ID_PLATFORM" "$NICE_DNS_ID_PROXY"
+      printf 'pihole\t%s\nsource_rev\t%s\nimages\t%s\n' "$NICE_DNS_ID_PIHOLE" "$NICE_DNS_ID_SOURCE_REV" "$NICE_DNS_ID_IMAGES"
+    } >"$ND_BUNDLE/identity.tsv"
+    RUN_ID="$NICE_DNS_RUN_ID" bash "$ND_BUNDLE/tests/live/collect.sh" --resolver "$RESOLVER" \
+      --workload "$NICE_DNS_WORKLOAD" --count "$NICE_DNS_COUNT" --timeout-ms "$NICE_DNS_TIMEOUT_MS" \
+      --pause-ms "$NICE_DNS_PAUSE_MS" --identity "$ND_BUNDLE/identity.tsv" \
+      --out "$ND_BUNDLE/samples.tsv" </dev/null >&2
+    rc=$?
+    [ -f "$ND_BUNDLE/samples.tsv" ] && cat "$ND_BUNDLE/samples.tsv"
+    exit $rc ;;
+  freeze-upstream)
+    running "$NICE_DNS_COMPONENT" || { echo "$NICE_DNS_COMPONENT is not running" >&2; exit 1; }
+    [ "$(ctl_exec "$NICE_DNS_COMPONENT" pgrep -x tor | grep -c .)" = 1 ] || { echo "expected exactly one tor process" >&2; exit 1; }
+    # Dead-man thaw, started before the freeze: SIGCONT after the maximum
+    # whatever happens to this session. Harmless if tor is already running.
+    nohup sh -c 'sleep "$1"; "$2" exec "$3" pkill -CONT -x tor' nice-dns-freeze-watchdog \
+      "$NICE_DNS_FREEZE_MAX" "$C" "$NICE_DNS_COMPONENT" </dev/null >/dev/null 2>&1 &
+    ctl_exec "$NICE_DNS_COMPONENT" pkill -STOP -x tor || exit 1
+    s=$(tor_states "$NICE_DNS_COMPONENT")
+    printf 'tor_state\t%s\n' "$s"
+    [ "$s" = T ] ;;
+  thaw-upstream)
+    ctl_exec "$NICE_DNS_COMPONENT" pkill -CONT -x tor; rc=$?
+    pkill -f nice-dns-freeze-watchdog 2>/dev/null
+    s=$(tor_states "$NICE_DNS_COMPONENT")
+    printf 'tor_state\t%s\n' "$s"
+    [ "$rc" -eq 0 ] && [ -n "$s" ] && case " $s " in *" T "*) false ;; *) true ;; esac ;;
   sever-upstream) ctl stop "$NICE_DNS_COMPONENT" ;;
   heal-upstream) ctl start "$NICE_DNS_COMPONENT" ;;
   restore)
@@ -289,7 +517,17 @@ case "$op" in
     } >"$STATE/receipt.tsv"
     log_op 0
     printf 'snapshot %s -> %s\n' "$alias_" "$STATE/snapshot.tsv" ;;
-  sever-upstream|heal-upstream|restore)
+  config|health)
+    # Read-only; the output starts with the identity lines, which are checked.
+    preconnect_guards
+    probe_identity "$op"
+    printf '%s\n' "$PROBE_OUT" ;;
+  collect)
+    preconnect_guards
+    probe_identity probe
+    remote_run "NICE_DNS_OP=collect NICE_DNS_WORKLOAD=$c_workload NICE_DNS_COUNT=$c_count NICE_DNS_TIMEOUT_MS=$c_timeout NICE_DNS_PAUSE_MS=$c_pause NICE_DNS_RUN_ID=$RUN_ID$ID_ENV"
+    case $? in 0) exit 0 ;; 1) exit 3 ;; *) exit 1 ;; esac ;;
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"
@@ -304,7 +542,7 @@ case "$op" in
       done
       remote_run "NICE_DNS_OP=restore NICE_DNS_COMPONENTS='${names# }'"; rc=$?
     else
-      remote_run "NICE_DNS_OP=$op NICE_DNS_COMPONENT=$component"; rc=$?
+      remote_run "NICE_DNS_OP=$op NICE_DNS_COMPONENT=$component NICE_DNS_FREEZE_MAX=$freeze_max"; rc=$?
     fi
     log_op "$rc"
     [ "$rc" -eq 0 ] || exit 1 ;;

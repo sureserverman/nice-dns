@@ -11,3 +11,4 @@ baseline-contracts	integration	baseline-contracts
 baseline	integration	baseline-contracts
 baseline	integration	target-guards
 baseline	unit	receipt-verifier
+baseline	unit	baseline

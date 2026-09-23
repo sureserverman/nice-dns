@@ -55,7 +55,7 @@ OP-NO-HISTORY-NAMES	PRIV-NO-QUERY-HISTORY	unit	measurement	t_collect_refuses_nam
 OP-NO-HISTORY-WORKLOADS	PRIV-NO-QUERY-HISTORY	unit	measurement	t_default_workloads_are_controlled_names	baseline
 OP-NO-SECRETS-FX	PRIV-NO-SECRETS	unit	fixtures	t_fixture_state_stays_in_artifacts	baseline
 OP-NO-SECRETS-KEYS	PRIV-NO-SECRETS	unit	fixtures	t_keys_are_fresh_and_private	baseline
-OP-NO-SECRETS-RECEIPT	PRIV-NO-SECRETS	-	-	-	baseline
+OP-NO-SECRETS-RECEIPT	PRIV-NO-SECRETS	live	baseline-characterize	t_representative_receipt_verifies	baseline
 OP-CONTROL-LOCAL	SEC-CONTROL-LOCAL	-	-	-	transport
 OP-OWNED-RESTORE	SEC-OWNED-RESTORE	-	-	-	installers
 OP-ACK-READINESS	REC-ACK-READINESS	-	-	-	controller

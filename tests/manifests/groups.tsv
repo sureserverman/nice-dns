@@ -11,3 +11,5 @@ unit	measurement	tests/unit/measurement-tests.sh	local
 integration	baseline-contracts	tests/integration/baseline-contracts.sh	local
 integration	target-guards	tests/integration/target-guards.sh	local
 unit	receipt-verifier	tests/unit/receipt-verifier-tests.sh	local
+live	baseline-characterize	tests/live/baseline-characterize.sh	live
+unit	baseline	tests/unit/baseline-tests.sh	local
