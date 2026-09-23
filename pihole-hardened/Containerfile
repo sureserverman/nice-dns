@@ -13,7 +13,11 @@
 # once published). It already runs pihole-FTL as uid 1000 with
 # CAP_NET_BIND_SERVICE, ships the v6 admin web UI, and pre-seeds
 # /etc/pihole/versions for the pinned upstream tags.
-FROM localhost/pi-hole-hardened-base:latest
+# Podman names the locally built base localhost/...; Apple's builder resolves
+# a local image only by its plain name, so install-mac-hardened.sh passes
+# --build-arg BASE_IMAGE=pi-hole-hardened-base:latest.
+ARG BASE_IMAGE=localhost/pi-hole-hardened-base:latest
+FROM ${BASE_IMAGE}
 
 USER root
 

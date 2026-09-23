@@ -197,7 +197,8 @@ sed -i '' -e 's|^    interface: 127\.0\.0\.1$|    interface: 0.0.0.0|' \
 
 # ─── Hardened-base Pi-hole build (the one block that differs from install-mac.sh) ───
 build_pihole_hardened_base
-"$CONTAINER_BIN" build --dns 1.1.1.1 -t pi-hole -f pihole-hardened/Containerfile .
+"$CONTAINER_BIN" build --dns 1.1.1.1 --build-arg BASE_IMAGE=pi-hole-hardened-base:latest \
+  -t pi-hole -f pihole-hardened/Containerfile .
 # ─── End of hardened-only block ───
 
 "$CONTAINER_BIN" builder stop >/dev/null 2>&1 || true
