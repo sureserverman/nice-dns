@@ -19,7 +19,10 @@
 #   thaw-upstream, recovery   time to the first answered cold query
 #   restore, snapshot, cold   BL-RESTORED: containers, states and addresses
 #                             equal the first snapshot, tor not stopped, and
-#                             an uncached query answers
+#                             an uncached query answered after the thaw
+#                             (recovery or post-restore samples: a target
+#                             that answered 10/30 cold before the fault may
+#                             miss 5 in a row after it)
 # into $ARTIFACT_DIR/baseline/NAME/ (NAME defaults to ALIAS). A scenario is "pass" when its
 # observation is complete; product behaviour is recorded, not judged, in
 # findings.tsv (e.g. health reporting healthy while upstream is dead). The
@@ -248,8 +251,8 @@ observe() {
       && [ -s "$D/containers-before.tsv" ] \
       && [ -n "$(kv tor_state "$D/config-after.tsv")" ] \
       && ! printf ' %s ' "$(kv tor_state "$D/config-after.tsv")" | grep -q ' T ' \
-      && [ -f "$D/samples-after.tsv" ] && [ "$(answered "$D/samples-after.tsv")" -ge 1 ]; then
-    record BL-RESTORED pass containers-after.tsv "containers equal the snapshot; post-restore cold answered=$(answered "$D/samples-after.tsv")/5; first recovery answer at attempt ${first:-none}"
+      && [ $(( $(answered "$D/samples-after.tsv" 2>/dev/null || echo 0) + $(answered "$D/samples-recovery.tsv" 2>/dev/null || echo 0) )) -ge 1 ]; then
+    record BL-RESTORED pass containers-after.tsv "containers equal the snapshot; after the thaw: recovery answered=$(answered "$D/samples-recovery.tsv")/$(attempts "$D/samples-recovery.tsv"), post-restore cold answered=$(answered "$D/samples-after.tsv")/5; first recovery answer at attempt ${first:-none}"
   else
     record BL-RESTORED fail containers-after.tsv "target not back to its snapshot state (see containers-before/after.tsv, samples-after.tsv)"
   fi

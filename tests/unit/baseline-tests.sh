@@ -63,6 +63,8 @@ case "$op" in
     while [ "$i" -le "$n" ]; do
       o=ok r=NOERROR e=1500
       if [ "$frozen" = yes ] && [ "$w" = cold ] && [ -z "${FAKE_ANSWERS_WHILE_FROZEN:-}" ]; then o=timeout r=- e=5000000 rc=3; fi
+      if [ -f "$FAKE_STATE/thawed-$alias_" ] && [ "$w" = cold ] && [ "$n" = 5 ] && [ -n "${FAKE_POST_RESTORE_MISS:-}" ]; then o=timeout r=- e=5000000 rc=3; fi
+      if [ -f "$FAKE_STATE/thawed-$alias_" ] && [ "$w" = cold ] && [ -n "${FAKE_NEVER_AFTER_THAW:-}" ]; then o=timeout r=- e=5000000 rc=3; fi
       printf '%s\t%s\t2026-09-23T00:00:00Z\t%s\t%s\tmiss\t%s\t%s\t%s\t%s\tx\ti\t127.0.0.1#53\tudp\tq.example.com\tA\t%s\t%s\t5000\n' \
         "$RUN_ID" "$i" "$e" "$w" "$alias_" "$plat" "$proxy" "$pihole" "$o" "$r"
       i=$((i + 1))
@@ -153,6 +155,24 @@ t_transient_product_container_is_not_restore_state() {
   assert_rc 0 "$BT_RC" "transient container ignored: $(cat "$CASE_DIR/run.log")"
   assert_match '^BL-RESTORED	pass	' "$BT_OBS" "BL-RESTORED passes"
   assert_not_match 'db004885' "$(cat "$ARTIFACT_DIR/baseline/fakelin/containers-before.tsv")" "only stack containers compared"
+}
+
+t_recovered_chain_with_unlucky_post_restore_samples_is_restored() {
+  # Recovery after the thaw answered; the 5 later attempts all missed, as a
+  # target that answered 10/30 cold before the fault can. That is restored.
+  bt_setup
+  FAKE_POST_RESTORE_MISS=1; export FAKE_POST_RESTORE_MISS
+  bt_run fakelin
+  assert_rc 0 "$BT_RC" "restored on the recovery answers: $(cat "$CASE_DIR/run.log")"
+  assert_match '^BL-RESTORED	pass	.*post-restore cold answered=0/5' "$BT_OBS" "BL-RESTORED passes and says the post-restore samples missed"
+}
+
+t_chain_that_never_answers_after_thaw_is_not_restored() {
+  bt_setup
+  FAKE_NEVER_AFTER_THAW=1; export FAKE_NEVER_AFTER_THAW
+  bt_run fakelin
+  assert_rc 1 "$BT_RC" "no answer after the thaw is not restored"
+  assert_match '^BL-RESTORED	fail	' "$BT_OBS" "BL-RESTORED fails"
 }
 
 t_changed_container_address_fails_restored() {
