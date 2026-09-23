@@ -36,6 +36,10 @@ case "$ACTION" in
 esac
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# The sibling pi-hole-hardened checkout sits next to the tree this script was
+# started from. Resolve it now: HERE is later repointed at the private copy
+# under $WORK, which never has a sibling.
+SIBLING_REPO="$(cd "$HERE/.." && pwd)/pi-hole-hardened"
 
 teardown() {
   AGENT="$HOME/Library/LaunchAgents/org.nice-dns.start-container.plist"
@@ -66,7 +70,7 @@ teardown() {
 # per install run, before the downstream pihole-hardened/Containerfile build.
 build_pihole_hardened_base() {
   local base_img="pi-hole-hardened-base:latest"
-  local sibling_repo="$HERE/../pi-hole-hardened"
+  local sibling_repo="$SIBLING_REPO"
 
   echo "▸ Resolving hardened base image…"
   if [[ -f "$sibling_repo/Dockerfile" && -f "$sibling_repo/post-install.sh" ]]; then
