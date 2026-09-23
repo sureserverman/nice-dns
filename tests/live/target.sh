@@ -34,9 +34,11 @@
 #   thaw-upstream    SIGCONT that tor process
 #   install-cell     reinstall the stack as --cell PROXY/PIHOLE with the
 #                    product's own installer (install-{deb,mac}{,-hardened}.sh)
-#                    from a fresh clone of nice-dns checked out at
-#                    --source-sha SHA (install-mac.sh clones main itself, so
-#                    it is refused unless origin/main is that commit). The
+#                    run from this checkout's `git archive` of --source-sha
+#                    SHA, sent inline (the target's own DNS may be the broken
+#                    stack being replaced, so nothing is fetched there).
+#                    install-mac.sh clones main itself, so it is refused
+#                    unless this checkout's origin/main is that commit. The
 #                    installer's output is streamed back; it may carry bridge
 #                    lines, so keep it out of portable evidence. Hardened
 #                    cells also need the pi-hole-hardened sibling, which has
@@ -185,6 +187,10 @@ if [ "$op" = install-cell ]; then
   case "$i_cell" in haproxy/standard|haproxy/hardened|socat/standard|socat/hardened) ;;
     *) die "install-cell needs --cell haproxy|socat/standard|hardened" ;; esac
   [[ "$i_sha" =~ ^[0-9a-f]{40}$ ]] || die "install-cell needs --source-sha <40-hex commit>"
+  [ "$(git -C "$ND_CHECKOUT" cat-file -t "$i_sha" 2>/dev/null)" = commit ] || die "--source-sha $i_sha is not a commit in $ND_CHECKOUT"
+  if [ "$T_PLATFORM/${i_cell#*/}" = macos/standard ] && [ "$(git -C "$ND_CHECKOUT" rev-parse origin/main 2>/dev/null)" != "$i_sha" ]; then
+    die "install-mac.sh installs origin/main, which is not $i_sha; refusing"
+  fi
   INSTALL_ENV="NICE_DNS_PROXY=${i_cell%/*} NICE_DNS_PIHOLE=${i_cell#*/} NICE_DNS_SOURCE_SHA=$i_sha"
   HSIB="$(cd "$ND_CHECKOUT/.." && pwd -P)/pi-hole-hardened"
   if [ "${i_cell#*/}" = hardened ]; then
@@ -277,6 +283,7 @@ preconnect_guards() {
 # verbatim from this checkout into a remote temporary directory).
 remote_run() {
   { if [ "$op" = collect ]; then remote_bundle || exit 1; fi
+    if [ "$op" = install-cell ]; then source_bundle || exit 1; fi
     if [ "$op" = install-cell ] && [ -n "$i_hsha" ]; then hardened_bundle || exit 1; fi
     remote_script; } \
     | ssh "${SSH_OPTS[@]}" "$T_SSH" "$1 /bin/sh -s"
@@ -295,6 +302,14 @@ remote_bundle() {
     cat "$ND_CHECKOUT/$f"
     printf '%s\n' "$BUNDLE_EOF"
   done
+}
+
+source_bundle() {
+  # nice-dns at the pinned commit, base64 tar.gz, decoded into ND_SOURCE_TGZ.
+  printf '%s\n' 'ND_SOURCE_TGZ=$(mktemp "${TMPDIR:-/tmp}/nice-dns-source.XXXXXX") || exit 1' \
+    "{ base64 -d 2>/dev/null || base64 -D; } >\"\$ND_SOURCE_TGZ\" <<'$BUNDLE_EOF'"
+  git -C "$ND_CHECKOUT" archive --format=tar "$i_sha" | gzip -9 | base64 || return 1
+  printf '%s\n' "$BUNDLE_EOF"
 }
 
 hardened_bundle() {
@@ -409,7 +424,7 @@ case "$NICE_DNS_OP" in
     fi
     printf 'section\tpihole\n'
     if running pi-hole; then
-      printf 'pihole_variant\t%s\n' "$(ctl_exec pi-hole sh -c 'test -e /pihole/post-install.sh && echo hardened || echo standard')"
+      printf 'pihole_variant\t%s\n' "$(ctl_exec pi-hole sh -c 'test -d /pihole && echo hardened || echo standard')"
       ctl_exec pi-hole sh -c 'grep -h "^server=" /etc/pihole/dnsmasq.conf /etc/dnsmasq.d/*.conf 2>/dev/null; sed -n "/^[[:space:]]*upstreams[[:space:]]*=/,/]/p" /etc/pihole/pihole.toml 2>/dev/null | sed "s/[[:space:]]###.*//" | tr -d "\n" | sed "s/  */ /g"; echo' |
         sed 's/^[[:space:]]*/pihole_upstream	/'
       printf 'pihole_version\t%s\n' "$(ctl_exec pi-hole sh -c 'pihole-FTL --version 2>/dev/null | head -1')"
@@ -519,11 +534,9 @@ case "$NICE_DNS_OP" in
     if [ "$plat" = macos ]; then PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$PATH"; export PATH; fi
     w=$(mktemp -d "$HOME/.nice-dns-harness-install.XXXXXX") || exit 1
     trap 'rm -rf "$w"' EXIT
-    git clone -q https://github.com/sureserverman/nice-dns.git "$w/nice-dns" </dev/null || exit 1
-    git -C "$w/nice-dns" checkout -q "$NICE_DNS_SOURCE_SHA" </dev/null || { echo "commit $NICE_DNS_SOURCE_SHA not found" >&2; exit 1; }
-    if [ "$inst" = install-mac.sh ] && [ "$(git -C "$w/nice-dns" rev-parse origin/main)" != "$NICE_DNS_SOURCE_SHA" ]; then
-      echo "install-mac.sh installs origin/main, which is not $NICE_DNS_SOURCE_SHA; refusing" >&2; exit 2
-    fi
+    [ -s "${ND_SOURCE_TGZ:-}" ] || { echo "install without the nice-dns source archive" >&2; exit 2; }
+    mkdir "$w/nice-dns" && tar -xzf "$ND_SOURCE_TGZ" -C "$w/nice-dns" || exit 1
+    rm -f "$ND_SOURCE_TGZ"
     if [ "$NICE_DNS_PIHOLE" = hardened ]; then
       [ -s "${ND_HARDENED_TGZ:-}" ] || { echo "hardened cell without the pi-hole-hardened archive" >&2; exit 2; }
       mkdir "$w/pi-hole-hardened" && tar -xzf "$ND_HARDENED_TGZ" -C "$w/pi-hole-hardened" || exit 1
@@ -531,7 +544,7 @@ case "$NICE_DNS_OP" in
       printf 'hardened_sha\t%s\n' "$NICE_DNS_HARDENED_SHA"
     fi
     printf 'install_cell\t%s/%s\ninstaller\t%s\nsource_sha\t%s\nstarted_utc\t%s\n' "$NICE_DNS_PROXY" "$NICE_DNS_PIHOLE" "$inst" \
-      "$(git -C "$w/nice-dns" rev-parse HEAD)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      "$NICE_DNS_SOURCE_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     (cd "$w/nice-dns" && bash "./$inst" "$NICE_DNS_PROXY" main) </dev/null 2>&1
     rc=$?
     printf 'finished_utc\t%s\ninstaller_exit\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc"
