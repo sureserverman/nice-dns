@@ -39,8 +39,12 @@ FAKE
 #!/usr/bin/env bash
 printf 'keygen %s\n' "$*" >>"$FAKE_LOG"
 if [ -n "${FAKE_NO_KNOWN:-}" ]; then exit 1; fi
-printf '# Host %s found: line 1\n' "$3"
-printf '256 %s %s (ED25519)\n' "${FAKE_FP:-SHA256:AAAAtestfingerprintAAAAAAAAAAAAAAAAAAAAAAAA}" "$3"
+# Output shape of real `ssh-keygen -F NAME -l` (OpenSSH 9.6): one comment
+# line and one "NAME TYPE FINGERPRINT" line per stored key.
+printf '# Host %s found: line 1 \n' "$2"
+printf '%s RSA %s\n' "$2" 'SHA256:RRRRotherkeytypeRRRRRRRRRRRRRRRRRRRRRRRRRRR'
+printf '# Host %s found: line 2 \n' "$2"
+printf '%s ED25519 %s\n' "$2" "${FAKE_FP:-SHA256:AAAAtestfingerprintAAAAAAAAAAAAAAAAAAAAAAAA}"
 FAKE
   chmod 755 "$CASE_DIR/bin/ssh" "$CASE_DIR/bin/ssh-keygen"
   PATH="$CASE_DIR/bin:$PATH"

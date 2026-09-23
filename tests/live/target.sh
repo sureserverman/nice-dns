@@ -168,7 +168,8 @@ preconnect_guards() {
       [ -f "$kh" ] || continue
       line="$(ssh-keygen -F "$name" -l -f "$kh" 2>/dev/null)" || continue
     fi
-    fps="$fps$(printf '%s\n' "$line" | awk '!/^#/ && NF >= 2 { print $2 }')
+    # "NAME TYPE SHA256:..." per key; take the fingerprint field, not a column.
+    fps="$fps$(printf '%s\n' "$line" | awk '!/^#/ { for (i = 1; i <= NF; i++) if ($i ~ /^SHA256:/) print $i }')
 "
   done
   [ -n "$(printf '%s' "$fps" | tr -d '\n')" ] \
