@@ -549,8 +549,11 @@ t_plan_runs_its_rows_in_order_and_fails_on_any_failure() {
 t_contracts_citations_bind_to_the_pinned_commit() {
   # Citations are path:line at the doc's pinned commit: a cited file that
   # changed since, is missing there, or is shorter than the cited line fails.
-  local f="$CASE_DIR/doc.md"
-  sed 's/b85bc9b7786efc7d3bf0572875e95e214dfa1d6c/337fb1596d71693f883c80594b0fa88a34a62c87/' "$(hc_doc)" >"$f"
+  local f="$CASE_DIR/doc.md" pin
+  # The doc's current pin, read from it: re-pinning must not break this case.
+  pin="$(grep -oE '[0-9a-f]{40}' "$(hc_doc)" | head -1)"
+  assert_match '^[0-9a-f]{40}$' "$pin" "the doc carries a pinned commit"
+  sed "s/$pin/337fb1596d71693f883c80594b0fa88a34a62c87/" "$(hc_doc)" >"$f"
   hc_run check-contracts "$f"
   assert_nonzero "$HC_RC" "pinned to a commit the cited files have since changed from"
   assert_match 'mac/start-container\.sh changed since the pinned commit' "$HC_OUT" "names a drifted file"
@@ -562,7 +565,7 @@ t_contracts_citations_bind_to_the_pinned_commit() {
   hc_run check-contracts "$f"
   assert_nonzero "$HC_RC" "a cited line past the end of the file"
   assert_match 'install-deb\.sh:99999 is past the end' "$HC_OUT" "names the bad line"
-  grep -v 'b85bc9b7786efc7d3bf0572875e95e214dfa1d6c' "$(hc_doc)" >"$f"
+  grep -v "$pin" "$(hc_doc)" >"$f"
   hc_run check-contracts "$f"
   assert_nonzero "$HC_RC" "a doc with no pinned commit"
   assert_match 'no pinned baseline commit' "$HC_OUT" "names the missing pin"
