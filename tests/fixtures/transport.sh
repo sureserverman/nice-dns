@@ -13,6 +13,9 @@
 #   tp_send <port> <marker>  one TCP stream to 127.0.0.1:<port> carrying marker
 #   tp_dests <marker>      "ip:port" per SOCKS request whose payload is marker
 #   tp_run <name> <args>   podman run -d, joining the namespace; tracked
+#   tp_supervised [args]   the image's own start.sh with a stand-in tor and
+#                          three syntactically valid test bridges
+#   tp_wait_file / tp_field / tp_request / tp_pid_of   restart-contract probes
 #
 # Safety: containers are named nd-test-tp-<run id>-<case>-*, never publish a
 # port, and join a --network none namespace, so nothing leaves the host
@@ -54,15 +57,16 @@ tp_setup() {
   local repo="$1" src h
   src="$TP_SIBS/$repo"
   TP_PFX="nd-test-tp-$RUN_ID-$(basename "$CASE_DIR" | tr '_' '-')"
-  TP_CTRS="" TP_SOCKS_WRAP="" TP_NSPID=""
+  TP_CTRS="" TP_SOCKS_WRAP="" TP_NSPID="" TP_SOCKS=""
   trap tp_cleanup EXIT
   [ -f "$src/Dockerfile" ] || fail "$repo sibling checkout not found at $src"
-  h="$(tp_src_hash "$src")"
+  # Docker image format, as published: the OCI format drops HEALTHCHECK.
+  h="$( { tp_src_hash "$src"; printf 'format=docker\n'; } | tp_sha)"
   # shellcheck disable=SC2034
   TP_SRC="$src"
   TP_IMG="localhost/nd-test-$repo:$(printf '%s' "$h" | cut -c1-16)"
   if ! podman image exists "$TP_IMG" 2>/dev/null; then
-    podman build -t "$TP_IMG" "$src" >"$CASE_DIR/build.log" 2>&1 \
+    podman build --format docker -t "$TP_IMG" "$src" >"$CASE_DIR/build.log" 2>&1 \
       || fail "$repo image build failed: $(tail -n 15 "$CASE_DIR/build.log")"
   fi
   printf 'image\t%s\t%s\t%s\n' "$repo" "$TP_IMG" "$(git -C "$src" rev-parse HEAD 2>/dev/null)" >"$CASE_DIR/image.tsv"
@@ -82,7 +86,7 @@ tp_cleanup() {
 tp_holder() {
   TP_HOLDER="$TP_PFX-ns"
   TP_CTRS="$TP_CTRS $TP_HOLDER"
-  tp_pm run -d --name "$TP_HOLDER" --network none --entrypoint /bin/sleep "$TP_IMG" 900
+  tp_pm run -d --health-interval=disable --name "$TP_HOLDER" --network none --entrypoint /bin/sleep "$TP_IMG" 900
   assert_rc 0 "$TP_RC" "network namespace holder starts: $TP_OUT"
   TP_NSPID="$(podman inspect -f '{{.State.Pid}}' "$TP_HOLDER" 2>/dev/null)"
   assert_match '^[1-9][0-9]*$' "$TP_NSPID" "holder has a pid"
@@ -95,7 +99,9 @@ tp_run() {
   TP_CTRS="$TP_CTRS $n"
   # shellcheck disable=SC2034
   TP_CTR="$n"
-  tp_pm run -d --name "$n" --network "container:$TP_HOLDER" "$@"
+  # --health-interval=disable: the image HEALTHCHECK stays defined (run on
+  # demand by tp_healthcheck_rc) but podman schedules no systemd timer.
+  tp_pm run -d --health-interval=disable --name "$n" --network "container:$TP_HOLDER" "$@"
   assert_rc 0 "$TP_RC" "container $n starts: $TP_OUT"
 }
 
@@ -143,4 +149,55 @@ s.close()' "$1" "$2"
 
 tp_dests() {
   awk -F '\t' -v m="$1" '$5 == m { print $2 ":" $3 }' "$TP_SOCKS/connects.tsv" | LC_ALL=C sort -u
+}
+
+# ─────────────────────────── supervision (image start.sh) ───────────────────
+
+# tp_supervised [podman run args]: the image's full start.sh with a stand-in
+# tor (logs "Bootstrapped 100%" and waits; its process name is "tor").
+tp_supervised() {
+  local b
+  printf '#!/bin/sh\necho "Bootstrapped 100%% (done): Done"\nwhile :; do sleep 1; done\n' >"$CASE_DIR/faketor"
+  chmod 755 "$CASE_DIR/faketor"
+  [ -n "$TP_NSPID" ] || tp_holder
+  [ -n "$TP_SOCKS" ] || tp_socks_start
+  # Caller's extra podman run args stay in "$@"; the bridges are appended.
+  for b in 1 2 3; do
+    set -- "$@" -e "BRIDGE$b=obfs4 192.0.2.$b:443 0123456789ABCDEF0123456789ABCDEF0123456$b cert=AAAAtestonly$b iat-mode=0"
+  done
+  tp_run sup "$@" -v "$CASE_DIR/faketor:/usr/bin/tor:ro" "$TP_IMG"
+  tp_wait_file /tmp/tor-generation 60 || fail "start.sh never wrote /tmp/tor-generation: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
+}
+
+# tp_wait_file <path> <seconds> [ERE]: wait until the file exists in the
+# container (and, if given, has a line matching ERE).
+tp_wait_file() {
+  local i=0 max=$(( $2 * 2 ))
+  while [ "$i" -lt "$max" ]; do
+    tp_pm exec "$TP_CTR" cat "$1"
+    if [ "$TP_RC" -eq 0 ] && { [ -z "${3:-}" ] || printf '%s\n' "$TP_OUT" | grep -Eq -- "$3"; }; then return 0; fi
+    i=$((i + 1)); sleep 0.5
+  done
+  return 1
+}
+
+tp_field() { printf '%s\n' "$2" | awk -F '\t' -v k="$1" '$1 == k { print $2; exit }'; }
+
+tp_request() {
+  # shellcheck disable=SC2016
+  tp_pm exec "$TP_CTR" sh -c 'printf "%s\n" "$1" >/tmp/tor-restart-request.tmp && mv /tmp/tor-restart-request.tmp /tmp/tor-restart-request' sh "$1"
+  assert_rc 0 "$TP_RC" "restart request written: $TP_OUT"
+}
+
+tp_pid_of() { tp_pm exec "$TP_CTR" pidof "$1"; printf '%s\n' "$TP_OUT"; }
+
+# tp_healthcheck_rc: run the image's own HEALTHCHECK in the running container
+# (podman healthcheck run); TP_RC is its verdict (0 healthy). Fails the case
+# when the image carries no healthcheck, so "unhealthy" can never be an error
+# about a missing check.
+tp_healthcheck_rc() {
+  local hc
+  hc="$(podman image inspect -f '{{.Config.Healthcheck}}' "$TP_IMG" 2>/dev/null | grep -v -- "$TP_WARN")"
+  assert_match 'dig' "$hc" "image $TP_IMG carries its HEALTHCHECK ($hc)"
+  tp_pm healthcheck run "$TP_CTR"
 }

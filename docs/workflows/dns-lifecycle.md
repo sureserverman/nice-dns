@@ -281,7 +281,9 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
 - Linux container health checks only test that a port is open: `nc -z` on
   853 and 5335 (deb/quadlet/tor-haproxy.container:54,
   deb/quadlet/unbound.container:22). Pi-hole's check is a `pi.hole` lookup
-  (deb/quadlet/pi-hole.container:28). All use `HealthOnFailure=restart`
+  that needs an answer line (deb/quadlet/pi-hole.container:28). Until
+  sub-plan 02 it trusted dig's exit status, which is 0 on a SERVFAIL and
+  `dig +short` prints its errors on stdout. All use `HealthOnFailure=restart`
   (deb/quadlet/tor-haproxy.container:76).
 - macOS LaunchAgent: `RunAtLoad` true and `KeepAlive` false
   (mac/org.nice-dns.start-container.plist:9, mac/org.nice-dns.start-container.plist:27).

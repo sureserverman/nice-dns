@@ -18,8 +18,13 @@ Behaviour is read per connection from <state>/mode:
                  DoT fixture), so a client's TLS runs end to end
 Missing mode file means accept.
 
+SOCKS4A (destination IP 0.0.0.x, x != 0, hostname after the user id) is
+understood: the destination is then the hostname (tor-socat asks for the
+.onion and even IP literals this way).
+
 Log: <state>/connects.tsv, one row per request:
-  utc  dest_ip  dest_port  mode  payload   (payload: printable prefix, or -)
+  utc  dest  dest_port  mode  payload   (dest: IP, or SOCKS4A hostname;
+                                         payload: printable prefix, or -)
 Writes <state>/ready once listening. Exits by itself when its parent dies
 or after --max-seconds (like dnsfixture.py). Standard library only.
 """
@@ -116,6 +121,8 @@ def handle(conn, state):
         port = int.from_bytes(read_exact(conn, 2), "big")
         ip = socket.inet_ntoa(read_exact(conn, 4))
         read_until_nul(conn)
+        if ip.startswith("0.0.0.") and ip != "0.0.0.0":
+            ip = read_until_nul(conn).decode("ascii", "replace")
         if vn != 4 or cd != 1:
             conn.sendall(b"\x00\x5b" + b"\0" * 6)
             log_row(state, ip, port, "bad-request", "-")

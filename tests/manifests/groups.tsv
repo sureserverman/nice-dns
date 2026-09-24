@@ -16,3 +16,4 @@ unit	baseline	tests/unit/baseline-tests.sh	local
 live	baseline-matrix	tests/live/baseline-matrix.sh	live
 integration	resolver-state	tests/integration/resolver-state.sh	local
 integration	transport-haproxy	tests/integration/transport-haproxy.sh	local
+integration	transport-socat	tests/integration/transport-socat.sh	local

@@ -62,11 +62,11 @@ th_backend_addrs() {
 
 t_config_is_valid() {
   tp_setup tor-haproxy
-  tp_pm run --rm --network none --entrypoint /usr/sbin/haproxy "$TP_IMG" -c -f /etc/haproxy/haproxy.cfg
+  tp_pm run --rm --health-interval=disable --network none --entrypoint /usr/sbin/haproxy "$TP_IMG" -c -f /etc/haproxy/haproxy.cfg
   assert_rc 0 "$TP_RC" "haproxy -c accepts the image config: $TP_OUT"
   # Negative control: the same check rejects a broken config (haproxy 3.x
   # prints nothing on success, so the exit status is the signal).
-  tp_pm run --rm --network none --entrypoint /bin/sh "$TP_IMG" -c \
+  tp_pm run --rm --health-interval=disable --network none --entrypoint /bin/sh "$TP_IMG" -c \
     'cp /etc/haproxy/haproxy.cfg /tmp/bad.cfg && echo "backend broken" >>/tmp/bad.cfg && echo "    server x" >>/tmp/bad.cfg && haproxy -c -f /tmp/bad.cfg'
   assert_nonzero "$TP_RC" "haproxy -c rejects a broken copy of the config"
 }
@@ -163,61 +163,24 @@ t_route_frontends_are_bounded() {
 
 # ─────────────────────────── supervision (start.sh) ──────────────────────────
 
-# th_supervised: the image's full start.sh with a stand-in tor.
-th_supervised() {
-  local b
-  printf '#!/bin/sh\necho "Bootstrapped 100%% (done): Done"\nwhile :; do sleep 1; done\n' >"$CASE_DIR/faketor"
-  chmod 755 "$CASE_DIR/faketor"
-  tp_holder
-  tp_socks_start
-  set --
-  for b in 1 2 3; do
-    set -- "$@" -e "BRIDGE$b=obfs4 192.0.2.$b:443 0123456789ABCDEF0123456789ABCDEF0123456$b cert=AAAAtestonly$b iat-mode=0"
-  done
-  tp_run sup "$@" -v "$CASE_DIR/faketor:/usr/bin/tor:ro" "$TP_IMG"
-  th_wait_file /tmp/tor-generation 60 || fail "start.sh never wrote /tmp/tor-generation: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
-}
-
-# th_wait_file <path> <seconds> [ERE]: wait until the file exists in the
-# container (and, if given, has a line matching ERE).
-th_wait_file() {
-  local i=0 max=$(( $2 * 2 ))
-  while [ "$i" -lt "$max" ]; do
-    tp_pm exec "$TP_CTR" cat "$1"
-    if [ "$TP_RC" -eq 0 ] && { [ -z "${3:-}" ] || printf '%s\n' "$TP_OUT" | grep -Eq -- "$3"; }; then return 0; fi
-    i=$((i + 1)); sleep 0.5
-  done
-  return 1
-}
-
-th_field() { printf '%s\n' "$2" | awk -F '\t' -v k="$1" '$1 == k { print $2; exit }'; }
-
-th_request() {
-  # shellcheck disable=SC2016
-  tp_pm exec "$TP_CTR" sh -c 'printf "%s\n" "$1" >/tmp/tor-restart-request.tmp && mv /tmp/tor-restart-request.tmp /tmp/tor-restart-request' sh "$1"
-  assert_rc 0 "$TP_RC" "restart request written: $TP_OUT"
-}
-
-th_pid_of() { tp_pm exec "$TP_CTR" pidof "$1"; printf '%s\n' "$TP_OUT"; }
-
 t_restart_request_acknowledged_with_new_generation() {
   local gen0 pid0 hap0 ack
   tp_setup tor-haproxy
-  th_supervised
-  gen0="$(th_field generation "$TP_OUT")"; pid0="$(th_field tor_pid "$TP_OUT")"
+  tp_supervised
+  gen0="$(tp_field generation "$TP_OUT")"; pid0="$(tp_field tor_pid "$TP_OUT")"
   assert_eq 1 "$gen0" "first tor is generation 1"
   assert_match '^[1-9][0-9]*$' "$pid0" "generation file names the tor pid"
-  hap0="$(th_pid_of haproxy)"
+  hap0="$(tp_pid_of haproxy)"
   assert_match '^[1-9]' "$hap0" "haproxy runs"
-  th_request req-ack-1
-  th_wait_file /tmp/tor-restart-ack 40 '^request_id	req-ack-1$' || fail "no acknowledgement for req-ack-1: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
+  tp_request req-ack-1
+  tp_wait_file /tmp/tor-restart-ack 40 '^request_id	req-ack-1$' || fail "no acknowledgement for req-ack-1: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
   ack="$TP_OUT"
-  assert_eq respawned "$(th_field status "$ack")" "request acknowledged as a respawn"
-  assert_eq 2 "$(th_field generation "$ack")" "the acknowledgement carries the new generation"
-  assert_ne "$pid0" "$(th_field tor_pid "$ack")" "a new tor process"
-  assert_match '^[1-9][0-9]*$' "$(th_field tor_pid "$ack")" "the new tor pid is recorded"
-  assert_eq "$hap0" "$(th_pid_of haproxy)" "haproxy kept running across the tor restart"
-  th_wait_file /tmp/tor-generation 5 '^generation	2$'
+  assert_eq respawned "$(tp_field status "$ack")" "request acknowledged as a respawn"
+  assert_eq 2 "$(tp_field generation "$ack")" "the acknowledgement carries the new generation"
+  assert_ne "$pid0" "$(tp_field tor_pid "$ack")" "a new tor process"
+  assert_match '^[1-9][0-9]*$' "$(tp_field tor_pid "$ack")" "the new tor pid is recorded"
+  assert_eq "$hap0" "$(tp_pid_of haproxy)" "haproxy kept running across the tor restart"
+  tp_wait_file /tmp/tor-generation 5 '^generation	2$'
   assert_rc 0 "$?" "the generation file follows the acknowledgement"
   tp_pm exec "$TP_CTR" test -e /tmp/tor-restart-request
   assert_nonzero "$TP_RC" "the request was consumed"
@@ -226,37 +189,50 @@ t_restart_request_acknowledged_with_new_generation() {
 t_invalid_restart_request_rejected() {
   local pid0
   tp_setup tor-haproxy
-  th_supervised
-  pid0="$(th_field tor_pid "$TP_OUT")"
-  th_request 'bad id; rm -rf /'
-  th_wait_file /tmp/tor-restart-ack 30 '^status	rejected$' || fail "no rejection acknowledgement: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
-  assert_eq 1 "$(th_field generation "$TP_OUT")" "a rejected request does not start a generation"
-  assert_eq invalid "$(th_field request_id "$TP_OUT")" "the unsafe id is not echoed back"
+  tp_supervised
+  pid0="$(tp_field tor_pid "$TP_OUT")"
+  tp_request 'bad id; rm -rf /'
+  tp_wait_file /tmp/tor-restart-ack 30 '^status	rejected$' || fail "no rejection acknowledgement: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
+  assert_eq 1 "$(tp_field generation "$TP_OUT")" "a rejected request does not start a generation"
+  assert_eq invalid "$(tp_field request_id "$TP_OUT")" "the unsafe id is not echoed back"
   # "legacy" is reserved for the flag interface's acknowledgements.
   tp_pm exec "$TP_CTR" rm -f /tmp/tor-restart-ack
-  th_request legacy
-  th_wait_file /tmp/tor-restart-ack 30 '^status	rejected$'
+  tp_request legacy
+  tp_wait_file /tmp/tor-restart-ack 30 '^status	rejected$'
   assert_rc 0 "$?" "a request that claims the reserved id legacy is rejected"
   sleep 6
-  th_wait_file /tmp/tor-generation 2
-  assert_eq "$pid0" "$(th_field tor_pid "$TP_OUT")" "tor was not restarted"
+  tp_wait_file /tmp/tor-generation 2
+  assert_eq "$pid0" "$(tp_field tor_pid "$TP_OUT")" "tor was not restarted"
 }
 
 t_legacy_restart_flag_acknowledged() {
   tp_setup tor-haproxy
-  th_supervised
+  tp_supervised
   tp_pm exec "$TP_CTR" touch /tmp/tor-restart-flag
-  th_wait_file /tmp/tor-restart-ack 40 '^request_id	legacy$' || fail "no acknowledgement for the legacy flag: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
-  assert_eq respawned "$(th_field status "$TP_OUT")" "legacy flag restarts tor"
-  assert_eq 2 "$(th_field generation "$TP_OUT")" "legacy restart advances the generation"
+  tp_wait_file /tmp/tor-restart-ack 40 '^request_id	legacy$' || fail "no acknowledgement for the legacy flag: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
+  assert_eq respawned "$(tp_field status "$TP_OUT")" "legacy flag restarts tor"
+  assert_eq 2 "$(tp_field generation "$TP_OUT")" "legacy restart advances the generation"
 }
 
 t_unrequested_tor_exit_tears_container_down() {
   local rc
   tp_setup tor-haproxy
-  th_supervised
+  tp_supervised
   tp_pm exec "$TP_CTR" pkill -x tor
   rc="$(timeout 30 podman wait "$TP_CTR" 2>/dev/null | grep -E '^[0-9]+$' | tail -1)"
   assert_match '^[0-9]+$' "$rc" "the container exited after tor died unrequested"
   assert_ne 0 "$rc" "an unrequested tor exit is a failure exit"
+}
+
+t_image_healthcheck_fails_when_upstream_drops_streams() {
+  # Every SOCKS destination refused: haproxy accepts the client's TCP
+  # connection and then closes it. dig +tls exits 0 on that, so a healthcheck
+  # trusting dig's exit status reported a dead chain healthy.
+  tp_setup tor-haproxy
+  tp_supervised
+  tp_wait_listen 853 30 || fail "haproxy never listened on 853"
+  tp_socks_mode reject
+  tp_healthcheck_rc
+  assert_nonzero "$TP_RC" "the image healthcheck reports unhealthy when no upstream answers ($TP_OUT)"
+  assert_match 'unhealthy' "$TP_OUT" "podman's verdict is unhealthy, not an error"
 }

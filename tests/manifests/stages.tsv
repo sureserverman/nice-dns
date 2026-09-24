@@ -17,3 +17,5 @@ transport	unit	harness-contracts
 transport	integration	resolver-state
 transport-images	integration	transport-haproxy
 transport	integration	transport-haproxy
+transport-images	integration	transport-socat
+transport	integration	transport-socat
