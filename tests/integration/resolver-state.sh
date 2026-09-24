@@ -23,10 +23,11 @@
 
 # shellcheck source=tests/fixtures/fixture.sh
 . "$NICE_DNS_ROOT/tests/fixtures/fixture.sh"
+# shellcheck source=tests/fixtures/unbound-image.sh
+. "$NICE_DNS_ROOT/tests/fixtures/unbound-image.sh"
 
-RS_SIBS="${NICE_DNS_SIBLINGS_DIR:-$(dirname "$NICE_DNS_ROOT")}"
-RS_BASE_SRC="$RS_SIBS/hardened-unbound"
-RS_PRODUCT_SRC="$NICE_DNS_ROOT/unbound"
+RS_BASE_SRC="$UB_BASE_SRC"
+RS_PRODUCT_SRC="$UB_PRODUCT_SRC"
 RS_ANCHOR=/var/lib/unbound/root.key
 RS_SEED=/usr/share/nice-dns/root-anchor.seed
 RS_SOCK=/run/unbound/control.sock
@@ -47,40 +48,11 @@ rs_ns() {
   rs_pm unshare nsenter -t "$RS_NSPID" -n "$@"
 }
 
-rs_sha() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi
-}
-
-# rs_tree_hash <dir> <file...>: content hash of the named files (paths and bytes).
-rs_tree_hash() {
-  local d="$1" f
-  shift
-  for f in "$@"; do
-    printf '%s\n' "$f"
-    if [ -f "$d/$f" ]; then rs_sha <"$d/$f"; else printf 'absent\n'; fi
-  done | rs_sha
-}
-
-# rs_images: build (or reuse) the candidate base and product images.
+# rs_images: the candidate base and product images (tests/fixtures/unbound-image.sh).
 rs_images() {
-  local bh ph files
-  [ -f "$RS_BASE_SRC/Dockerfile" ] || fail "hardened-unbound sibling checkout not found at $RS_BASE_SRC"
-  bh="$(rs_tree_hash "$RS_BASE_SRC" Dockerfile post-install.sh)"
-  files="$(cd "$RS_PRODUCT_SRC" && find . -type f | LC_ALL=C sort)"
-  # shellcheck disable=SC2086
-  ph="$( { printf '%s\n' "$bh"; rs_tree_hash "$RS_PRODUCT_SRC" $files; } | rs_sha)"
-  RS_BASE_IMG="localhost/nd-test-hardened-unbound:$(printf '%s' "$bh" | cut -c1-16)"
-  RS_IMG="localhost/nd-test-unbound:$(printf '%s' "$ph" | cut -c1-16)"
-  if ! podman image exists "$RS_BASE_IMG" 2>/dev/null; then
-    podman build -t "$RS_BASE_IMG" "$RS_BASE_SRC" >"$CASE_DIR/build-base.log" 2>&1 \
-      || fail "base image build failed: $(tail -n 15 "$CASE_DIR/build-base.log")"
-  fi
-  if ! podman image exists "$RS_IMG" 2>/dev/null; then
-    podman build --build-arg "BASE_IMAGE=$RS_BASE_IMG" -t "$RS_IMG" "$RS_PRODUCT_SRC" \
-      >"$CASE_DIR/build-product.log" 2>&1 \
-      || fail "product image build failed: $(tail -n 15 "$CASE_DIR/build-product.log")"
-  fi
-  printf 'images\t%s\t%s\n' "$RS_BASE_IMG" "$RS_IMG" >"$CASE_DIR/images.tsv"
+  ub_images
+  RS_BASE_IMG="$UB_BASE_IMG" RS_IMG="$UB_IMG"
+  cp "$CASE_DIR/unbound-images.tsv" "$CASE_DIR/images.tsv"
 }
 
 # rs_setup: images, unique names and the cleanup trap. Call first in a case.

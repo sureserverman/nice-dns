@@ -15,7 +15,9 @@ Behaviour is read per connection from <state>/mode:
                  (a provider is down; a stream that switched provider would
                  then be accepted elsewhere and logged with its marker)
   relay PORT     grant, then relay the stream to 127.0.0.1:PORT (e.g. the
-                 DoT fixture), so a client's TLS runs end to end
+                 DoT fixture), so a client's TLS runs end to end; the logged
+                 payload is "sni:<name>" from the TLS ClientHello (sni:- if
+                 none), which tells a client's session from health probes
 Missing mode file means accept.
 
 SOCKS4A (destination IP 0.0.0.x, x != 0, hostname after the user id) is
@@ -97,6 +99,36 @@ def current_mode(state):
     return ("reject",)
 
 
+def client_hello_sni(data):
+    """server_name from a TLS ClientHello record, or None."""
+    try:
+        if len(data) < 5 or data[0] != 22:
+            return None
+        p = 5
+        if data[p] != 1:
+            return None
+        p += 4 + 2 + 32
+        p += 1 + data[p]
+        p += 2 + int.from_bytes(data[p:p + 2], "big")
+        p += 1 + data[p]
+        end = p + 2 + int.from_bytes(data[p:p + 2], "big")
+        p += 2
+        while p + 4 <= min(end, len(data)):
+            etype = int.from_bytes(data[p:p + 2], "big")
+            elen = int.from_bytes(data[p + 2:p + 4], "big")
+            p += 4
+            if etype == 0:
+                q = p + 2
+                if data[q] == 0:
+                    n = int.from_bytes(data[q + 1:q + 3], "big")
+                    return data[q + 3:q + 3 + n].decode("ascii", "replace")
+                return None
+            p += elen
+    except (IndexError, ValueError):
+        return None
+    return None
+
+
 def pump(src, dst):
     try:
         while True:
@@ -135,7 +167,13 @@ def handle(conn, state):
         if mode[0] == "relay":
             up = socket.create_connection(("127.0.0.1", mode[1]), timeout=5)
             conn.sendall(b"\x00\x5a" + b"\0" * 6)
-            log_row(state, ip, port, "relay", "-")
+            try:
+                first = conn.recv(4096)
+            except socket.timeout:
+                first = b""
+            if first:
+                up.sendall(first)
+            log_row(state, ip, port, "relay", "sni:%s" % (client_hello_sni(first) or "-"))
             conn.settimeout(None)
             up.settimeout(None)
             t = threading.Thread(target=pump, args=(up, conn), daemon=True)
