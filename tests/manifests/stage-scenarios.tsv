@@ -193,7 +193,7 @@ count	stage:transport	47
 # check: stage:transport is the Stage 1 bounded regression (Stage 1 groups,
 # near its 5-minute budget) and keeps its explicit require rows; Stage 2
 # groups run only in plan:transport (plan Preflight amendment, 2026-09-24).
-count	plan:transport	67
+count	plan:transport	84
 owner	plan:transport	transport
 require	plan:transport	OP-TLS-NAME	integration	transport-interaction	t_haproxy_routes_carry_authenticated_tls	tests/integration/transport-interaction.sh
 require	plan:transport	OP-TLS-NAME-SOCAT	integration	transport-interaction	t_socat_routes_carry_authenticated_tls	tests/integration/transport-interaction.sh
@@ -262,3 +262,20 @@ require	plan:transport	OP-PROBE-UNTRUSTED-SOCAT	integration	probe-contract	t_soc
 require	plan:transport	OP-PROBE-EXPIRED-SOCAT	integration	probe-contract	t_socat_probe_rejects_bad_certificates	tests/integration/probe-contract.sh
 require	plan:transport	OP-PROBE-HEALTH-SOCAT	integration	probe-contract	t_socat_healthcheck_uses_verifying_probe	tests/integration/probe-contract.sh
 require	plan:transport	OP-PROBE-FAILOVER-SOCAT	integration	probe-contract	t_socat_legacy_failover_uses_verifying_probe	tests/integration/probe-contract.sh
+require	plan:transport	OP-CHAIN-TLS-NAME-HAPROXY-STANDARD	integration	transport-transitions	t_cell_linux_haproxy_standard	tests/integration/transport-matrix.sh
+require	plan:transport	OP-CHAIN-ROUTE-HAPROXY-STANDARD	integration	transport-transitions	t_cell_linux_haproxy_standard	tests/integration/transport-matrix.sh
+require	plan:transport	OP-CHAIN-BOGUS-HAPROXY-STANDARD	integration	transport-transitions	t_cell_linux_haproxy_standard	tests/integration/transport-matrix.sh
+require	plan:transport	OP-CHAIN-WRONGNAME-HAPROXY-STANDARD	integration	transport-transitions	t_cell_linux_haproxy_standard	tests/integration/transport-matrix.sh
+require	plan:transport	OP-CHAIN-TLS-NAME-HAPROXY-HARDENED	integration	transport-transitions	t_cell_linux_haproxy_hardened	tests/integration/transport-matrix.sh
+require	plan:transport	OP-CHAIN-ROUTE-HAPROXY-HARDENED	integration	transport-transitions	t_cell_linux_haproxy_hardened	tests/integration/transport-matrix.sh
+require	plan:transport	OP-CHAIN-BOGUS-HAPROXY-HARDENED	integration	transport-transitions	t_cell_linux_haproxy_hardened	tests/integration/transport-matrix.sh
+require	plan:transport	OP-CHAIN-WRONGNAME-HAPROXY-HARDENED	integration	transport-transitions	t_cell_linux_haproxy_hardened	tests/integration/transport-matrix.sh
+require	plan:transport	OP-CHAIN-TLS-NAME-SOCAT-STANDARD	integration	transport-transitions	t_cell_linux_socat_standard	tests/integration/transport-matrix.sh
+require	plan:transport	OP-CHAIN-ROUTE-SOCAT-STANDARD	integration	transport-transitions	t_cell_linux_socat_standard	tests/integration/transport-matrix.sh
+require	plan:transport	OP-CHAIN-BOGUS-SOCAT-STANDARD	integration	transport-transitions	t_cell_linux_socat_standard	tests/integration/transport-matrix.sh
+require	plan:transport	OP-CHAIN-WRONGNAME-SOCAT-STANDARD	integration	transport-transitions	t_cell_linux_socat_standard	tests/integration/transport-matrix.sh
+require	plan:transport	OP-CHAIN-TLS-NAME-SOCAT-HARDENED	integration	transport-transitions	t_cell_linux_socat_hardened	tests/integration/transport-matrix.sh
+require	plan:transport	OP-CHAIN-ROUTE-SOCAT-HARDENED	integration	transport-transitions	t_cell_linux_socat_hardened	tests/integration/transport-matrix.sh
+require	plan:transport	OP-CHAIN-BOGUS-SOCAT-HARDENED	integration	transport-transitions	t_cell_linux_socat_hardened	tests/integration/transport-matrix.sh
+require	plan:transport	OP-CHAIN-WRONGNAME-SOCAT-HARDENED	integration	transport-transitions	t_cell_linux_socat_hardened	tests/integration/transport-matrix.sh
+require	plan:transport	OP-TRANSPORT-RECEIPT	integration	transport-transitions	t_zz_transport_receipt	tests/integration/transport-matrix.sh

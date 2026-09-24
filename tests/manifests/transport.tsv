@@ -12,3 +12,15 @@ scenario	TR-ROUTE-IDENTITY	per-cell	identity-bound listeners never switch provid
 scenario	TR-DNSSEC	per-cell	signed validates, unsigned answers, bogus rejected by local Unbound; anchor owned and usable
 scenario	TR-CONTROL	per-cell	restricted local control socket; no network control listener
 scenario	TR-ROUTE-SWITCH	per-cell	controlled route transition: cache, in-flight and rollback results
+# Evidence content (tests/integration/transport-matrix.sh writes key=value lines).
+content	TR-TLS-NAME	^result=pass$
+content	TR-TLS-NEGATIVE	^result=pass$
+content	TR-ROUTE-IDENTITY	^result=pass$
+content	TR-DNSSEC	^result=pass$
+content	TR-CONTROL	^result=pass$
+content	TR-ROUTE-SWITCH	^result=pass$
+content	TR-ROUTE-SWITCH	^warm_timeouts=0$
+content	TR-ROUTE-SWITCH	^warm_errors=0$
+content	TR-ROUTE-SWITCH	^cache_retained=yes$
+content	TR-DNSSEC	^bogus=SERVFAIL$
+content	TR-TLS-NEGATIVE	^certificate=wrongname$
