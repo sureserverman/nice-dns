@@ -735,6 +735,81 @@ t_req_owner_rows_must_all_run() {
   hc_req_refused "owned scenario outside the stage" 'scenario S-C \(owner transport\) runs in unit/gc'
 }
 
+t_req_b1_delimiter_in_group_path_refused() {
+  # Round-4 evaluator B1: a file path carrying "|kind/group=" spoofed a dropped
+  # group in a delimited string. Such paths are refused at load.
+  hc_req_manifests "$CASE_DIR/m"
+  grep -v 'gb$' "$CASE_DIR/m/stages.tsv" >"$CASE_DIR/x" && mv "$CASE_DIR/x" "$CASE_DIR/m/stages.tsv"
+  awk -F '\t' -v OFS='\t' -v h="$CASE_DIR/h.sh" '$2 == "ga" { $3 = $3 "|unit/gb=" h "|/w.sh" } { print }' \
+    "$CASE_DIR/m/groups.tsv" >"$CASE_DIR/x" && mv "$CASE_DIR/x" "$CASE_DIR/m/groups.tsv"
+  assert_match '\|unit/gb=' "$(cat "$CASE_DIR/m/groups.tsv")" "the attack path is in the registry"
+  HC_MANIFESTS="$CASE_DIR/m" hc_run stage st
+  assert_rc 2 "$HC_RC" "a group path with a record delimiter is a registry error ($HC_OUT)"
+  assert_match 'contains \|, =' "$HC_OUT" "names the unsafe path"
+}
+
+t_req_b2_escape_in_group_path_refused() {
+  # Round-4 evaluator B2: awk -v decoded "\170" to "x", so an escaped decoy
+  # file name matched the pin. Backslashes are refused at load, and the
+  # checks no longer pass data through -v.
+  local decoy
+  hc_req_manifests "$CASE_DIR/m"
+  decoy="$CASE_DIR/h\\170.sh"
+  hc_group_file "$decoy" 't_two() { assert_eq 1 1; }'
+  DECOY="$decoy" awk -F '\t' -v OFS='\t' '$2 == "gb" { $3 = ENVIRON["DECOY"] } { print }' \
+    "$CASE_DIR/m/groups.tsv" >"$CASE_DIR/x" && mv "$CASE_DIR/x" "$CASE_DIR/m/groups.tsv"
+  assert_match 'h\\170\.sh' "$(cat "$CASE_DIR/m/groups.tsv")" "the escaped decoy path is in the registry"
+  HC_MANIFESTS="$CASE_DIR/m" hc_run stage st
+  assert_rc 2 "$HC_RC" "a group path with a backslash is a registry error ($HC_OUT)"
+}
+
+t_req_m1_empty_scenarios_refused() {
+  # Round-4 evaluator M1: an empty scenarios.tsv made awk read the
+  # requirement file as scenarios, so nothing was checked.
+  hc_req_manifests "$CASE_DIR/m"
+  : >"$CASE_DIR/m/scenarios.tsv"; : >"$CASE_DIR/m/privacy-ops.tsv"; : >"$CASE_DIR/m/variants.tsv"
+  grep -v 'gb$' "$CASE_DIR/m/stages.tsv" >"$CASE_DIR/x" && mv "$CASE_DIR/x" "$CASE_DIR/m/stages.tsv"
+  hc_req_refused "empty scenario lists" 'required scenario S-A has no row'
+}
+
+t_req_m2a_case_hidden_at_run_time_fails() {
+  # Round-4 evaluator M2: a group defines the required case only while
+  # RUN_ID is unset (the pre-run checks see it; the run does not). The
+  # post-run check finds no pass for it.
+  hc_req_manifests "$CASE_DIR/m"
+  # shellcheck disable=SC2016  # the group file body is literal
+  hc_group_file "$CASE_DIR/h.sh" 'if [ -z "${RUN_ID:-}" ]; then t_two() { assert_eq b b; }; fi
+t_spare() { assert_eq s s; }'
+  HC_MANIFESTS="$CASE_DIR/m" hc_run stage st
+  assert_rc 1 "$HC_RC" "a required case that never ran fails the stage ($HC_OUT)"
+  assert_match 'required case unit/gb t_two \(S-B\) did not run' "$HC_OUT" "names the missing required case"
+  assert_match 'result=fail' "$HC_OUT" "the run is recorded as failed"
+}
+
+t_req_m2b_exported_case_function_ignored() {
+  # Round-4 evaluator M2: a function exported by the caller (export -f)
+  # stood in for a required case deleted from its group.
+  hc_req_manifests "$CASE_DIR/m"
+  hc_group_file "$CASE_DIR/h.sh" 't_spare() { assert_eq s s; }'
+  # shellcheck disable=SC2329  # invoked only through export -f
+  t_two() { assert_eq 1 1; }
+  export -f t_two
+  HC_MANIFESTS="$CASE_DIR/m" hc_run stage st
+  export -n -f t_two
+  assert_rc 1 "$HC_RC" "an exported function never counts as a group's case ($HC_OUT)"
+  assert_match 'names case t_two, which unit/gb does not define' "$HC_OUT" "the deleted case is missing"
+}
+
+t_req_m1b_relative_manifests_with_equals_sign() {
+  # Round-4 evaluator m1: a relative manifest directory "m=x" read as an awk
+  # assignment and skipped every requirement.
+  hc_req_manifests "$CASE_DIR/m=x"
+  grep -v 'gb$' "$CASE_DIR/m=x/stages.tsv" >"$CASE_DIR/x" && mv "$CASE_DIR/x" "$CASE_DIR/m=x/stages.tsv"
+  HC_MANIFESTS="m=x" hc_run stage st
+  assert_rc 1 "$HC_RC" "a dropped group is refused through a manifest path containing = ($HC_OUT)"
+  assert_match 'which stage:st does not run' "$HC_OUT" "names the dropped group"
+}
+
 t_run_receipt_records_manifest_override() {
   # A run against altered manifests must not read like a real one.
   local d
