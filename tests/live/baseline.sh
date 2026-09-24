@@ -40,7 +40,7 @@
 # matrix installs every cell of ALIAS's platform (tests/manifests/matrix.tsv)
 # with target.sh install-cell at SHA, the cell ALIAS ran before last so the
 # target ends on it, waits for the first answered uncached query after each
-# install (NICE_DNS_BASELINE_READY_SECS, default 1500) and characterizes each
+# install (NICE_DNS_BASELINE_READY_SECS, default 2400) and characterizes each
 # cell as label ALIAS-PROXY-PIHOLE. Install logs stay in
 # $ARTIFACT_DIR/baseline-matrix/ALIAS/ and never enter a receipt (installer
 # output can carry bridge lines).
@@ -49,7 +49,8 @@
 # (plus BL-STAGE and BL-INVENTORY evidence) for tests/reports/verify.sh, and
 # freezes the per-platform targets from those cells into BL-TARGETS.txt.
 #
-# Environment (all optional): NICE_DNS_BASELINE_COLD (30), _WARM (100),
+# Environment (all optional): NICE_DNS_BASELINE_COLD (30), _WARM (1000; the
+#   master plan's minimum, enforced by the baseline manifest),
 #   _SEVER_SECS (120, the wait before the severed observation: three podman
 #   healthcheck intervals plus margin), _SEVERED_COUNT (5), _RECOVERY_COUNT
 #   (36 attempts, 5 s apart), _TIMEOUT_MS (5000).
@@ -119,7 +120,7 @@ cmd_characterize() {
   [ -n "$platform" ] || die "alias '$alias_' is not in $targets"
 
   N_COLD="$(num NICE_DNS_BASELINE_COLD 30)"
-  N_WARM="$(num NICE_DNS_BASELINE_WARM 100)"
+  N_WARM="$(num NICE_DNS_BASELINE_WARM 1000)"
   SEVER_SECS="$(num NICE_DNS_BASELINE_SEVER_SECS 120)"
   N_SEV="$(num NICE_DNS_BASELINE_SEVERED_COUNT 5)"
   N_REC="$(num NICE_DNS_BASELINE_RECOVERY_COUNT 36)"
@@ -318,6 +319,7 @@ judge_severed() {
       healthy:*|pass:*) finding health-detects "$src went $b -> $v with upstream dead" ;;
       unhealthy:*|fail:*) finding health-not-discriminating "$src was already $b on the working chain (severed: $v)" ;;
       :*) finding health-source-appeared "$src reported $v with upstream dead but gave no verdict before the fault" ;;
+      *) finding health-uninterpreted "$src: before the fault '$b', severed '$v' (not a healthy/unhealthy/pass/fail verdict)" ;;
     esac
   done < <(awk -F '\t' '$1 == "health"' "$D/health-severed.tsv")
   [ "$(kv tor_state "$D/config-severed.tsv")" = T ] \
@@ -374,7 +376,7 @@ cmd_matrix() {
   platform="$(bash "$TGT" validate --targets "$targets" | awk -F '\t' -v a="$alias_" '$1 == a { print $2 }')"
   [ -n "$platform" ] || die "alias '$alias_' is not in $targets"
   ALIAS="$alias_" TARGETS="$targets" PLATFORM="$platform"
-  READY_SECS="$(num NICE_DNS_BASELINE_READY_SECS 1500)"
+  READY_SECS="$(num NICE_DNS_BASELINE_READY_SECS 2400)"
   TMO="$(num NICE_DNS_BASELINE_TIMEOUT_MS 5000)"
   M="$ARTIFACT_DIR/baseline-matrix/$alias_"
   [ -e "$M" ] && die "$M already exists"
@@ -406,7 +408,7 @@ cmd_matrix() {
     pargs=(--product-sha "$sha" --install-source inline-archive)
     # install-mac.sh clones GitHub main itself; target.sh only lets it run when
     # this checkout's origin/main is the pinned commit.
-    [ "$PLATFORM/${c#*/}" = macos/standard ] && pargs=(--product-sha "$sha" --install-source github-main-verified)
+    [ "$PLATFORM/${c#*/}" = macos/standard ] && pargs=(--product-sha "$sha" --install-source github-main-lsremote)
     [ ${#hargs[@]} -gt 0 ] && pargs+=(--hardened-sha "${hargs[1]}")
     if ! bash "$0" characterize "$ALIAS" --targets "$TARGETS" --label "$label" "${pargs[@]}" >>"$M/$label.log" 2>&1; then
       printf '%s\tobservation-incomplete\t%s\n' "$c" "$ready" >>"$M/cells.tsv"; rc=1; continue
@@ -477,7 +479,9 @@ cmd_receipt() {
     printf 'receipt\tbaseline\nrun_id\t%s\ncreated_utc\t%s\n' "${RUN_ID:?RUN_ID must be set}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     for repo in nice-dns tor-haproxy tor-socat hardened-unbound pi-hole-hardened; do
       if [ "$repo" = nice-dns ]; then cd="$BL_ROOT"; else cd="$sib/$repo"; fi
-      if [ -n "$(GIT_OPTIONAL_LOCKS=0 git -C "$cd" status --porcelain --untracked-files=no 2>/dev/null)" ]; then st=dirty; else st=clean; fi
+      # Untracked files count (e.g. the proxies' untracked bridge-eval binary),
+      # as in the BL-INVENTORY evidence beside this row.
+      if [ -n "$(GIT_OPTIONAL_LOCKS=0 git -C "$cd" status --porcelain 2>/dev/null)" ]; then st=dirty; else st=clean; fi
       printf 'source\t%s\t%s\t%s\n' "$repo" "$(git -C "$cd" rev-parse HEAD)" "$st"
     done
     for repo in tor-haproxy tor-socat hardened-unbound pi-hole-hardened; do
@@ -492,6 +496,15 @@ cmd_receipt() {
     [ -f "$a" ] || die "global evidence $a missing (set NICE_DNS_BASELINE_GLOBAL_DIR)"
     cp "$a" "$out/$s.txt"
     printf 'scenario\t%s\t-\tpass\t%s.txt\t%s\t-\n' "$s" "$s" "$(sha "$out/$s.txt")" >>"$r"
+  done
+  # The installed product, when every cell names the same one.
+  for s in product_sha:nice-dns hardened_sha:pi-hole-hardened; do
+    a="$(for cd in "$@"; do kv "${s%%:*}" "$cd/cell.tsv"; done | grep -Ev '^(unknown|-)?$' | sort -u)"
+    case "$(printf '%s' "$a" | grep -c .)" in
+      0) ;;
+      1) printf 'product\t%s\t%s\n' "${s#*:}" "$a" >>"$r" ;;
+      *) die "cells disagree on the installed ${s#*:}: $(printf '%s' "$a" | tr '\n' ' ')" ;;
+    esac
   done
   freeze_targets "$out/BL-TARGETS.txt" "$@" || die "cannot freeze targets"
   printf 'scenario\tBL-TARGETS\t-\tpass\tBL-TARGETS.txt\t%s\t-\n' "$(sha "$out/BL-TARGETS.txt")" >>"$r"
@@ -528,6 +541,7 @@ freeze_targets() {
     printf 'rule\tno-timeout-regression: per cell and workload, a candidate timeout_rate must not exceed the baseline timeout_rate\n'
     printf 'rule\timprove-problem-class: per platform, at least one previously problematic cold/idle/post-wake class improves beyond measured variability (interleaved runs, same workload)\n'
     printf 'rule\tsecurity-absolute: no latency target is met by weakening TLS, DNSSEC or the no-direct-resolver guarantees\n'
+    printf 'rule\tsingle-run: these values come from one run; cold timeout rates varied widely between runs (e.g. 0.6333 vs 0.2333 on one cell), so a candidate is compared against the baseline generation re-measured interleaved, never against these numbers alone\n'
     for cd in "$@"; do
       key="$(kv cell "$cd/cell.tsv")"
       # A cell observed while it never answered is not a baseline to hold a

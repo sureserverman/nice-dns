@@ -23,7 +23,7 @@
 #   1 a case failed, zero cases were collected, or --list found a problem;
 #   2 usage or registry error (unknown kind/group/stage/option, missing file);
 #   3 NOT RUN: tier gate refused (slow needs --include-slow; live needs
-#     --live and --targets FILE); 4 BLOCKED: command not implemented yet.
+#     --live and --targets FILE).
 #
 # Environment:
 #   NICE_DNS_TEST_MANIFESTS  manifest dir (default tests/manifests)
@@ -50,7 +50,7 @@ ND_TAB="$(printf '\t')"
 NICE_DNS_ROOT="$ND_ROOT" NICE_DNS_RUNNER="$ND_SELF"
 export NICE_DNS_ROOT NICE_DNS_RUNNER
 
-ND_OK=0 ND_FAIL=1 ND_USAGE=2 ND_NOTRUN=3 ND_BLOCKED=4
+ND_OK=0 ND_FAIL=1 ND_USAGE=2 ND_NOTRUN=3
 
 nd_err() { printf 'run.sh: %s\n' "$*" >&2; }
 
@@ -640,6 +640,34 @@ cmd_check_contracts() {
     grep -qF "[$id]" "$doc" || problems="${problems}missing mandatory operation [$id]
 "
   done <"$ops"
+  # Citations are path:line at the doc's pinned "Baseline source" commit: each
+  # cited file must exist there, be long enough, and be unchanged since (a
+  # changed file means the citations must be re-derived, not read at HEAD).
+  local pin cite path line nlines
+  pin="$(awk '/Baseline source/ { on = 1 } on { if (match($0, /[0-9a-f]{40}/)) { print substr($0, RSTART, 40); exit } } on && /^- / && !/Baseline source/ { exit }' "$doc")"
+  if [ -z "$pin" ] || ! GIT_OPTIONAL_LOCKS=0 git -C "$ND_ROOT" cat-file -e "$pin^{commit}" 2>/dev/null; then
+    problems="${problems}no pinned baseline commit (a 40-hex commit on the 'Baseline source' line) known to this checkout
+"
+  else
+    for cite in $(grep -oE '(^|[ (`,])[A-Za-z0-9_][A-Za-z0-9_./-]*:[0-9]+' "$doc" | sed -E 's/^[ (`,]//' | sort -u); do
+      path="${cite%:*}" line="${cite##*:}"
+      case "$path" in *[!0-9.]*) ;; *) continue ;; esac   # an address such as 127.0.0.1:53
+      if ! GIT_OPTIONAL_LOCKS=0 git -C "$ND_ROOT" cat-file -e "$pin:$path" 2>/dev/null; then
+        problems="${problems}cited $path is not in the pinned commit ${pin:0:12}
+"; continue
+      fi
+      nlines="$(GIT_OPTIONAL_LOCKS=0 git -C "$ND_ROOT" show "$pin:$path" | wc -l | tr -d ' ')"
+      [ "$line" -le "$nlines" ] || problems="${problems}cited $path:$line is past the end of $path ($nlines lines) at ${pin:0:12}
+"
+    done
+    for path in $(grep -oE '(^|[ (`,])[A-Za-z0-9_][A-Za-z0-9_./-]*:[0-9]+' "$doc" | sed -E 's/^[ (`,]//; s/:[0-9]+$//' | sort -u); do
+      case "$path" in *[!0-9.]*) ;; *) continue ;; esac
+      GIT_OPTIONAL_LOCKS=0 git -C "$ND_ROOT" cat-file -e "$pin:$path" 2>/dev/null || continue
+      GIT_OPTIONAL_LOCKS=0 git -C "$ND_ROOT" diff --quiet "$pin" -- "$path" 2>/dev/null \
+        || problems="${problems}cited $path changed since the pinned commit ${pin:0:12}; re-derive its citations and re-pin
+"
+    done
+  fi
   for tag in $(grep -oE '\[(SEC|PRIV|EVD|REC)-[A-Z0-9-]+\]' "$doc" | sort -u); do
     id="${tag#[}"; id="${id%]}"
     case "$known" in *"|$id|"*) ;; *) problems="${problems}unknown operation tag $tag (not in privacy-ops.tsv)

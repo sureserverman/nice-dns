@@ -58,7 +58,8 @@ case "$op" in
     : ;;
   collect)
     shift 2
-    while [ $# -gt 0 ]; do case "$1" in --workload) w="$2" ;; --count) n="$2" ;; esac; shift 2; done
+    while [ $# -gt 0 ]; do case "$1" in --workload) w="$2" ;; --count) n="$2" ;; --identity) idf="$2" ;; esac; shift 2; done
+    rev="$(awk -F '\t' '$1 == "source_rev" { print $2 }' "$idf")"; imgs="$(awk -F '\t' '$1 == "images" { print $2 }' "$idf")"
     printf '# schema\tnice-dns-sample/1\n'
     printf 'run_id\tsample_id\tutc_start\telapsed_us\tworkload\tcache_class\ttarget_id\tplatform\tproxy\tpihole\tsource_rev\timages\tresolver\ttransport\tqname\tqtype\toutcome\trcode\ttimeout_ms\n'
     if [ -n "${FAKE_COLD_BROKEN:-}" ] && [ "$w" = cold ] && [ "$n" = 3 ]; then exit 2; fi
@@ -69,8 +70,8 @@ case "$op" in
       if [ -f "$FAKE_STATE/thawed-$alias_" ] && [ "$w" = cold ] && [ "$n" = 5 ] && [ -n "${FAKE_POST_RESTORE_MISS:-}" ]; then o=timeout r=- e=5000000 rc=3; fi
       if [ -f "$FAKE_STATE/thawed-$alias_" ] && [ "$w" = cold ] && [ -n "${FAKE_NEVER_AFTER_THAW:-}" ]; then o=timeout r=- e=5000000 rc=3; fi
       if [ "$cell" = "${FAKE_DEAD_CELL:-}" ]; then o=timeout r=- e=5000000 rc=3; fi
-      printf '%s\t%s\t2026-09-23T00:00:00Z\t%s\t%s\tmiss\t%s\t%s\t%s\t%s\tx\ti\t127.0.0.1#53\tudp\tq.example.com\tA\t%s\t%s\t5000\n' \
-        "$RUN_ID" "$i" "$e" "$w" "$alias_" "$plat" "$proxy" "$pihole" "$o" "$r"
+      printf '%s\t%s\t2026-09-23T00:00:00Z\t%s\t%s\tmiss\t%s\t%s\t%s\t%s\t%s\t%s\t127.0.0.1#53\tudp\tq.example.com\tA\t%s\t%s\t5000\n' \
+        "$RUN_ID" "$i" "$e" "$w" "$alias_" "$plat" "$proxy" "$pihole" "$rev" "$imgs" "$o" "$r"
       i=$((i + 1))
     done
     exit "$rc" ;;
@@ -238,12 +239,15 @@ t_health_red_before_the_fault_is_not_detection() {
 t_receipt_from_two_cells_verifies_and_detects_tampering() {
   local g r
   bt_setup
+  # The baseline manifest's floors: 30 cold, 1000 warm.
+  NICE_DNS_BASELINE_COLD=30 NICE_DNS_BASELINE_WARM=1000; export NICE_DNS_BASELINE_COLD NICE_DNS_BASELINE_WARM
   bt_run fakelin
   assert_rc 0 "$BT_RC" "linux cell"
   bt_run fakemac
   assert_rc 0 "$BT_RC" "macos cell"
   g="$CASE_DIR/global"; mkdir -p "$g"
-  printf 'stage evidence\n' >"$g/BL-STAGE.txt"; printf 'inventory evidence\n' >"$g/BL-INVENTORY.txt"
+  printf 'git_head\t%s\ncollected=1 passed=1 failed=0\nresult=pass run_id=x\n' "$(git -C "$NICE_DNS_ROOT" rev-parse HEAD)" >"$g/BL-STAGE.txt"
+  printf 'repo\tnice-dns\n' >"$g/BL-INVENTORY.txt"
   r="$(NICE_DNS_BASELINE_GLOBAL_DIR="$g" bash "$BT_BASELINE" receipt --out "$CASE_DIR/receipt" \
     "$ARTIFACT_DIR/baseline/fakelin" "$ARTIFACT_DIR/baseline/fakemac" 2>"$CASE_DIR/receipt.err")"
   assert_rc 0 $? "receipt assembled: $(cat "$CASE_DIR/receipt.err")"
@@ -355,6 +359,8 @@ t_never_ready_cells_are_named_in_the_frozen_targets() {
   assert_rc 0 $? "receipt: $(cat "$CASE_DIR/r.err")"
   assert_match '^never-ready	linux/haproxy/hardened$' "$(cat "$CASE_DIR/receipt/BL-TARGETS.txt")" "dead cell named in the frozen targets"
   assert_eq 1 "$(grep -c '^never-ready	' "$CASE_DIR/receipt/BL-TARGETS.txt")" "only the dead cell"
+  assert_match "^product	nice-dns	$SHA40$" "$(cat "$r")" "receipt names the installed product"
+  assert_match "^product	pi-hole-hardened	$(git -C "$NICE_DNS_ROOT/../pi-hole-hardened" rev-parse HEAD)$" "$(cat "$r")" "receipt names the hardened sibling"
 }
 
 t_health_source_seen_only_while_severed_is_a_finding() {
@@ -363,4 +369,13 @@ t_health_source_seen_only_while_severed_is_a_finding() {
   bt_run fakelin
   assert_rc 0 "$BT_RC" "observation complete"
   assert_match '^health-source-appeared	podman:newcomer' "$BT_FIND" "no health source is silently dropped"
+}
+
+t_uninterpreted_health_verdict_is_a_finding() {
+  # launchd reports last_exit=N, which is neither healthy nor unhealthy.
+  bt_setup
+  FAKE_HEALTH=last_exit=1; export FAKE_HEALTH
+  bt_run fakelin
+  assert_rc 0 "$BT_RC" "observation complete"
+  assert_match "^health-uninterpreted	podman:unbound: before the fault 'last_exit=1', severed 'last_exit=1'" "$BT_FIND" "recorded, not dropped"
 }

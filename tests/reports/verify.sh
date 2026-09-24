@@ -26,8 +26,18 @@
 #   aggregate PATH SHA256 SAMPLES                     (must equal stats.sh
 #            recomputed over SAMPLES)
 #   entrypoint NAME pass|fail
+#   product  nice-dns|pi-hole-hardened SHA40        (the installed product;
+#            optional, at most one per repository)
 # Scenario ids, scopes and required links come from tests/manifests/NAME.tsv;
-# anything undeclared fails. Artifact paths are relative to the receipt's
+# anything undeclared fails. Content, not only structure, is checked:
+#   - manifest `minimum SCENARIO N`: its artifact is a nice-dns-sample/1 file
+#     with at least N sample rows;
+#   - manifest `content SCENARIO ERE`: its artifact has a line matching ERE;
+#   - every nice-dns-sample/1 file (scenario artifact or aggregate samples)
+#     carries the receipt's run_id, the product (or, with no product row,
+#     the nice-dns source) revision, and, for a cell's samples, exactly that
+#     cell's target, platform, proxy, pihole and image generation;
+#   - an artifact carrying a `git_head` line names the nice-dns source row. Artifact paths are relative to the receipt's
 # directory, never absolute, never "..", never symlinks.
 #
 # Exit: 0 valid; 1 invalid (every problem is listed); 2 usage.
@@ -98,9 +108,18 @@ cmd_manifests() {
           case "$b" in per-cell|global) ;; *) err "$m.tsv: scenario $a has scope '$b'" ;; esac
           case "$ids" in *"|$a|"*) err "$m.tsv: duplicate scenario $a" ;; esac
           ids="$ids$a|" ;;
+        minimum)
+          [ -n "${b:-}" ] && [ -z "${c:-}" ] || err "$m.tsv: minimum row needs scenario, count"
+          case "$b" in ''|*[!0-9]*) err "$m.tsv: minimum for $a is not a count" ;; esac ;;
+        content)
+          # The pattern is the rest of the row and may itself contain tabs.
+          [ -n "${b:-}" ] || err "$m.tsv: content row needs scenario, pattern" ;;
         *) err "$m.tsv: unknown row type '$kind'" ;;
       esac
     done <"$MAN/$m.tsv"
+    for a in $(awk -F '\t' '!/^#/ && ($1 == "minimum" || $1 == "content") { print $2 }' "$MAN/$m.tsv"); do
+      case "$ids" in *"|$a|"*) ;; *) err "$m.tsv: minimum/content for undeclared scenario $a" ;; esac
+    done
     printf '%s requires %s\n' "$m" "${reqs:-nothing}"
   done
   # The requires graph must be acyclic: walk it from every receipt.
@@ -151,7 +170,7 @@ cmd_check() {
   # Row shapes and types.
   while IFS= read -r n; do err "$f: $n"; done < <(awk -F '\t' '
     BEGIN { w["receipt"] = 2; w["run_id"] = 2; w["created_utc"] = 2; w["source"] = 4; w["arch"] = 4
-            w["requires"] = 4; w["cell"] = 7; w["scenario"] = 7; w["aggregate"] = 4; w["entrypoint"] = 3 }
+            w["requires"] = 4; w["cell"] = 7; w["scenario"] = 7; w["aggregate"] = 4; w["entrypoint"] = 3; w["product"] = 3 }
     /^#/ || /^$/ { next }
     !($1 in w) { printf "line %d: unknown row type %s\n", NR, $1; next }
     NF != w[$1] { printf "line %d: %s row has %d fields, expected %d\n", NR, $1, NF, w[$1] }
@@ -166,11 +185,13 @@ cmd_check() {
   fi
 
   check_sources "$f"
+  check_products "$f"
   check_requires "$f" "$name" "$req_deps"
   # Called directly (not in $(...)) so their err() calls reach ERRS.
   check_cells "$f"; cells="$CELLS"
   check_scenarios "$f" "$d" "$name"; scen="$SCEN"
   check_aggregates "$f" "$d"
+  check_contents "$f" "$d" "$name"
   check_entrypoints "$f" "$req_entry"
   check_requirements "$f" "$req_matrix" "$req_platforms" "$req_proxies"
   finish "$f" "$cells" "$scen" "$name"
@@ -274,6 +295,66 @@ check_scenarios() {
     fi
   done < <(manifest_rows "$name" scenario)
   SCEN="$n"
+}
+
+check_products() {
+  local f="$1" repo sha
+  while IFS="$TAB" read -r _ repo sha; do
+    case "$repo" in nice-dns|pi-hole-hardened) ;; *) err "$f: product row for unknown repository '$repo'" ;; esac
+    printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$' || err "$f: product $repo '$sha' is not a full commit id"
+  done < <(awk -F '\t' '$1 == "product"' "$f")
+  for repo in nice-dns pi-hole-hardened; do
+    [ "$(awk -F '\t' -v r="$repo" '$1 == "product" && $2 == r' "$f" | grep -c .)" -le 1 ] || err "$f: more than one product row for $repo"
+  done
+}
+
+# sample_rows FILE: the sample rows of a nice-dns-sample/1 file (no header).
+is_samples() { [ "$(sed -n 1p "$1" 2>/dev/null)" = "# schema${TAB}nice-dns-sample/1" ]; }
+
+check_sample_identity() {
+  # check_sample_identity RECEIPT FILE CELLKEY|- : run, revision and cell
+  # identity of every sample row.
+  local f="$1" s="$2" key="$3" run rev cellrow bad
+  run="$(awk -F '\t' '$1 == "run_id" { print $2; exit }' "$f")"
+  rev="$(awk -F '\t' '$1 == "product" && $2 == "nice-dns" { print $3; exit }' "$f")"
+  [ -n "$rev" ] || rev="$(awk -F '\t' '$1 == "source" && $2 == "nice-dns" { print $3; exit }' "$f")"
+  cellrow="-"
+  [ "$key" = - ] || cellrow="$(awk -F '\t' -v k="$key" '$1 == "cell" && $2 "/" $3 "/" $4 == k { print $5 "\t" $2 "\t" $3 "\t" $4 "\t" $6; exit }' "$f")"
+  bad="$(awk -F '\t' -v run="$run" -v rev="$rev" -v cell="$cellrow" '
+    NR <= 2 || /^#/ { next }
+    { n++
+      if ($1 != run) { printf "row %d run_id %s is not the receipt run %s\n", NR, $1, run; exit }
+      if ($11 != rev) { printf "row %d source_rev %s is not the recorded revision %s\n", NR, $11, rev; exit }
+      if (cell != "-" && ($7 "\t" $8 "\t" $9 "\t" $10 "\t" $12) != cell) { printf "row %d is %s/%s/%s on %s (%s), not this cell\n", NR, $8, $9, $10, $7, $12; exit } }' "$s")"
+  [ -z "$bad" ] || err "$f: samples ${s##*/} ($key): $bad"
+}
+
+check_contents() {
+  local f="$1" d="$2" name="$3" id c a n min pat src head
+  src="$(awk -F '\t' '$1 == "source" && $2 == "nice-dns" { print $3; exit }' "$f")"
+  while IFS="$TAB" read -r _ id c _ a _ _; do
+    safe_rel "$d" "$a" || continue
+    if is_samples "$d/$a"; then check_sample_identity "$f" "$d/$a" "$c"; fi
+    head="$(awk -F '\t' '$1 == "git_head" { print $2; exit }' "$d/$a")"
+    [ -z "$head" ] || [ "$head" = "$src" ] || err "$f: scenario $id artifact names git_head $head, not the nice-dns source $src"
+    min="$(manifest_rows "$name" minimum | awk -F '\t' -v i="$id" '$2 == i { print $3; exit }')"
+    if [ -n "$min" ]; then
+      if ! is_samples "$d/$a"; then err "$f: scenario $id ($c) artifact $a is not a sample file"
+      else
+        n="$(awk 'NR > 2 && !/^#/' "$d/$a" | grep -c .)"
+        [ "$n" -ge "$min" ] || err "$f: scenario $id ($c) has $n samples, fewer than the declared minimum $min"
+      fi
+    fi
+    while IFS="$TAB" read -r _ _ pat; do
+      grep -Eq -- "$pat" "$d/$a" || err "$f: scenario $id ($c) artifact $a has no line matching /$pat/"
+    done < <(manifest_rows "$name" content | awk -F '\t' -v i="$id" '$2 == i')
+  done < <(awk -F '\t' '$1 == "scenario"' "$f")
+  # Aggregate sample files under cells/P-X-H/ belong to that cell.
+  while IFS="$TAB" read -r _ _ _ a; do
+    safe_rel "$d" "$a" && is_samples "$d/$a" || continue
+    c="$(awk -F '\t' -v p="$a" '$1 == "cell" { k = "cells/" $2 "-" $3 "-" $4 "/"; if (index(p, k) == 1) { print $2 "/" $3 "/" $4; exit } }' "$f")"
+    check_sample_identity "$f" "$d/$a" "${c:--}"
+  done < <(awk -F '\t' '$1 == "aggregate"' "$f")
 }
 
 check_aggregates() {

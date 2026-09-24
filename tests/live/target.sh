@@ -38,7 +38,9 @@
 #                    SHA, sent inline (the target's own DNS may be the broken
 #                    stack being replaced, so nothing is fetched there).
 #                    install-mac.sh clones main itself, so it is refused
-#                    unless this checkout's origin/main is that commit. The
+#                    unless this checkout's origin/main is that commit and
+#                    `git ls-remote` of GitHub main, run on the target just
+#                    before, is that commit too (recorded as github_main). The
 #                    installer's output is streamed back; it may carry bridge
 #                    lines, so keep it out of portable evidence. Hardened
 #                    cells also need the pi-hole-hardened sibling, which has
@@ -564,6 +566,13 @@ case "$NICE_DNS_OP" in
       mkdir "$w/pi-hole-hardened" && tar -xzf "$ND_HARDENED_TGZ" -C "$w/pi-hole-hardened" || exit 1
       rm -f "$ND_HARDENED_TGZ"
       printf 'hardened_sha\t%s\n' "$NICE_DNS_HARDENED_SHA"
+    fi
+    if [ "$inst" = install-mac.sh ]; then
+      # install-mac.sh clones GitHub main itself: observe that ref from the
+      # target just before, and refuse unless it is the pinned commit.
+      gm=$(git ls-remote https://github.com/sureserverman/nice-dns.git refs/heads/main </dev/null 2>/dev/null | cut -f1)
+      printf 'github_main\t%s\n' "${gm:-unreadable}"
+      [ "$gm" = "$NICE_DNS_SOURCE_SHA" ] || { echo "GitHub main is '${gm:-unreadable}', not $NICE_DNS_SOURCE_SHA; refusing" >&2; exit 2; }
     fi
     printf 'install_cell\t%s/%s\ninstaller\t%s\nsource_sha\t%s\nstarted_utc\t%s\n' "$NICE_DNS_PROXY" "$NICE_DNS_PIHOLE" "$inst" \
       "$NICE_DNS_SOURCE_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"

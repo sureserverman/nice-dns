@@ -25,6 +25,33 @@ rv_platforms() {
     sort | paste -sd, -
 }
 
+rv_artifact() {
+  # rv_artifact NAME SCENARIO CELLKEY|- GEN FILE: content that satisfies the
+  # manifest's minimum/content rules for SCENARIO (samples carry the cell).
+  local name="$1" sc="$2" key="$3" gen="$4" out="$5" min head
+  head="$(git -C "$RV_SIB/nice-dns" rev-parse HEAD)"
+  min="$(awk -F '\t' -v s="$sc" '$1 == "minimum" && $2 == s { print $3 }' "$RV_MAN/$name.tsv")"
+  if [ -n "$min" ]; then
+    awk -v n="$min" -v run="run-test-$name" -v rev="$head" -v key="$key" -v gen="$gen" 'BEGIN {
+      split(key, c, "/")
+      printf "# schema\tnice-dns-sample/1\n"
+      print "run_id\tsample_id\tutc_start\telapsed_us\tworkload\tcache_class\ttarget_id\tplatform\tproxy\tpihole\tsource_rev\timages\tresolver\ttransport\tqname\tqtype\toutcome\trcode\ttimeout_ms"
+      for (i = 1; i <= n; i++)
+        printf "%s\t%d\t2026-01-01T00:00:00Z\t1500\tcold\tmiss\ttarget-%s\t%s\t%s\t%s\t%s\t%s\t127.0.0.1#53\tudp\tq.example.com\tA\tok\tNOERROR\t5000\n", run, i, c[1], c[1], c[2], c[3], rev, gen
+    }' >"$out"
+    return
+  fi
+  case "$name:$sc" in
+    baseline:BL-STAGE) printf 'git_head\t%s\ncollected=1 passed=1 failed=0\nresult=pass run_id=x\n' "$head" ;;
+    baseline:BL-INVENTORY) printf 'repo\tnice-dns\n' ;;
+    baseline:BL-CONFIG) printf 'image\tpi-hole\tpi-hole:latest\tsha256:0\n' ;;
+    baseline:BL-SEVERED) printf 'health\tpodman:unbound\thealthy\t-\n' ;;
+    baseline:BL-RESTORED) printf 'pi-hole\trunning\t-\n' ;;
+    baseline:BL-TARGETS) printf 'coverage\t8 cells\n' ;;
+    *) printf 'observed %s %s\n' "$sc" "$key" ;;
+  esac >"$out"
+}
+
 rv_build() {
   # rv_build <receipt-name> <dir> [cells: all|rep]: a complete, valid receipt.
   local name="$1" d="$2" cells="${3:-all}" r p x h key gen sc scope a repo
@@ -53,11 +80,11 @@ rv_build() {
   while IFS='	' read -r a sc scope _; do
     [ "$a" = scenario ] || continue
     if [ "$scope" = global ]; then
-      printf 'observed %s\n' "$sc" >"$d/art/$sc.txt"
+      rv_artifact "$name" "$sc" - - "$d/art/$sc.txt"
       printf 'scenario\t%s\t-\tpass\tart/%s.txt\t%s\t-\n' "$sc" "$sc" "$(rv_sha "$d/art/$sc.txt")" >>"$r"
     else
       awk -F '\t' '$1 == "cell" { print $2 "/" $3 "/" $4 "\t" $6 }' "$r" | while IFS='	' read -r key gen; do
-        printf 'observed %s %s\n' "$sc" "$key" >"$d/art/$sc-$(printf '%s' "$key" | tr / -).txt"
+        rv_artifact "$name" "$sc" "$key" "$gen" "$d/art/$sc-$(printf '%s' "$key" | tr / -).txt"
         printf 'scenario\t%s\t%s\tpass\tart/%s-%s.txt\t%s\t%s\n' "$sc" "$key" "$sc" "$(printf '%s' "$key" | tr / -)" \
           "$(rv_sha "$d/art/$sc-$(printf '%s' "$key" | tr / -).txt")" "$gen" >>"$r"
       done
@@ -67,8 +94,8 @@ rv_build() {
   {
     printf '# schema\tnice-dns-sample/1\n'
     printf 'run_id\tsample_id\tutc_start\telapsed_us\tworkload\tcache_class\ttarget_id\tplatform\tproxy\tpihole\tsource_rev\timages\tresolver\ttransport\tqname\tqtype\toutcome\trcode\ttimeout_ms\n'
-    printf 'r\t1\t2026-01-01T00:00:00Z\t1500\tcold\tmiss\tt\tlinux\thaproxy\tstandard\tx\ti\t127.0.0.1#53\tudp\ta.example.com\tA\tnxdomain\tNXDOMAIN\t5000\n'
-    printf 'r\t2\t2026-01-01T00:00:01Z\t5000000\tcold\tmiss\tt\tlinux\thaproxy\tstandard\tx\ti\t127.0.0.1#53\tudp\tb.example.com\tA\ttimeout\t-\t5000\n'
+    printf 'run-test-%s\t1\t2026-01-01T00:00:00Z\t1500\tcold\tmiss\tt\tlinux\thaproxy\tstandard\t%s\ti\t127.0.0.1#53\tudp\ta.example.com\tA\tnxdomain\tNXDOMAIN\t5000\n' "$name" "$(git -C "$RV_SIB/nice-dns" rev-parse HEAD)"
+    printf 'run-test-%s\t2\t2026-01-01T00:00:01Z\t5000000\tcold\tmiss\tt\tlinux\thaproxy\tstandard\t%s\ti\t127.0.0.1#53\tudp\tb.example.com\tA\ttimeout\t-\t5000\n' "$name" "$(git -C "$RV_SIB/nice-dns" rev-parse HEAD)"
   } >"$d/art/samples.tsv"
   bash "$NICE_DNS_ROOT/tests/reports/stats.sh" "$d/art/samples.tsv" >"$d/art/stats.tsv"
   printf 'aggregate\tart/stats.tsv\t%s\tart/samples.tsv\n' "$(rv_sha "$d/art/stats.tsv")" >>"$r"
@@ -287,4 +314,81 @@ t_runner_receipt_command_verifies_latest_receipt() {
   assert_rc 0 $? "runner verifies the latest baseline receipt: $out"
   out="$(NICE_DNS_TEST_ARTIFACTS="$root" bash "$NICE_DNS_ROOT/tests/run.sh" receipt transport --require-baseline baseline --require-proxies all 2>&1)"
   assert_nonzero $? "no transport receipt"
+}
+
+rv_rehash() {
+  # rv_rehash RECEIPTDIR: recompute every scenario artifact hash, so a
+  # tampered artifact is caught by its content, not by its sha256.
+  local d="$1" tmp="$1/receipt.tmp"
+  awk -F '\t' -v d="$d" 'BEGIN { OFS = "\t" }
+    $1 == "scenario" { cmd = "sha256sum \"" d "/" $5 "\" 2>/dev/null || shasum -a 256 \"" d "/" $5 "\""; cmd | getline l; close(cmd); split(l, h, " "); $6 = h[1] }
+    { print }' "$d/receipt.tsv" >"$tmp" && mv "$tmp" "$d/receipt.tsv"
+}
+
+t_stage_evidence_must_say_pass() {
+  rv_build baseline "$CASE_DIR/b"
+  printf 'git_head\t%s\ncollected=155 passed=100 failed=55\nresult=fail run_id=x\n' "$(git -C "$RV_SIB/nice-dns" rev-parse HEAD)" >"$CASE_DIR/b/art/BL-STAGE.txt"
+  rv_rehash "$CASE_DIR/b"
+  rv "$CASE_DIR/b/receipt.tsv" --require-matrix all
+  assert_rc 1 "$RV_RC" "a failed stage run is not BL-STAGE evidence"
+  assert_match 'BL-STAGE .*no line matching /\^result=pass' "$RV_OUT" "names the missing pass"
+}
+
+t_stage_evidence_must_name_the_source_commit() {
+  rv_build baseline "$CASE_DIR/b"
+  printf 'git_head\t%s\ncollected=1 passed=1 failed=0\nresult=pass run_id=x\n' 0123456789abcdef0123456789abcdef01234567 >"$CASE_DIR/b/art/BL-STAGE.txt"
+  rv_rehash "$CASE_DIR/b"
+  rv "$CASE_DIR/b/receipt.tsv" --require-matrix all
+  assert_rc 1 "$RV_RC" "stage evidence from another commit"
+  assert_match 'names git_head 0123456789abcdef' "$RV_OUT" "names the wrong head"
+}
+
+t_samples_from_another_cell_fail() {
+  local f
+  rv_build baseline "$CASE_DIR/b"
+  f="$CASE_DIR/b/art/BL-COLD-linux-socat-standard.txt"
+  cp "$CASE_DIR/b/art/BL-COLD-macos-socat-standard.txt" "$f"
+  rv_rehash "$CASE_DIR/b"
+  rv "$CASE_DIR/b/receipt.tsv" --require-matrix all
+  assert_rc 1 "$RV_RC" "macOS samples filed under a linux cell"
+  assert_match 'linux/socat/standard.*is macos/socat/standard' "$RV_OUT" "names the foreign cell"
+}
+
+t_too_few_samples_fail() {
+  rv_build baseline "$CASE_DIR/b"
+  head -n 101 "$CASE_DIR/b/art/BL-WARM-linux-haproxy-standard.txt" >"$CASE_DIR/w" && mv "$CASE_DIR/w" "$CASE_DIR/b/art/BL-WARM-linux-haproxy-standard.txt"
+  rv_rehash "$CASE_DIR/b"
+  rv "$CASE_DIR/b/receipt.tsv" --require-matrix all
+  assert_rc 1 "$RV_RC" "99 warm samples is below the 1000 minimum"
+  assert_match 'BL-WARM \(linux/haproxy/standard\) has 99 samples, fewer than the declared minimum 1000' "$RV_OUT" "names the shortfall"
+}
+
+t_empty_health_evidence_fails() {
+  rv_build baseline "$CASE_DIR/b"
+  : >"$CASE_DIR/b/art/BL-SEVERED-linux-haproxy-standard.txt"
+  rv_rehash "$CASE_DIR/b"
+  rv "$CASE_DIR/b/receipt.tsv" --require-matrix all
+  assert_rc 1 "$RV_RC" "an empty severed observation"
+  assert_match 'BL-SEVERED \(linux/haproxy/standard\).*no line matching /\^health' "$RV_OUT" "names the empty artifact"
+}
+
+t_samples_must_name_the_recorded_product() {
+  rv_build baseline "$CASE_DIR/b"
+  printf 'product\tnice-dns\t%s\n' 0123456789abcdef0123456789abcdef01234567 >>"$CASE_DIR/b/receipt.tsv"
+  rv "$CASE_DIR/b/receipt.tsv" --require-matrix all
+  assert_rc 1 "$RV_RC" "samples from another product revision"
+  assert_match 'source_rev [0-9a-f]{40} is not the recorded revision 0123456789abcdef' "$RV_OUT" "names the revision mismatch"
+  rv_build baseline "$CASE_DIR/c"
+  printf 'product\tnice-dns\tmain\n' >>"$CASE_DIR/c/receipt.tsv"
+  rv "$CASE_DIR/c/receipt.tsv" --require-matrix all
+  assert_rc 1 "$RV_RC" "a product row must be a full commit id"
+}
+
+t_manifest_rules_must_name_declared_scenarios() {
+  local m="$CASE_DIR/man"
+  cp -R "$RV_MAN" "$m"
+  printf 'minimum\tBL-NOPE\t5\n' >>"$m/baseline.tsv"
+  NICE_DNS_TEST_MANIFESTS="$m" bash "$RV" manifests >"$CASE_DIR/out" 2>&1
+  assert_rc 1 $? "a rule for an undeclared scenario"
+  assert_match 'undeclared scenario BL-NOPE' "$(cat "$CASE_DIR/out")" "names it"
 }

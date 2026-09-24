@@ -6,7 +6,11 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the
 - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)
   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.
 - Baseline source: this repository at commit
-  `337fb1596d71693f883c80594b0fa88a34a62c87`. Citations are `path:line` at that commit.
+  `b85bc9b7786efc7d3bf0572875e95e214dfa1d6c`. Citations are `path:line` at that commit.
+  It is the product the eight-cell baseline receipt measured. The document was
+  first written against 337fb15; sub-plan 01 then landed product fixes
+  (c8ecd70, fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived.
+  `check-contracts` fails when a cited file changes after this commit.
 - Checked by `bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md`.
   The check needs every workflow ID below, every operation ID in
   `tests/manifests/privacy-ops.tsv`, and each workflow's required subsections.
@@ -104,7 +108,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   (pihole/etc/pihole.toml:12-14). The Linux quadlet sets
   `DNS1=127.0.0.1#5335` (deb/quadlet/pi-hole.container:26).
 - On macOS the installer and LaunchAgent override the upstream to
-  `172.31.240.251#5335` (install-mac.sh:269-270, mac/start-container.sh:375-376).
+  `172.31.240.251#5335` (install-mac.sh:269-270, mac/start-container.sh:409-410).
 - Pi-hole query logging is off in the shipped config
   (pihole/etc/pihole.toml:197). dnsmasq `log-queries` is commented out
   (pihole/etc/dnsmasq.conf:48). baseline: unverified at runtime for both
@@ -152,7 +156,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
 - macOS: Apple `container` gives each container its own address on `dnsnet`.
   The configs hardcode .250/.251/.252 (mac/start-container.sh:24-26). The
   LaunchAgent refuses a stack whose addresses do not match
-  (mac/start-container.sh:157-165, mac/start-container.sh:582-590).
+  (mac/start-container.sh:168-176, mac/start-container.sh:635-643).
 
 ## WF-DNS-002 Recovery
 
@@ -227,13 +231,23 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   `launchctl kickstart -k` of the start-container agent
   (health/nice-dns-health:399-414).
 - The only persisted state is the outage marker
-  (health/nice-dns-health:359). No lock and no cooldown exist.
+  (health/nice-dns-health:359). nice-dns-health keeps no lock and no cooldown.
+- On macOS the start-container agent and bridge-eval share a `mkdir` stack lock
+  (mac/start-container.sh:57, mac/start-container.sh:247, mac/start-container.sh:509).
+  A holder whose stored PID fails `kill -0` is taken over. After a crash, a reused
+  PID in that persistent state file blocks the start for up to 600 s. Two waiters
+  can also both take over a dead holder. This is carried to Sub-plan 3
+  (state.sh owns locks) [REC-ACK-READINESS].
 - Cache masking: Unbound serves expired answers for up to 24 h
   (unbound/etc/unbound.conf:94-96). dnsmasq has `use-stale-cache=3600`
   (pihole/etc/dnsmasq.conf:58). The `chain-resolves` check on `cloudflare.com`
   (health/nice-dns-health:193-201) can therefore pass while the upstream is
-  down. This is the BL-018 blind spot [EVD-CACHE-NOT-UPSTREAM]. baseline:
-  unverified.
+  down. This is the BL-018 blind spot [EVD-CACHE-NOT-UPSTREAM]. Reproduced by
+  the baseline receipt (run 20260923T214611Z-a97c6844): with tor stopped in
+  the proxy container for 120 s, every Linux quadlet cell kept pi-hole, unbound
+  and the proxy `healthy` while 0/5 uncached queries were answered and 5/5
+  cached ones were. No restart fired. Every macOS cell answered cached names
+  the same way.
 - Linux container health checks only test that a port is open: `nc -z` on
   853 and 5335 (deb/quadlet/tor-haproxy.container:54,
   deb/quadlet/unbound.container:22). Pi-hole's check is a `pi.hole` lookup
@@ -244,15 +258,15 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   It runs at load or login only. What runs after a wake is baseline:
   unverified.
 - The macOS fast path exits when the addresses are correct and a probe
-  resolves (mac/start-container.sh:521-525). The comment admits that a warm
-  cache can satisfy the probe (mac/start-container.sh:514-520).
+  resolves (mac/start-container.sh:574-578). The comment admits that a warm
+  cache can satisfy the probe (mac/start-container.sh:567-573).
 - A wedged datapath is detected by a probe between containers
-  (mac/start-container.sh:198-207). The fix is a runtime restart
-  (mac/start-container.sh:534-542).
+  (mac/start-container.sh:209-218). The fix is a runtime restart
+  (mac/start-container.sh:587-595).
 - The stack is rebuilt once only when Tor never bootstrapped
-  (mac/start-container.sh:627-637). If the chain is unhealthy but Tor did
+  (mac/start-container.sh:680-690). If the chain is unhealthy but Tor did
   bootstrap, the script exits without pinning DNS
-  (mac/start-container.sh:616-626).
+  (mac/start-container.sh:669-679).
 
 ### Platform notes
 
@@ -306,38 +320,42 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
 
 - Linux reinstall and uninstall rewrite the host resolver to public DNS.
   When /etc/resolv.conf holds `nameserver 127.0.0.1`, `teardown` writes
-  9.9.9.9, 1.1.1.1 and 1.0.0.1 (install-deb.sh:130-135). Every install runs
-  teardown first (install-deb.sh:201). The hardened installer does the same
-  (install-deb-hardened.sh:148-151, install-deb-hardened.sh:196). This
-  violates [PRIV-NO-HOST-PUBLIC].
+  9.9.9.9, 1.1.1.1 and 1.0.0.1 (install-deb.sh:138-143). Every install runs
+  teardown first (install-deb.sh:209). The hardened installer does the same
+  (install-deb-hardened.sh:157-160, install-deb-hardened.sh:204). This
+  violates [PRIV-NO-HOST-PUBLIC]. Both teardowns first disable custom-dns-deb and
+  remove the NetworkManager pin hook (install-deb.sh:135-136,
+  install-deb-hardened.sh:154-155). The swap therefore holds for the whole
+  install and stays after a failed one. Before b85bc9b the hook usually put
+  127.0.0.1 back within seconds, and the install failed closed.
 - Teardown removes the running containers, images and network
-  (install-deb.sh:154-170) before new images are built
-  (install-deb.sh:428-431). DNS is down for the whole build.
-- Builds resolve through `--dns 1.1.1.1` (install-deb.sh:428-429,
+  (install-deb.sh:162-178) before new images are built
+  (install-deb.sh:436-439). DNS is down for the whole build.
+- Builds resolve through `--dns 1.1.1.1` (install-deb.sh:436-437,
   install-mac.sh:256-257) [PRIV-BOOTSTRAP-DECLARED]. The proxy image is a
-  floating `:latest` tag (install-deb.sh:430,
+  floating `:latest` tag (install-deb.sh:438,
   deb/quadlet/tor-haproxy.container:14). Inputs are not immutable.
 - The standard and hardened installers have drifted. install-deb.sh builds
-  with `--pull=newer --no-cache` (install-deb.sh:428-429).
-  install-deb-hardened.sh does not (install-deb-hardened.sh:356,
-  install-deb-hardened.sh:365). The same gap exists on macOS
-  (install-mac.sh:256-257 against install-mac-hardened.sh:192,
-  install-mac-hardened.sh:196). The macOS hardened teardown does not unload
-  the bridge-eval agent (install-mac-hardened.sh:40-63). The standard
+  with `--pull=newer --no-cache` (install-deb.sh:436-437).
+  install-deb-hardened.sh does not (install-deb-hardened.sh:364,
+  install-deb-hardened.sh:373). The same gap exists on macOS
+  (install-mac.sh:256-257 against install-mac-hardened.sh:196,
+  install-mac-hardened.sh:200-201). The macOS hardened teardown does not unload
+  the bridge-eval agent (install-mac-hardened.sh:44-67). The standard
   teardown does (install-mac.sh:32-36).
 - Linux resolver pin: `custom-dns-deb` stops and disables systemd-resolved
   (deb/custom-dns-deb:10-16). It writes `nameserver 127.0.0.1` and keeps a
   timestamped backup (deb/custom-dns-deb:18-36). NetworkManager gets
   `dns=none` and a dispatcher hook (install-deb.sh:50-65).
-- Uninstall deletes those files (install-deb.sh:173-181). It does not
+- Uninstall deletes those files (install-deb.sh:181-189). It does not
   re-enable systemd-resolved or restore the backup, so it leaves the public
   resolvers written by teardown. Exact restore is not implemented
   [SEC-OWNED-RESTORE].
 - Linux pins the resolver without a readiness gate. The pod is restarted
   (deb/persistent-podman.sh:292). The pin is then applied at once
-  (install-deb.sh:436-443), with no resolution check in between.
+  (install-deb.sh:444-451), with no resolution check in between.
 - macOS teardown sets every network service's DNS to `Empty`
-  (install-mac.sh:106-111, install-mac-hardened.sh:58-61). Queries during
+  (install-mac.sh:106-111, install-mac-hardened.sh:62-65). Queries during
   install then go to whatever DHCP supplies. That may be a public or ISP
   resolver [PRIV-NO-HOST-PUBLIC]. baseline: unverified per network.
 - macOS waits for the chain to resolve before pinning
@@ -434,16 +452,19 @@ Sources: ARCH-07, design "Bridge lifecycle".
   (deb/quadlet/tor-haproxy.container:12-23). Whether Tor state survives
   container recreation on Linux is baseline: unverified (ARCH-06).
 - macOS: the bridge-eval agent has `RunAtLoad` and `StartInterval` 86400
-  (mac/org.nice-dns.bridge-eval.plist:17-19). It runs on `dnsnet`
-  (mac/bridge-eval.sh:88-96, mac/bridge-eval.sh:107-114). It redacts `cert=`
-  in its log (mac/bridge-eval.sh:116). It keeps the existing file on failure
-  (mac/bridge-eval.sh:125-128).
+  (mac/org.nice-dns.bridge-eval.plist:17-19). It runs on `dnsnet`, and only
+  after the stack is up on its own addresses (mac/bridge-eval.sh:102-117). It
+  holds the stack lock while its probe container exists
+  (mac/bridge-eval.sh:119-135), and it runs the probe on `dnsnet`
+  (mac/bridge-eval.sh:153-160). It redacts `cert=`
+  in its log (mac/bridge-eval.sh:162). It keeps the existing file on failure
+  (mac/bridge-eval.sh:171-174).
 - The macOS LaunchAgent refetches only when the pool is missing or
-  incomplete, or after a failed bootstrap (mac/start-container.sh:470-491).
+  incomplete, or after a failed bootstrap (mac/start-container.sh:523-544).
   It recreates Tor only when the bridge fingerprint changed
-  (mac/start-container.sh:392-408). On a change it drops the guard sample
-  and keeps the cache (mac/start-container.sh:109-111). Tor's DataDirectory
-  persists (mac/start-container.sh:42, mac/start-container.sh:412).
+  (mac/start-container.sh:426-442). On a change it drops the guard sample
+  and keeps the cache (mac/start-container.sh:116-118). Tor's DataDirectory
+  persists (mac/start-container.sh:42, mac/start-container.sh:446).
 - The macOS installer runs the fetcher without `--force`
   (install-mac.sh:280). It requires at least three bridges
   (install-mac.sh:301-304).
@@ -454,4 +475,4 @@ Sources: ARCH-07, design "Bridge lifecycle".
   (deb/persistent-podman.sh:159). The target adds a daily timer and keeps
   the out-of-band selection model.
 - macOS: a second container on another vmnet network wedges `dnsnet`
-  (mac/bridge-eval.sh:74-87). Selection must stay on `dnsnet`.
+  (mac/bridge-eval.sh:77-90). Selection must stay on `dnsnet`.
