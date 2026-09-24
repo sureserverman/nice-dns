@@ -191,7 +191,7 @@ t_two() { assert_eq b b; }'
   printf 'TEST-OP\tsynthetic operation\n' >"$m/privacy-ops.tsv"
   printf '# variant\tmeaning\n' >"$m/variants.tsv"
   printf 'S-TEST\tTEST-OP\tunit\tga\tt_ok\tbaseline\n' >"$m/scenarios.tsv"
-  printf 'require\tstage:pair\tS-TEST\tt_ok\n' >>"$m/stage-scenarios.tsv"
+  printf 'require\tstage:pair\tS-TEST\tunit\tga\tt_ok\t%s\ncount\tstage:pair\t1\n' "$CASE_DIR/g.sh" >>"$m/stage-scenarios.tsv"
   HC_MANIFESTS="$m" hc_run stage pair
   assert_rc 0 "$HC_RC" "stage of two passing groups"
   assert_match 'collected=3 passed=3 failed=0' "$HC_OUT" "stage aggregates every group"
@@ -207,7 +207,7 @@ t_stage_with_one_empty_group_fails() {
   printf 'TEST-OP\tsynthetic operation\n' >"$m/privacy-ops.tsv"
   printf '# variant\tmeaning\n' >"$m/variants.tsv"
   printf 'S-TEST\tTEST-OP\tunit\tga\tt_ok\tbaseline\n' >"$m/scenarios.tsv"
-  printf 'require\tstage:mixed\tS-TEST\tt_ok\n' >>"$m/stage-scenarios.tsv"
+  printf 'require\tstage:mixed\tS-TEST\tunit\tga\tt_ok\t%s\ncount\tstage:mixed\t1\n' "$CASE_DIR/g.sh" >>"$m/stage-scenarios.tsv"
   HC_MANIFESTS="$m" hc_run stage mixed
   assert_nonzero "$HC_RC" "a stage with one empty group is not green even when the other passes"
   assert_match 'result=fail' "$HC_OUT" "stage result is fail"
@@ -575,118 +575,176 @@ t_contracts_citations_bind_to_the_pinned_commit() {
 }
 
 # ─────────────────────────── stage scenario requirements ─────────────────────
+# One case per way to drop or substitute a mandatory proof (sub-plan 02,
+# Stage 1 gate). Every field of a proof's identity is attacked: scenario row,
+# require row, case, group, registered group file, active state, the stage's
+# group list, the manifest itself, its count, and malformed lines.
 
-# hc_req_manifests <dir>: a registry with groups ga (t_ok) and gb (t_two), stage
-# "st" running both, and scenarios S-A (ga) and S-B (gb), both owner transport.
+# hc_req_manifests <dir>: groups ga (t_ok, file g.sh) and gb (t_two and
+# t_spare, file h.sh), plus gc (t_two, file i.sh) outside the stage; stage
+# "st" runs ga and gb; S-A and S-B (owner transport) are required with their
+# whole identity and a count of 2.
 hc_req_manifests() {
   local m="$1"
   hc_manifests "$m"
   hc_group_file "$CASE_DIR/g.sh" "$hc_passing_group"
-  hc_group_file "$CASE_DIR/h.sh" 't_two() { assert_eq b b; }'
-  printf 'unit\tga\t%s\tlocal\nunit\tgb\t%s\tlocal\n' "$CASE_DIR/g.sh" "$CASE_DIR/h.sh" >>"$m/groups.tsv"
+  hc_group_file "$CASE_DIR/h.sh" 't_two() { assert_eq b b; }
+t_spare() { assert_eq s s; }'
+  hc_group_file "$CASE_DIR/i.sh" 't_two() { assert_eq c c; }'
+  printf 'unit\tga\t%s\tlocal\nunit\tgb\t%s\tlocal\nunit\tgc\t%s\tlocal\n' "$CASE_DIR/g.sh" "$CASE_DIR/h.sh" "$CASE_DIR/i.sh" >>"$m/groups.tsv"
   printf 'st\tunit\tga\nst\tunit\tgb\n' >>"$m/stages.tsv"
   printf 'TEST-OP\tsynthetic operation\n' >"$m/privacy-ops.tsv"
   printf '# variant\tmeaning\n' >"$m/variants.tsv"
   printf 'S-A\tTEST-OP\tunit\tga\tt_ok\ttransport\nS-B\tTEST-OP\tunit\tgb\tt_two\ttransport\n' >"$m/scenarios.tsv"
-  printf 'require\tstage:st\tS-A\tt_ok\nrequire\tstage:st\tS-B\tt_two\n' >"$m/stage-scenarios.tsv"
+  hc_req_rows "$m"
 }
 
-t_stage_with_its_required_scenarios_runs() {
-  local m="$CASE_DIR/m"
-  hc_req_manifests "$m"
-  HC_MANIFESTS="$m" hc_run stage st
-  assert_rc 0 "$HC_RC" "positive control: every required scenario is active in the stage ($HC_OUT)"
+hc_req_rows() {
+  printf 'require\tstage:st\tS-A\tunit\tga\tt_ok\t%s\nrequire\tstage:st\tS-B\tunit\tgb\tt_two\t%s\ncount\tstage:st\t2\n' \
+    "$CASE_DIR/g.sh" "$CASE_DIR/h.sh" >"$1/stage-scenarios.tsv"
 }
 
-t_stage_refuses_a_missing_required_scenario() {
-  # The evaluator's mutation A: a mandatory row (and its case) deleted while
-  # another row still covers the same operation.
-  local m="$CASE_DIR/m"
-  hc_req_manifests "$m"
-  printf 'S-A\tTEST-OP\tunit\tga\tt_ok\ttransport\n' >"$m/scenarios.tsv"
-  hc_group_file "$CASE_DIR/h.sh" 't_other() { assert_eq b b; }'
-  HC_MANIFESTS="$m" hc_run stage st
-  assert_rc 1 "$HC_RC" "a required scenario with no row refuses the stage"
-  assert_match 'required scenario S-B has no row' "$HC_OUT" "names the missing scenario"
-  assert_not_match 'collected=' "$HC_OUT" "nothing ran"
+# hc_req_refused <label> <ERE>: the stage is refused before any group runs,
+# for the named reason.
+hc_req_refused() {
+  HC_MANIFESTS="$CASE_DIR/m" hc_run stage st
+  assert_rc 1 "$HC_RC" "$1: refused ($HC_OUT)"
+  assert_match "$2" "$HC_OUT" "$1: names the reason"
+  assert_not_match 'collected=' "$HC_OUT" "$1: nothing ran"
 }
 
-t_stage_refuses_a_required_scenario_outside_it() {
-  # The evaluator's mutation B: the group proving a required scenario dropped
-  # from the stage.
-  local m="$CASE_DIR/m"
-  hc_req_manifests "$m"
-  grep -v 'gb$' "$m/stages.tsv" >"$m/stages.tsv.new"; mv "$m/stages.tsv.new" "$m/stages.tsv"
-  HC_MANIFESTS="$m" hc_run stage st
-  assert_rc 1 "$HC_RC" "a required scenario whose group the stage dropped refuses the stage"
-  assert_match 'required scenario S-B runs in unit/gb, which stage:st does not run' "$HC_OUT" "names the dropped group"
+t_req_positive_control() {
+  hc_req_manifests "$CASE_DIR/m"
+  HC_MANIFESTS="$CASE_DIR/m" hc_run stage st
+  assert_rc 0 "$HC_RC" "every required proof in place: the stage runs ($HC_OUT)"
+  assert_match 'collected=3 passed=3 failed=0' "$HC_OUT" "all three cases ran"
 }
 
-t_stage_refuses_a_deferred_required_scenario() {
-  local m="$CASE_DIR/m"
-  hc_req_manifests "$m"
-  printf 'S-A\tTEST-OP\tunit\tga\tt_ok\ttransport\nS-B\tTEST-OP\t-\t-\t-\ttransport\n' >"$m/scenarios.tsv"
-  HC_MANIFESTS="$m" hc_run stage st
-  assert_rc 1 "$HC_RC" "a required scenario left deferred refuses the stage"
-  assert_match 'required scenario S-B is deferred' "$HC_OUT" "names the deferred scenario"
+t_req_a01_scenario_row_deleted() {
+  hc_req_manifests "$CASE_DIR/m"
+  printf 'S-A\tTEST-OP\tunit\tga\tt_ok\ttransport\n' >"$CASE_DIR/m/scenarios.tsv"
+  hc_req_refused "scenario row deleted" 'required scenario S-B has no row'
 }
 
-t_stage_owner_rows_must_all_run_in_it() {
-  local m="$CASE_DIR/m"
-  hc_req_manifests "$m"
-  printf 'owner\tstage:st\ttransport\n' >>"$m/stage-scenarios.tsv"
-  printf 'S-C\tTEST-OP\tunit\tgc\tt_three\ttransport\n' >>"$m/scenarios.tsv"
-  hc_group_file "$CASE_DIR/i.sh" 't_three() { assert_eq c c; }'
-  printf 'unit\tgc\t%s\tlocal\n' "$CASE_DIR/i.sh" >>"$m/groups.tsv"
-  HC_MANIFESTS="$m" hc_run stage st
-  assert_rc 1 "$HC_RC" "an owned scenario outside the stage refuses it"
-  assert_match 'scenario S-C \(owner transport\) runs in unit/gc' "$HC_OUT" "names the owned scenario"
+t_req_a02_require_row_deleted() {
+  hc_req_manifests "$CASE_DIR/m"
+  grep -v 'S-B' "$CASE_DIR/m/stage-scenarios.tsv" >"$CASE_DIR/x" && mv "$CASE_DIR/x" "$CASE_DIR/m/stage-scenarios.tsv"
+  hc_req_refused "require row deleted" 'S-B runs in stage:st \(unit/gb\) but is not required'
 }
 
-t_stage_requirements_reject_unknown_rows() {
-  local m="$CASE_DIR/m"
-  hc_req_manifests "$m"
-  printf 'requir\tstage:st\tS-A\tt_ok\n' >>"$m/stage-scenarios.tsv"
-  HC_MANIFESTS="$m" hc_run stage st
-  assert_rc 1 "$HC_RC" "a misspelt row type refuses rather than being ignored"
-  assert_match 'unknown row type "requir"' "$HC_OUT" "names the bad row"
+t_req_a03_both_rows_deleted_count_kept() {
+  hc_req_manifests "$CASE_DIR/m"
+  printf 'S-A\tTEST-OP\tunit\tga\tt_ok\ttransport\n' >"$CASE_DIR/m/scenarios.tsv"
+  grep -v 'S-B' "$CASE_DIR/m/stage-scenarios.tsv" >"$CASE_DIR/x" && mv "$CASE_DIR/x" "$CASE_DIR/m/stage-scenarios.tsv"
+  hc_req_refused "scenario and require rows deleted, count kept" 'stage:st has 1 require rows, but its count row says 2'
 }
 
-t_stage_refuses_a_repointed_scenario() {
-  # The evaluator's M9: a required scenario re-pointed at a sibling case in
-  # the same group, and its real proof deleted.
-  local m="$CASE_DIR/m"
-  hc_req_manifests "$m"
-  hc_group_file "$CASE_DIR/h.sh" 't_three() { assert_eq c c; }'
-  printf 'S-A\tTEST-OP\tunit\tga\tt_ok\ttransport\nS-B\tTEST-OP\tunit\tgb\tt_three\ttransport\n' >"$m/scenarios.tsv"
-  HC_MANIFESTS="$m" hc_run stage st
-  assert_rc 1 "$HC_RC" "a scenario proven by another case than the pinned one refuses the stage"
-  assert_match 'required scenario S-B must be proven by t_two, but scenarios.tsv names t_three' "$HC_OUT" "names the substitution"
+t_req_a04_case_repointed() {
+  hc_req_manifests "$CASE_DIR/m"
+  printf 'S-A\tTEST-OP\tunit\tga\tt_ok\ttransport\nS-B\tTEST-OP\tunit\tgb\tt_spare\ttransport\n' >"$CASE_DIR/m/scenarios.tsv"
+  hc_req_refused "case re-pointed within the group" 'S-B must be proven by unit/gb t_two, but scenarios.tsv names unit/gb t_spare'
 }
 
-t_stage_refuses_an_unrequired_scenario() {
-  # The evaluator's M3: a requirement row deleted with its scenario still
-  # running in the stage (the list must be complete).
-  local m="$CASE_DIR/m"
-  hc_req_manifests "$m"
-  printf 'require\tstage:st\tS-A\tt_ok\n' >"$m/stage-scenarios.tsv"
-  HC_MANIFESTS="$m" hc_run stage st
-  assert_rc 1 "$HC_RC" "an active scenario in the stage without a requirement refuses it"
-  assert_match 'scenario S-B runs in stage:st \(unit/gb\) but is not required there' "$HC_OUT" "names the unrequired scenario"
+t_req_a05_group_repointed_same_case_name() {
+  # The round-3 evaluator's B1: same case name, another group in the stage.
+  hc_req_manifests "$CASE_DIR/m"
+  printf 'st\tunit\tgc\n' >>"$CASE_DIR/m/stages.tsv"
+  printf 'S-A\tTEST-OP\tunit\tga\tt_ok\ttransport\nS-B\tTEST-OP\tunit\tgc\tt_two\ttransport\n' >"$CASE_DIR/m/scenarios.tsv"
+  hc_req_refused "same case name in another group" 'S-B must be proven by unit/gb t_two, but scenarios.tsv names unit/gc t_two'
 }
 
-t_stage_refuses_without_its_requirements_manifest() {
-  # The evaluator's M5 and M4: the manifest deleted, or emptied.
-  local m="$CASE_DIR/m"
-  hc_req_manifests "$m"
-  rm -f "$m/stage-scenarios.tsv"
-  HC_MANIFESTS="$m" hc_run stage st
-  assert_rc 1 "$HC_RC" "a missing requirements manifest refuses the stage"
-  assert_match 'required manifest missing' "$HC_OUT" "names the missing manifest"
-  printf '# emptied\n' >"$m/stage-scenarios.tsv"
-  HC_MANIFESTS="$m" hc_run stage st
-  assert_rc 1 "$HC_RC" "an emptied requirements manifest refuses the stage"
-  assert_match 'scenario S-A runs in stage:st' "$HC_OUT" "names an unrequired scenario"
+t_req_a06_group_file_swapped() {
+  # groups.tsv points the required group at another (e.g. gutted) file.
+  hc_req_manifests "$CASE_DIR/m"
+  hc_group_file "$CASE_DIR/gutted.sh" 't_two() { assert_eq 1 1; }'
+  sed "s|$CASE_DIR/h.sh|$CASE_DIR/gutted.sh|" "$CASE_DIR/m/groups.tsv" >"$CASE_DIR/x" && mv "$CASE_DIR/x" "$CASE_DIR/m/groups.tsv"
+  hc_req_refused "group registered with another file" 'group unit/gb is registered with .*gutted\.sh, not the pinned .*h\.sh'
+}
+
+t_req_a07_scenario_deferred() {
+  hc_req_manifests "$CASE_DIR/m"
+  printf 'S-A\tTEST-OP\tunit\tga\tt_ok\ttransport\nS-B\tTEST-OP\t-\t-\t-\ttransport\n' >"$CASE_DIR/m/scenarios.tsv"
+  hc_req_refused "scenario deferred" 'required scenario S-B is deferred'
+}
+
+t_req_a08_group_dropped_from_stage() {
+  hc_req_manifests "$CASE_DIR/m"
+  grep -v 'gb$' "$CASE_DIR/m/stages.tsv" >"$CASE_DIR/x" && mv "$CASE_DIR/x" "$CASE_DIR/m/stages.tsv"
+  hc_req_refused "group dropped" 'required scenario S-B runs in unit/gb, which stage:st does not run'
+}
+
+t_req_a09_manifest_missing() {
+  hc_req_manifests "$CASE_DIR/m"
+  rm -f "$CASE_DIR/m/stage-scenarios.tsv"
+  hc_req_refused "manifest deleted" 'required manifest missing'
+}
+
+t_req_a10_manifest_emptied() {
+  hc_req_manifests "$CASE_DIR/m"
+  printf '# emptied\n' >"$CASE_DIR/m/stage-scenarios.tsv"
+  hc_req_refused "manifest emptied" 'S-A runs in stage:st .* but is not required'
+}
+
+t_req_a11_crlf_rows() {
+  hc_req_manifests "$CASE_DIR/m"
+  sed 's/$/\r/' "$CASE_DIR/m/stage-scenarios.tsv" >"$CASE_DIR/x" && mv "$CASE_DIR/x" "$CASE_DIR/m/stage-scenarios.tsv"
+  hc_req_refused "CRLF requirement rows" 'malformed line'
+}
+
+t_req_a12_leading_tab_scenario() {
+  # IFS read would strip the tab and count the row; awk would skip it. Both
+  # refuse it now.
+  hc_req_manifests "$CASE_DIR/m"
+  printf 'S-A\tTEST-OP\tunit\tga\tt_ok\ttransport\n\tS-B\tTEST-OP\tunit\tgb\tt_two\ttransport\n' >"$CASE_DIR/m/scenarios.tsv"
+  HC_MANIFESTS="$CASE_DIR/m" hc_run stage st
+  assert_rc 1 "$HC_RC" "leading-tab scenario row: refused ($HC_OUT)"
+  assert_match 'malformed line' "$HC_OUT" "leading-tab scenario row: names the reason"
+  assert_not_match 'collected=' "$HC_OUT" "leading-tab scenario row: nothing ran"
+}
+
+t_req_a13_duplicate_require_row() {
+  hc_req_manifests "$CASE_DIR/m"
+  grep '	S-B	' "$CASE_DIR/m/stage-scenarios.tsv" >"$CASE_DIR/dup"
+  assert_match 'S-B' "$(cat "$CASE_DIR/dup")" "the duplicated row was captured"
+  cat "$CASE_DIR/dup" >>"$CASE_DIR/m/stage-scenarios.tsv"
+  hc_req_refused "duplicate require row" 'S-B is required twice in stage:st'
+}
+
+t_req_a14_misspelt_row_type() {
+  hc_req_manifests "$CASE_DIR/m"
+  printf 'requir\tstage:st\tS-A\tunit\tga\tt_ok\tx\n' >>"$CASE_DIR/m/stage-scenarios.tsv"
+  hc_req_refused "misspelt row type" 'unknown row type "requir"'
+}
+
+t_req_a15_stage_key_renamed() {
+  hc_req_manifests "$CASE_DIR/m"
+  sed 's/\tstage:st\t/\tstage:sx\t/' "$CASE_DIR/m/stage-scenarios.tsv" >"$CASE_DIR/x" && mv "$CASE_DIR/x" "$CASE_DIR/m/stage-scenarios.tsv"
+  hc_req_refused "requirements keyed to another name" 'S-A runs in stage:st .* but is not required'
+}
+
+t_req_a16_count_row_missing() {
+  hc_req_manifests "$CASE_DIR/m"
+  grep -v '^count' "$CASE_DIR/m/stage-scenarios.tsv" >"$CASE_DIR/x" && mv "$CASE_DIR/x" "$CASE_DIR/m/stage-scenarios.tsv"
+  hc_req_refused "count row missing" 'has require rows for stage:st but no count row'
+}
+
+t_req_owner_rows_must_all_run() {
+  hc_req_manifests "$CASE_DIR/m"
+  printf 'owner\tstage:st\ttransport\n' >>"$CASE_DIR/m/stage-scenarios.tsv"
+  printf 'S-C\tTEST-OP\tunit\tgc\tt_two\ttransport\n' >>"$CASE_DIR/m/scenarios.tsv"
+  hc_req_refused "owned scenario outside the stage" 'scenario S-C \(owner transport\) runs in unit/gc'
+}
+
+t_run_receipt_records_manifest_override() {
+  # A run against altered manifests must not read like a real one.
+  local d
+  hc_req_manifests "$CASE_DIR/m"
+  HC_MANIFESTS="$CASE_DIR/m" hc_run stage st
+  assert_rc 0 "$HC_RC" "override run passes ($HC_OUT)"
+  d="$(printf '%s\n' "$HC_OUT" | sed -n 's/^run_id=[^ ]* artifacts=\([^ ]*\) stage=st$/\1/p')"
+  assert_file "$d/receipt.tsv" "run receipt present"
+  assert_match '^manifests_override	yes$' "$(cat "$d/receipt.tsv")" "receipt says the manifests were overridden"
+  assert_match "^group	unit/gb	$CASE_DIR/h.sh\$" "$(cat "$d/receipt.tsv")" "receipt names each group's file"
 }
 
 t_real_transport_stages_have_requirements() {
@@ -697,4 +755,7 @@ t_real_transport_stages_have_requirements() {
     assert_match '^(4[0-9]|[5-9][0-9]|[1-9][0-9][0-9]+)$' "$n" "$st requires its scenarios (at least 40 rows, got $n)"
   done
   assert_match '^owner	stage:transport	transport$' "$(cat "$f")" "stage transport owns every transport scenario"
+  for st in stage:transport-images stage:transport; do
+    assert_match "^count	$st	[0-9]+\$" "$(cat "$f")" "$st has an exact count row"
+  done
 }

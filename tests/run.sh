@@ -320,6 +320,9 @@ nd_new_run() {
     printf 'artifact_dir\t%s\n' "$ARTIFACT_DIR"
     printf 'created_by\ttests/run.sh\n'
     printf 'command\t%s\n' "${cmd% }"
+    # A run against altered manifests must not read like a real one.
+    printf 'manifests\t%s\n' "$ND_MANIFESTS"
+    if [ -n "${NICE_DNS_TEST_MANIFESTS:-}" ]; then printf 'manifests_override\tyes\n'; else printf 'manifests_override\tno\n'; fi
   } >"$ARTIFACT_DIR/receipt.tsv"
   export RUN_ID ARTIFACT_DIR
   return 0
@@ -460,7 +463,7 @@ nd_composite() {
     return "$ND_FAIL"
   fi
   local grouplist="|"
-  for i in $idxs; do grouplist="$grouplist${ND_G_KIND[$i]}/${ND_G_NAME[$i]}|"; done
+  for i in $idxs; do grouplist="$grouplist${ND_G_KIND[$i]}/${ND_G_NAME[$i]}=${ND_G_FILE[$i]}|"; done
   if ! nd_stage_requirements "$what:$name" "$grouplist"; then
     nd_err "$what '$name' refused: its required scenarios are not all active in it (tests/manifests/stage-scenarios.tsv)"
     return "$ND_FAIL"
@@ -470,6 +473,9 @@ nd_composite() {
     [ "$rc" -eq 0 ] || return "$rc"
   done
   nd_new_run tests/run.sh "$what" "$name" "$@" || return $?
+  for i in $idxs; do
+    printf 'group\t%s/%s\t%s\n' "${ND_G_KIND[$i]}" "${ND_G_NAME[$i]}" "${ND_G_FILE[$i]}" >>"$ARTIFACT_DIR/receipt.tsv"
+  done
   printf 'run_id=%s artifacts=%s %s=%s\n' "$RUN_ID" "$ARTIFACT_DIR" "$what" "$name"
   for i in $idxs; do
     printf '== %s/%s ==\n' "${ND_G_KIND[$i]}" "${ND_G_NAME[$i]}"
@@ -478,42 +484,61 @@ nd_composite() {
   nd_finish "$worst"
 }
 
-# nd_stage_requirements <stage:NAME|plan:NAME> <|kind/group|...|>: rows of
-# stage-scenarios.tsv (tab-separated, parsed as data) for this stage or plan:
-#   require <stage:NAME> <scenario id> <case>  the scenario has a row in
-#                          scenarios.tsv, is active, is proven by exactly
-#                          <case>, and its group runs here;
-#   owner   <stage:NAME> <owner>  every scenario row with that owner is
-#                          active and its group runs here.
+# nd_stage_requirements <stage:NAME|plan:NAME> <|kind/group=file|...|>: rows
+# of stage-scenarios.tsv (tab-separated, parsed as data) for this stage or plan:
+#   require <NAME> <id> <kind> <group> <case> <file>
+#       the proof's whole identity: scenarios.tsv has row <id>, active, proven
+#       by exactly <kind>/<group> <case>; that group runs here and is
+#       registered with exactly <file> (a checkout-relative path is resolved
+#       against the checkout).
+#   count   <NAME> <n>      exactly n require rows exist for NAME.
+#   owner   <NAME> <owner>  every scenario row of that owner is active and
+#                           runs here.
 # The list is complete: every active scenario whose group runs here must be
-# required here. So deleting a scenario (row and case), re-pointing it at a
-# sibling case, dropping a group, or emptying or deleting this manifest
-# refuses the run; dropping a mandatory proof takes an explicit edit of the
-# requirement list. A missing manifest refuses every stage and plan. Prints
-# each problem; 1 if any.
+# required here, and a NAME with require rows must have its count row. So a
+# deleted, re-pointed, re-grouped, deferred or re-filed proof, a dropped
+# group, a duplicate or malformed row, or an emptied, deleted or re-keyed
+# manifest refuses the run. Retiring a mandatory proof takes an explicit edit
+# of its require row and the count. What no manifest can see is a case whose
+# body was gutted; the per-task mutation proofs cover that. A missing
+# manifest refuses every stage and plan. Prints each problem; 1 if any.
 nd_stage_requirements() {
   local f="$ND_MANIFESTS/stage-scenarios.tsv" errs
   if [ ! -f "$f" ]; then
     nd_err "required manifest missing: $f (every stage and plan checks its scenario requirements)"
     return 1
   fi
-  errs="$(awk -F '\t' -v st="$1" -v groups="$2" '
+  errs="$(awk -F '\t' -v st="$1" -v groups="$2" -v root="$ND_ROOT" '
+    function malformed(line) {
+      return line ~ /\r/ || line ~ /^[ \t]+[^ \t]/
+    }
     FNR == NR {
+      # Malformed scenarios.tsv lines are refused earlier by check-scenarios.
       if ($1 == "" || $1 ~ /^#/) next
       kind[$1] = $3; grp[$1] = $4; cas[$1] = $5; own[$1] = $6; ids[++n] = $1; next
     }
+    malformed($0) { print "stage-scenarios.tsv:" FNR ": malformed line (carriage return or leading whitespace)"; next }
     $1 == "" || $1 ~ /^#/ { next }
-    $1 == "require" && NF != 4 { print "stage-scenarios.tsv:" FNR ": require rows have 4 tab-separated fields (require NAME ID CASE)"; next }
-    $1 == "owner" && NF != 3 { print "stage-scenarios.tsv:" FNR ": owner rows have 3 tab-separated fields (owner NAME OWNER)"; next }
-    $1 != "require" && $1 != "owner" { print "stage-scenarios.tsv:" FNR ": unknown row type \"" $1 "\""; next }
+    $1 == "require" && NF != 7 { print "stage-scenarios.tsv:" FNR ": require rows have 7 tab-separated fields (require NAME ID KIND GROUP CASE FILE)"; next }
+    ($1 == "owner" || $1 == "count") && NF != 3 { print "stage-scenarios.tsv:" FNR ": " $1 " rows have 3 tab-separated fields"; next }
+    $1 != "require" && $1 != "owner" && $1 != "count" { print "stage-scenarios.tsv:" FNR ": unknown row type \"" $1 "\""; next }
     $2 != st { next }
+    $1 == "count" { if (counted) print "stage-scenarios.tsv:" FNR ": second count row for " st; counted = 1; want = $3; next }
     $1 == "require" {
-      id = $3; req[id] = 1
+      id = $3; nreq++
+      if (id in req) { print "stage-scenarios.tsv:" FNR ": " id " is required twice in " st; next }
+      req[id] = 1
       if (!(id in kind)) { print "required scenario " id " has no row in scenarios.tsv"; next }
       if (kind[id] == "-") { print "required scenario " id " is deferred, not active"; next }
-      if (cas[id] != $4) { print "required scenario " id " must be proven by " $4 ", but scenarios.tsv names " cas[id]; next }
-      if (index(groups, "|" kind[id] "/" grp[id] "|") == 0)
-        print "required scenario " id " runs in " kind[id] "/" grp[id] ", which " st " does not run"
+      if (kind[id] != $4 || grp[id] != $5 || cas[id] != $6) {
+        print "required scenario " id " must be proven by " $4 "/" $5 " " $6 ", but scenarios.tsv names " kind[id] "/" grp[id] " " cas[id]; next
+      }
+      key = "|" $4 "/" $5 "="
+      p = index(groups, key)
+      if (p == 0) { print "required scenario " id " runs in " $4 "/" $5 ", which " st " does not run"; next }
+      rest = substr(groups, p + length(key)); regfile = substr(rest, 1, index(rest, "|") - 1)
+      pin = $7; if (pin !~ /^\//) pin = root "/" pin
+      if (regfile != pin) print "required scenario " id ": group " $4 "/" $5 " is registered with " regfile ", not the pinned " pin
       next
     }
     $1 == "owner" {
@@ -521,7 +546,7 @@ nd_stage_requirements() {
         id = ids[i]
         if (own[id] != $3) continue
         if (kind[id] == "-") print "scenario " id " (owner " $3 ") is still deferred"
-        else if (index(groups, "|" kind[id] "/" grp[id] "|") == 0)
+        else if (index(groups, "|" kind[id] "/" grp[id] "=") == 0)
           print "scenario " id " (owner " $3 ") runs in " kind[id] "/" grp[id] ", which " st " does not run"
       }
     }
@@ -529,9 +554,11 @@ nd_stage_requirements() {
       for (i = 1; i <= n; i++) {
         id = ids[i]
         if (kind[id] == "-" || (id in req)) continue
-        if (index(groups, "|" kind[id] "/" grp[id] "|") > 0)
-          print "scenario " id " runs in " st " (" kind[id] "/" grp[id] ") but is not required there: add require\t" st "\t" id "\t" cas[id]
+        if (index(groups, "|" kind[id] "/" grp[id] "=") > 0)
+          print "scenario " id " runs in " st " (" kind[id] "/" grp[id] ") but is not required there"
       }
+      if (nreq > 0 && !counted) print "stage-scenarios.tsv has require rows for " st " but no count row"
+      if (counted && want != nreq) print st " has " nreq " require rows, but its count row says " want
     }' "$ND_MANIFESTS/scenarios.tsv" "$f")"
   [ -z "$errs" ] && return 0
   printf '%s\n' "$errs" | sed 's/^/run.sh: /' >&2
@@ -771,6 +798,12 @@ cmd_check_scenarios() {
     case "$id" in ''|'#'*) continue ;; esac
     known_vars="$known_vars$id|"
   done <"$varf"
+  # One rule for both parsers: a carriage return or leading whitespace makes a
+  # row malformed (IFS read would strip a leading tab, awk would not).
+  if grep -nE "$(printf '\r')|^[[:space:]]+[^[:space:]]" "$sc" >/dev/null 2>&1; then
+    nd_err "scenarios.tsv: malformed line(s) (carriage return or leading whitespace): $(grep -nE "$(printf '\r')|^[[:space:]]+[^[:space:]]" "$sc" | cut -d: -f1 | tr '\n' ' ')"
+    errs=$((errs + 1))
+  fi
   while IFS="$ND_TAB" read -r id cov k g c o extra || [ -n "${id:-}" ]; do
     ln=$((ln + 1))
     case "$id" in ''|'#'*) continue ;; esac
