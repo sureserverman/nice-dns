@@ -51,6 +51,7 @@ hc_manifests() {
   cp "$NICE_DNS_ROOT/tests/manifests/privacy-ops.tsv" "$d/" 2>/dev/null || true
   printf '# kind\tgroup\tfile\ttier\n' >"$d/groups.tsv"
   printf '# stage\tkind\tgroup\n' >"$d/stages.tsv"
+  printf '# requirements\n' >"$d/stage-scenarios.tsv"
 }
 
 # hc_group_file <path> <body>: write a sourced group file.
@@ -190,6 +191,7 @@ t_two() { assert_eq b b; }'
   printf 'TEST-OP\tsynthetic operation\n' >"$m/privacy-ops.tsv"
   printf '# variant\tmeaning\n' >"$m/variants.tsv"
   printf 'S-TEST\tTEST-OP\tunit\tga\tt_ok\tbaseline\n' >"$m/scenarios.tsv"
+  printf 'require\tstage:pair\tS-TEST\tt_ok\n' >>"$m/stage-scenarios.tsv"
   HC_MANIFESTS="$m" hc_run stage pair
   assert_rc 0 "$HC_RC" "stage of two passing groups"
   assert_match 'collected=3 passed=3 failed=0' "$HC_OUT" "stage aggregates every group"
@@ -205,6 +207,7 @@ t_stage_with_one_empty_group_fails() {
   printf 'TEST-OP\tsynthetic operation\n' >"$m/privacy-ops.tsv"
   printf '# variant\tmeaning\n' >"$m/variants.tsv"
   printf 'S-TEST\tTEST-OP\tunit\tga\tt_ok\tbaseline\n' >"$m/scenarios.tsv"
+  printf 'require\tstage:mixed\tS-TEST\tt_ok\n' >>"$m/stage-scenarios.tsv"
   HC_MANIFESTS="$m" hc_run stage mixed
   assert_nonzero "$HC_RC" "a stage with one empty group is not green even when the other passes"
   assert_match 'result=fail' "$HC_OUT" "stage result is fail"
@@ -585,7 +588,7 @@ hc_req_manifests() {
   printf 'TEST-OP\tsynthetic operation\n' >"$m/privacy-ops.tsv"
   printf '# variant\tmeaning\n' >"$m/variants.tsv"
   printf 'S-A\tTEST-OP\tunit\tga\tt_ok\ttransport\nS-B\tTEST-OP\tunit\tgb\tt_two\ttransport\n' >"$m/scenarios.tsv"
-  printf 'require\tst\tS-A\nrequire\tst\tS-B\n' >"$m/stage-scenarios.tsv"
+  printf 'require\tstage:st\tS-A\tt_ok\nrequire\tstage:st\tS-B\tt_two\n' >"$m/stage-scenarios.tsv"
 }
 
 t_stage_with_its_required_scenarios_runs() {
@@ -616,7 +619,7 @@ t_stage_refuses_a_required_scenario_outside_it() {
   grep -v 'gb$' "$m/stages.tsv" >"$m/stages.tsv.new"; mv "$m/stages.tsv.new" "$m/stages.tsv"
   HC_MANIFESTS="$m" hc_run stage st
   assert_rc 1 "$HC_RC" "a required scenario whose group the stage dropped refuses the stage"
-  assert_match 'required scenario S-B runs in unit/gb, which st does not run' "$HC_OUT" "names the dropped group"
+  assert_match 'required scenario S-B runs in unit/gb, which stage:st does not run' "$HC_OUT" "names the dropped group"
 }
 
 t_stage_refuses_a_deferred_required_scenario() {
@@ -631,7 +634,7 @@ t_stage_refuses_a_deferred_required_scenario() {
 t_stage_owner_rows_must_all_run_in_it() {
   local m="$CASE_DIR/m"
   hc_req_manifests "$m"
-  printf 'owner\tst\ttransport\n' >"$m/stage-scenarios.tsv"
+  printf 'owner\tstage:st\ttransport\n' >>"$m/stage-scenarios.tsv"
   printf 'S-C\tTEST-OP\tunit\tgc\tt_three\ttransport\n' >>"$m/scenarios.tsv"
   hc_group_file "$CASE_DIR/i.sh" 't_three() { assert_eq c c; }'
   printf 'unit\tgc\t%s\tlocal\n' "$CASE_DIR/i.sh" >>"$m/groups.tsv"
@@ -643,19 +646,55 @@ t_stage_owner_rows_must_all_run_in_it() {
 t_stage_requirements_reject_unknown_rows() {
   local m="$CASE_DIR/m"
   hc_req_manifests "$m"
-  printf 'requir\tst\tS-A\n' >>"$m/stage-scenarios.tsv"
+  printf 'requir\tstage:st\tS-A\tt_ok\n' >>"$m/stage-scenarios.tsv"
   HC_MANIFESTS="$m" hc_run stage st
   assert_rc 1 "$HC_RC" "a misspelt row type refuses rather than being ignored"
   assert_match 'unknown row type "requir"' "$HC_OUT" "names the bad row"
 }
 
+t_stage_refuses_a_repointed_scenario() {
+  # The evaluator's M9: a required scenario re-pointed at a sibling case in
+  # the same group, and its real proof deleted.
+  local m="$CASE_DIR/m"
+  hc_req_manifests "$m"
+  hc_group_file "$CASE_DIR/h.sh" 't_three() { assert_eq c c; }'
+  printf 'S-A\tTEST-OP\tunit\tga\tt_ok\ttransport\nS-B\tTEST-OP\tunit\tgb\tt_three\ttransport\n' >"$m/scenarios.tsv"
+  HC_MANIFESTS="$m" hc_run stage st
+  assert_rc 1 "$HC_RC" "a scenario proven by another case than the pinned one refuses the stage"
+  assert_match 'required scenario S-B must be proven by t_two, but scenarios.tsv names t_three' "$HC_OUT" "names the substitution"
+}
+
+t_stage_refuses_an_unrequired_scenario() {
+  # The evaluator's M3: a requirement row deleted with its scenario still
+  # running in the stage (the list must be complete).
+  local m="$CASE_DIR/m"
+  hc_req_manifests "$m"
+  printf 'require\tstage:st\tS-A\tt_ok\n' >"$m/stage-scenarios.tsv"
+  HC_MANIFESTS="$m" hc_run stage st
+  assert_rc 1 "$HC_RC" "an active scenario in the stage without a requirement refuses it"
+  assert_match 'scenario S-B runs in stage:st \(unit/gb\) but is not required there' "$HC_OUT" "names the unrequired scenario"
+}
+
+t_stage_refuses_without_its_requirements_manifest() {
+  # The evaluator's M5 and M4: the manifest deleted, or emptied.
+  local m="$CASE_DIR/m"
+  hc_req_manifests "$m"
+  rm -f "$m/stage-scenarios.tsv"
+  HC_MANIFESTS="$m" hc_run stage st
+  assert_rc 1 "$HC_RC" "a missing requirements manifest refuses the stage"
+  assert_match 'required manifest missing' "$HC_OUT" "names the missing manifest"
+  printf '# emptied\n' >"$m/stage-scenarios.tsv"
+  HC_MANIFESTS="$m" hc_run stage st
+  assert_rc 1 "$HC_RC" "an emptied requirements manifest refuses the stage"
+  assert_match 'scenario S-A runs in stage:st' "$HC_OUT" "names an unrequired scenario"
+}
+
 t_real_transport_stages_have_requirements() {
-  # Deleting the requirement rows would silently switch the check off.
   local f="$NICE_DNS_ROOT/tests/manifests/stage-scenarios.tsv" st n
   assert_file "$f" "stage-scenarios manifest exists"
-  for st in transport-images transport; do
+  for st in stage:transport-images stage:transport; do
     n="$(awk -F '\t' -v s="$st" '$1 == "require" && $2 == s' "$f" | wc -l | tr -d ' ')"
-    assert_match '^(4[0-9]|[5-9][0-9]|[1-9][0-9][0-9]+)$' "$n" "stage $st requires its scenarios (at least 40 rows, got $n)"
+    assert_match '^(4[0-9]|[5-9][0-9]|[1-9][0-9][0-9]+)$' "$n" "$st requires its scenarios (at least 40 rows, got $n)"
   done
-  assert_match '^owner	transport	transport$' "$(cat "$f")" "stage transport owns every transport scenario"
+  assert_match '^owner	stage:transport	transport$' "$(cat "$f")" "stage transport owns every transport scenario"
 }

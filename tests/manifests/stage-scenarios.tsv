@@ -1,97 +1,185 @@
-# Per-stage scenario requirements, parsed as data by tests/run.sh (never
-# sourced); checked before any group of the stage runs.
-#   require <stage> <scenario id>  row exists, is active, its group is in the stage
-#   owner   <stage> <owner>        every row of that owner is active and in the stage
-# Stage 1 of sub-plan 02 (transport-images) requires every scenario its
-# groups prove; stage transport owns all transport scenarios.
-require	transport-images	OP-TLS-NAME
-require	transport-images	OP-TLS-NAME-SOCAT
-require	transport-images	OP-TLS-WRONGNAME
-require	transport-images	OP-TLS-WRONGNAME-SOCAT
-require	transport-images	OP-TLS-UNTRUSTED
-require	transport-images	OP-TLS-UNTRUSTED-SOCAT
-require	transport-images	OP-TLS-EXPIRED
-require	transport-images	OP-TLS-EXPIRED-SOCAT
-require	transport-images	OP-ROUTE-IDENTITY
-require	transport-images	OP-ROUTE-IDENTITY-HAPROXY-MAP
-require	transport-images	OP-ROUTE-IDENTITY-HAPROXY-BACKENDS
-require	transport-images	OP-ROUTE-IDENTITY-HAPROXY-LEGACY
-require	transport-images	OP-ROUTE-IDENTITY-SOCAT
-require	transport-images	OP-ROUTE-IDENTITY-SOCAT-MAP
-require	transport-images	OP-ROUTE-IDENTITY-SOCAT-LEGACY
-require	transport-images	OP-ANCHOR
-require	transport-images	OP-ANCHOR-SEED
-require	transport-images	OP-ANCHOR-KSK
-require	transport-images	OP-ANCHOR-UNUSABLE
-require	transport-images	OP-ANCHOR-UNWRITABLE
-require	transport-images	OP-ANCHOR-SYMLINK
-require	transport-images	OP-ANCHOR-READONLY-FILE
-require	transport-images	OP-ANCHOR-KEEP
-require	transport-images	OP-ANCHOR-SEED-REJECT
-require	transport-images	OP-ANCHOR-SEED-DS
-require	transport-images	OP-ANCHOR-PUBLISHED-BASE
-require	transport-images	OP-ANCHOR-BASE-AGREES
-require	transport-images	OP-ANCHOR-ROLLOVER
-require	transport-images	OP-BOGUS
-require	transport-images	OP-SIGNED
-require	transport-images	OP-UNSIGNED
-require	transport-images	OP-CONTROL-LOCAL
-require	transport-images	OP-CONTROL-SOCKET
-require	transport-images	OP-CONTROL-AUTHORIZED
-require	transport-images	OP-CONTROL-DENIED
-require	transport-images	OP-CONTROL-NO-SHARED-KEYS
-require	transport-images	OP-CONTROL-RUNDIR
-require	transport-images	OP-CONTROL-BASE-SELFTEST
-require	transport-images	OP-CONTROL-NO-NETWORK
-require	transport-images	OP-ACK-HAPROXY-PRIVATE
-require	transport-images	OP-ACK-SOCAT-PRIVATE
-require	transport-images	OP-ACK-HAPROXY-IMAGE
-require	transport-images	OP-ACK-HAPROXY-REJECT
-require	transport-images	OP-ACK-SOCAT-IMAGE
-require	transport-images	OP-ACK-SOCAT-REJECT
-require	transport	OP-TLS-NAME
-require	transport	OP-TLS-NAME-SOCAT
-require	transport	OP-TLS-WRONGNAME
-require	transport	OP-TLS-WRONGNAME-SOCAT
-require	transport	OP-TLS-UNTRUSTED
-require	transport	OP-TLS-UNTRUSTED-SOCAT
-require	transport	OP-TLS-EXPIRED
-require	transport	OP-TLS-EXPIRED-SOCAT
-require	transport	OP-ROUTE-IDENTITY
-require	transport	OP-ROUTE-IDENTITY-HAPROXY-MAP
-require	transport	OP-ROUTE-IDENTITY-HAPROXY-BACKENDS
-require	transport	OP-ROUTE-IDENTITY-HAPROXY-LEGACY
-require	transport	OP-ROUTE-IDENTITY-SOCAT
-require	transport	OP-ROUTE-IDENTITY-SOCAT-MAP
-require	transport	OP-ROUTE-IDENTITY-SOCAT-LEGACY
-require	transport	OP-ANCHOR
-require	transport	OP-ANCHOR-SEED
-require	transport	OP-ANCHOR-KSK
-require	transport	OP-ANCHOR-UNUSABLE
-require	transport	OP-ANCHOR-UNWRITABLE
-require	transport	OP-ANCHOR-SYMLINK
-require	transport	OP-ANCHOR-READONLY-FILE
-require	transport	OP-ANCHOR-KEEP
-require	transport	OP-ANCHOR-SEED-REJECT
-require	transport	OP-ANCHOR-SEED-DS
-require	transport	OP-ANCHOR-PUBLISHED-BASE
-require	transport	OP-ANCHOR-BASE-AGREES
-require	transport	OP-ANCHOR-ROLLOVER
-require	transport	OP-BOGUS
-require	transport	OP-SIGNED
-require	transport	OP-UNSIGNED
-require	transport	OP-CONTROL-LOCAL
-require	transport	OP-CONTROL-SOCKET
-require	transport	OP-CONTROL-AUTHORIZED
-require	transport	OP-CONTROL-DENIED
-require	transport	OP-CONTROL-NO-SHARED-KEYS
-require	transport	OP-CONTROL-RUNDIR
-require	transport	OP-CONTROL-BASE-SELFTEST
-require	transport	OP-CONTROL-NO-NETWORK
-require	transport	OP-ACK-HAPROXY-PRIVATE
-require	transport	OP-ACK-SOCAT-PRIVATE
-require	transport	OP-ACK-HAPROXY-IMAGE
-require	transport	OP-ACK-HAPROXY-REJECT
-require	transport	OP-ACK-SOCAT-IMAGE
-require	transport	OP-ACK-SOCAT-REJECT
-owner	transport	transport
+# Scenario requirements per stage and plan, parsed as data by tests/run.sh
+# (never sourced) before any group of that stage or plan runs.
+#   require <stage:NAME|plan:NAME> <scenario id> <case>
+#       the row exists in scenarios.tsv, is active, is proven by exactly
+#       <case>, and its group runs in that stage or plan;
+#   owner   <stage:NAME|plan:NAME> <owner>
+#       every scenario row of that owner is active and runs there.
+# The list must be complete: every active scenario whose group runs in a
+# stage or plan is required there. This file is required; edit it by hand
+# when a mandatory proof is deliberately added, moved or retired.
+require	stage:baseline-contracts	S1-TLS-GOOD	t_dot_matching_cert_verifies
+require	stage:baseline-contracts	S1-TLS-WRONGNAME	t_dot_wrong_name_rejected
+require	stage:baseline-contracts	S1-TLS-EXPIRED	t_dot_expired_rejected
+require	stage:baseline-contracts	S1-TLS-UNTRUSTED	t_dot_untrusted_rejected
+require	stage:baseline-contracts	S1-TLS-UNVERIFIED	t_dot_every_variant_serves_without_verification
+require	stage:baseline-contracts	S1-DNSSEC-SIGNED	t_signed_answer_fully_validates
+require	stage:baseline-contracts	S1-DNSSEC-BOGUS-SERVED	t_bogus_is_delivered_by_fixture
+require	stage:baseline-contracts	S1-DNSSEC-BOGUS-REJECTED	t_bogus_is_rejected_by_validator
+require	stage:baseline-contracts	S1-DNSSEC-UNSIGNED	t_unsigned_delegation_is_insecure
+require	stage:baseline-contracts	S1-DNSSEC-NXDOMAIN	t_nxdomain_is_validated_negative
+require	stage:baseline-contracts	S1-DNSSEC-NODATA	t_nodata_is_validated_negative
+require	stage:baseline-contracts	S1-UDP-TC	t_udp_truncates_and_tcp_answers
+require	stage:baseline-contracts	S1-TCP-FULL	t_udp_truncates_and_tcp_answers
+require	stage:baseline-contracts	S1-REFUSED	t_out_of_zone_is_refused
+require	stage:baseline-contracts	S1-OUT-OK	t_collect_records_every_attempt_with_identity
+require	stage:baseline-contracts	S1-OUT-NXDOMAIN	t_collect_servfail_is_failure_and_nxdomain_is_answer
+require	stage:baseline-contracts	S1-OUT-SERVFAIL	t_collect_servfail_is_failure_and_nxdomain_is_answer
+require	stage:baseline-contracts	S1-OUT-TIMEOUT	t_collect_counts_timeouts_in_denominator
+require	stage:baseline-contracts	S1-PIPELINE	t_fixture_collector_stats_pipeline
+require	stage:baseline-contracts	S1-WL-COLD	t_default_workloads_are_controlled_names
+require	stage:baseline-contracts	S1-WL-WARM	t_default_workloads_are_controlled_names
+require	stage:baseline-contracts	S1-WL-IDLE	t_default_workloads_are_controlled_names
+require	stage:baseline-contracts	S1-WL-WAKE	t_default_workloads_are_controlled_names
+require	stage:baseline-contracts	OP-TLS-NAME-FX	t_dot_matching_cert_verifies
+require	stage:baseline-contracts	OP-TLS-WRONGNAME-FX	t_dot_wrong_name_rejected
+require	stage:baseline-contracts	OP-TLS-UNTRUSTED-FX	t_dot_untrusted_rejected
+require	stage:baseline-contracts	OP-TLS-EXPIRED-FX	t_dot_expired_rejected
+require	stage:baseline-contracts	OP-ANCHOR-FX	t_unbound_anchor_matches_served_key
+require	stage:baseline-contracts	OP-BOGUS-FX	t_bogus_is_delivered_by_fixture
+require	stage:baseline-contracts	OP-SIGNED-FX	t_signed_answer_fully_validates
+require	stage:baseline-contracts	OP-UNSIGNED-FX	t_unsigned_delegation_is_insecure
+require	stage:baseline-contracts	OP-NO-HISTORY-NAMES	t_collect_refuses_names_outside_workloads
+require	stage:baseline-contracts	OP-NO-HISTORY-WORKLOADS	t_default_workloads_are_controlled_names
+require	stage:baseline-contracts	OP-NO-SECRETS-FX	t_fixture_state_stays_in_artifacts
+require	stage:baseline-contracts	OP-NO-SECRETS-KEYS	t_keys_are_fresh_and_private
+require	stage:baseline-contracts	OP-CACHE-CLASS	t_collect_records_every_attempt_with_identity
+require	stage:baseline-contracts	OP-FAILURES-COLLECT	t_collect_counts_timeouts_in_denominator
+require	stage:baseline-contracts	OP-FAILURES-STATS	t_stats_failures_stay_in_denominator
+require	stage:baseline-contracts	OP-FAILURES-EMPTY	t_zero_case_group_rejected
+require	stage:baseline-contracts	OP-FAILURES-CELL	t_matrix_each_single_cell_deletion_fails
+require	stage:baseline-contracts	OP-FAILURES-PIPELINE	t_fixture_collector_stats_pipeline
+require	stage:baseline	S1-TLS-GOOD	t_dot_matching_cert_verifies
+require	stage:baseline	S1-TLS-WRONGNAME	t_dot_wrong_name_rejected
+require	stage:baseline	S1-TLS-EXPIRED	t_dot_expired_rejected
+require	stage:baseline	S1-TLS-UNTRUSTED	t_dot_untrusted_rejected
+require	stage:baseline	S1-TLS-UNVERIFIED	t_dot_every_variant_serves_without_verification
+require	stage:baseline	S1-DNSSEC-SIGNED	t_signed_answer_fully_validates
+require	stage:baseline	S1-DNSSEC-BOGUS-SERVED	t_bogus_is_delivered_by_fixture
+require	stage:baseline	S1-DNSSEC-BOGUS-REJECTED	t_bogus_is_rejected_by_validator
+require	stage:baseline	S1-DNSSEC-UNSIGNED	t_unsigned_delegation_is_insecure
+require	stage:baseline	S1-DNSSEC-NXDOMAIN	t_nxdomain_is_validated_negative
+require	stage:baseline	S1-DNSSEC-NODATA	t_nodata_is_validated_negative
+require	stage:baseline	S1-UDP-TC	t_udp_truncates_and_tcp_answers
+require	stage:baseline	S1-TCP-FULL	t_udp_truncates_and_tcp_answers
+require	stage:baseline	S1-REFUSED	t_out_of_zone_is_refused
+require	stage:baseline	S1-OUT-OK	t_collect_records_every_attempt_with_identity
+require	stage:baseline	S1-OUT-NXDOMAIN	t_collect_servfail_is_failure_and_nxdomain_is_answer
+require	stage:baseline	S1-OUT-SERVFAIL	t_collect_servfail_is_failure_and_nxdomain_is_answer
+require	stage:baseline	S1-OUT-TIMEOUT	t_collect_counts_timeouts_in_denominator
+require	stage:baseline	S1-PIPELINE	t_fixture_collector_stats_pipeline
+require	stage:baseline	S1-WL-COLD	t_default_workloads_are_controlled_names
+require	stage:baseline	S1-WL-WARM	t_default_workloads_are_controlled_names
+require	stage:baseline	S1-WL-IDLE	t_default_workloads_are_controlled_names
+require	stage:baseline	S1-WL-WAKE	t_default_workloads_are_controlled_names
+require	stage:baseline	OP-TLS-NAME-FX	t_dot_matching_cert_verifies
+require	stage:baseline	OP-TLS-WRONGNAME-FX	t_dot_wrong_name_rejected
+require	stage:baseline	OP-TLS-UNTRUSTED-FX	t_dot_untrusted_rejected
+require	stage:baseline	OP-TLS-EXPIRED-FX	t_dot_expired_rejected
+require	stage:baseline	OP-ANCHOR-FX	t_unbound_anchor_matches_served_key
+require	stage:baseline	OP-BOGUS-FX	t_bogus_is_delivered_by_fixture
+require	stage:baseline	OP-SIGNED-FX	t_signed_answer_fully_validates
+require	stage:baseline	OP-UNSIGNED-FX	t_unsigned_delegation_is_insecure
+require	stage:baseline	OP-NO-HISTORY-NAMES	t_collect_refuses_names_outside_workloads
+require	stage:baseline	OP-NO-HISTORY-WORKLOADS	t_default_workloads_are_controlled_names
+require	stage:baseline	OP-NO-SECRETS-FX	t_fixture_state_stays_in_artifacts
+require	stage:baseline	OP-NO-SECRETS-KEYS	t_keys_are_fresh_and_private
+require	stage:baseline	OP-CACHE-CLASS	t_collect_records_every_attempt_with_identity
+require	stage:baseline	OP-FAILURES-COLLECT	t_collect_counts_timeouts_in_denominator
+require	stage:baseline	OP-FAILURES-STATS	t_stats_failures_stay_in_denominator
+require	stage:baseline	OP-FAILURES-EMPTY	t_zero_case_group_rejected
+require	stage:baseline	OP-FAILURES-CELL	t_matrix_each_single_cell_deletion_fails
+require	stage:baseline	OP-FAILURES-PIPELINE	t_fixture_collector_stats_pipeline
+require	stage:transport-images	OP-TLS-NAME	t_haproxy_routes_carry_authenticated_tls
+require	stage:transport-images	OP-TLS-NAME-SOCAT	t_socat_routes_carry_authenticated_tls
+require	stage:transport-images	OP-TLS-WRONGNAME	t_haproxy_route_tls_rejects_bad_certificates
+require	stage:transport-images	OP-TLS-WRONGNAME-SOCAT	t_socat_route_tls_rejects_bad_certificates
+require	stage:transport-images	OP-TLS-UNTRUSTED	t_haproxy_route_tls_rejects_bad_certificates
+require	stage:transport-images	OP-TLS-UNTRUSTED-SOCAT	t_socat_route_tls_rejects_bad_certificates
+require	stage:transport-images	OP-TLS-EXPIRED	t_haproxy_route_tls_rejects_bad_certificates
+require	stage:transport-images	OP-TLS-EXPIRED-SOCAT	t_socat_route_tls_rejects_bad_certificates
+require	stage:transport-images	OP-ROUTE-IDENTITY	t_route_never_switches_provider_when_its_provider_fails
+require	stage:transport-images	OP-ROUTE-IDENTITY-HAPROXY-MAP	t_each_route_reaches_only_its_provider
+require	stage:transport-images	OP-ROUTE-IDENTITY-HAPROXY-BACKENDS	t_route_backends_hold_only_their_provider
+require	stage:transport-images	OP-ROUTE-IDENTITY-HAPROXY-LEGACY	t_legacy_853_is_cloudflare_only
+require	stage:transport-images	OP-ROUTE-IDENTITY-SOCAT	t_route_never_switches_provider_when_its_provider_fails
+require	stage:transport-images	OP-ROUTE-IDENTITY-SOCAT-MAP	t_each_route_reaches_only_its_provider
+require	stage:transport-images	OP-ROUTE-IDENTITY-SOCAT-LEGACY	t_legacy_853_fails_over_within_cloudflare_only
+require	stage:transport-images	OP-ANCHOR	t_effective_config_uses_persistent_anchor_and_socket
+require	stage:transport-images	OP-ANCHOR-SEED	t_fresh_state_dir_is_seeded_and_persisted
+require	stage:transport-images	OP-ANCHOR-KSK	t_seed_anchor_carries_root_ksks
+require	stage:transport-images	OP-ANCHOR-UNUSABLE	t_unusable_anchor_file_refused
+require	stage:transport-images	OP-ANCHOR-UNWRITABLE	t_unwritable_anchor_dir_refused
+require	stage:transport-images	OP-ANCHOR-SYMLINK	t_symlinked_anchor_state_refused
+require	stage:transport-images	OP-ANCHOR-READONLY-FILE	t_read_only_anchor_file_refused
+require	stage:transport-images	OP-ANCHOR-KEEP	t_existing_valid_anchor_is_kept
+require	stage:transport-images	OP-ANCHOR-SEED-REJECT	t_seed_builder_rejects_unverified_keys
+require	stage:transport-images	OP-ANCHOR-SEED-DS	t_seed_falls_back_to_builtin_ds
+require	stage:transport-images	OP-ANCHOR-PUBLISHED-BASE	t_product_builds_on_published_base
+require	stage:transport-images	OP-ANCHOR-BASE-AGREES	t_base_and_product_anchor_agree
+require	stage:transport-images	OP-ANCHOR-ROLLOVER	t_anchor_survives_partial_ksk_revocation
+require	stage:transport-images	OP-BOGUS	t_bogus_answer_rejected_locally
+require	stage:transport-images	OP-SIGNED	t_signed_answer_validates_with_ad
+require	stage:transport-images	OP-UNSIGNED	t_unsigned_answer_is_insecure_not_bogus
+require	stage:transport-images	OP-CONTROL-LOCAL	t_no_network_control_listener
+require	stage:transport-images	OP-CONTROL-SOCKET	t_control_socket_mode_and_owner
+require	stage:transport-images	OP-CONTROL-AUTHORIZED	t_control_authorized_as_unbound_user
+require	stage:transport-images	OP-CONTROL-DENIED	t_control_denied_to_other_uids
+require	stage:transport-images	OP-CONTROL-NO-SHARED-KEYS	t_images_carry_no_private_keys
+require	stage:transport-images	OP-CONTROL-RUNDIR	t_unusable_runtime_dir_refused
+require	stage:transport-images	OP-CONTROL-BASE-SELFTEST	t_base_image_self_test_passes
+require	stage:transport-images	OP-CONTROL-NO-NETWORK	t_network_control_interface_refused
+require	stage:transport-images	OP-ACK-HAPROXY-PRIVATE	t_restart_control_is_private_to_the_image_user
+require	stage:transport-images	OP-ACK-SOCAT-PRIVATE	t_restart_control_is_private_to_the_image_user
+require	stage:transport-images	OP-ACK-HAPROXY-IMAGE	t_restart_request_acknowledged_with_new_generation
+require	stage:transport-images	OP-ACK-HAPROXY-REJECT	t_invalid_restart_request_rejected
+require	stage:transport-images	OP-ACK-SOCAT-IMAGE	t_restart_request_acknowledged_with_new_generation
+require	stage:transport-images	OP-ACK-SOCAT-REJECT	t_invalid_restart_request_rejected
+require	stage:transport	OP-TLS-NAME	t_haproxy_routes_carry_authenticated_tls
+require	stage:transport	OP-TLS-NAME-SOCAT	t_socat_routes_carry_authenticated_tls
+require	stage:transport	OP-TLS-WRONGNAME	t_haproxy_route_tls_rejects_bad_certificates
+require	stage:transport	OP-TLS-WRONGNAME-SOCAT	t_socat_route_tls_rejects_bad_certificates
+require	stage:transport	OP-TLS-UNTRUSTED	t_haproxy_route_tls_rejects_bad_certificates
+require	stage:transport	OP-TLS-UNTRUSTED-SOCAT	t_socat_route_tls_rejects_bad_certificates
+require	stage:transport	OP-TLS-EXPIRED	t_haproxy_route_tls_rejects_bad_certificates
+require	stage:transport	OP-TLS-EXPIRED-SOCAT	t_socat_route_tls_rejects_bad_certificates
+require	stage:transport	OP-ROUTE-IDENTITY	t_route_never_switches_provider_when_its_provider_fails
+require	stage:transport	OP-ROUTE-IDENTITY-HAPROXY-MAP	t_each_route_reaches_only_its_provider
+require	stage:transport	OP-ROUTE-IDENTITY-HAPROXY-BACKENDS	t_route_backends_hold_only_their_provider
+require	stage:transport	OP-ROUTE-IDENTITY-HAPROXY-LEGACY	t_legacy_853_is_cloudflare_only
+require	stage:transport	OP-ROUTE-IDENTITY-SOCAT	t_route_never_switches_provider_when_its_provider_fails
+require	stage:transport	OP-ROUTE-IDENTITY-SOCAT-MAP	t_each_route_reaches_only_its_provider
+require	stage:transport	OP-ROUTE-IDENTITY-SOCAT-LEGACY	t_legacy_853_fails_over_within_cloudflare_only
+require	stage:transport	OP-ANCHOR	t_effective_config_uses_persistent_anchor_and_socket
+require	stage:transport	OP-ANCHOR-SEED	t_fresh_state_dir_is_seeded_and_persisted
+require	stage:transport	OP-ANCHOR-KSK	t_seed_anchor_carries_root_ksks
+require	stage:transport	OP-ANCHOR-UNUSABLE	t_unusable_anchor_file_refused
+require	stage:transport	OP-ANCHOR-UNWRITABLE	t_unwritable_anchor_dir_refused
+require	stage:transport	OP-ANCHOR-SYMLINK	t_symlinked_anchor_state_refused
+require	stage:transport	OP-ANCHOR-READONLY-FILE	t_read_only_anchor_file_refused
+require	stage:transport	OP-ANCHOR-KEEP	t_existing_valid_anchor_is_kept
+require	stage:transport	OP-ANCHOR-SEED-REJECT	t_seed_builder_rejects_unverified_keys
+require	stage:transport	OP-ANCHOR-SEED-DS	t_seed_falls_back_to_builtin_ds
+require	stage:transport	OP-ANCHOR-PUBLISHED-BASE	t_product_builds_on_published_base
+require	stage:transport	OP-ANCHOR-BASE-AGREES	t_base_and_product_anchor_agree
+require	stage:transport	OP-ANCHOR-ROLLOVER	t_anchor_survives_partial_ksk_revocation
+require	stage:transport	OP-BOGUS	t_bogus_answer_rejected_locally
+require	stage:transport	OP-SIGNED	t_signed_answer_validates_with_ad
+require	stage:transport	OP-UNSIGNED	t_unsigned_answer_is_insecure_not_bogus
+require	stage:transport	OP-CONTROL-LOCAL	t_no_network_control_listener
+require	stage:transport	OP-CONTROL-SOCKET	t_control_socket_mode_and_owner
+require	stage:transport	OP-CONTROL-AUTHORIZED	t_control_authorized_as_unbound_user
+require	stage:transport	OP-CONTROL-DENIED	t_control_denied_to_other_uids
+require	stage:transport	OP-CONTROL-NO-SHARED-KEYS	t_images_carry_no_private_keys
+require	stage:transport	OP-CONTROL-RUNDIR	t_unusable_runtime_dir_refused
+require	stage:transport	OP-CONTROL-BASE-SELFTEST	t_base_image_self_test_passes
+require	stage:transport	OP-CONTROL-NO-NETWORK	t_network_control_interface_refused
+require	stage:transport	OP-ACK-HAPROXY-PRIVATE	t_restart_control_is_private_to_the_image_user
+require	stage:transport	OP-ACK-SOCAT-PRIVATE	t_restart_control_is_private_to_the_image_user
+require	stage:transport	OP-ACK-HAPROXY-IMAGE	t_restart_request_acknowledged_with_new_generation
+require	stage:transport	OP-ACK-HAPROXY-REJECT	t_invalid_restart_request_rejected
+require	stage:transport	OP-ACK-SOCAT-IMAGE	t_restart_request_acknowledged_with_new_generation
+require	stage:transport	OP-ACK-SOCAT-REJECT	t_invalid_restart_request_rejected
+require	stage:transport	OP-FAILURES-EMPTY	t_zero_case_group_rejected
+require	stage:transport	OP-FAILURES-CELL	t_matrix_each_single_cell_deletion_fails
+owner	stage:transport	transport
