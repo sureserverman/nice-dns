@@ -1,6 +1,35 @@
-FROM sureserver/hardened-unbound:latest
+# The default stays the plain published name: Apple's `container` builder
+# cannot resolve localhost/ prefixes. Candidate builds and tests pass
+# --build-arg BASE_IMAGE=<locally built hardened-unbound>.
+ARG BASE_IMAGE=sureserver/hardened-unbound:latest
+FROM ${BASE_IMAGE}
 
 ADD --chown=unbound:unbound etc/* /etc/unbound/
+
+# Entry point: validates the persistent trust anchor and the control socket
+# directory, then execs Unbound. Root-owned and not writable by unbound.
+COPY start.sh /usr/local/bin/nice-dns-unbound-start
+
+# Resolver state and the local control channel:
+#  - Remove every remote-control credential and anchor an older published base
+#    may still carry (it baked one shared control keypair into the public
+#    image). nice-dns controls Unbound only through a Unix socket.
+#  - Build the read-only root trust-anchor seed, verified offline against
+#    unbound-anchor's builtin DS records; the build fails if it cannot be.
+#  - /var/lib/unbound: persistent anchor state (RFC 5011 updates), owned by
+#    unbound, 0700; mount a volume here to keep it across containers.
+#  - /run/unbound: control socket directory, unbound:unbound 0750. Unbound
+#    creates control.sock inside it with mode 0660.
+RUN rm -f /etc/unbound/unbound_server.key /etc/unbound/unbound_server.pem \
+          /etc/unbound/unbound_control.key /etc/unbound/unbound_control.pem \
+          /etc/unbound/root.key \
+    && chmod 0555 /usr/local/bin/nice-dns-unbound-start \
+    && mkdir -p /usr/share/nice-dns \
+    && /usr/local/bin/nice-dns-unbound-start build-seed \
+    && mkdir -p /var/lib/unbound /run/unbound \
+    && chown unbound:unbound /var/lib/unbound /run/unbound \
+    && chmod 0700 /var/lib/unbound \
+    && chmod 0750 /run/unbound
 
 # Lock down: remove apk, set strict permissions, remove chown
 RUN $APP_DIR/post-install.sh
@@ -8,3 +37,5 @@ RUN $APP_DIR/post-install.sh
 # Drop privileges. The base image's setcap on /usr/sbin/unbound grants
 # CAP_NET_BIND_SERVICE, so unbound can still bind port 53 as a non-root user.
 USER unbound
+
+CMD ["/usr/local/bin/nice-dns-unbound-start"]

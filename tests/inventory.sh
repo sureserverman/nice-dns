@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # nice-dns source inventory (sub-plan 01, Task 1.1).
 #
-# Usage: bash tests/inventory.sh baseline [--out DIR]
+# Usage: bash tests/inventory.sh <baseline|transport> [--out DIR]
+#   (the label names the sub-plan taking the inventory; both record the same)
 #
 # Records, for nice-dns and its four sibling repositories (tor-haproxy,
 # tor-socat, hardened-unbound, pi-hole-hardened): full HEAD SHA, branch,
@@ -35,7 +36,7 @@ GIT_OPTIONAL_LOCKS=0
 export GIT_OPTIONAL_LOCKS
 
 inv_err() { printf 'inventory.sh: %s\n' "$*" >&2; }
-inv_usage() { inv_err "usage: inventory.sh baseline [--out DIR]"; }
+inv_usage() { inv_err "usage: inventory.sh <baseline|transport> [--out DIR]"; }
 
 inv_inside_checkout() {
   case "$1/" in "$INV_ROOT"/*|"$INV_ROOT_LOGICAL"/*) return 0 ;; esac
@@ -146,8 +147,8 @@ main() {
   local mode="${1:-}" out="" phys base rc=0 r
   [ $# -gt 0 ] && shift
   case "$mode" in
-    baseline) ;;
-    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; return 0 ;;
+    baseline|transport) ;;
+    -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; return 0 ;;
     *) inv_usage; return 2 ;;
   esac
   while [ $# -gt 0 ]; do
@@ -163,7 +164,7 @@ main() {
     phys="$(cd "$out" && pwd -P)"
     if inv_inside_checkout "$phys"; then inv_err "--out resolves inside the checkout ($phys); refusing"; return 2; fi
   else
-    base="$(bash "$INV_RUNNER" new-run tests/inventory.sh baseline)" || { inv_err "could not create a run directory"; return 2; }
+    base="$(bash "$INV_RUNNER" new-run tests/inventory.sh "$mode")" || { inv_err "could not create a run directory"; return 2; }
     out="$base/inventory"
     mkdir -p "$out" || return 2
   fi

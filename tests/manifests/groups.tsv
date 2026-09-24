@@ -14,3 +14,4 @@ unit	receipt-verifier	tests/unit/receipt-verifier-tests.sh	local
 live	baseline-characterize	tests/live/baseline-characterize.sh	live
 unit	baseline	tests/unit/baseline-tests.sh	local
 live	baseline-matrix	tests/live/baseline-matrix.sh	live
+integration	resolver-state	tests/integration/resolver-state.sh	local
