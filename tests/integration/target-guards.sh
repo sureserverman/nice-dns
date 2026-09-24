@@ -486,6 +486,8 @@ t_install_cell_maps_each_cell_to_its_installer() {
   assert_match "test -d /pihole && echo hardened" "$script" "hardened marker survives the image's own lockdown (post-install.sh deletes itself)"
   assert_match 'git ls-remote https://github.com/sureserverman/nice-dns.git refs/heads/main' "$script" "GitHub main is observed on the target before install-mac.sh clones it"
   assert_match 'GitHub main is .*not \$NICE_DNS_SOURCE_SHA; refusing' "$script" "and refused when it is not the pinned commit"
+  assert_match "printf 'github_main_after" "$script" "GitHub main is read again after install-mac.sh's own clone"
+  assert_match 'GitHub main moved to .* during the install' "$script" "and a move during the install fails the operation"
   assert_match 'if \[ "\$plat" = macos \]; then PATH="/opt/homebrew/bin:' "$script" "macOS installers get Homebrew on PATH (ssh shells are not login shells)"
 }
 

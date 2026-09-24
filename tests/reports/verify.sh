@@ -111,12 +111,13 @@ cmd_manifests() {
         minimum)
           [ -n "${b:-}" ] && [ -z "${c:-}" ] || err "$m.tsv: minimum row needs scenario, count"
           case "$b" in ''|*[!0-9]*) err "$m.tsv: minimum for $a is not a count" ;; esac ;;
-        content)
-          # The pattern is the rest of the row and may itself contain tabs.
-          [ -n "${b:-}" ] || err "$m.tsv: content row needs scenario, pattern" ;;
+        content) ;;   # checked below from the raw row: its pattern may hold tabs
         *) err "$m.tsv: unknown row type '$kind'" ;;
       esac
     done <"$MAN/$m.tsv"
+    while IFS= read -r a; do
+      [ -n "$a" ] || err "$m.tsv: content row has an empty pattern"
+    done < <(awk -F '\t' '!/^#/ && $1 == "content" { p = $0; if (!sub(/^[^\t]*\t[^\t]*\t/, "", p)) p = ""; print p }' "$MAN/$m.tsv")
     for a in $(awk -F '\t' '!/^#/ && ($1 == "minimum" || $1 == "content") { print $2 }' "$MAN/$m.tsv"); do
       case "$ids" in *"|$a|"*) ;; *) err "$m.tsv: minimum/content for undeclared scenario $a" ;; esac
     done
@@ -345,9 +346,11 @@ check_contents() {
         [ "$n" -ge "$min" ] || err "$f: scenario $id ($c) has $n samples, fewer than the declared minimum $min"
       fi
     fi
-    while IFS="$TAB" read -r _ _ pat; do
+    # The pattern is the literal rest of the row after "content<TAB>ID<TAB>":
+    # `read` with a tab IFS would merge adjacent tabs and strip a trailing one.
+    while IFS= read -r pat; do
       grep -Eq -- "$pat" "$d/$a" || err "$f: scenario $id ($c) artifact $a has no line matching /$pat/"
-    done < <(manifest_rows "$name" content | awk -F '\t' -v i="$id" '$2 == i')
+    done < <(manifest_rows "$name" content | awk -F '\t' -v i="$id" '$2 == i { sub(/^[^\t]*\t[^\t]*\t/, ""); print }')
   done < <(awk -F '\t' '$1 == "scenario"' "$f")
   # Aggregate sample files under cells/P-X-H/ belong to that cell.
   while IFS="$TAB" read -r _ _ _ a; do

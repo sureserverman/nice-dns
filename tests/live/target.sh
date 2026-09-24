@@ -40,7 +40,10 @@
 #                    install-mac.sh clones main itself, so it is refused
 #                    unless this checkout's origin/main is that commit and
 #                    `git ls-remote` of GitHub main, run on the target just
-#                    before, is that commit too (recorded as github_main). The
+#                    before and again just after, is that commit both times
+#                    (github_main, github_main_after; the install fails
+#                    otherwise). This is weaker than the inline archive: a
+#                    push and revert inside the window would not show. The
 #                    installer's output is streamed back; it may carry bridge
 #                    lines, so keep it out of portable evidence. Hardened
 #                    cells also need the pi-hole-hardened sibling, which has
@@ -578,6 +581,17 @@ case "$NICE_DNS_OP" in
       "$NICE_DNS_SOURCE_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     (cd "$w/nice-dns" && bash "./$inst" "$NICE_DNS_PROXY" main) </dev/null 2>&1
     rc=$?
+    if [ "$inst" = install-mac.sh ]; then
+      # install-mac.sh's own clone happened between the two reads: main equal
+      # to the pin before and after bounds what it installed (a push and
+      # revert inside the window is the one case this cannot see).
+      ga=$(git ls-remote https://github.com/sureserverman/nice-dns.git refs/heads/main </dev/null 2>/dev/null | cut -f1)
+      printf 'github_main_after\t%s\n' "${ga:-unreadable}"
+      if [ "$ga" != "$NICE_DNS_SOURCE_SHA" ]; then
+        echo "GitHub main moved to '${ga:-unreadable}' during the install; what install-mac.sh cloned is unknown" >&2
+        [ "$rc" -eq 0 ] && rc=1
+      fi
+    fi
     printf 'finished_utc\t%s\ninstaller_exit\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc"
     exit $rc ;;
   sever-upstream) ctl stop "$NICE_DNS_COMPONENT" ;;

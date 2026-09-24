@@ -392,3 +392,16 @@ t_manifest_rules_must_name_declared_scenarios() {
   assert_rc 1 $? "a rule for an undeclared scenario"
   assert_match 'undeclared scenario BL-NOPE' "$(cat "$CASE_DIR/out")" "names it"
 }
+
+t_content_rules_keep_their_tabs() {
+  # A content pattern is the literal rest of its manifest row, tabs included:
+  # "running" elsewhere on a line is not a container whose state is running.
+  rv_build baseline "$CASE_DIR/b"
+  printf 'pi-hole\texited\t-\n# pi-hole was running before the fault\n' >"$CASE_DIR/b/art/BL-RESTORED-linux-haproxy-standard.txt"
+  printf 'imagery\tnot an image row\n' >"$CASE_DIR/b/art/BL-CONFIG-linux-haproxy-standard.txt"
+  rv_rehash "$CASE_DIR/b"
+  rv "$CASE_DIR/b/receipt.tsv" --require-matrix all
+  assert_rc 1 "$RV_RC" "substring matches are not field matches"
+  assert_match 'BL-RESTORED \(linux/haproxy/standard\).*no line matching' "$RV_OUT" "a stopped container is not restored evidence"
+  assert_match 'BL-CONFIG \(linux/haproxy/standard\).*no line matching' "$RV_OUT" "^image<TAB> keeps its tab"
+}

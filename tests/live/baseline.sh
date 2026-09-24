@@ -406,8 +406,8 @@ cmd_matrix() {
     never=''
     if ! ready="$(wait_ready "$label")"; then never="$ready"; fi
     pargs=(--product-sha "$sha" --install-source inline-archive)
-    # install-mac.sh clones GitHub main itself; target.sh only lets it run when
-    # this checkout's origin/main is the pinned commit.
+    # install-mac.sh clones GitHub main itself; target.sh lets it run only when
+    # origin/main and GitHub main (read before and after) are the pinned commit.
     [ "$PLATFORM/${c#*/}" = macos/standard ] && pargs=(--product-sha "$sha" --install-source github-main-lsremote)
     [ ${#hargs[@]} -gt 0 ] && pargs+=(--hardened-sha "${hargs[1]}")
     if ! bash "$0" characterize "$ALIAS" --targets "$TARGETS" --label "$label" "${pargs[@]}" >>"$M/$label.log" 2>&1; then
