@@ -156,10 +156,11 @@ t_socat_route_tls_rejects_bad_certificates() { ti_rejects_bad_certificates tor-s
 t_stage_covers_every_proxy_variant() {
   # The interaction stage must not silently omit a proxy: every proxy in the
   # eight-cell matrix has its transport group in stage transport-images.
-  local p rows
-  rows="$(awk -F '\t' '$1 == "transport-images" { print $2 "/" $3 }' "$NICE_DNS_ROOT/tests/manifests/stages.tsv")"
+  local p rows man="${NICE_DNS_TEST_MANIFESTS:-$NICE_DNS_ROOT/tests/manifests}"
+  # The manifests the runner itself reads (tests/run.sh honours the override).
+  rows="$(awk -F '\t' '$1 == "transport-images" { print $2 "/" $3 }' "$man/stages.tsv")"
   # shellcheck disable=SC2013  # one word per proxy name
-  for p in $(awk -F '\t' '!/^#/ && NF == 3 { print $2 }' "$NICE_DNS_ROOT/tests/manifests/matrix.tsv" | LC_ALL=C sort -u); do
+  for p in $(awk -F '\t' '!/^#/ && NF == 3 { print $2 }' "$man/matrix.tsv" | LC_ALL=C sort -u); do
     assert_match "^integration/transport-$p\$" "$rows" "stage transport-images runs the $p transport group"
   done
   assert_match '^integration/transport-interaction$' "$rows" "stage transport-images runs the interaction group"
