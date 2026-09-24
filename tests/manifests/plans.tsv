@@ -8,3 +8,4 @@ transport	integration	transport-haproxy
 transport	integration	transport-socat
 transport	integration	transport-interaction
 transport	integration	route-transition
+transport	integration	probe-contract

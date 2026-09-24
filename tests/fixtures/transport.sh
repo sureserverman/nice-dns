@@ -193,12 +193,12 @@ tp_pid_of() { tp_pm exec "$TP_CTR" pidof "$1"; printf '%s\n' "$TP_OUT"; }
 
 # tp_healthcheck_rc: run the image's own HEALTHCHECK in the running container
 # (podman healthcheck run); TP_RC is its verdict (0 healthy). Fails the case
-# when the image carries no healthcheck, so "unhealthy" can never be an error
-# about a missing check.
+# when the image's healthcheck is not the verifying route probe, so
+# "unhealthy" can never be an error about a missing or unverified check.
 tp_healthcheck_rc() {
   local hc
   hc="$(podman image inspect -f '{{.Config.Healthcheck}}' "$TP_IMG" 2>/dev/null | grep -v -- "$TP_WARN")"
-  assert_match 'dig' "$hc" "image $TP_IMG carries its HEALTHCHECK ($hc)"
+  assert_match 'nice-dns-route-probe' "$hc" "image $TP_IMG carries its HEALTHCHECK, the verifying route probe ($hc)"
   tp_pm healthcheck run "$TP_CTR"
 }
 

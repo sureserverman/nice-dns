@@ -19,3 +19,4 @@ integration	transport-haproxy	tests/integration/transport-haproxy.sh	local
 integration	transport-socat	tests/integration/transport-socat.sh	local
 integration	transport-interaction	tests/integration/transport-interaction.sh	local
 integration	route-transition	tests/integration/route-transition.sh	local
+integration	probe-contract	tests/integration/probe-contract.sh	local

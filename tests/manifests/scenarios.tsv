@@ -108,3 +108,16 @@ OP-ROUTE-RENDER-TABLE	SEC-TLS-NAME	integration	route-transition	t_rendered_route
 OP-ROUTE-NO-DIRECT-FALLBACK	PRIV-NO-DIRECT	integration	route-transition	t_direct_fallback_refused	transport
 OP-ROUTE-RESTORE	PRIV-NO-DIRECT	integration	route-transition	t_failed_activation_restores_previous_route	transport
 OP-ROUTE-ROLLBACK-KEEPS-FORWARDING	PRIV-NO-DIRECT	integration	route-transition	t_failed_rollback_escalates_and_keeps_forwarding	transport
+OP-PROBE-TLS-NAME-HAPROXY	SEC-TLS-NAME	integration	probe-contract	t_haproxy_probe_authenticates_and_follows_route	transport
+OP-PROBE-ROUTE-HAPROXY	PRIV-ROUTE-IDENTITY	integration	probe-contract	t_haproxy_probe_authenticates_and_follows_route	transport
+OP-PROBE-WRONGNAME-HAPROXY	SEC-TLS-WRONGNAME	integration	probe-contract	t_haproxy_probe_rejects_bad_certificates	transport
+OP-PROBE-UNTRUSTED-HAPROXY	SEC-TLS-UNTRUSTED	integration	probe-contract	t_haproxy_probe_rejects_bad_certificates	transport
+OP-PROBE-EXPIRED-HAPROXY	SEC-TLS-EXPIRED	integration	probe-contract	t_haproxy_probe_rejects_bad_certificates	transport
+OP-PROBE-HEALTH-HAPROXY	SEC-TLS-WRONGNAME	integration	probe-contract	t_haproxy_healthcheck_uses_verifying_probe	transport
+OP-PROBE-TLS-NAME-SOCAT	SEC-TLS-NAME	integration	probe-contract	t_socat_probe_authenticates_and_follows_route	transport
+OP-PROBE-ROUTE-SOCAT	PRIV-ROUTE-IDENTITY	integration	probe-contract	t_socat_probe_authenticates_and_follows_route	transport
+OP-PROBE-WRONGNAME-SOCAT	SEC-TLS-WRONGNAME	integration	probe-contract	t_socat_probe_rejects_bad_certificates	transport
+OP-PROBE-UNTRUSTED-SOCAT	SEC-TLS-UNTRUSTED	integration	probe-contract	t_socat_probe_rejects_bad_certificates	transport
+OP-PROBE-EXPIRED-SOCAT	SEC-TLS-EXPIRED	integration	probe-contract	t_socat_probe_rejects_bad_certificates	transport
+OP-PROBE-HEALTH-SOCAT	SEC-TLS-WRONGNAME	integration	probe-contract	t_socat_healthcheck_uses_verifying_probe	transport
+OP-PROBE-FAILOVER-SOCAT	SEC-TLS-WRONGNAME	integration	probe-contract	t_socat_legacy_failover_uses_verifying_probe	transport
