@@ -6,11 +6,13 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the
 - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)
   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.
 - Baseline source: this repository at commit
-  `b85bc9b7786efc7d3bf0572875e95e214dfa1d6c`. Citations are `path:line` at that commit.
-  It is the product the eight-cell baseline receipt measured. The document was
-  first written against 337fb15; sub-plan 01 then landed product fixes
-  (c8ecd70, fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived.
-  `check-contracts` fails when a cited file changes after this commit.
+  `04b98cfef06bba869d0b59ae44606ac17035afda`. Citations are `path:line` at that commit.
+  The eight-cell baseline receipt measured b85bc9b. The document was first
+  written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,
+  fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02
+  re-pins after each change to a cited file (Task 1.1: 04b98cf, Unbound
+  anchor and control). `check-contracts` fails when a cited file changes
+  after this commit.
 - Checked by `bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md`.
   The check needs every workflow ID below, every operation ID in
   `tests/manifests/privacy-ops.tsv`, and each workflow's required subsections.
