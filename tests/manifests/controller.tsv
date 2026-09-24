@@ -1,0 +1,12 @@
+# Receipt manifest: controller. Parsed as data by tests/reports/verify.sh (never sourced).
+# Rows (tab-separated):
+#   requires  <receipt>                     a receipt this one must link (by sha256)
+#   scenario  <id>  per-cell|global  <meaning>
+# A receipt naming a scenario that is not declared here fails verification;
+# a declared scenario missing from the receipt (for every required cell when
+# per-cell) fails verification. Add scenarios here, never only in a receipt.
+requires	transport
+scenario	CT-PROBES	per-cell	platform probes observe local, route and DNS-owner state correctly
+scenario	CT-RECOVERY-ACK	per-cell	each recovery records request, acknowledgement and later readiness
+scenario	CT-CACHE-VS-UPSTREAM	per-cell	cached answers never certify upstream health
+scenario	CT-BRIDGES	per-cell	bridge refresh keeps the working set and applies without disruption

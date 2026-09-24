@@ -1,0 +1,14 @@
+# Stage composition, parsed as data by tests/run.sh (never sourced).
+# Columns (tab-separated): stage  kind  group
+# Every (kind, group) must be registered in groups.tsv. Later tasks append rows.
+baseline-contracts	unit	harness-contracts
+baseline	unit	harness-contracts
+baseline-contracts	unit	fixtures
+baseline	unit	fixtures
+baseline-contracts	unit	measurement
+baseline	unit	measurement
+baseline-contracts	integration	baseline-contracts
+baseline	integration	baseline-contracts
+baseline	integration	target-guards
+baseline	unit	receipt-verifier
+baseline	unit	baseline

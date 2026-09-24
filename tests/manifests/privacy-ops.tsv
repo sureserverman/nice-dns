@@ -1,0 +1,25 @@
+# Mandatory privacy/security/evidence operations (design, ARCH-04/06/07/09,
+# master "Acceptance targets"). Each ID must be defined in
+# docs/workflows/dns-lifecycle.md as a bracketed tag, e.g. [SEC-TLS-NAME];
+# checked by `bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md`.
+# IDs are stable: add new ones, never renumber or reuse.
+# id	meaning
+SEC-TLS-NAME	Every upstream DoT session authenticates the documented TLS name of the selected provider route; Unbound is the only upstream TLS client
+SEC-TLS-WRONGNAME	A certificate whose name does not match the route's authentication name is rejected and no answer from that session is served
+SEC-TLS-UNTRUSTED	A certificate that does not chain to the configured trust store is rejected
+SEC-TLS-EXPIRED	An expired or not-yet-valid certificate is rejected
+PRIV-ROUTE-IDENTITY	An identity-bound route never hands a session to a provider other than the one whose name it authenticates
+SEC-DNSSEC-ANCHOR	The root trust anchor is wired into the effective Unbound config from an owned writable location; a missing or unusable anchor fails clearly and is never reported healthy
+SEC-DNSSEC-BOGUS	A bogus answer delivered by a controlled signer is rejected (SERVFAIL) by local Unbound validation, not by an upstream resolver
+SEC-DNSSEC-SIGNED	A correctly signed answer validates through local Unbound (AD set)
+SEC-DNSSEC-UNSIGNED	An answer from an unsigned zone is still answered (insecure, not bogus)
+PRIV-NO-DIRECT	No ordinary client query reaches a direct public resolver during normal operation, failure, recovery or maintenance
+PRIV-NO-HOST-PUBLIC	No lifecycle step (install, reinstall, upgrade, recovery) rewrites the host resolver to public DNS
+PRIV-BOOTSTRAP-DECLARED	Bootstrap traffic (image and package pulls, build-time DNS, bridge fetch) is inventoried as a declared exception and never serves client queries
+PRIV-NO-QUERY-HISTORY	Evidence, logs and diagnostics hold no client query history; probes use controlled names only
+PRIV-NO-SECRETS	Portable evidence carries no credentials, private keys or bridge certificates
+SEC-CONTROL-LOCAL	Resolver management uses a restricted local control channel with per-instance credentials; no network control listener with image-shared keys
+SEC-OWNED-RESTORE	Installers snapshot only the DNS state they own and restore exactly that snapshot on failure or uninstall
+REC-ACK-READINESS	Every recovery action records a request, an acknowledgement and a separate later readiness observation; a flag write is not an acknowledgement
+EVD-CACHE-NOT-UPSTREAM	A cached or stale local answer never certifies upstream health; cache and upstream states are recorded separately
+EVD-FAILURES-COUNTED	Every attempted query, including errors and timeouts, stays in the denominators; missing rows or skipped cells are BLOCKED, never green

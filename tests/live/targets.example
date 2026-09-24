@@ -1,0 +1,15 @@
+# Disposable test targets for tests/live/target.sh. Copy to
+# tests/live/targets.env (git-ignored), keep it mode 600, and list only hosts
+# that may lose DNS during tests. Never list the machine you work on or any
+# host other people depend on for DNS.
+#
+# Columns (tab-separated, data only, never sourced):
+#   alias  platform  ssh-alias  host-key  designation  designated_on
+#   platform     linux | macos
+#   ssh-alias    a Host from ~/.ssh/config (authentication stays there)
+#   host-key     SHA256 fingerprint, verified out of band; must already be in
+#                known_hosts (ssh-keygen -lF <host>)
+#   designation  the literal word: disposable
+#   designated_on  YYYY-MM-DD the owner designated the host disposable
+example-linux	linux	example-linux-ssh	SHA256:AAAAexampleAAAAfingerprintAAAAAAAAAAAAAAAAA	disposable	2026-09-22
+example-mac	macos	example-mac-ssh	SHA256:AAAAexampleAAAAfingerprintAAAAAAAAAAAAAAAAA	disposable	2026-09-22

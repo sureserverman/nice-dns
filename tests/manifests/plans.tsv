@@ -1,0 +1,4 @@
+# Plan-scope composition, parsed as data by tests/run.sh plan (never sourced).
+# Columns (tab-separated): plan  kind  group
+# A plan runs its rows in order as one run; live rows need --live --targets.
+baseline	live	baseline-matrix

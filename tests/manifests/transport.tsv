@@ -1,0 +1,14 @@
+# Receipt manifest: transport. Parsed as data by tests/reports/verify.sh (never sourced).
+# Rows (tab-separated):
+#   requires  <receipt>                     a receipt this one must link (by sha256)
+#   scenario  <id>  per-cell|global  <meaning>
+# A receipt naming a scenario that is not declared here fails verification;
+# a declared scenario missing from the receipt (for every required cell when
+# per-cell) fails verification. Add scenarios here, never only in a receipt.
+requires	baseline
+scenario	TR-TLS-NAME	per-cell	Unbound authenticates each provider route's documented TLS name
+scenario	TR-TLS-NEGATIVE	global	wrong-name, untrusted and expired certificates rejected by the product
+scenario	TR-ROUTE-IDENTITY	per-cell	identity-bound listeners never switch providers
+scenario	TR-DNSSEC	per-cell	signed validates, unsigned answers, bogus rejected by local Unbound; anchor owned and usable
+scenario	TR-CONTROL	per-cell	restricted local control socket; no network control listener
+scenario	TR-ROUTE-SWITCH	per-cell	controlled route transition: cache, in-flight and rollback results

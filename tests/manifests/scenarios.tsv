@@ -1,0 +1,68 @@
+# Scenario coverage, parsed as data by tests/run.sh check-scenarios (every
+# stage run checks it before running any group).
+# Columns (tab-separated): scenario  covers  kind  group  case  owner
+#   covers: a privacy-ops.tsv ID or variant:<name> from variants.tsv
+#   owner:  baseline | transport | controller | installers | qualification
+#   kind/group/case: a registered group and an existing t_* case (active), or
+#     "-" in all three when a later owner must supply the proof (deferred).
+# Every privacy op needs at least one row; every variant needs an active row.
+# Stage 1 rows prove fixture and evidence capability; product-level proof of
+# the same operation is a separate row owned by the sub-plan that builds it.
+S1-TLS-GOOD	variant:tls/good	unit	fixtures	t_dot_matching_cert_verifies	baseline
+S1-TLS-WRONGNAME	variant:tls/wrongname	unit	fixtures	t_dot_wrong_name_rejected	baseline
+S1-TLS-EXPIRED	variant:tls/expired	unit	fixtures	t_dot_expired_rejected	baseline
+S1-TLS-UNTRUSTED	variant:tls/untrusted	unit	fixtures	t_dot_untrusted_rejected	baseline
+S1-TLS-UNVERIFIED	variant:tls/unverified-serves	unit	fixtures	t_dot_every_variant_serves_without_verification	baseline
+S1-DNSSEC-SIGNED	variant:dnssec/signed	unit	fixtures	t_signed_answer_fully_validates	baseline
+S1-DNSSEC-BOGUS-SERVED	variant:dnssec/bogus-served	unit	fixtures	t_bogus_is_delivered_by_fixture	baseline
+S1-DNSSEC-BOGUS-REJECTED	variant:dnssec/bogus-rejected	unit	fixtures	t_bogus_is_rejected_by_validator	baseline
+S1-DNSSEC-UNSIGNED	variant:dnssec/unsigned	unit	fixtures	t_unsigned_delegation_is_insecure	baseline
+S1-DNSSEC-NXDOMAIN	variant:dnssec/nxdomain	unit	fixtures	t_nxdomain_is_validated_negative	baseline
+S1-DNSSEC-NODATA	variant:dnssec/nodata	unit	fixtures	t_nodata_is_validated_negative	baseline
+S1-UDP-TC	variant:transport/udp-truncated	unit	fixtures	t_udp_truncates_and_tcp_answers	baseline
+S1-TCP-FULL	variant:transport/tcp-full	unit	fixtures	t_udp_truncates_and_tcp_answers	baseline
+S1-REFUSED	variant:transport/out-of-zone-refused	unit	fixtures	t_out_of_zone_is_refused	baseline
+S1-OUT-OK	variant:outcome/ok	unit	measurement	t_collect_records_every_attempt_with_identity	baseline
+S1-OUT-NXDOMAIN	variant:outcome/nxdomain	unit	measurement	t_collect_servfail_is_failure_and_nxdomain_is_answer	baseline
+S1-OUT-SERVFAIL	variant:outcome/servfail	unit	measurement	t_collect_servfail_is_failure_and_nxdomain_is_answer	baseline
+S1-OUT-TIMEOUT	variant:outcome/timeout	unit	measurement	t_collect_counts_timeouts_in_denominator	baseline
+S1-PIPELINE	variant:pipeline/failures-reach-report	integration	baseline-contracts	t_fixture_collector_stats_pipeline	baseline
+S1-WL-COLD	variant:workload/cold	unit	measurement	t_default_workloads_are_controlled_names	baseline
+S1-WL-WARM	variant:workload/warm	unit	measurement	t_default_workloads_are_controlled_names	baseline
+S1-WL-IDLE	variant:workload/idle	unit	measurement	t_default_workloads_are_controlled_names	baseline
+S1-WL-WAKE	variant:workload/wake	unit	measurement	t_default_workloads_are_controlled_names	baseline
+OP-TLS-NAME-FX	SEC-TLS-NAME	unit	fixtures	t_dot_matching_cert_verifies	baseline
+OP-TLS-NAME	SEC-TLS-NAME	-	-	-	transport
+OP-TLS-WRONGNAME-FX	SEC-TLS-WRONGNAME	unit	fixtures	t_dot_wrong_name_rejected	baseline
+OP-TLS-WRONGNAME	SEC-TLS-WRONGNAME	-	-	-	transport
+OP-TLS-UNTRUSTED-FX	SEC-TLS-UNTRUSTED	unit	fixtures	t_dot_untrusted_rejected	baseline
+OP-TLS-UNTRUSTED	SEC-TLS-UNTRUSTED	-	-	-	transport
+OP-TLS-EXPIRED-FX	SEC-TLS-EXPIRED	unit	fixtures	t_dot_expired_rejected	baseline
+OP-TLS-EXPIRED	SEC-TLS-EXPIRED	-	-	-	transport
+OP-ROUTE-IDENTITY	PRIV-ROUTE-IDENTITY	-	-	-	transport
+OP-ANCHOR-FX	SEC-DNSSEC-ANCHOR	unit	fixtures	t_unbound_anchor_matches_served_key	baseline
+OP-ANCHOR	SEC-DNSSEC-ANCHOR	-	-	-	transport
+OP-BOGUS-FX	SEC-DNSSEC-BOGUS	unit	fixtures	t_bogus_is_delivered_by_fixture	baseline
+OP-BOGUS	SEC-DNSSEC-BOGUS	-	-	-	transport
+OP-SIGNED-FX	SEC-DNSSEC-SIGNED	unit	fixtures	t_signed_answer_fully_validates	baseline
+OP-SIGNED	SEC-DNSSEC-SIGNED	-	-	-	transport
+OP-UNSIGNED-FX	SEC-DNSSEC-UNSIGNED	unit	fixtures	t_unsigned_delegation_is_insecure	baseline
+OP-UNSIGNED	SEC-DNSSEC-UNSIGNED	-	-	-	transport
+OP-NO-DIRECT	PRIV-NO-DIRECT	-	-	-	qualification
+OP-NO-HOST-PUBLIC	PRIV-NO-HOST-PUBLIC	-	-	-	installers
+OP-BOOTSTRAP	PRIV-BOOTSTRAP-DECLARED	-	-	-	installers
+OP-NO-HISTORY-NAMES	PRIV-NO-QUERY-HISTORY	unit	measurement	t_collect_refuses_names_outside_workloads	baseline
+OP-NO-HISTORY-WORKLOADS	PRIV-NO-QUERY-HISTORY	unit	measurement	t_default_workloads_are_controlled_names	baseline
+OP-NO-SECRETS-FX	PRIV-NO-SECRETS	unit	fixtures	t_fixture_state_stays_in_artifacts	baseline
+OP-NO-SECRETS-KEYS	PRIV-NO-SECRETS	unit	fixtures	t_keys_are_fresh_and_private	baseline
+OP-NO-SECRETS-RECEIPT	PRIV-NO-SECRETS	live	baseline-characterize	t_representative_receipt_verifies	baseline
+OP-CONTROL-LOCAL	SEC-CONTROL-LOCAL	-	-	-	transport
+OP-OWNED-RESTORE	SEC-OWNED-RESTORE	-	-	-	installers
+OP-ACK-READINESS	REC-ACK-READINESS	-	-	-	controller
+OP-CACHE-CLASS	EVD-CACHE-NOT-UPSTREAM	unit	measurement	t_collect_records_every_attempt_with_identity	baseline
+OP-CACHE-NOT-UPSTREAM	EVD-CACHE-NOT-UPSTREAM	-	-	-	controller
+OP-FAILURES-COLLECT	EVD-FAILURES-COUNTED	unit	measurement	t_collect_counts_timeouts_in_denominator	baseline
+OP-FAILURES-STATS	EVD-FAILURES-COUNTED	unit	measurement	t_stats_failures_stay_in_denominator	baseline
+OP-FAILURES-EMPTY	EVD-FAILURES-COUNTED	unit	harness-contracts	t_zero_case_group_rejected	baseline
+OP-FAILURES-CELL	EVD-FAILURES-COUNTED	unit	harness-contracts	t_matrix_each_single_cell_deletion_fails	baseline
+OP-FAILURES-PIPELINE	EVD-FAILURES-COUNTED	integration	baseline-contracts	t_fixture_collector_stats_pipeline	baseline

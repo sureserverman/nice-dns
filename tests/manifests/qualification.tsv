@@ -1,0 +1,14 @@
+# Receipt manifest: qualification. Parsed as data by tests/reports/verify.sh (never sourced).
+# Rows (tab-separated):
+#   requires  <receipt>                     a receipt this one must link (by sha256)
+#   scenario  <id>  per-cell|global  <meaning>
+# A receipt naming a scenario that is not declared here fails verification;
+# a declared scenario missing from the receipt (for every required cell when
+# per-cell) fails verification. Add scenarios here, never only in a receipt.
+requires	baseline
+requires	transport
+requires	controller
+requires	installers
+scenario	QU-LATENCY	per-cell	interleaved baseline-vs-candidate latency with frozen targets
+scenario	QU-NO-DIRECT	per-cell	no ordinary query reaches a direct public resolver in any supported case
+scenario	QU-SOAK	per-cell	24 h soak with bridge refresh and sleep/network events

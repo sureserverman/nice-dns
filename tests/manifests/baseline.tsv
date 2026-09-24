@@ -1,0 +1,28 @@
+# Receipt manifest: baseline. Parsed as data by tests/reports/verify.sh (never sourced).
+# Rows (tab-separated):
+#   requires  <receipt>                     a receipt this one must link (by sha256)
+#   scenario  <id>  per-cell|global  <meaning>
+# A receipt naming a scenario that is not declared here fails verification;
+# a declared scenario missing from the receipt (for every required cell when
+# per-cell) fails verification. Add scenarios here, never only in a receipt.
+scenario	BL-STAGE	global	bash tests/run.sh stage baseline passed at the receipt's source revision
+scenario	BL-INVENTORY	global	five-repo inventory (tests/inventory.sh baseline)
+scenario	BL-CONFIG	per-cell	effective configs, image identities and runtime versions recorded
+scenario	BL-COLD	per-cell	cold workload samples and their stats aggregate
+scenario	BL-WARM	per-cell	warm workload samples and their stats aggregate
+scenario	BL-SEVERED	per-cell	upstream severed with local listeners alive: DNS outcome and existing health verdict recorded
+scenario	BL-RESTORED	per-cell	target returned to its snapshot state after the fault
+scenario	BL-TARGETS	global	per-cell and per-platform latency and timeout targets frozen from this receipt before tuning
+# Content rules (verify.sh): an artifact must hold what its scenario claims.
+#   minimum <scenario> <n>   artifact is a sample file with at least n samples
+#   content <scenario> <ERE> artifact has a line matching ERE
+# Master plan: at least 30 cold trials and 1000 warm samples per deployment.
+minimum	BL-COLD	30
+minimum	BL-WARM	1000
+content	BL-STAGE	^result=pass 
+content	BL-STAGE	^collected=[1-9][0-9]* passed=[0-9]+ failed=0$
+content	BL-INVENTORY	nice-dns
+content	BL-CONFIG	^image	
+content	BL-SEVERED	^health	
+content	BL-RESTORED		running	
+content	BL-TARGETS	^coverage	[0-9]+ cells$
