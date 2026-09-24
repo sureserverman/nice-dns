@@ -15,3 +15,5 @@ baseline	unit	baseline
 transport-images	integration	resolver-state
 transport	unit	harness-contracts
 transport	integration	resolver-state
+transport-images	integration	transport-haproxy
+transport	integration	transport-haproxy

@@ -39,7 +39,10 @@ OP-TLS-UNTRUSTED-FX	SEC-TLS-UNTRUSTED	unit	fixtures	t_dot_untrusted_rejected	bas
 OP-TLS-UNTRUSTED	SEC-TLS-UNTRUSTED	-	-	-	transport
 OP-TLS-EXPIRED-FX	SEC-TLS-EXPIRED	unit	fixtures	t_dot_expired_rejected	baseline
 OP-TLS-EXPIRED	SEC-TLS-EXPIRED	-	-	-	transport
-OP-ROUTE-IDENTITY	PRIV-ROUTE-IDENTITY	-	-	-	transport
+OP-ROUTE-IDENTITY	PRIV-ROUTE-IDENTITY	integration	transport-haproxy	t_route_never_switches_provider_when_its_provider_fails	transport
+OP-ROUTE-IDENTITY-HAPROXY-MAP	PRIV-ROUTE-IDENTITY	integration	transport-haproxy	t_each_route_reaches_only_its_provider	transport
+OP-ROUTE-IDENTITY-HAPROXY-BACKENDS	PRIV-ROUTE-IDENTITY	integration	transport-haproxy	t_route_backends_hold_only_their_provider	transport
+OP-ROUTE-IDENTITY-HAPROXY-LEGACY	PRIV-ROUTE-IDENTITY	integration	transport-haproxy	t_legacy_853_is_cloudflare_only	transport
 OP-ANCHOR-FX	SEC-DNSSEC-ANCHOR	unit	fixtures	t_unbound_anchor_matches_served_key	baseline
 OP-ANCHOR	SEC-DNSSEC-ANCHOR	integration	resolver-state	t_effective_config_uses_persistent_anchor_and_socket	transport
 OP-ANCHOR-SEED	SEC-DNSSEC-ANCHOR	integration	resolver-state	t_fresh_state_dir_is_seeded_and_persisted	transport
@@ -76,6 +79,8 @@ OP-CONTROL-RUNDIR	SEC-CONTROL-LOCAL	integration	resolver-state	t_unusable_runtim
 OP-CONTROL-BASE-SELFTEST	SEC-CONTROL-LOCAL	integration	resolver-state	t_base_image_self_test_passes	transport
 OP-OWNED-RESTORE	SEC-OWNED-RESTORE	-	-	-	installers
 OP-ACK-READINESS	REC-ACK-READINESS	-	-	-	controller
+OP-ACK-HAPROXY-IMAGE	REC-ACK-READINESS	integration	transport-haproxy	t_restart_request_acknowledged_with_new_generation	transport
+OP-ACK-HAPROXY-REJECT	REC-ACK-READINESS	integration	transport-haproxy	t_invalid_restart_request_rejected	transport
 OP-CACHE-CLASS	EVD-CACHE-NOT-UPSTREAM	unit	measurement	t_collect_records_every_attempt_with_identity	baseline
 OP-CACHE-NOT-UPSTREAM	EVD-CACHE-NOT-UPSTREAM	-	-	-	controller
 OP-FAILURES-COLLECT	EVD-FAILURES-COUNTED	unit	measurement	t_collect_counts_timeouts_in_denominator	baseline
