@@ -6,12 +6,12 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the
 - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)
   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.
 - Baseline source: this repository at commit
-  `bc846b261f6e9876f11b28ccbcc5170774322633`. Citations are `path:line` at that commit.
+  `94a9c604b6c71be1f887a3d063e4e06c38bc4bd1`. Citations are `path:line` at that commit.
   The eight-cell baseline receipt measured b85bc9b. The document was first
   written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,
   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02
   re-pins after each change to a cited file (Task 1.1: 04b98cf, Unbound
-  anchor and control; Task 1.3: d6c1a1f, Pi-hole HealthCmd; Stage 1 gate: 80d6c18, control refusal; Task 2.1: 9e71d32, route include; Task 2.3: bc846b2, Unbound WORKDIR). `check-contracts` fails when a cited file changes
+  anchor and control; Task 1.3: d6c1a1f, Pi-hole HealthCmd; Stage 1 gate: 80d6c18, control refusal; Task 2.1: 9e71d32, route include; Task 2.3: bc846b2, Unbound WORKDIR; Stage 2 gate: 94a9c60, route resolution check). `check-contracts` fails when a cited file changes
   after this commit.
 - Checked by `bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md`.
   The check needs every workflow ID below, every operation ID in
@@ -125,24 +125,31 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   unless the include holds exactly one root forward-zone over TLS with one
   `ADDR@PORT#TLS-NAME` forwarder and `forward-first: no`, plus the route
   marker, and unless the main config names no other root forward-zone or
-  stub-zone (unbound/start.sh:135-178, unbound/start.sh:248-251)
+  stub-zone (unbound/start.sh:140-183, unbound/start.sh:279-282)
   [PRIV-NO-DIRECT] [SEC-TLS-NAME].
 - Route selection (ARCH-03 `apply_route`): routes/providers.tsv binds each
   route to its port and TLS name (routes/providers.tsv:13-17). The host
   library records the desired route, stages the include, has the image
   validate it (`nice-dns-unbound-start check-route`: the shape above, then
   `unbound-checkconf` on the complete candidate config,
-  unbound/start.sh:182-196), keeps the previous include, renames the staged
+  unbound/start.sh:187-204), keeps the previous include, renames the staged
   file into place, runs `reload_keep_cache` and reads back the
-  `nice-dns-route.invalid.` TXT marker through the control socket
-  (lib/recovery.sh:269-314). A failure after the rename restores the
+  `nice-dns-route.invalid.` TXT marker through the control socket, then
+  resolves through the new forwarder with a fresh TLS session
+  (`nice-dns-unbound-start probe-route`, unbound/start.sh:211-227; the cache
+  cannot answer it) (lib/recovery.sh:272-332). A route that does not resolve
+  is rolled back. A failure after the rename restores the
   previous include the same way; if that also fails the result is
   `escalate` and the forward-zone stays in place. An unchanged route is not
   reloaded. `reconcile_route` finishes an interrupted change
-  (lib/recovery.sh:316-342). The Linux adapter uses 127.0.0.1, the macOS
+  (lib/recovery.sh:334-360). The Linux adapter uses 127.0.0.1, the macOS
   adapter 172.31.240.252 (lib/platform/linux.sh:15, lib/platform/macos.sh:17).
   Deployments do not mount a route directory yet, so the image default runs
-  until a later sub-plan wires the mount [PRIV-ROUTE-IDENTITY].
+  until a later sub-plan wires the mount [PRIV-ROUTE-IDENTITY]. On macOS
+  (Apple container 1.4.1, /bin/bash 3.2.57) the adapter was qualified with
+  a throwaway container: `container exec --user unbound` controls Unbound,
+  other uids are denied, and a route change is staged, renamed in the
+  bind-mounted directory, reloaded, read back and rolled back.
 - Proven on the built image by `integration/route-transition`: each listed
   route carries queries only on its port; the route changes with the cache,
   thread, socket and cache-size settings intact; an unchanged route is not
@@ -179,12 +186,12 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   is seeded as its builtin DS line, so the image also builds on the published
   base, whose package carries only KSK-2017. The build fails on a DNSKEY that
   matches no builtin DS, a required tag unknown to both, or an empty tag list
-  (unbound/start.sh:97-127, unbound/Containerfile:39). The entrypoint reads
+  (unbound/start.sh:102-132, unbound/Containerfile:39). The entrypoint reads
   the anchor path from the effective config. It seeds a missing anchor from
   the seed. It exits with a `FATAL` message, before Unbound starts, when the
   anchor or its directory is unusable: symlinked, not owned by unbound, not
   writable (including a read-only mount), empty, malformed, or without a
-  trusted root key (unbound/start.sh:198-222). [SEC-DNSSEC-ANCHOR]
+  trusted root key (unbound/start.sh:229-253). [SEC-DNSSEC-ANCHOR]
 - Proven on the built images by `integration/resolver-state`. Through a
   controlled signer, the product Unbound sets AD on a signed answer, answers
   an insecure delegation without AD, and returns SERVFAIL for a bogus
@@ -197,7 +204,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   `control-use-cert: no` and no TCP listener or key files
   (unbound/etc/unbound.conf:166-169). The entrypoint keeps `/run/unbound`
   owned by unbound and closed to others, and refuses any network
-  control-interface while control is enabled (unbound/start.sh:225-245). Unbound
+  control-interface while control is enabled (unbound/start.sh:256-276). Unbound
   creates the socket with mode 0660. Operators run
   `podman exec --user unbound unbound unbound-control ...`; other uids are
   refused. The nice-dns image deletes any control keys an older published
