@@ -118,7 +118,8 @@ tm_stack() {
   done
   # Route: the shipped table with the fixture's TLS name.
   ND_ROUTE_DIR="$CASE_DIR/route" ND_ROUTES_FILE="$CASE_DIR/providers.tsv" ND_UNBOUND_CONTAINER="$TP_PFX-ub"
-  export ND_ROUTE_DIR ND_ROUTES_FILE ND_UNBOUND_CONTAINER
+  ND_ROUTE_PROBE_NAME=signed.fixture.test
+  export ND_ROUTE_DIR ND_ROUTES_FILE ND_UNBOUND_CONTAINER ND_ROUTE_PROBE_NAME
   awk -F '\t' 'BEGIN { OFS = "\t" } /^#/ || NF != 5 || $1 == "schema" { print; next } { $3 = "dns.fixture.test"; print }' \
     "$NICE_DNS_ROOT/routes/providers.tsv" >"$ND_ROUTES_FILE"
   TM_RES="$(seed_route cloudflare-onion 1 2>&1)"
@@ -175,7 +176,7 @@ tm_baseline_cold_rate() {
 }
 
 tm_cell() {
-  local proxy="$1" ph="$2" out got rt t0 t1 s st n
+  local proxy="$1" ph="$2" out got rt t0 t1 s st n i
   tm_stack "$proxy" "$ph"
   # The SOCKS log is kept from the stack's start: Unbound opens its upstream
   # session at startup and reuses it, so clearing it here would hide the
@@ -273,17 +274,29 @@ tm_cell() {
   printf 'after_queries=5\nafter_upstream_sessions=%s\n' "$(awk -F '\t' '$4 == "relay" && $5 == "sni:dns.fixture.test"' "$TP_SOCKS/connects.tsv" | grep -c .)" >>"$TM_E/route-switch.txt"
   tm_observe TR-ROUTE-SWITCH route-switch.txt
 
-  # TR-TLS-NEGATIVE: a wrong-name certificate on a newly selected route (a
-  # route change opens new upstream sessions; the open ones were authenticated).
+  # TR-TLS-NEGATIVE: a wrong-name certificate on the upstream. Selecting a
+  # route there is refused: apply_route's resolution check fails and the
+  # previous route is restored. Then Unbound restarts, so its sessions are
+  # new, and clients get SERVFAIL, never an answer from that session.
   tp_socks_mode relay "$(fx_port "$CASE_DIR/fx" dot-wrongname)"
   TM_RES="$(apply_route quad9-exit 3 2>&1)"
-  assert_rc 0 "$?" "$TM_CELL: route quad9-exit selected: $TM_RES"
+  assert_rc 1 "$?" "$TM_CELL: a route presenting a wrong-name certificate is not activated: $TM_RES"
+  assert_match '^result	restored$' "$TM_RES" "$TM_CELL: the previous route is restored"
+  assert_eq "cloudflare-exit	2	127.0.0.1" "$(route_readback)" "$TM_CELL: cloudflare-exit runs again"
+  tp_pm restart -t 2 "$TP_PFX-ub"
+  assert_rc 0 "$TP_RC" "$TM_CELL: Unbound restarted: $TP_OUT"
+  i=0
+  while :; do
+    tm_dig 5335 localhost A
+    case "$TP_OUT" in *'status: NOERROR'*) break ;; esac
+    i=$((i + 1)); [ "$i" -le 60 ] || fail "Unbound never answered after the restart"; sleep 0.5
+  done
   tm_dig 53 "neg$RANDOM.fixture.test" A
   assert_match 'status: SERVFAIL' "$TP_OUT" "$TM_CELL: a wrong-name certificate yields SERVFAIL through Pi-hole"
   tm_dig 5335 "neg$RANDOM.fixture.test" A
   assert_match 'status: SERVFAIL' "$TP_OUT" "$TM_CELL: and through Unbound"
   assert_not_match 'ANSWER SECTION' "$TP_OUT" "$TM_CELL: nothing answered from the wrong-name session"
-  printf 'cell=%s\nroute=quad9-exit\ncertificate=wrongname\npihole=SERVFAIL\nunbound=SERVFAIL\n' "$TM_CELL" >"$TM_E/tls-negative.txt"
+  printf 'cell=%s\nroute=cloudflare-exit\ncertificate=wrongname\napply=restored\npihole=SERVFAIL\nunbound=SERVFAIL\n' "$TM_CELL" >"$TM_E/tls-negative.txt"
   tm_observe TR-TLS-NEGATIVE-CELL tls-negative.txt
 }
 

@@ -284,3 +284,25 @@ t_stop_ends_every_child_promptly() {
   assert_ne 137 "$rc" "the container stopped without SIGKILL"
   assert_match '^([0-9]|1[0-3])$' "$((t1 - t0))" "stop completed before the kill deadline ($((t1 - t0))s)"
 }
+
+t_primary_probe_measures_milliseconds() {
+  # probe-primary.sh times a SOCKS connect to the .onion and compares it with
+  # SLOW_THRESHOLD_MS. The stand-in Tor grants each stream after 1.5 s, so
+  # the probe must report about 1500 ms (busybox date has no sub-second
+  # format: a date-based timer reports 1 or 2 and never counts as slow).
+  local line t i=0
+  tp_setup tor-haproxy
+  tp_holder
+  tp_socks_start
+  tp_socks_mode delay 1.5
+  tp_supervised -e PROBE_INTERVAL_S=1 -e SLOW_THRESHOLD_MS=1000
+  while [ "$i" -lt 60 ]; do
+    line="$(podman logs "$TP_CTR" 2>&1 | grep -E '^primary-probe t=[0-9]+ms' | tail -n 1)"
+    [ -n "$line" ] && break
+    i=$((i + 1)); sleep 0.5
+  done
+  assert_match '^primary-probe t=[0-9]+ms' "$line" "the primary probe logged a timing"
+  t="$(printf '%s\n' "$line" | sed -n 's/^primary-probe t=\([0-9]*\)ms.*/\1/p')"
+  [ "$t" -ge 1200 ] && [ "$t" -le 5000 ] || fail "primary probe reported t=${t}ms for a 1.5 s SOCKS grant (not milliseconds)"
+  assert_match 'streak=slow/' "$line" "a 1.5 s connect is slow against a 1000 ms threshold"
+}

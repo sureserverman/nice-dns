@@ -14,6 +14,7 @@ Behaviour is read per connection from <state>/mode:
   reject IP...   refuse requests for these destination IPs, accept the rest
                  (a provider is down; a stream that switched provider would
                  then be accepted elsewhere and logged with its marker)
+  delay SECONDS  wait that long, then behave as accept (a slow Tor circuit)
   relay PORT     grant, then relay the stream to 127.0.0.1:PORT (e.g. the
                  DoT fixture), so a client's TLS runs end to end; the logged
                  payload is "sni:<name>" from the TLS ClientHello (sni:- if
@@ -96,6 +97,8 @@ def current_mode(state):
         return ("reject-some", set(words[1:]))
     if words[0] == "relay" and len(words) == 2 and words[1].isdigit():
         return ("relay", int(words[1]))
+    if words[0] == "delay" and len(words) == 2 and words[1].replace(".", "", 1).isdigit():
+        return ("delay", float(words[1]))
     return ("reject",)
 
 
@@ -182,6 +185,8 @@ def handle(conn, state):
             t.join(5)
             up.close()
             return
+        if mode[0] == "delay":
+            time.sleep(mode[1])
         conn.sendall(b"\x00\x5a" + b"\0" * 6)
         conn.settimeout(2)
         try:

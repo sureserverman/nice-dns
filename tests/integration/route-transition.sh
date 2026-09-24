@@ -51,7 +51,10 @@ rt_setup() {
   trap rt_cleanup EXIT
   ub_images
   ND_ROUTE_DIR="$CASE_DIR/route" ND_ROUTES_FILE="$CASE_DIR/providers.tsv" ND_UNBOUND_CONTAINER="$RT_PFX-ub"
-  export ND_ROUTE_DIR ND_ROUTES_FILE ND_UNBOUND_CONTAINER
+  # apply_route proves a new route resolves with this name (the fixture
+  # refuses the default ".").
+  ND_ROUTE_PROBE_NAME=signed.fixture.test
+  export ND_ROUTE_DIR ND_ROUTES_FILE ND_UNBOUND_CONTAINER ND_ROUTE_PROBE_NAME
   # The shipped table with the fixture's TLS name on every route.
   awk -F '\t' 'BEGIN { OFS = "\t" } /^#/ || NF != 5 || $1 == "schema" { print; next } { $3 = "dns.fixture.test"; print }' \
     "$NICE_DNS_ROOT/routes/providers.tsv" >"$ND_ROUTES_FILE"
@@ -305,6 +308,9 @@ t_direct_fallback_refused() {
   rt_check_refuses "a non-root zone name" "$(printf '%s\n' "$good" | sed 's/name: "\."/name: "fixture.test."/')" 'must be for the root|not allowed'
   rt_check_refuses "a server option" "$(printf '%s\nserver:\n    num-threads: 4\n' "$good")" 'not allowed in the route include'
   rt_check_refuses "no route marker" "$(printf '%s\n' "$good" | grep -v 'nice-dns-route')" 'route marker'
+  rt_pm exec --user unbound "$ND_UNBOUND_CONTAINER" "$RT_START" check-route '/tmp/a#b'
+  assert_rc 1 "$RT_RC" "check-route refuses a path it cannot safely substitute: $RT_OUT"
+  assert_match 'unsafe route include path' "$RT_OUT" "the refusal names the unsafe path"
   # The entrypoint refuses to START Unbound on an include without a forward-zone.
   printf '%s\n' "$good" | sed '/^forward-zone:/,$d' >"$CASE_DIR/nofwd.conf"
   mkdir -m 755 "$CASE_DIR/nofwd" && cp "$CASE_DIR/nofwd.conf" "$CASE_DIR/nofwd/forward-route.conf" && chmod 644 "$CASE_DIR/nofwd/forward-route.conf"
@@ -325,6 +331,7 @@ t_stale_generation_conflicts() {
   rt_stack cloudflare-onion 1
   rt_call apply_route quad9-exit 5
   assert_eq applied "$(rt_f result)" "generation 5 applies: $RT_RES"
+  assert_eq "schema	nice-dns-route-desired/1" "$(head -n 1 "$ND_ROUTE_DIR/desired.tsv")" "desired.tsv names its schema"
   s="$(rt_state)"
   rt_call apply_route cloudflare-exit 3
   assert_rc 4 "$RT_RRC" "an older generation conflicts: $RT_RES"
@@ -429,6 +436,18 @@ t_failed_activation_restores_previous_route() {
   assert_eq restored "$(rt_f result)" "result is restored"
   assert_eq "cloudflare-onion	1	127.0.0.1" "$(route_readback)" "the previous route runs again"
   assert_eq "cloudflare-onion	1	127.0.0.1@18531#dns.fixture.test" "$(_nd_route_file_info "$ND_ROUTE_DIR/forward-route.conf")" "the previous include is back in place"
+  rt_resolves_via 18531
+}
+
+t_route_that_does_not_resolve_is_rolled_back() {
+  # ARCH-04: a route is active only once it resolves. The probe query is
+  # answered SERVFAIL by the fixture, so the new route must not stay.
+  rt_stack cloudflare-onion 1
+  ND_ROUTE_PROBE_NAME=servfail.fixture.test rt_call apply_route quad9-exit 2
+  assert_rc 1 "$RT_RRC" "a route that does not resolve is rolled back: $RT_RES"
+  assert_eq restored "$(rt_f result)" "result is restored"
+  assert_match 'did not resolve.*SERVFAIL' "$(rt_f detail)" "the detail names the failed resolution"
+  assert_eq "cloudflare-onion	1	127.0.0.1" "$(route_readback)" "the previous route runs again"
   rt_resolves_via 18531
 }
 

@@ -135,6 +135,7 @@ pc_rejects_bad_certificates() {
 }
 
 pc_parses_dns_errors() {
+  local ms
   pc_stack "$1"
   pc_probe 18533 dns.fixture.test servfail.fixture.test
   assert_rc 1 "$TP_RC" "SERVFAIL is not healthy: $TP_OUT"
@@ -149,6 +150,12 @@ pc_parses_dns_errors() {
   pc_probe 18533 dns.fixture.test signed.fixture.test
   assert_rc 1 "$TP_RC" "a refused Tor stream is not healthy: $TP_OUT"
   assert_match 'result=no-answer rcode=-' "$TP_OUT" "$1 probe reports a dead route as no-answer"
+  # ms is milliseconds: a Tor stream granted after 1.5 s reads as about 1500
+  # (busybox date has no sub-second format; a date-based timer printed 1).
+  tp_socks_mode delay 1.5
+  pc_probe 18533 dns.fixture.test signed.fixture.test
+  ms="$(printf '%s\n' "$TP_OUT" | sed -n 's/.* ms=\([0-9]*\).*/\1/p')"
+  [ "${ms:-0}" -ge 1200 ] && [ "$ms" -le 6000 ] || fail "$1 probe ms=$ms for a 1.5 s Tor stream is not in milliseconds ($TP_OUT)"
   pc_probe 18533 dns.fixture.test 'bad name;x'
   assert_rc 2 "$TP_RC" "an unsafe query name is a usage error: $TP_OUT"
   pc_probe 0x35 dns.fixture.test

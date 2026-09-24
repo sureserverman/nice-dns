@@ -5,6 +5,11 @@
 #   nice-dns-unbound-start build-seed [SRC [OUT]]
 #                                          image build only (root): write the
 #                                          verified read-only root anchor seed
+#   nice-dns-unbound-start probe-route [QNAME]
+#                                          one DNS-over-TLS query (QNAME, default
+#                                          ".", type SOA) straight to the active
+#                                          include's forwarder, authenticated like
+#                                          Unbound's own sessions; bypasses the cache
 #   nice-dns-unbound-start check-route FILE
 #                                          validate a staged route include: its
 #                                          shape, then the complete candidate
@@ -180,6 +185,9 @@ main_conf_guard() {
 # the complete config with it in place of the active include passes
 # unbound-checkconf. Runs as the unbound user, before the file is activated.
 check_route() {
+  # The path is substituted into a sed program below.
+  case "$1" in /*) ;; *) die "unsafe route include path '$1' (absolute paths of [A-Za-z0-9._/-] only)" ;; esac
+  case "$1" in *[!A-Za-z0-9._/-]*) die "unsafe route include path '$1' (absolute paths of [A-Za-z0-9._/-] only)" ;; esac
   [ -L "$1" ] && die "route include $1 is a symlink; refusing"
   [ -f "$1" ] || die "route include $1 is missing or not a regular file"
   out="$(check_route_policy "$1")" || die "route include $1 refused: $out"
@@ -193,6 +201,29 @@ check_route() {
   fi
   rm -f "$cand"
   log "route include $1 accepted"
+}
+
+# probe_route [QNAME]: resolution through the active route, bypassing the
+# cache (a reload keeps it, and aggressive NSEC can answer from it). The
+# certificate must chain to the effective tls-cert-bundle and match the
+# forwarder's TLS name, as for Unbound's own sessions. Prints one line;
+# exit 0 only for a NOERROR or NXDOMAIN response.
+probe_route() {
+  qname="${1:-.}"
+  case "$qname" in ''|*[!A-Za-z0-9._-]*) die "unsafe probe name '$qname'" ;; esac
+  fwd="$(awk '/^[[:space:]]*forward-addr:/ { print $2 }' "$ROUTE")"
+  addr="${fwd%%@*}" rest="${fwd#*@}"
+  port="${rest%%#*}" name="${rest#*#}"
+  [ -n "$addr" ] && [ -n "$port" ] && [ -n "$name" ] && [ "$fwd" != "$addr" ] \
+    || die "cannot read a forwarder ADDR@PORT#NAME from $ROUTE"
+  bundle="$(unbound-checkconf -o tls-cert-bundle 2>/dev/null)"
+  [ -r "$bundle" ] || die "tls-cert-bundle '$bundle' is not readable"
+  out="$(dig +tls +tls-ca="$bundle" +tls-hostname="$name" +tries=1 +retry=0 \
+    +time="${NICE_DNS_PROBE_TIMEOUT:-15}" -p "$port" "@$addr" "$qname" SOA 2>&1)"
+  rcode="$(printf '%s\n' "$out" | sed -n 's/^;; ->>HEADER<<- opcode: [A-Z]*, status: \([A-Z]*\), id: [0-9]*$/\1/p' | head -n 1)"
+  printf 'forwarder=%s qname=%s rcode=%s\n' "$fwd" "$qname" "${rcode:--}"
+  case "$rcode" in NOERROR|NXDOMAIN) return 0 ;; esac
+  return 1
 }
 
 start() {
@@ -262,5 +293,6 @@ case "${1:-}" in
   '') start ;;
   build-seed) build_seed "${2:-/usr/share/dnssec-root/trusted-key.key}" "${3:-$SEED}" ;;
   check-route) [ $# -eq 2 ] || die "usage: $ME check-route FILE"; check_route "$2" ;;
-  *) die "unknown command '$1' (usage: $ME [build-seed [SRC [OUT]] | check-route FILE])" ;;
+  probe-route) [ $# -le 2 ] || die "usage: $ME probe-route [QNAME]"; probe_route "${2:-.}" ;;
+  *) die "unknown command '$1' (usage: $ME [build-seed [SRC [OUT]] | check-route FILE | probe-route [QNAME]])" ;;
 esac

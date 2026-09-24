@@ -14,14 +14,21 @@
 #   forward-route.conf          the active include (rendered here, 0644)
 #   .forward-route.conf.staged  a candidate being validated
 #   .forward-route.conf.prev    the include before the last change (rollback)
-#   desired.tsv                 route and generation last requested
+#   desired.tsv                 schema, route and generation last requested
+#                               (Sub-plan 3's lib/state.sh becomes the owner of
+#                               desired state and generations; this file and
+#                               the stale-generation check here then serve as
+#                               the route layer's own guard)
 #
 # apply_route: record the desired route; stage the include; have the image
 # validate it (nice-dns-unbound-start check-route: shape, then
 # unbound-checkconf on the complete candidate config); keep the previous
 # include; rename the candidate over the active one; reload_keep_cache; read
-# the route marker back through the control socket. A failure after the
-# rename restores the previous include the same way. An unchanged route is
+# the route marker back through the control socket; then resolve through the
+# new forwarder (nice-dns-unbound-start probe-route: a fresh TLS session with
+# Unbound's trust store and the route's name, so the cache cannot answer for
+# it; ND_ROUTE_PROBE_NAME, default "."). A failure after the rename restores
+# the previous include the same way (the restore is read back, not probed). An unchanged route is
 # never reloaded. A reload is only issued after validation: Unbound exits
 # when it reloads a config it cannot parse.
 #
@@ -135,7 +142,9 @@ route_readback() {
     }
     part == 2 && $1 == "." && $3 == "forward" {
       nf++; a = ""; na = 0
-      for (i = 4; i <= NF; i++) if ($i !~ /^\+/) { a = $i; na++ }
+      # Unbound 1.25 prints the address only; drop any @port#name suffix so
+      # a release that adds it still compares by address.
+      for (i = 4; i <= NF; i++) if ($i !~ /^\+/) { a = $i; sub(/[@#].*/, "", a); na++ }
     }
     END { if (nm != 1 || nf != 1 || na != 1) exit 1; print r "\t" g "\t" a }'
 }
@@ -158,6 +167,12 @@ _nd_route_reload() {
   local out
   out="$(nd_platform_unbound_exec unbound-control -c "$_ND_CTL" reload_keep_cache 2>&1)" || return 1
   printf '%s\n' "$out" | grep -qx ok
+}
+
+# _nd_route_resolves: resolution through the running route, bypassing the
+# cache (see the header).
+_nd_route_resolves() {
+  nd_platform_unbound_exec "$_ND_START" probe-route "${ND_ROUTE_PROBE_NAME:-.}" 2>&1
 }
 
 # _nd_route_check <container path>: the image validates a route include.
@@ -189,6 +204,7 @@ _nd_route_dir_ok() {
 _nd_route_read_desired() {
   _ND_DES_ROUTE="" _ND_DES_GEN=""
   [ -e "$1/desired.tsv" ] || return 0
+  [ "$(head -n 1 "$1/desired.tsv")" = "schema	nice-dns-route-desired/1" ] || return 1
   _ND_DES_ROUTE="$(awk -F '\t' '$1 == "route" { print $2 }' "$1/desired.tsv")"
   _ND_DES_GEN="$(awk -F '\t' '$1 == "generation" { print $2 }' "$1/desired.tsv")"
   case "$_ND_DES_ROUTE" in ''|*[!a-z0-9-]*) _ND_DES_ROUTE="" _ND_DES_GEN=""; return 1 ;; esac
@@ -197,7 +213,7 @@ _nd_route_read_desired() {
 }
 
 _nd_route_write_desired() {
-  (umask 077 && printf 'route\t%s\ngeneration\t%s\n' "$2" "$3" >"$1/.desired.tsv.tmp") \
+  (umask 077 && printf 'schema\tnice-dns-route-desired/1\nroute\t%s\ngeneration\t%s\n' "$2" "$3" >"$1/.desired.tsv.tmp") \
     && mv -f "$1/.desired.tsv.tmp" "$1/desired.tsv"
 }
 
@@ -217,6 +233,7 @@ _nd_route_resolve() {
   _ND_FWD="$_ND_ADDR@$port#$name"
 }
 
+# Generations start at 1; 0 is reserved for the image default include.
 _nd_route_gen_ok() {
   case "$1" in ''|0*|*[!0-9]*) return 1 ;; esac
   [ "${#1}" -le 15 ]
@@ -253,11 +270,12 @@ _nd_route_rollback() {
 # _nd_route_activate <dir> <route> <generation> <forwarder> <address>: the
 # include is in place; reload and read it back, else roll back.
 _nd_route_activate() {
-  local why=""
+  local why="" out
   if ! nd_route_checkpoint after-rename; then why="interrupted after the rename"
   elif ! _nd_route_reload; then why="reload_keep_cache failed"
   elif ! nd_route_checkpoint after-reload; then why="interrupted after the reload"
   elif ! _nd_route_wait_runtime "$2" "$3" "$5"; then why="readback does not show route $2 generation $3 at $5 (got: $_ND_RT)"
+  elif ! out="$(_nd_route_resolves)"; then why="route $2 did not resolve ($out)"
   fi
   if [ -z "$why" ]; then
     _nd_route_out applied "$2" "$3" "$4" "route $2 generation $3 active after reload_keep_cache"
