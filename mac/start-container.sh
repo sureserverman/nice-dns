@@ -18,7 +18,7 @@ NETWORK_STATE_DIR="${HOME}/Library/Application Support/com.apple.container/netwo
 # vmnet allocator hands out when the network is created fresh and containers
 # are created in the order below: it allocates sequentially from the subnet
 # base, and .249 is the gateway. Verified deterministic across repeated
-# create/destroy cycles. unbound.conf's forward-addr, pi-hole's upstream, and
+# create/destroy cycles. the Unbound route include's forward-addr, pi-hole's upstream, and
 # start-container-root.sh's set_local_dns all hardcode these, so the stack is
 # only correct when the allocator actually produces them.
 PIHOLE_IP=172.31.240.250

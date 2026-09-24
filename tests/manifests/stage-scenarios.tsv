@@ -189,4 +189,63 @@ require	stage:transport	OP-ACK-SOCAT-REJECT	integration	transport-socat	t_invali
 require	stage:transport	OP-FAILURES-EMPTY	unit	harness-contracts	t_zero_case_group_rejected	tests/unit/harness-contracts.sh
 require	stage:transport	OP-FAILURES-CELL	unit	harness-contracts	t_matrix_each_single_cell_deletion_fails	tests/unit/harness-contracts.sh
 count	stage:transport	47
-owner	stage:transport	transport
+# plan:transport (Sub-plan 2 Stage 2 gate) owns the transport completeness
+# check: stage:transport is the Stage 1 bounded regression (Stage 1 groups,
+# near its 5-minute budget) and keeps its explicit require rows; Stage 2
+# groups run only in plan:transport (plan Preflight amendment, 2026-09-24).
+count	plan:transport	54
+owner	plan:transport	transport
+require	plan:transport	OP-TLS-NAME	integration	transport-interaction	t_haproxy_routes_carry_authenticated_tls	tests/integration/transport-interaction.sh
+require	plan:transport	OP-TLS-NAME-SOCAT	integration	transport-interaction	t_socat_routes_carry_authenticated_tls	tests/integration/transport-interaction.sh
+require	plan:transport	OP-TLS-WRONGNAME	integration	transport-interaction	t_haproxy_route_tls_rejects_bad_certificates	tests/integration/transport-interaction.sh
+require	plan:transport	OP-TLS-WRONGNAME-SOCAT	integration	transport-interaction	t_socat_route_tls_rejects_bad_certificates	tests/integration/transport-interaction.sh
+require	plan:transport	OP-TLS-UNTRUSTED	integration	transport-interaction	t_haproxy_route_tls_rejects_bad_certificates	tests/integration/transport-interaction.sh
+require	plan:transport	OP-TLS-UNTRUSTED-SOCAT	integration	transport-interaction	t_socat_route_tls_rejects_bad_certificates	tests/integration/transport-interaction.sh
+require	plan:transport	OP-TLS-EXPIRED	integration	transport-interaction	t_haproxy_route_tls_rejects_bad_certificates	tests/integration/transport-interaction.sh
+require	plan:transport	OP-TLS-EXPIRED-SOCAT	integration	transport-interaction	t_socat_route_tls_rejects_bad_certificates	tests/integration/transport-interaction.sh
+require	plan:transport	OP-ROUTE-IDENTITY	integration	transport-haproxy	t_route_never_switches_provider_when_its_provider_fails	tests/integration/transport-haproxy.sh
+require	plan:transport	OP-ROUTE-IDENTITY-HAPROXY-MAP	integration	transport-haproxy	t_each_route_reaches_only_its_provider	tests/integration/transport-haproxy.sh
+require	plan:transport	OP-ROUTE-IDENTITY-HAPROXY-BACKENDS	integration	transport-haproxy	t_route_backends_hold_only_their_provider	tests/integration/transport-haproxy.sh
+require	plan:transport	OP-ROUTE-IDENTITY-HAPROXY-LEGACY	integration	transport-haproxy	t_legacy_853_is_cloudflare_only	tests/integration/transport-haproxy.sh
+require	plan:transport	OP-ROUTE-IDENTITY-SOCAT	integration	transport-socat	t_route_never_switches_provider_when_its_provider_fails	tests/integration/transport-socat.sh
+require	plan:transport	OP-ROUTE-IDENTITY-SOCAT-MAP	integration	transport-socat	t_each_route_reaches_only_its_provider	tests/integration/transport-socat.sh
+require	plan:transport	OP-ROUTE-IDENTITY-SOCAT-LEGACY	integration	transport-socat	t_legacy_853_fails_over_within_cloudflare_only	tests/integration/transport-socat.sh
+require	plan:transport	OP-ANCHOR	integration	resolver-state	t_effective_config_uses_persistent_anchor_and_socket	tests/integration/resolver-state.sh
+require	plan:transport	OP-ANCHOR-SEED	integration	resolver-state	t_fresh_state_dir_is_seeded_and_persisted	tests/integration/resolver-state.sh
+require	plan:transport	OP-ANCHOR-KSK	integration	resolver-state	t_seed_anchor_carries_root_ksks	tests/integration/resolver-state.sh
+require	plan:transport	OP-ANCHOR-UNUSABLE	integration	resolver-state	t_unusable_anchor_file_refused	tests/integration/resolver-state.sh
+require	plan:transport	OP-ANCHOR-UNWRITABLE	integration	resolver-state	t_unwritable_anchor_dir_refused	tests/integration/resolver-state.sh
+require	plan:transport	OP-ANCHOR-SYMLINK	integration	resolver-state	t_symlinked_anchor_state_refused	tests/integration/resolver-state.sh
+require	plan:transport	OP-ANCHOR-READONLY-FILE	integration	resolver-state	t_read_only_anchor_file_refused	tests/integration/resolver-state.sh
+require	plan:transport	OP-ANCHOR-KEEP	integration	resolver-state	t_existing_valid_anchor_is_kept	tests/integration/resolver-state.sh
+require	plan:transport	OP-ANCHOR-SEED-REJECT	integration	resolver-state	t_seed_builder_rejects_unverified_keys	tests/integration/resolver-state.sh
+require	plan:transport	OP-ANCHOR-SEED-DS	integration	resolver-state	t_seed_falls_back_to_builtin_ds	tests/integration/resolver-state.sh
+require	plan:transport	OP-ANCHOR-PUBLISHED-BASE	integration	resolver-state	t_product_builds_on_published_base	tests/integration/resolver-state.sh
+require	plan:transport	OP-ANCHOR-BASE-AGREES	integration	resolver-state	t_base_and_product_anchor_agree	tests/integration/resolver-state.sh
+require	plan:transport	OP-ANCHOR-ROLLOVER	integration	resolver-state	t_anchor_survives_partial_ksk_revocation	tests/integration/resolver-state.sh
+require	plan:transport	OP-BOGUS	integration	resolver-state	t_bogus_answer_rejected_locally	tests/integration/resolver-state.sh
+require	plan:transport	OP-SIGNED	integration	resolver-state	t_signed_answer_validates_with_ad	tests/integration/resolver-state.sh
+require	plan:transport	OP-UNSIGNED	integration	resolver-state	t_unsigned_answer_is_insecure_not_bogus	tests/integration/resolver-state.sh
+require	plan:transport	OP-CONTROL-LOCAL	integration	resolver-state	t_no_network_control_listener	tests/integration/resolver-state.sh
+require	plan:transport	OP-CONTROL-SOCKET	integration	resolver-state	t_control_socket_mode_and_owner	tests/integration/resolver-state.sh
+require	plan:transport	OP-CONTROL-AUTHORIZED	integration	resolver-state	t_control_authorized_as_unbound_user	tests/integration/resolver-state.sh
+require	plan:transport	OP-CONTROL-DENIED	integration	resolver-state	t_control_denied_to_other_uids	tests/integration/resolver-state.sh
+require	plan:transport	OP-CONTROL-NO-SHARED-KEYS	integration	resolver-state	t_images_carry_no_private_keys	tests/integration/resolver-state.sh
+require	plan:transport	OP-CONTROL-RUNDIR	integration	resolver-state	t_unusable_runtime_dir_refused	tests/integration/resolver-state.sh
+require	plan:transport	OP-CONTROL-BASE-SELFTEST	integration	resolver-state	t_base_image_self_test_passes	tests/integration/resolver-state.sh
+require	plan:transport	OP-CONTROL-NO-NETWORK	integration	resolver-state	t_network_control_interface_refused	tests/integration/resolver-state.sh
+require	plan:transport	OP-ACK-HAPROXY-PRIVATE	integration	transport-haproxy	t_restart_control_is_private_to_the_image_user	tests/integration/transport-haproxy.sh
+require	plan:transport	OP-ACK-SOCAT-PRIVATE	integration	transport-socat	t_restart_control_is_private_to_the_image_user	tests/integration/transport-socat.sh
+require	plan:transport	OP-ACK-HAPROXY-IMAGE	integration	transport-haproxy	t_restart_request_acknowledged_with_new_generation	tests/integration/transport-haproxy.sh
+require	plan:transport	OP-ACK-HAPROXY-REJECT	integration	transport-haproxy	t_invalid_restart_request_rejected	tests/integration/transport-haproxy.sh
+require	plan:transport	OP-ACK-SOCAT-IMAGE	integration	transport-socat	t_restart_request_acknowledged_with_new_generation	tests/integration/transport-socat.sh
+require	plan:transport	OP-ACK-SOCAT-REJECT	integration	transport-socat	t_invalid_restart_request_rejected	tests/integration/transport-socat.sh
+require	plan:transport	OP-FAILURES-EMPTY	unit	harness-contracts	t_zero_case_group_rejected	tests/unit/harness-contracts.sh
+require	plan:transport	OP-FAILURES-CELL	unit	harness-contracts	t_matrix_each_single_cell_deletion_fails	tests/unit/harness-contracts.sh
+require	plan:transport	OP-ROUTE-APPLY-IDENTITY	integration	route-transition	t_every_listed_route_applies_and_carries_queries	tests/integration/route-transition.sh
+require	plan:transport	OP-ROUTE-UNLISTED	integration	route-transition	t_unlisted_route_refused	tests/integration/route-transition.sh
+require	plan:transport	OP-ROUTE-TLS-NAME-REQUIRED	integration	route-transition	t_missing_tls_name_refused	tests/integration/route-transition.sh
+require	plan:transport	OP-ROUTE-RENDER-TABLE	integration	route-transition	t_rendered_routes_match_table_and_image_on_both_platforms	tests/integration/route-transition.sh
+require	plan:transport	OP-ROUTE-NO-DIRECT-FALLBACK	integration	route-transition	t_direct_fallback_refused	tests/integration/route-transition.sh
+require	plan:transport	OP-ROUTE-RESTORE	integration	route-transition	t_failed_activation_restores_previous_route	tests/integration/route-transition.sh
+require	plan:transport	OP-ROUTE-ROLLBACK-KEEPS-FORWARDING	integration	route-transition	t_failed_rollback_escalates_and_keeps_forwarding	tests/integration/route-transition.sh

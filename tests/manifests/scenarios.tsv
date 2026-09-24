@@ -101,3 +101,10 @@ OP-FAILURES-STATS	EVD-FAILURES-COUNTED	unit	measurement	t_stats_failures_stay_in
 OP-FAILURES-EMPTY	EVD-FAILURES-COUNTED	unit	harness-contracts	t_zero_case_group_rejected	baseline
 OP-FAILURES-CELL	EVD-FAILURES-COUNTED	unit	harness-contracts	t_matrix_each_single_cell_deletion_fails	baseline
 OP-FAILURES-PIPELINE	EVD-FAILURES-COUNTED	integration	baseline-contracts	t_fixture_collector_stats_pipeline	baseline
+OP-ROUTE-APPLY-IDENTITY	PRIV-ROUTE-IDENTITY	integration	route-transition	t_every_listed_route_applies_and_carries_queries	transport
+OP-ROUTE-UNLISTED	PRIV-ROUTE-IDENTITY	integration	route-transition	t_unlisted_route_refused	transport
+OP-ROUTE-TLS-NAME-REQUIRED	SEC-TLS-NAME	integration	route-transition	t_missing_tls_name_refused	transport
+OP-ROUTE-RENDER-TABLE	SEC-TLS-NAME	integration	route-transition	t_rendered_routes_match_table_and_image_on_both_platforms	transport
+OP-ROUTE-NO-DIRECT-FALLBACK	PRIV-NO-DIRECT	integration	route-transition	t_direct_fallback_refused	transport
+OP-ROUTE-RESTORE	PRIV-NO-DIRECT	integration	route-transition	t_failed_activation_restores_previous_route	transport
+OP-ROUTE-ROLLBACK-KEEPS-FORWARDING	PRIV-NO-DIRECT	integration	route-transition	t_failed_rollback_escalates_and_keeps_forwarding	transport

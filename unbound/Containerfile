@@ -10,6 +10,15 @@ ADD --chown=unbound:unbound etc/* /etc/unbound/
 # directory, then execs Unbound. Root-owned and not writable by unbound.
 COPY start.sh /usr/local/bin/nice-dns-unbound-start
 
+# The selected route (ARCH-04): /etc/unbound/route/forward-route.conf is the
+# one managed include. Deployments mount a host-owned directory here and
+# lib/recovery.sh replaces the file inside it; the image default is the legacy
+# :853 route. Root-owned: Unbound reads the route and never writes it.
+COPY route/forward-route.conf /etc/unbound/route/forward-route.conf
+# unbound-control reads this control-only config, so management keeps working
+# even while the main config is being replaced.
+COPY control.conf /usr/share/nice-dns/control.conf
+
 # Resolver state and the local control channel:
 #  - Remove every remote-control credential and anchor an older published base
 #    may still carry (it baked one shared control keypair into the public
@@ -24,7 +33,9 @@ RUN rm -f /etc/unbound/unbound_server.key /etc/unbound/unbound_server.pem \
           /etc/unbound/unbound_control.key /etc/unbound/unbound_control.pem \
           /etc/unbound/root.key \
     && chmod 0555 /usr/local/bin/nice-dns-unbound-start \
-    && mkdir -p /usr/share/nice-dns \
+    && chown -R root:root /etc/unbound/route /usr/share/nice-dns \
+    && chmod 0755 /etc/unbound/route /usr/share/nice-dns \
+    && chmod 0444 /etc/unbound/route/forward-route.conf /usr/share/nice-dns/control.conf \
     && /usr/local/bin/nice-dns-unbound-start build-seed \
     && mkdir -p /var/lib/unbound /run/unbound \
     && chown unbound:unbound /var/lib/unbound /run/unbound \

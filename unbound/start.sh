@@ -5,6 +5,11 @@
 #   nice-dns-unbound-start build-seed [SRC [OUT]]
 #                                          image build only (root): write the
 #                                          verified read-only root anchor seed
+#   nice-dns-unbound-start check-route FILE
+#                                          validate a staged route include: its
+#                                          shape, then the complete candidate
+#                                          config with FILE in place of the
+#                                          active include (unbound-checkconf)
 #
 # Start (runs as the unbound user under tini):
 #   1. The configured auto-trust-anchor-file must live in a real directory
@@ -16,7 +21,11 @@
 #   3. The control socket directory (/run/unbound) must be a real directory
 #      owned by this user and closed to others; it is created when missing and
 #      the parent allows it.
-#   4. unbound-checkconf must pass. Then Unbound replaces this shell.
+#   4. The route include (/etc/unbound/route/forward-route.conf) must hold
+#      exactly one root forward-zone over TLS with one named forwarder and no
+#      direct fallback, and no other root forward-zone or stub-zone may exist
+#      in the main config (see check_route_policy).
+#   5. unbound-checkconf must pass. Then Unbound replaces this shell.
 # Every refusal prints "nice-dns-unbound-start: FATAL: ..." and exits 1
 # before Unbound starts: a resolver without a usable anchor is never run.
 #
@@ -25,6 +34,8 @@
 set -u
 
 SEED=/usr/share/nice-dns/root-anchor.seed
+CONF=/etc/unbound/unbound.conf
+ROUTE=/etc/unbound/route/forward-route.conf
 ME=nice-dns-unbound-start
 
 log() { printf '%s: %s\n' "$ME" "$*" >&2; }
@@ -115,8 +126,76 @@ build_seed() {
   log "seed $out verified (DNSKEY tags:$dnskeys; builtin DS tags:${dss:- none})"
 }
 
+# check_route_policy <file>: print each problem; exit 0 when the include holds
+# only the route marker (a static nice-dns-route.invalid. zone with one TXT
+# record) and one root forward-zone: forward-tls-upstream yes, forward-first
+# no and a single forward-addr ADDR@PORT#TLS-NAME. Anything else (a server
+# option, a second zone or forwarder, a missing TLS name) is refused, so a
+# route change can never alter sockets, threads or cache sizes.
+check_route_policy() {
+  awk -v q="'" '
+    function bad(m) { print m; err = 1 }
+    BEGIN {
+      marker = "^local-data: " q "nice-dns-route\\.invalid\\. 0 IN TXT \"route=[a-z0-9-]+ generation=[0-9]+\"" q "$"
+    }
+    /^[[:space:]]*(#|$)/ { next }
+    {
+      line = $0; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
+      if (line == "server:") { clause = "server"; next }
+      if (line == "forward-zone:") { clause = "fwd"; nfz++; next }
+      if (clause == "server" && line == "local-zone: \"nice-dns-route.invalid.\" static") { lz++; next }
+      if (clause == "server" && line ~ marker) { ld++; next }
+      if (clause == "fwd" && line == "name: \".\"") { nm++; next }
+      if (clause == "fwd" && line == "forward-tls-upstream: yes") { tls++; next }
+      if (clause == "fwd" && line == "forward-first: no") { ff++; next }
+      if (clause == "fwd" && line ~ /^forward-addr: [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+@[1-9][0-9]?[0-9]?[0-9]?[0-9]?#[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/) { fa++; next }
+      bad("line " NR ": not allowed in the route include: " line)
+    }
+    END {
+      if (nfz != 1) bad("exactly one forward-zone is required (found " nfz + 0 ")")
+      if (nm != 1) bad("the forward-zone must be for the root, name: \".\"")
+      if (tls != 1) bad("forward-tls-upstream: yes is required")
+      if (ff != 1) bad("forward-first: no is required (no direct recursive fallback)")
+      if (fa != 1) bad("exactly one forward-addr ADDR@PORT#TLS-NAME is required (found " fa + 0 ")")
+      if (lz != 1 || ld != 1) bad("the route marker (nice-dns-route.invalid.) is required exactly once")
+      exit err
+    }' "$1"
+}
+
+# main_conf_guard <conf>: the main config includes the route file exactly
+# once and names no root forward-zone or stub-zone of its own (Unbound would
+# otherwise use one of two root zones, or recurse directly).
+main_conf_guard() {
+  n="$(grep -c "^include: \"$ROUTE\"\$" "$1")"
+  [ "$n" -eq 1 ] || die "$1 must include $ROUTE exactly once (found $n)"
+  root="$(awk '
+    /^[[:space:]]*(#|$)/ { next }
+    /^[a-z-]+:[[:space:]]*$/ { clause = $1 }
+    (clause == "forward-zone:" || clause == "stub-zone:") && $1 == "name:" && ($2 == "\".\"" || $2 == ".") { print NR ": " clause " " $0 }
+  ' "$1")"
+  [ -z "$root" ] || die "$1 defines a root zone outside $ROUTE: $root"
+}
+
+# check_route <file>: the file is a regular file with the route shape, and
+# the complete config with it in place of the active include passes
+# unbound-checkconf. Runs as the unbound user, before the file is activated.
+check_route() {
+  [ -L "$1" ] && die "route include $1 is a symlink; refusing"
+  [ -f "$1" ] || die "route include $1 is missing or not a regular file"
+  out="$(check_route_policy "$1")" || die "route include $1 refused: $out"
+  main_conf_guard "$CONF"
+  cand="$(mktemp /tmp/nice-dns-candidate.XXXXXX)" || die "cannot create a candidate config"
+  if ! sed "s#^include: \"$ROUTE\"\$#include: \"$1\"#" "$CONF" >"$cand"; then
+    rm -f "$cand"; die "cannot write the candidate config"
+  fi
+  if ! out="$(unbound-checkconf "$cand" 2>&1)"; then
+    rm -f "$cand"; die "candidate config with $1 rejected by unbound-checkconf: $out"
+  fi
+  rm -f "$cand"
+  log "route include $1 accepted"
+}
+
 start() {
-  cd / || die "cannot chdir to /"
   anchor="$(unbound-checkconf -o auto-trust-anchor-file 2>&1)" \
     || die "unbound-checkconf rejected the configuration: $anchor"
   n="$(printf '%s\n' "$anchor" | grep -c .)"
@@ -165,12 +244,23 @@ start() {
     esac
   done
 
+  # The active route: its shape, and no second root zone in the main config.
+  main_conf_guard "$CONF"
+  [ -L "$ROUTE" ] && die "route include $ROUTE is a symlink; refusing"
+  [ -f "$ROUTE" ] || die "route include $ROUTE is missing or not a regular file"
+  n="$(check_route_policy "$ROUTE")" || die "route include $ROUTE refused: $n"
+
   n="$(unbound-checkconf 2>&1)" || die "unbound-checkconf failed: $n"
   exec unbound -d -p
 }
 
+# Every command runs from /: the image WORKDIR is closed to the unbound user,
+# and unbound-checkconf resolves relative paths from the working directory.
+cd / || die "cannot chdir to /"
+
 case "${1:-}" in
   '') start ;;
   build-seed) build_seed "${2:-/usr/share/dnssec-root/trusted-key.key}" "${3:-$SEED}" ;;
-  *) die "unknown command '$1' (usage: $ME [build-seed [SRC [OUT]]])" ;;
+  check-route) [ $# -eq 2 ] || die "usage: $ME check-route FILE"; check_route "$2" ;;
+  *) die "unknown command '$1' (usage: $ME [build-seed [SRC [OUT]] | check-route FILE])" ;;
 esac

@@ -829,8 +829,14 @@ t_real_transport_stages_have_requirements() {
     n="$(awk -F '\t' -v s="$st" '$1 == "require" && $2 == s' "$f" | wc -l | tr -d ' ')"
     assert_match '^(4[0-9]|[5-9][0-9]|[1-9][0-9][0-9]+)$' "$n" "$st requires its scenarios (at least 40 rows, got $n)"
   done
-  assert_match '^owner	stage:transport	transport$' "$(cat "$f")" "stage transport owns every transport scenario"
-  for st in stage:transport-images stage:transport; do
+  # Plan transport (the Stage 2 gate) owns every transport scenario and
+  # requires every proof stage transport requires (plan Preflight amendment,
+  # 2026-09-24: Stage 2 groups run only in the plan).
+  assert_match '^owner	plan:transport	transport$' "$(cat "$f")" "plan transport owns every transport scenario"
+  assert_eq "" "$(awk -F '\t' '$1 == "require" && $2 == "stage:transport" { $2 = ""; print }' "$f" | LC_ALL=C sort \
+    | comm -23 - <(awk -F '\t' '$1 == "require" && $2 == "plan:transport" { $2 = ""; print }' "$f" | LC_ALL=C sort))" \
+    "every stage transport requirement is also a plan transport requirement"
+  for st in stage:transport-images stage:transport plan:transport; do
     assert_match "^count	$st	[0-9]+\$" "$(cat "$f")" "$st has an exact count row"
   done
 }
