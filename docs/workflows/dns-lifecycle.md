@@ -6,12 +6,12 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the
 - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)
   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.
 - Baseline source: this repository at commit
-  `9e71d3269f2bc9f3997703be978fc59622f82f7e`. Citations are `path:line` at that commit.
+  `bc846b261f6e9876f11b28ccbcc5170774322633`. Citations are `path:line` at that commit.
   The eight-cell baseline receipt measured b85bc9b. The document was first
   written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,
   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02
   re-pins after each change to a cited file (Task 1.1: 04b98cf, Unbound
-  anchor and control; Task 1.3: d6c1a1f, Pi-hole HealthCmd; Stage 1 gate: 80d6c18, control refusal; Task 2.1: 9e71d32, route include). `check-contracts` fails when a cited file changes
+  anchor and control; Task 1.3: d6c1a1f, Pi-hole HealthCmd; Stage 1 gate: 80d6c18, control refusal; Task 2.1: 9e71d32, route include; Task 2.3: bc846b2, Unbound WORKDIR). `check-contracts` fails when a cited file changes
   after this commit.
 - Checked by `bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md`.
   The check needs every workflow ID below, every operation ID in
@@ -151,6 +151,14 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   before and after the rename and after the reload reconciles; a failed
   activation restores the previous route, and a failed rollback escalates
   with forwarding still in place.
+- Measured on the whole chain by `integration/transport-transitions`
+  (both proxies x both Pi-hole images, fixture upstream): a route change
+  under paced load lost no query (0 timeouts and 0 errors of 80 cached and
+  80 fresh; the queries in flight during the ~0.6 s change were answered),
+  kept the cache, and reused one upstream session afterwards. A wrong-name
+  certificate on the selected route and a bogus signature give SERVFAIL
+  through Pi-hole. The run writes the transport receipt
+  (`bash tests/run.sh receipt transport`) [EVD-FAILURES-COUNTED].
 - The macOS installers edit the build copies: unbound.conf binds 0.0.0.0 and
   allows 172.31.240.248/29 (install-mac.sh:220-224), and the route include
   forwards to `172.31.240.252@853` (install-mac.sh:227-229).
