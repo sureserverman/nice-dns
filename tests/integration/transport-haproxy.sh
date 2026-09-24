@@ -18,9 +18,9 @@
 # (a script that logs "Bootstrapped 100%" and waits) mounted over /usr/bin/tor.
 #
 # Restart contract (start.sh): the host writes a request id to
-# /tmp/tor-restart-request; the image restarts only tor and answers in
-# /tmp/tor-restart-ack (request_id, status, generation, tor_pid, utc).
-# /tmp/tor-generation always names the current tor generation and pid.
+# /app/data/control/tor-restart-request; the image restarts only tor and answers in
+# /app/data/control/tor-restart-ack (request_id, status, generation, tor_pid, utc).
+# /app/data/control/tor-generation always names the current tor generation and pid.
 # Readiness is a later, separate observation.
 
 # shellcheck source=tests/fixtures/transport.sh
@@ -173,16 +173,16 @@ t_restart_request_acknowledged_with_new_generation() {
   hap0="$(tp_pid_of haproxy)"
   assert_match '^[1-9]' "$hap0" "haproxy runs"
   tp_request req-ack-1
-  tp_wait_file /tmp/tor-restart-ack 40 '^request_id	req-ack-1$' || fail "no acknowledgement for req-ack-1: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
+  tp_wait_file /app/data/control/tor-restart-ack 40 '^request_id	req-ack-1$' || fail "no acknowledgement for req-ack-1: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
   ack="$TP_OUT"
   assert_eq respawned "$(tp_field status "$ack")" "request acknowledged as a respawn"
   assert_eq 2 "$(tp_field generation "$ack")" "the acknowledgement carries the new generation"
   assert_ne "$pid0" "$(tp_field tor_pid "$ack")" "a new tor process"
   assert_match '^[1-9][0-9]*$' "$(tp_field tor_pid "$ack")" "the new tor pid is recorded"
   assert_eq "$hap0" "$(tp_pid_of haproxy)" "haproxy kept running across the tor restart"
-  tp_wait_file /tmp/tor-generation 5 '^generation	2$'
+  tp_wait_file /app/data/control/tor-generation 5 '^generation	2$'
   assert_rc 0 "$?" "the generation file follows the acknowledgement"
-  tp_pm exec "$TP_CTR" test -e /tmp/tor-restart-request
+  tp_pm exec "$TP_CTR" test -e /app/data/control/tor-restart-request
   assert_nonzero "$TP_RC" "the request was consumed"
 }
 
@@ -192,16 +192,18 @@ t_invalid_restart_request_rejected() {
   tp_supervised
   pid0="$(tp_field tor_pid "$TP_OUT")"
   tp_request 'bad id; rm -rf /'
-  tp_wait_file /tmp/tor-restart-ack 30 '^status	rejected$' || fail "no rejection acknowledgement: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
+  tp_wait_file /app/data/control/tor-restart-rejected 30 '^status	rejected$' || fail "no rejection record: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
   assert_eq 1 "$(tp_field generation "$TP_OUT")" "a rejected request does not start a generation"
   assert_eq invalid "$(tp_field request_id "$TP_OUT")" "the unsafe id is not echoed back"
+  tp_pm exec "$TP_CTR" test -e /app/data/control/tor-restart-ack
+  assert_nonzero "$TP_RC" "a rejection never writes the acknowledgement file"
   # "legacy" is reserved for the flag interface's acknowledgements.
-  tp_pm exec "$TP_CTR" rm -f /tmp/tor-restart-ack
+  tp_pm exec "$TP_CTR" rm -f /app/data/control/tor-restart-rejected
   tp_request legacy
-  tp_wait_file /tmp/tor-restart-ack 30 '^status	rejected$'
+  tp_wait_file /app/data/control/tor-restart-rejected 30 '^status	rejected$'
   assert_rc 0 "$?" "a request that claims the reserved id legacy is rejected"
   sleep 6
-  tp_wait_file /tmp/tor-generation 2
+  tp_wait_file /app/data/control/tor-generation 2
   assert_eq "$pid0" "$(tp_field tor_pid "$TP_OUT")" "tor was not restarted"
 }
 
@@ -209,7 +211,7 @@ t_legacy_restart_flag_acknowledged() {
   tp_setup tor-haproxy
   tp_supervised
   tp_pm exec "$TP_CTR" touch /tmp/tor-restart-flag
-  tp_wait_file /tmp/tor-restart-ack 40 '^request_id	legacy$' || fail "no acknowledgement for the legacy flag: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
+  tp_wait_file /app/data/control/tor-restart-ack 40 '^request_id	legacy$' || fail "no acknowledgement for the legacy flag: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
   assert_eq respawned "$(tp_field status "$TP_OUT")" "legacy flag restarts tor"
   assert_eq 2 "$(tp_field generation "$TP_OUT")" "legacy restart advances the generation"
 }
@@ -235,4 +237,50 @@ t_image_healthcheck_fails_when_upstream_drops_streams() {
   tp_healthcheck_rc
   assert_nonzero "$TP_RC" "the image healthcheck reports unhealthy when no upstream answers ($TP_OUT)"
   assert_match 'unhealthy' "$TP_OUT" "podman's verdict is unhealthy, not an error"
+}
+
+t_route_carries_slow_answers_and_idle_reuse() {
+  # A Tor round trip of several seconds, then the same upstream session
+  # reused after an idle gap (Unbound keeps DoT sessions for 120 s). An
+  # inactivity timeout shorter than either drops a valid answer.
+  tp_setup tor-haproxy
+  tp_supervised
+  tp_wait_listen 18532 30 || fail "no route listener"
+  tp_slow_start 5
+  tp_socks_mode relay "$TP_SLOW_PORT"
+  tp_exchange_twice 18532 25
+  assert_eq "PONG:A PONG:B" "$TP_OUT" "a 5 s answer, then a reuse after 25 s idle, both arrive through the route"
+}
+
+t_restart_control_is_private_to_the_image_user() {
+  # Only the image's own user can request a restart or write its answers:
+  # the control files live in a 0700 directory, not in the shared /tmp,
+  # and /tmp carries the sticky bit.
+  tp_setup tor-haproxy
+  tp_supervised
+  tp_pm exec "$TP_CTR" stat -c '%a %U %F' /app/data/control
+  assert_eq '700 app directory' "$TP_OUT" "control directory is 0700 and owned by the image user"
+  tp_pm exec "$TP_CTR" stat -c '%a' /tmp
+  assert_eq 1777 "$TP_OUT" "/tmp has the sticky bit"
+  tp_pm exec "$TP_CTR" sh -c 'printf "planted\n" >/tmp/tor-restart-request'
+  sleep 7
+  tp_pm exec "$TP_CTR" test -e /app/data/control/tor-restart-ack
+  assert_nonzero "$TP_RC" "a request planted in /tmp is not honoured"
+  tp_wait_file /app/data/control/tor-generation 2
+  assert_eq 1 "$(tp_field generation "$TP_OUT")" "tor was not restarted by the planted request"
+}
+
+t_stop_ends_every_child_promptly() {
+  # SIGTERM reaches start.sh through tini; its cleanup must end tor, haproxy,
+  # the probe and the watcher so the runtime never needs SIGKILL.
+  local rc t0 t1
+  tp_setup tor-haproxy
+  tp_supervised
+  tp_wait_listen 853 30 || fail "haproxy never listened on 853"
+  t0="$(date +%s)"
+  podman stop -t 15 "$TP_CTR" >/dev/null 2>&1
+  t1="$(date +%s)"
+  rc="$(podman inspect -f '{{.State.ExitCode}}' "$TP_CTR" 2>/dev/null)"
+  assert_ne 137 "$rc" "the container stopped without SIGKILL"
+  assert_match '^([0-9]|1[0-3])$' "$((t1 - t0))" "stop completed before the kill deadline ($((t1 - t0))s)"
 }

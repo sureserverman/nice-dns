@@ -570,3 +570,92 @@ t_contracts_citations_bind_to_the_pinned_commit() {
   assert_nonzero "$HC_RC" "a doc with no pinned commit"
   assert_match 'no pinned baseline commit' "$HC_OUT" "names the missing pin"
 }
+
+# ─────────────────────────── stage scenario requirements ─────────────────────
+
+# hc_req_manifests <dir>: a registry with groups ga (t_ok) and gb (t_two), stage
+# "st" running both, and scenarios S-A (ga) and S-B (gb), both owner transport.
+hc_req_manifests() {
+  local m="$1"
+  hc_manifests "$m"
+  hc_group_file "$CASE_DIR/g.sh" "$hc_passing_group"
+  hc_group_file "$CASE_DIR/h.sh" 't_two() { assert_eq b b; }'
+  printf 'unit\tga\t%s\tlocal\nunit\tgb\t%s\tlocal\n' "$CASE_DIR/g.sh" "$CASE_DIR/h.sh" >>"$m/groups.tsv"
+  printf 'st\tunit\tga\nst\tunit\tgb\n' >>"$m/stages.tsv"
+  printf 'TEST-OP\tsynthetic operation\n' >"$m/privacy-ops.tsv"
+  printf '# variant\tmeaning\n' >"$m/variants.tsv"
+  printf 'S-A\tTEST-OP\tunit\tga\tt_ok\ttransport\nS-B\tTEST-OP\tunit\tgb\tt_two\ttransport\n' >"$m/scenarios.tsv"
+  printf 'require\tst\tS-A\nrequire\tst\tS-B\n' >"$m/stage-scenarios.tsv"
+}
+
+t_stage_with_its_required_scenarios_runs() {
+  local m="$CASE_DIR/m"
+  hc_req_manifests "$m"
+  HC_MANIFESTS="$m" hc_run stage st
+  assert_rc 0 "$HC_RC" "positive control: every required scenario is active in the stage ($HC_OUT)"
+}
+
+t_stage_refuses_a_missing_required_scenario() {
+  # The evaluator's mutation A: a mandatory row (and its case) deleted while
+  # another row still covers the same operation.
+  local m="$CASE_DIR/m"
+  hc_req_manifests "$m"
+  printf 'S-A\tTEST-OP\tunit\tga\tt_ok\ttransport\n' >"$m/scenarios.tsv"
+  hc_group_file "$CASE_DIR/h.sh" 't_other() { assert_eq b b; }'
+  HC_MANIFESTS="$m" hc_run stage st
+  assert_rc 1 "$HC_RC" "a required scenario with no row refuses the stage"
+  assert_match 'required scenario S-B has no row' "$HC_OUT" "names the missing scenario"
+  assert_not_match 'collected=' "$HC_OUT" "nothing ran"
+}
+
+t_stage_refuses_a_required_scenario_outside_it() {
+  # The evaluator's mutation B: the group proving a required scenario dropped
+  # from the stage.
+  local m="$CASE_DIR/m"
+  hc_req_manifests "$m"
+  grep -v 'gb$' "$m/stages.tsv" >"$m/stages.tsv.new"; mv "$m/stages.tsv.new" "$m/stages.tsv"
+  HC_MANIFESTS="$m" hc_run stage st
+  assert_rc 1 "$HC_RC" "a required scenario whose group the stage dropped refuses the stage"
+  assert_match 'required scenario S-B runs in unit/gb, which st does not run' "$HC_OUT" "names the dropped group"
+}
+
+t_stage_refuses_a_deferred_required_scenario() {
+  local m="$CASE_DIR/m"
+  hc_req_manifests "$m"
+  printf 'S-A\tTEST-OP\tunit\tga\tt_ok\ttransport\nS-B\tTEST-OP\t-\t-\t-\ttransport\n' >"$m/scenarios.tsv"
+  HC_MANIFESTS="$m" hc_run stage st
+  assert_rc 1 "$HC_RC" "a required scenario left deferred refuses the stage"
+  assert_match 'required scenario S-B is deferred' "$HC_OUT" "names the deferred scenario"
+}
+
+t_stage_owner_rows_must_all_run_in_it() {
+  local m="$CASE_DIR/m"
+  hc_req_manifests "$m"
+  printf 'owner\tst\ttransport\n' >"$m/stage-scenarios.tsv"
+  printf 'S-C\tTEST-OP\tunit\tgc\tt_three\ttransport\n' >>"$m/scenarios.tsv"
+  hc_group_file "$CASE_DIR/i.sh" 't_three() { assert_eq c c; }'
+  printf 'unit\tgc\t%s\tlocal\n' "$CASE_DIR/i.sh" >>"$m/groups.tsv"
+  HC_MANIFESTS="$m" hc_run stage st
+  assert_rc 1 "$HC_RC" "an owned scenario outside the stage refuses it"
+  assert_match 'scenario S-C \(owner transport\) runs in unit/gc' "$HC_OUT" "names the owned scenario"
+}
+
+t_stage_requirements_reject_unknown_rows() {
+  local m="$CASE_DIR/m"
+  hc_req_manifests "$m"
+  printf 'requir\tst\tS-A\n' >>"$m/stage-scenarios.tsv"
+  HC_MANIFESTS="$m" hc_run stage st
+  assert_rc 1 "$HC_RC" "a misspelt row type refuses rather than being ignored"
+  assert_match 'unknown row type "requir"' "$HC_OUT" "names the bad row"
+}
+
+t_real_transport_stages_have_requirements() {
+  # Deleting the requirement rows would silently switch the check off.
+  local f="$NICE_DNS_ROOT/tests/manifests/stage-scenarios.tsv" st n
+  assert_file "$f" "stage-scenarios manifest exists"
+  for st in transport-images transport; do
+    n="$(awk -F '\t' -v s="$st" '$1 == "require" && $2 == s' "$f" | wc -l | tr -d ' ')"
+    assert_match '^(4[0-9]|[5-9][0-9]|[1-9][0-9][0-9]+)$' "$n" "stage $st requires its scenarios (at least 40 rows, got $n)"
+  done
+  assert_match '^owner	transport	transport$' "$(cat "$f")" "stage transport owns every transport scenario"
+}

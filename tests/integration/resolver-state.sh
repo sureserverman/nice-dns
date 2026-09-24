@@ -599,3 +599,36 @@ t_bogus_answer_rejected_locally() {
   assert_match 'bogus\.fixture\.test\..*IN[[:space:]]+A[[:space:]]+192\.0\.2\.66' "$RS_OUT" \
     "the fixture delivered the record, so the SERVFAIL was local validation"
 }
+
+t_anchor_survives_partial_ksk_revocation() {
+  # The real rollover: RFC 5011 has marked KSK-2017 REVOKED (state 4) while
+  # KSK-2024 is VALID (state 2). That anchor is usable and must not be
+  # refused (the all-revoked case is t_unusable_anchor_file_refused).
+  local st k17 k24
+  rs_setup
+  rs_state_dir state; st="$RS_DIR"
+  rs_pm run --rm --network none --entrypoint /bin/cat "$RS_IMG" "$RS_SEED"
+  k17="$(printf '%s\n' "$RS_OUT" | awk '/DNSKEY/ && /key tag 20326/ { sub(/ *;.*/, ""); print $NF }')"
+  k24="$(printf '%s\n' "$RS_OUT" | awk '/DNSKEY/ && /key tag 38696/ { sub(/ *;.*/, ""); print $NF }')"
+  assert_ne "" "$k17" "the seed has the KSK-2017 key"
+  assert_ne "" "$k24" "the seed has the KSK-2024 key"
+  rs_put "$st/root.key" ".	86400	IN	DNSKEY	385 3 8 $k17 ;{id = 20326 (ksk), size = 2048b} ;;state=4 [ REVOKED ] ;;count=0 ;;lastchange=1760000000
+.	86400	IN	DNSKEY	257 3 8 $k24 ;{id = 38696 (ksk), size = 2048b} ;;state=2 [  VALID  ] ;;count=0 ;;lastchange=1760000000
+"
+  rs_running_product -v "$st:/var/lib/unbound"
+  rs_pm logs "$RS_CTR"
+  assert_match 'using existing anchor' "$RS_OUT" "the rolled-over anchor was accepted, not re-seeded or refused"
+}
+
+t_network_control_interface_refused() {
+  # The entrypoint itself refuses a network control listener; the shipped
+  # config is not the only guard.
+  local f="$CASE_DIR/netctl.conf"
+  rs_setup
+  rs_holder
+  rs_pm run --rm --network none --entrypoint /bin/cat "$RS_IMG" /etc/unbound/unbound.conf
+  printf '%s\n' "$RS_OUT" | sed 's|control-interface: /run/unbound/control.sock|control-interface: 127.0.0.1|' >"$f"
+  chmod 644 "$f"
+  assert_match 'control-interface: 127\.0\.0\.1' "$(cat "$f")" "the test config asks for a network control listener"
+  rs_expect_refused "network-control" "control-interface 127.0.0.1 is a network address" -v "$f:/etc/unbound/unbound.conf:ro"
+}

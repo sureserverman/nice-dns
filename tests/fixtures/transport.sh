@@ -166,7 +166,7 @@ tp_supervised() {
     set -- "$@" -e "BRIDGE$b=obfs4 192.0.2.$b:443 0123456789ABCDEF0123456789ABCDEF0123456$b cert=AAAAtestonly$b iat-mode=0"
   done
   tp_run sup "$@" -v "$CASE_DIR/faketor:/usr/bin/tor:ro" "$TP_IMG"
-  tp_wait_file /tmp/tor-generation 60 || fail "start.sh never wrote /tmp/tor-generation: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
+  tp_wait_file /app/data/control/tor-generation 60 || fail "start.sh never wrote /app/data/control/tor-generation: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
 }
 
 # tp_wait_file <path> <seconds> [ERE]: wait until the file exists in the
@@ -185,7 +185,7 @@ tp_field() { printf '%s\n' "$2" | awk -F '\t' -v k="$1" '$1 == k { print $2; exi
 
 tp_request() {
   # shellcheck disable=SC2016
-  tp_pm exec "$TP_CTR" sh -c 'printf "%s\n" "$1" >/tmp/tor-restart-request.tmp && mv /tmp/tor-restart-request.tmp /tmp/tor-restart-request' sh "$1"
+  tp_pm exec "$TP_CTR" sh -c 'printf "%s\n" "$1" >/app/data/control/tor-restart-request.tmp && mv /app/data/control/tor-restart-request.tmp /app/data/control/tor-restart-request' sh "$1"
   assert_rc 0 "$TP_RC" "restart request written: $TP_OUT"
 }
 
@@ -200,4 +200,69 @@ tp_healthcheck_rc() {
   hc="$(podman image inspect -f '{{.Config.Healthcheck}}' "$TP_IMG" 2>/dev/null | grep -v -- "$TP_WARN")"
   assert_match 'dig' "$hc" "image $TP_IMG carries its HEALTHCHECK ($hc)"
   tp_pm healthcheck run "$TP_CTR"
+}
+
+# tp_slow_start <delay seconds>: a TCP responder on 127.0.0.1 inside the
+# namespace that answers each chunk it reads with "PONG:<chunk>" after the
+# delay, keeping the connection open (a slow Tor round trip on a reused
+# upstream session). Sets TP_SLOW_PORT. Stopped by the namespace teardown and
+# its own 600 s limit.
+tp_slow_start() {
+  local d="$CASE_DIR/slow" i=0
+  mkdir -m 700 "$d" || fail "cannot create $d"
+  # shellcheck disable=SC2016
+  podman unshare nsenter -t "$TP_NSPID" -n python3 -c '
+import os, socket, sys, threading, time
+delay, state = float(sys.argv[1]), sys.argv[2]
+def serve(c):
+    try:
+        while True:
+            data = c.recv(256)
+            if not data:
+                return
+            time.sleep(delay)
+            c.sendall(b"PONG:" + data)
+    except OSError:
+        pass
+    finally:
+        c.close()
+def watchdog(owner=os.getppid(), end=time.monotonic() + 600):
+    while os.getppid() == owner and time.monotonic() < end:
+        time.sleep(0.5)
+    os._exit(0)
+threading.Thread(target=watchdog, daemon=True).start()
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+s.listen(16)
+open(os.path.join(state, "port"), "w").write("%d\n" % s.getsockname()[1])
+while True:
+    c, _ = s.accept()
+    threading.Thread(target=serve, args=(c,), daemon=True).start()
+' "$1" "$d" >"$d/log" 2>&1 </dev/null &
+  while [ ! -s "$d/port" ]; do
+    i=$((i + 1))
+    [ "$i" -le 200 ] || fail "slow responder did not start: $(cat "$d/log")"
+    sleep 0.05
+  done
+  TP_SLOW_PORT="$(cat "$d/port")"
+}
+
+# tp_exchange_twice <port> <idle seconds>: on ONE connection, send "A" and
+# wait up to 15 s for PONG:A, stay idle, then send "B" and wait for PONG:B.
+# TP_OUT is what came back ("PONG:A PONG:B" when both arrived).
+tp_exchange_twice() {
+  # shellcheck disable=SC2016
+  tp_ns python3 -c '
+import socket, sys, time
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
+got = []
+for msg, pause in ((b"A", 0), (b"B", float(sys.argv[2]))):
+    time.sleep(pause)
+    try:
+        s.sendall(msg)
+        s.settimeout(15)
+        got.append(s.recv(64).decode() or "EOF")
+    except OSError as e:
+        got.append("ERR:%s" % type(e).__name__)
+print(" ".join(got))' "$1" "$2"
 }

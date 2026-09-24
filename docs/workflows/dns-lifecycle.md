@@ -157,7 +157,8 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
 - Resolver management is a Unix socket, `/run/unbound/control.sock`, with
   `control-use-cert: no` and no TCP listener or key files
   (unbound/etc/unbound.conf:163-166). The entrypoint keeps `/run/unbound`
-  owned by unbound and closed to others (unbound/start.sh:146-158). Unbound
+  owned by unbound and closed to others, and refuses any network
+  control-interface while control is enabled (unbound/start.sh:146-166). Unbound
   creates the socket with mode 0660. Operators run
   `podman exec --user unbound unbound unbound-control ...`; other uids are
   refused. The nice-dns image deletes any control keys an older published

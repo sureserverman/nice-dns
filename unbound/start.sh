@@ -143,7 +143,15 @@ start() {
     log "using existing anchor $anchor"
   fi
 
+  # With control enabled, every control-interface must be a Unix socket path:
+  # a network control listener is refused, not just left out of the shipped
+  # config.
+  ctl_on="$(unbound-checkconf -o control-enable 2>/dev/null)"
   for ctl in $(unbound-checkconf -o control-interface 2>/dev/null); do
+    case "$ctl" in
+      /*) ;;
+      *) [ "$ctl_on" != yes ] || die "control-interface $ctl is a network address; only a Unix socket path is allowed" ;;
+    esac
     case "$ctl" in
       /*)
         dir="$(dirname "$ctl")"

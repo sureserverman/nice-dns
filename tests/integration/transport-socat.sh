@@ -9,8 +9,8 @@
 #   18533  quad9-exit         9.9.9.9:853 (Quad9, Tor exit)
 #   853    legacy             onion, then Cloudflare exit; never Quad9
 #
-# and the same acknowledged tor restart (/tmp/tor-restart-request ->
-# /tmp/tor-restart-ack, /tmp/tor-generation). Every case runs the image's own
+# and the same acknowledged tor restart (/app/data/control/tor-restart-request ->
+# /app/data/control/tor-restart-ack, /app/data/control/tor-generation). Every case runs the image's own
 # start.sh with a stand-in tor, and tests/fixtures/socksfixture.py in place
 # of Tor's SocksPort inside a --network none namespace: destinations are only
 # recorded. LEGACY_CHECK_INTERVAL / LEGACY_FAIL_THRESHOLD / LEGACY_RETRY_DELAY
@@ -127,44 +127,46 @@ t_route_listeners_are_bounded() {
 t_restart_request_acknowledged_with_new_generation() {
   local gen0 pid0 socat0 ack
   ts_up
-  tp_wait_file /tmp/tor-generation 5
+  tp_wait_file /app/data/control/tor-generation 5
   gen0="$(tp_field generation "$TP_OUT")"; pid0="$(tp_field tor_pid "$TP_OUT")"
   assert_eq 1 "$gen0" "first tor is generation 1"
   assert_match '^[1-9][0-9]*$' "$pid0" "generation file names the tor pid"
   socat0="$(tp_pid_of socat | tr ' ' '\n' | LC_ALL=C sort | tr '\n' ' ')"
   assert_match '[1-9]' "$socat0" "socat listeners run"
   tp_request req-ack-1
-  tp_wait_file /tmp/tor-restart-ack 40 '^request_id	req-ack-1$' || fail "no acknowledgement for req-ack-1: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
+  tp_wait_file /app/data/control/tor-restart-ack 40 '^request_id	req-ack-1$' || fail "no acknowledgement for req-ack-1: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
   ack="$TP_OUT"
   assert_eq respawned "$(tp_field status "$ack")" "request acknowledged as a respawn"
   assert_eq 2 "$(tp_field generation "$ack")" "the acknowledgement carries the new generation"
   assert_ne "$pid0" "$(tp_field tor_pid "$ack")" "a new tor process"
   assert_eq "$socat0" "$(tp_pid_of socat | tr ' ' '\n' | LC_ALL=C sort | tr '\n' ' ')" "the socat listeners kept running across the tor restart"
-  tp_pm exec "$TP_CTR" test -e /tmp/tor-restart-request
+  tp_pm exec "$TP_CTR" test -e /app/data/control/tor-restart-request
   assert_nonzero "$TP_RC" "the request was consumed"
 }
 
 t_invalid_restart_request_rejected() {
   local pid0
   ts_up
-  tp_wait_file /tmp/tor-generation 5
+  tp_wait_file /app/data/control/tor-generation 5
   pid0="$(tp_field tor_pid "$TP_OUT")"
   tp_request 'bad id; rm -rf /'
-  tp_wait_file /tmp/tor-restart-ack 30 '^status	rejected$' || fail "no rejection acknowledgement: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
+  tp_wait_file /app/data/control/tor-restart-rejected 30 '^status	rejected$' || fail "no rejection record: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
   assert_eq 1 "$(tp_field generation "$TP_OUT")" "a rejected request does not start a generation"
   assert_eq invalid "$(tp_field request_id "$TP_OUT")" "the unsafe id is not echoed back"
-  tp_pm exec "$TP_CTR" rm -f /tmp/tor-restart-ack
+  tp_pm exec "$TP_CTR" test -e /app/data/control/tor-restart-ack
+  assert_nonzero "$TP_RC" "a rejection never writes the acknowledgement file"
+  tp_pm exec "$TP_CTR" rm -f /app/data/control/tor-restart-rejected
   tp_request legacy
-  tp_wait_file /tmp/tor-restart-ack 30 '^status	rejected$'
+  tp_wait_file /app/data/control/tor-restart-rejected 30 '^status	rejected$'
   assert_rc 0 "$?" "a request that claims the reserved id legacy is rejected"
-  tp_wait_file /tmp/tor-generation 2
+  tp_wait_file /app/data/control/tor-generation 2
   assert_eq "$pid0" "$(tp_field tor_pid "$TP_OUT")" "tor was not restarted"
 }
 
 t_legacy_restart_flag_acknowledged() {
   ts_up
   tp_pm exec "$TP_CTR" touch /tmp/tor-restart-flag
-  tp_wait_file /tmp/tor-restart-ack 40 '^request_id	legacy$' || fail "no acknowledgement for the legacy flag: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
+  tp_wait_file /app/data/control/tor-restart-ack 40 '^request_id	legacy$' || fail "no acknowledgement for the legacy flag: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
   assert_eq respawned "$(tp_field status "$TP_OUT")" "the legacy flag restarts tor"
   assert_eq 2 "$(tp_field generation "$TP_OUT")" "a legacy restart advances the generation"
 }
@@ -202,4 +204,33 @@ t_image_healthcheck_fails_when_upstream_drops_streams() {
   tp_healthcheck_rc
   assert_nonzero "$TP_RC" "the image healthcheck reports unhealthy when no upstream answers ($TP_OUT)"
   assert_match 'unhealthy' "$TP_OUT" "podman's verdict is unhealthy, not an error"
+}
+
+t_route_carries_slow_answers_and_idle_reuse() {
+  # A Tor round trip of several seconds, then the same upstream session
+  # reused after an idle gap (Unbound keeps DoT sessions for 120 s). An
+  # inactivity timeout shorter than either drops a valid answer.
+  ts_up
+  tp_slow_start 5
+  tp_socks_mode relay "$TP_SLOW_PORT"
+  tp_exchange_twice 18532 25
+  assert_eq "PONG:A PONG:B" "$TP_OUT" "a 5 s answer, then a reuse after 25 s idle, both arrive through the route"
+}
+
+t_restart_control_is_private_to_the_image_user() {
+  # Only the image's own user can request a restart or write its answers:
+  # the control files live in a 0700 directory, not in the shared /tmp,
+  # and /tmp carries the sticky bit.
+  tp_setup tor-socat
+  tp_supervised
+  tp_pm exec "$TP_CTR" stat -c '%a %U %F' /app/data/control
+  assert_eq '700 app directory' "$TP_OUT" "control directory is 0700 and owned by the image user"
+  tp_pm exec "$TP_CTR" stat -c '%a' /tmp
+  assert_eq 1777 "$TP_OUT" "/tmp has the sticky bit"
+  tp_pm exec "$TP_CTR" sh -c 'printf "planted\n" >/tmp/tor-restart-request'
+  sleep 7
+  tp_pm exec "$TP_CTR" test -e /app/data/control/tor-restart-ack
+  assert_nonzero "$TP_RC" "a request planted in /tmp is not honoured"
+  tp_wait_file /app/data/control/tor-generation 2
+  assert_eq 1 "$(tp_field generation "$TP_OUT")" "tor was not restarted by the planted request"
 }

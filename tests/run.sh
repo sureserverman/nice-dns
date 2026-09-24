@@ -453,9 +453,16 @@ nd_composite() {
     return "$ND_USAGE"
   fi
   # Refuse the whole run before running anything if scenario coverage is
-  # incomplete or any tier gate refuses.
+  # incomplete, the stage's required scenarios are not all in it, or any tier
+  # gate refuses.
   if ! cmd_check_scenarios >/dev/null; then
     nd_err "$what '$name' refused: scenario coverage is incomplete (bash tests/run.sh check-scenarios)"
+    return "$ND_FAIL"
+  fi
+  local grouplist="|"
+  for i in $idxs; do grouplist="$grouplist${ND_G_KIND[$i]}/${ND_G_NAME[$i]}|"; done
+  if ! nd_stage_requirements "$name" "$grouplist"; then
+    nd_err "$what '$name' refused: its required scenarios are not all active in it (tests/manifests/stage-scenarios.tsv)"
     return "$ND_FAIL"
   fi
   for i in $idxs; do
@@ -469,6 +476,49 @@ nd_composite() {
     nd_run_group_index "$i" || worst=1
   done
   nd_finish "$worst"
+}
+
+# nd_stage_requirements <stage|plan name> <|kind/group|...|>: rows of
+# stage-scenarios.tsv (tab-separated, parsed as data) for this name:
+#   require <name> <scenario id>  the scenario has a row in scenarios.tsv, is
+#                                 active, and its group runs in <name>;
+#   owner   <name> <owner>        every scenario row with that owner is
+#                                 active and its group runs in <name>.
+# So deleting a mandatory scenario (row and case) or dropping a group from
+# the stage refuses the run instead of passing with less. A name with no rows
+# has no requirements (the baseline stages). Prints each problem; 1 if any.
+nd_stage_requirements() {
+  local f="$ND_MANIFESTS/stage-scenarios.tsv" errs
+  [ -f "$f" ] || return 0
+  errs="$(awk -F '\t' -v st="$1" -v groups="$2" '
+    FNR == NR {
+      if ($1 == "" || $1 ~ /^#/) next
+      kind[$1] = $3; grp[$1] = $4; own[$1] = $6; ids[++n] = $1; next
+    }
+    $1 == "" || $1 ~ /^#/ { next }
+    $1 != "require" && $1 != "owner" { print "stage-scenarios.tsv:" FNR ": unknown row type \"" $1 "\""; next }
+    NF != 3 { print "stage-scenarios.tsv:" FNR ": expected 3 tab-separated fields"; next }
+    $2 != st { next }
+    $1 == "require" {
+      id = $3
+      if (!(id in kind)) { print "required scenario " id " has no row in scenarios.tsv"; next }
+      if (kind[id] == "-") { print "required scenario " id " is deferred, not active"; next }
+      if (index(groups, "|" kind[id] "/" grp[id] "|") == 0)
+        print "required scenario " id " runs in " kind[id] "/" grp[id] ", which " st " does not run"
+      next
+    }
+    $1 == "owner" {
+      for (i = 1; i <= n; i++) {
+        id = ids[i]
+        if (own[id] != $3) continue
+        if (kind[id] == "-") print "scenario " id " (owner " $3 ") is still deferred"
+        else if (index(groups, "|" kind[id] "/" grp[id] "|") == 0)
+          print "scenario " id " (owner " $3 ") runs in " kind[id] "/" grp[id] ", which " st " does not run"
+      }
+    }' "$ND_MANIFESTS/scenarios.tsv" "$f")"
+  [ -z "$errs" ] && return 0
+  printf '%s\n' "$errs" | sed 's/^/run.sh: /' >&2
+  return 1
 }
 
 cmd_list() {
