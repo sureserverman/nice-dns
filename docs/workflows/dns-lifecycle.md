@@ -384,7 +384,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   proxy cannot forge (lib/recovery.sh:696-730, DEC-006). An Unbound image
   without nice-dns-unbound-start gives "ready, uncorroborated" (exit 126 or
   127). Since Sub-plan 3 Task 2.3 the macOS adapter reports Apple container's
-  missing executable (exit 1) as 127 (lib/platform/macos.sh:26-35). Before
+  missing executable (exit 1) as 127 (lib/platform/macos.sh:28-36). Before
   that, a working restart on macOS was never ready (live run
   20260925T200235Z-e3b4de89).
 - The schedules still call `run`; Sub-plan 3 Task 2.1 moves them to `tick`.
