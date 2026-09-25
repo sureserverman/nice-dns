@@ -408,33 +408,49 @@ cmd_run() {
 #     restart) and, when that is not acknowledged, one service restart
 #     (nd_recovery_restart_tor);
 #   * readiness is recorded on a later pass.
-# Before the pass, and outside the lock (a bridge fetch is slow), bridges are
-# refetched once an observed outage has outlasted the grace, as before: they
-# take effect when the proxy container is next created.
+# Before the pass, and outside the lock (an evaluation is slow), the bridges
+# are re-evaluated once an observed outage has outlasted the grace
+# (refresh_bridges_on_outage); a changed set is adopted by the service
+# restart.
 # NICE_DNS_RESTART_GRACE_SECS still sets the grace (ND_POLICY_GRACE_S).
 
 ND_POLICY_GRACE_S="${ND_POLICY_GRACE_S:-${NICE_DNS_RESTART_GRACE_SECS:-300}}"
 export ND_POLICY_GRACE_S
 
+# refresh_bridges_on_outage <now_human>: once an observed full outage has
+# outlasted the grace, re-evaluate the bridges (lib/recovery.sh
+# nd_bridges_refresh: the image's bridge-eval, applied only under its rules),
+# at most once per ND_BRIDGE_OUTAGE_REFRESH_S (3600), before the pass and
+# outside the state lock. A changed set is then adopted by the pass's service
+# restart. Nothing here writes bridges.env directly: until Task 2.2 this
+# called the raw Moat fetcher, which replaced an evaluated set with an
+# unranked pool.
+refresh_bridges_on_outage() {
+  local since now last f t c v out
+  since="$(nd_state_load 2>/dev/null | awk -F '\t' '$1 == "outage_since" { print $2 }')"
+  case "$since" in ''|-|*[!0-9]*) return 0 ;; esac
+  now="$(date +%s)"
+  [ $((now - since)) -ge "$ND_POLICY_GRACE_S" ] || return 0
+  f="$(nd_platform_state_dir)/bridges.last"
+  last="$(cat "$f" 2>/dev/null)"; case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  [ $((now - last)) -ge "${ND_BRIDGE_OUTAGE_REFRESH_S:-3600}" ] || return 0
+  (umask 077 && printf '%s\n' "$now" >"$f")
+  t="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-br.XXXXXX")" || return 0
+  c="$(nd_platform_proxy_container "${ND_RECOVERY_CMD_DEADLINE:-15}" "$t" 2>/dev/null)"; v="${c#tor-}"
+  rm -rf "${t:?}"
+  case "$v" in haproxy|socat) ;; *) return 0 ;; esac
+  out="$(nd_bridges_refresh "$v" 2>&1)"
+  log_to_file "$1 BRIDGES outage refresh $(printf '%s\n' "$out" | awk -F '\t' '$1 == "result" { print "result=" $2 }')"
+}
+
 run_controller_pass() {
-  local now_human="$1" since o out
+  local now_human="$1" o out
   # No libraries or no valid observations: nothing to decide on.
   if [ -z "${HEALTH_LIBS_LOADED:-}" ] || [ -z "$HEALTH_OBS" ] || ! printf '%s\n' "$HEALTH_OBS" | nd_health_validate 2>/dev/null; then
     log_to_file "$now_human controller skipped: no valid observations"
     return 0
   fi
-  case " ${FAILED_CHECKS[*]:-} " in
-    *" chain-resolves "*)
-      since="$(nd_state_load 2>/dev/null | awk -F '\t' '$1 == "outage_since" { print $2 }')"
-      case "$since" in
-        ''|-|*[!0-9]*) ;;
-        *)
-          if [ $(( $(date +%s) - since )) -ge "$ND_POLICY_GRACE_S" ] && [ -x "$HOME/.local/bin/nice-dns-fetch-bridges" ]; then
-            "$HOME/.local/bin/nice-dns-fetch-bridges" --force >>"$ROLL_LOG" 2>&1 \
-              || log_to_file "$now_human fetch-bridges --force failed (continuing)"
-          fi ;;
-      esac ;;
-  esac
+  nd_state_init 2>/dev/null && refresh_bridges_on_outage "$now_human"
   o="$(mktemp "${TMPDIR:-/tmp}/nice-dns-obs.XXXXXX")" || return 0
   printf '%s\n' "$HEALTH_OBS" >"$o"
   out="$(nd_recovery_tick active "$o" 2>&1)"
@@ -870,6 +886,7 @@ cmd_tick() {
   if ! nd_health_validate <"$o"; then
     rm -f "$o"; echo "$SCRIPT_NAME: the observation output is not valid" >&2; return 3
   fi
+  if [ "$mode" = active ] && nd_state_init 2>/dev/null; then refresh_bridges_on_outage "$(ts)"; fi
   out="$(nd_recovery_tick "$mode" "$o")"; rc=$?
   rm -f "$o"
   log_to_file "$(ts) TICK $mode $(printf '%s\n' "$out" | awk -F '\t' '{ printf "%s%s=%s", s, $1, $2; s = " " }')"

@@ -258,3 +258,31 @@ t_macos_installer_retires_the_legacy_bridge_agent_after_the_controller() {
   cr="$(grep -n 'launchctl unload "\$EVAL_DST"' "$f" | cut -d: -f1)"
   [ -n "$ci" ] && [ -n "$cr" ] && [ "$cr" -gt "$ci" ] || fail "the legacy agent must be retired only after the controller installs (install line $ci, retire line $cr)"
 }
+
+t_outage_refresh_is_evaluated_and_rate_limited() {
+  local plat tree tok now
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      tree="$CASE_DIR/tree-$plat"; mkdir -p "$tree"
+      cp -R "$NICE_DNS_ROOT/health" "$NICE_DNS_ROOT/lib" "$NICE_DNS_ROOT/routes" "$tree/"; chmod -R go-w "$tree"
+      printf 'nameserver 127.0.0.1\n' >"$CASE_DIR/resolv-$plat.conf"; export ND_RESOLV_CONF="$CASE_DIR/resolv-$plat.conf"
+      bl_set "$BL_LIVE" 5; bl_set "$CASE_DIR/cand" 7 9
+      printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+      for p in 18531 18532 18533 853; do echo servfail >"$FAKE/probe/$p"; done
+      # An observed outage an hour old: past the grace.
+      now="$(date +%s)"
+      printf 'schema\tnice-dns-controller-state/1\nboot_id\tboot-a\nupdated\t%s\nstarted\t%s\nroute\tcloudflare-exit\noutage_since\t%s\noutage_restarts\t0\nlast_action\t-\nlast_action_at\t-\nrecovery_at\t%s\n' \
+        "$((now - 60))" "$((now - 7200))" "$((now - 3600))" "$((now - 60))" >"$CASE_DIR/seed"
+      tok="$(nd_state_lock)" && nd_state_commit "$tok" 0 "$CASE_DIR/seed" >/dev/null && nd_state_unlock "$tok"
+      # A raw fetcher must never be called: make one that would be noticed.
+      mkdir -p "$HOME/.local/bin"; printf '#!/bin/sh\necho RAW >>"%s"\n' "$FAKE_LOG" >"$HOME/.local/bin/nice-dns-fetch-bridges"; chmod 755 "$HOME/.local/bin/nice-dns-fetch-bridges"
+      bash "$tree/health/nice-dns-health" tick >"$CASE_DIR/t1" 2>&1
+      assert_eq 1 "$(grep -c ' run --rm ' "$FAKE_LOG")" "$plat: the outage past the grace re-evaluates the bridges once: $(cat "$CASE_DIR/t1")"
+      assert_eq 7 "$(grep -cE '^BRIDGE[0-9]+=obfs4 192\.0\.9\.' "$BL_LIVE")" "$plat: the evaluated set is applied under its rules"
+      assert_not_match 'RAW' "$(cat "$FAKE_LOG")" "$plat: the raw Moat fetcher is never used"
+      bash "$tree/health/nice-dns-health" tick >"$CASE_DIR/t2" 2>&1
+      assert_eq 1 "$(grep -c ' run --rm ' "$FAKE_LOG")" "$plat: not again within the hour"
+    ) || exit 1
+  done
+}
