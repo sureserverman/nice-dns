@@ -6,13 +6,13 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the
 - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)
   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.
 - Baseline source: this repository at commit
-  `b8b9bb8957853bb33044bae01c316cdb9645f8fe`. Citations are `path:line` at that commit.
+  `93a9122ac1900193a38dab909a369561d879cc01`. Citations are `path:line` at that commit.
   The eight-cell baseline receipt measured b85bc9b. The document was first
   written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,
   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02
   re-pins after each change to a cited file (Task 1.1: 04b98cf, Unbound
   anchor and control; Task 1.3: d6c1a1f, Pi-hole HealthCmd; Stage 1 gate: 80d6c18, control refusal; Task 2.1: 9e71d32, route include; Task 2.3: bc846b2, Unbound WORKDIR; Stage 2 gate: 94a9c60, route resolution check). Sub-plan 03 re-pins the same
-  way (Task 1.1: ba144fd, health observations and platform adapters; Task 1.2: e81697f, state directory and boot identity appended to the platform adapters; Task 1.3: 6bf29f3, acknowledged recovery; Stage 1 gate: 4b11779, one controller pass; 20589e8, route recorded on success; Task 2.1: 3a4b4d6, bundle and minute schedules; Task 2.2: d934ed5, bridge lifecycle; Task 2.3: b8b9bb8, shadow install and privacy-safe failure dump). `check-contracts` fails when a cited file changes
+  way (Task 1.1: ba144fd, health observations and platform adapters; Task 1.2: e81697f, state directory and boot identity appended to the platform adapters; Task 1.3: 6bf29f3, acknowledged recovery; Stage 1 gate: 4b11779, one controller pass; 20589e8, route recorded on success; Task 2.1: 3a4b4d6, bundle and minute schedules; Task 2.2: d934ed5, bridge lifecycle; Task 2.3: b8b9bb8, shadow install and privacy-safe failure dump; 93a9122, macOS exec reports a missing executable as 127). `check-contracts` fails when a cited file changes
   after this commit.
 - Checked by `bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md`.
   The check needs every workflow ID below, every operation ID in
@@ -334,10 +334,10 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   Until Sub-plan 3 Task 1.1 both platforms read /etc/resolv.conf and queried
   `@127.0.0.1`. Now the platform adapter picks Pi-hole's endpoint: 127.0.0.1
   on Linux (lib/platform/linux.sh:36) and 172.31.240.250 on macOS
-  (lib/platform/macos.sh:41, mac/start-container.sh:24). DNS ownership is
+  (lib/platform/macos.sh:56, mac/start-container.sh:24). DNS ownership is
   resolv.conf naming only 127.0.0.1 on Linux (lib/platform/linux.sh:74-85).
   On macOS, every enabled network service and scutil's resolver #1 must use
-  172.31.240.250 (lib/platform/macos.sh:102-139). The macOS path is proven
+  172.31.240.250 (lib/platform/macos.sh:117-154). The macOS path is proven
   with unit fakes built from captured macOS output. Whether it passes on a
   live Mac is baseline: unverified.
 - Since the Sub-plan 3 Stage 1 gate, `run` has no outage timer of its own.
@@ -367,7 +367,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
     `systemctl --user restart tor-<variant>.service`
     (lib/platform/linux.sh:134). On macOS it is `launchctl kickstart -k` of
     the start-container agent, which recreates the whole stack
-    (lib/platform/macos.sh:200).
+    (lib/platform/macos.sh:215).
   - The in-image restart keeps Tor's data. The service restart recreates
     the `--rm` container, which loses it until a volume is mounted
     (Sub-plan 4).
@@ -381,7 +381,12 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   bounded in wall-clock seconds.
 - A Tor restart is ready when an identity route answers and Unbound
   resolves over its TLS-verified route, which is host-side evidence the
-  proxy cannot forge (lib/recovery.sh:696-730, DEC-006).
+  proxy cannot forge (lib/recovery.sh:696-730, DEC-006). An Unbound image
+  without nice-dns-unbound-start gives "ready, uncorroborated" (exit 126 or
+  127). Since Sub-plan 3 Task 2.3 the macOS adapter reports Apple container's
+  missing executable (exit 1) as 127 (lib/platform/macos.sh:26-35). Before
+  that, a working restart on macOS was never ready (live run
+  20260925T200235Z-e3b4de89).
 - The schedules still call `run`; Sub-plan 3 Task 2.1 moves them to `tick`.
 - On macOS the start-container agent and bridge-eval share a `mkdir` stack lock
   (mac/start-container.sh:57, mac/start-container.sh:247, mac/start-container.sh:509).
@@ -638,7 +643,7 @@ Sources: ARCH-07, design "Bridge lifecycle".
   `org.nice-dns.health-bridges` agent (a daily `StartCalendarInterval`,
   which runs on wake; health/nice-dns-health:677). Its probe container runs
   only on `dnsnet`, and only while pi-hole, unbound and the proxy hold their
-  addresses (lib/platform/macos.sh:230-240).
+  addresses (lib/platform/macos.sh:245-255).
   - `mac/persist.sh` no longer installs the legacy `org.nice-dns.bridge-eval`
     agent. It retires that agent after the controller installs
     (mac/persist.sh:61).
