@@ -6,11 +6,13 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the
 - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)
   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.
 - Baseline source: this repository at commit
-  `b85bc9b7786efc7d3bf0572875e95e214dfa1d6c`. Citations are `path:line` at that commit.
-  It is the product the eight-cell baseline receipt measured. The document was
-  first written against 337fb15; sub-plan 01 then landed product fixes
-  (c8ecd70, fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived.
-  `check-contracts` fails when a cited file changes after this commit.
+  `94a9c604b6c71be1f887a3d063e4e06c38bc4bd1`. Citations are `path:line` at that commit.
+  The eight-cell baseline receipt measured b85bc9b. The document was first
+  written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,
+  fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02
+  re-pins after each change to a cited file (Task 1.1: 04b98cf, Unbound
+  anchor and control; Task 1.3: d6c1a1f, Pi-hole HealthCmd; Stage 1 gate: 80d6c18, control refusal; Task 2.1: 9e71d32, route include; Task 2.3: bc846b2, Unbound WORKDIR; Stage 2 gate: 94a9c60, route resolution check). `check-contracts` fails when a cited file changes
+  after this commit.
 - Checked by `bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md`.
   The check needs every workflow ID below, every operation ID in
   `tests/manifests/privacy-ops.tsv`, and each workflow's required subsections.
@@ -108,30 +110,105 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   (pihole/etc/pihole.toml:12-14). The Linux quadlet sets
   `DNS1=127.0.0.1#5335` (deb/quadlet/pi-hole.container:26).
 - On macOS the installer and LaunchAgent override the upstream to
-  `172.31.240.251#5335` (install-mac.sh:269-270, mac/start-container.sh:409-410).
+  `172.31.240.251#5335` (install-mac.sh:273-274, mac/start-container.sh:409-410).
 - Pi-hole query logging is off in the shipped config
   (pihole/etc/pihole.toml:197). dnsmasq `log-queries` is commented out
   (pihole/etc/dnsmasq.conf:48). baseline: unverified at runtime for both
   Pi-hole images.
-- Unbound forwards the root zone over TLS to a single address
-  `127.0.0.1@853#tor.cloudflare-dns.com` (unbound/etc/unbound.conf:131-135).
-  It uses `tls-cert-bundle: "/etc/ssl/cert.pem"` (unbound/etc/unbound.conf:127).
-  The file sets no `forward-first`. baseline: unverified that the effective
-  runtime config has no recursion fallback.
-- The macOS installer edits the build copy of unbound.conf. It binds 0.0.0.0,
-  allows 172.31.240.248/29 and forwards to `172.31.240.252@853`
-  (install-mac.sh:220-225).
-- Provider identity is mixed today. Unbound authenticates
-  `tor.cloudflare-dns.com` (unbound/etc/unbound.conf:135). The health script
+- Unbound forwards the root zone through one managed include,
+  `include: "/etc/unbound/route/forward-route.conf"` (unbound/etc/unbound.conf:143).
+  The image default is the legacy route: `forward-first: no`,
+  `forward-tls-upstream: yes` and `127.0.0.1@853#tor.cloudflare-dns.com`
+  (unbound/route/forward-route.conf:13-17), so an image paired with an older
+  proxy keeps resolving. It uses `tls-cert-bundle: "/etc/ssl/cert.pem"`
+  (unbound/etc/unbound.conf:132). The entrypoint refuses to start Unbound
+  unless the include holds exactly one root forward-zone over TLS with one
+  `ADDR@PORT#TLS-NAME` forwarder and `forward-first: no`, plus the route
+  marker, and unless the main config names no other root forward-zone or
+  stub-zone (unbound/start.sh:140-183, unbound/start.sh:279-282)
+  [PRIV-NO-DIRECT] [SEC-TLS-NAME].
+- Route selection (ARCH-03 `apply_route`): routes/providers.tsv binds each
+  route to its port and TLS name (routes/providers.tsv:13-17). The host
+  library records the desired route, stages the include, has the image
+  validate it (`nice-dns-unbound-start check-route`: the shape above, then
+  `unbound-checkconf` on the complete candidate config,
+  unbound/start.sh:187-204), keeps the previous include, renames the staged
+  file into place, runs `reload_keep_cache` and reads back the
+  `nice-dns-route.invalid.` TXT marker through the control socket, then
+  resolves through the new forwarder with a fresh TLS session
+  (`nice-dns-unbound-start probe-route`, unbound/start.sh:211-227; the cache
+  cannot answer it) (lib/recovery.sh:272-332). A route that does not resolve
+  is rolled back. A failure after the rename restores the
+  previous include the same way; if that also fails the result is
+  `escalate` and the forward-zone stays in place. An unchanged route is not
+  reloaded. `reconcile_route` finishes an interrupted change
+  (lib/recovery.sh:334-360). The Linux adapter uses 127.0.0.1, the macOS
+  adapter 172.31.240.252 (lib/platform/linux.sh:15, lib/platform/macos.sh:17).
+  Deployments do not mount a route directory yet, so the image default runs
+  until a later sub-plan wires the mount [PRIV-ROUTE-IDENTITY]. On macOS
+  (Apple container 1.4.1, /bin/bash 3.2.57) the adapter was qualified with
+  a throwaway container: `container exec --user unbound` controls Unbound,
+  other uids are denied, and a route change is staged, renamed in the
+  bind-mounted directory, reloaded, read back and rolled back.
+- Proven on the built image by `integration/route-transition`: each listed
+  route carries queries only on its port; the route changes with the cache,
+  thread, socket and cache-size settings intact; an unchanged route is not
+  reloaded; unlisted routes, nameless TLS forwarders, `forward-first: yes`,
+  a missing forward-zone and a second root zone are refused; interruption
+  before and after the rename and after the reload reconciles; a failed
+  activation restores the previous route, and a failed rollback escalates
+  with forwarding still in place.
+- Measured on the whole chain by `integration/transport-transitions`
+  (both proxies x both Pi-hole images, fixture upstream): a route change
+  under paced load lost no query (0 timeouts and 0 errors of 80 cached and
+  80 fresh; the queries in flight during the ~0.6 s change were answered),
+  kept the cache, and reused one upstream session afterwards. A wrong-name
+  certificate on the selected route and a bogus signature give SERVFAIL
+  through Pi-hole. The run writes the transport receipt
+  (`bash tests/run.sh receipt transport`) [EVD-FAILURES-COUNTED].
+- The macOS installers edit the build copies: unbound.conf binds 0.0.0.0 and
+  allows 172.31.240.248/29 (install-mac.sh:220-224), and the route include
+  forwards to `172.31.240.252@853` (install-mac.sh:227-229).
+- Provider identity is mixed today. The default route authenticates
+  `tor.cloudflare-dns.com` (unbound/route/forward-route.conf:17). The health script
   describes the proxy backends as the onion primary, a 1.1.1.1 backup and a
   9.9.9.9 fallback via Tor exit (health/nice-dns-health:353-356). A Quad9
   backend would receive a Cloudflare-named TLS session. That breaks
   [PRIV-ROUTE-IDENTITY]. baseline: unverified. The proxy config lives in the
   sibling repos and was not read here.
-- unbound.conf has no `trust-anchor`, `auto-trust-anchor-file` or
-  `trust-anchor-file` directive. Only the comment at
-  unbound/etc/unbound.conf:28 mentions trust anchors. Whether DNSSEC
-  validation is active depends on the base image. baseline: unverified.
+- Unbound validates against the root anchor in
+  `auto-trust-anchor-file: "/var/lib/unbound/root.key"`
+  (unbound/etc/unbound.conf:30-34). That directory is persistent state owned
+  by the unbound user, 0700 (unbound/Containerfile:40-42). The image carries a
+  read-only seed. Its trust root is the DS set compiled into unbound-anchor.
+  Every root DNSKEY in the dnssec-root package must match one of those DS
+  records and is kept. A required KSK (20326, 38696) that the package lacks
+  is seeded as its builtin DS line, so the image also builds on the published
+  base, whose package carries only KSK-2017. The build fails on a DNSKEY that
+  matches no builtin DS, a required tag unknown to both, or an empty tag list
+  (unbound/start.sh:102-132, unbound/Containerfile:39). The entrypoint reads
+  the anchor path from the effective config. It seeds a missing anchor from
+  the seed. It exits with a `FATAL` message, before Unbound starts, when the
+  anchor or its directory is unusable: symlinked, not owned by unbound, not
+  writable (including a read-only mount), empty, malformed, or without a
+  trusted root key (unbound/start.sh:229-253). [SEC-DNSSEC-ANCHOR]
+- Proven on the built images by `integration/resolver-state`. Through a
+  controlled signer, the product Unbound sets AD on a signed answer, answers
+  an insecure delegation without AD, and returns SERVFAIL for a bogus
+  signature whose record `+cd` still retrieves
+  [SEC-DNSSEC-SIGNED] [SEC-DNSSEC-UNSIGNED] [SEC-DNSSEC-BOGUS].
+  Persistence across container re-creation needs a volume on
+  /var/lib/unbound. The quadlets and macOS scripts do not mount one yet, so
+  each new container re-seeds from the image (owned by a later sub-plan).
+- Resolver management is a Unix socket, `/run/unbound/control.sock`, with
+  `control-use-cert: no` and no TCP listener or key files
+  (unbound/etc/unbound.conf:166-169). The entrypoint keeps `/run/unbound`
+  owned by unbound and closed to others, and refuses any network
+  control-interface while control is enabled (unbound/start.sh:256-276). Unbound
+  creates the socket with mode 0660. Operators run
+  `podman exec --user unbound unbound unbound-control ...`; other uids are
+  refused. The nice-dns image deletes any control keys an older published
+  base still carries (unbound/Containerfile:32-34) [SEC-CONTROL-LOCAL].
 - Unbound does not use IPv6 (`do-ip6: no`, unbound/etc/unbound.conf:19).
   Linux installs disable IPv6 through sysctl (install-deb.sh:68-74).
 - The Linux pod publishes port 53 TCP/UDP with no host address, so on every
@@ -239,7 +316,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   can also both take over a dead holder. This is carried to Sub-plan 3
   (state.sh owns locks) [REC-ACK-READINESS].
 - Cache masking: Unbound serves expired answers for up to 24 h
-  (unbound/etc/unbound.conf:94-96). dnsmasq has `use-stale-cache=3600`
+  (unbound/etc/unbound.conf:99-101). dnsmasq has `use-stale-cache=3600`
   (pihole/etc/dnsmasq.conf:58). The `chain-resolves` check on `cloudflare.com`
   (health/nice-dns-health:193-201) can therefore pass while the upstream is
   down. This is the BL-018 blind spot [EVD-CACHE-NOT-UPSTREAM]. Reproduced by
@@ -251,7 +328,9 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
 - Linux container health checks only test that a port is open: `nc -z` on
   853 and 5335 (deb/quadlet/tor-haproxy.container:54,
   deb/quadlet/unbound.container:22). Pi-hole's check is a `pi.hole` lookup
-  (deb/quadlet/pi-hole.container:28). All use `HealthOnFailure=restart`
+  that needs an answer line (deb/quadlet/pi-hole.container:28). Until
+  sub-plan 02 it trusted dig's exit status, which is 0 on a SERVFAIL and
+  `dig +short` prints its errors on stdout. All use `HealthOnFailure=restart`
   (deb/quadlet/tor-haproxy.container:76).
 - macOS LaunchAgent: `RunAtLoad` true and `KeepAlive` false
   (mac/org.nice-dns.start-container.plist:9, mac/org.nice-dns.start-container.plist:27).
@@ -332,15 +411,15 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   (install-deb.sh:162-178) before new images are built
   (install-deb.sh:436-439). DNS is down for the whole build.
 - Builds resolve through `--dns 1.1.1.1` (install-deb.sh:436-437,
-  install-mac.sh:256-257) [PRIV-BOOTSTRAP-DECLARED]. The proxy image is a
+  install-mac.sh:260-261) [PRIV-BOOTSTRAP-DECLARED]. The proxy image is a
   floating `:latest` tag (install-deb.sh:438,
   deb/quadlet/tor-haproxy.container:14). Inputs are not immutable.
 - The standard and hardened installers have drifted. install-deb.sh builds
   with `--pull=newer --no-cache` (install-deb.sh:436-437).
   install-deb-hardened.sh does not (install-deb-hardened.sh:364,
   install-deb-hardened.sh:373). The same gap exists on macOS
-  (install-mac.sh:256-257 against install-mac-hardened.sh:196,
-  install-mac-hardened.sh:200-201). The macOS hardened teardown does not unload
+  (install-mac.sh:260-261 against install-mac-hardened.sh:200,
+  install-mac-hardened.sh:204-205). The macOS hardened teardown does not unload
   the bridge-eval agent (install-mac-hardened.sh:44-67). The standard
   teardown does (install-mac.sh:32-36).
 - Linux resolver pin: `custom-dns-deb` stops and disables systemd-resolved
@@ -359,18 +438,19 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   install then go to whatever DHCP supplies. That may be a public or ISP
   resolver [PRIV-NO-HOST-PUBLIC]. baseline: unverified per network.
 - macOS waits for the chain to resolve before pinning
-  (install-mac.sh:326-341). It pins through the root helper
-  (install-mac.sh:349). The helper sets every service to 172.31.240.250
+  (install-mac.sh:330-345). It pins through the root helper
+  (install-mac.sh:353). The helper sets every service to 172.31.240.250
   (mac/start-container-root.sh:28-32). No snapshot of the prior per-service
   DNS is taken. Uninstall sets `Empty` rather than restoring the prior values
   [SEC-OWNED-RESTORE].
 - The macOS helper boots out and re-bootstraps Mullvad
   (mac/start-container-root.sh:35-39, mac/start-container-root.sh:46-51).
   That is VPN state the installer does not own (ARCH-06).
-- Unbound remote control listens on 127.0.0.1:8953 with keys stored at fixed
-  paths (unbound/etc/unbound.conf:154-161). The comment says the keys are
-  baked into the base image (unbound/etc/unbound.conf:139-143). That breaks
-  [SEC-CONTROL-LOCAL].
+- Unbound remote control is a Unix socket at `/run/unbound/control.sock`
+  with no keys and no network listener (unbound/etc/unbound.conf:166-169).
+  Neither image carries control keys; the hardened-unbound base no longer
+  generates them at build [SEC-CONTROL-LOCAL]. Installers do not yet mount a
+  persistent volume for /var/lib/unbound (WF-DNS-001).
 - All four entrypoints refuse to run as root (install-deb.sh:13,
   install-deb-hardened.sh:31, install-mac.sh:13, install-mac-hardened.sh:28). The macOS agent may run only three helper verbs
   under sudo (mac/start-container.sudoers:7).
@@ -466,8 +546,8 @@ Sources: ARCH-07, design "Bridge lifecycle".
   and keeps the cache (mac/start-container.sh:116-118). Tor's DataDirectory
   persists (mac/start-container.sh:42, mac/start-container.sh:446).
 - The macOS installer runs the fetcher without `--force`
-  (install-mac.sh:280). It requires at least three bridges
-  (install-mac.sh:301-304).
+  (install-mac.sh:284). It requires at least three bridges
+  (install-mac.sh:305-308).
 
 ### Platform notes
 

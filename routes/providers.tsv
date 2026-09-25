@@ -1,0 +1,17 @@
+# nice-dns provider routes (ARCH-04). Parsed as data by lib/recovery.sh and
+# tests; never sourced. The first data row names the schema.
+# Columns (tab-separated): route  port  tls_name  provider  class
+#   port      the proxy listener; the address comes from the platform adapter
+#             (Linux 127.0.0.1 in the pod, macOS the proxy container address)
+#   tls_name  the name Unbound authenticates on every session of this route
+#   class     identity: an identity-bound route, one provider, never switches
+#             compat:   the legacy :853 endpoint, Cloudflare-only in the
+#                       Sub-plan 2 proxy images; the image default route
+# Identities: https://developers.cloudflare.com/1.1.1.1/encryption/dns-over-tls/
+# (one.one.one.one) and https://docs.quad9.net/services/ (dns.quad9.net).
+# The onion service presents tor.cloudflare-dns.com.
+schema	nice-dns-routes/1
+cloudflare-onion	18531	tor.cloudflare-dns.com	cloudflare	identity
+cloudflare-exit	18532	one.one.one.one	cloudflare	identity
+quad9-exit	18533	dns.quad9.net	quad9	identity
+cloudflare-legacy	853	tor.cloudflare-dns.com	cloudflare	compat

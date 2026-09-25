@@ -181,8 +181,12 @@ _uconf="$HERE/unbound/etc/unbound.conf"
 sed -i '' -e 's|^    interface: 127\.0\.0\.1$|    interface: 0.0.0.0|' \
           -e 's|^    access-control: 127\.0\.0\.0/8 allow$|    access-control: 127.0.0.0/8 allow\
     access-control: 172.31.240.248/29 allow|' \
-          -e 's|^    forward-addr: 127\.0\.0\.1@853#tor\.cloudflare-dns\.com$|    forward-addr: 172.31.240.252@853#tor.cloudflare-dns.com|' \
           "$_uconf"
+# The forwarder lives in the route include (unbound/route/forward-route.conf,
+# the image default route); unbound.conf only includes it.
+_rconf="$HERE/unbound/route/forward-route.conf"
+sed -i '' -e 's|^    forward-addr: 127\.0\.0\.1@853#tor\.cloudflare-dns\.com$|    forward-addr: 172.31.240.252@853#tor.cloudflare-dns.com|' \
+          "$_rconf"
 
 # Note: pi-hole's bundled pihole.toml hardcodes upstreams = ["127.0.0.1#5335"]
 # for the Linux pod path; on macOS unbound is a peer container at .251. We

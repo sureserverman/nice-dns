@@ -25,7 +25,7 @@ Environment=TZ=Europe/London
 # not first-start bootstrap.)
 Environment=DNS1=127.0.0.1#5335
 Environment=DISABLE_GITHUB_UPDATES=true
-HealthCmd=dig -p $(pihole-FTL --config dns.port) +short +norecurse +retry=0 @127.0.0.1 pi.hole || exit 1
+HealthCmd=dig -p $(pihole-FTL --config dns.port) +short +norecurse +retry=0 @127.0.0.1 pi.hole 2>/dev/null | grep -q '^[^;]' || exit 1
 HealthInterval=30s
 HealthTimeout=10s
 HealthRetries=5
