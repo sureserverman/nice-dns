@@ -24,8 +24,10 @@ transport	integration	transport-interaction
 controller-core	unit	observations
 controller-core	unit	state-policy
 controller-core	integration	recovery-actions
+controller-core	integration	controller-interaction
 controller	unit	harness-contracts
 controller	unit	observations
 controller	unit	state-policy
 controller	integration	recovery-actions
+controller	integration	controller-interaction
 controller	unit	receipt-verifier

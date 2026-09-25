@@ -13,3 +13,4 @@ transport	integration	transport-transitions
 controller	unit	observations
 controller	unit	state-policy
 controller	integration	recovery-actions
+controller	integration	controller-interaction

@@ -289,7 +289,10 @@ require	stage:controller-core	OP-POLICY-UNKNOWN-NOT-HEALTH	unit	state-policy	t_p
 require	stage:controller-core	OP-ACK-READINESS	integration	recovery-actions	t_tick_active_records_request_acknowledgement_then_readiness	tests/integration/recovery-actions.sh
 require	stage:controller-core	OP-ACK-IMAGE-GENERATION	integration	recovery-actions	t_image_restart_request_is_acknowledged_with_new_generation	tests/integration/recovery-actions.sh
 require	stage:controller-core	OP-ACK-REQUEST-NOT-ACK	integration	recovery-actions	t_request_write_is_never_an_acknowledgement	tests/integration/recovery-actions.sh
-count	stage:controller-core	10
+require	stage:controller-core	OP-CHAIN-CACHE-NOT-UPSTREAM	integration	controller-interaction	t_cached_answer_never_hides_an_upstream_outage	tests/integration/controller-interaction.sh
+require	stage:controller-core	OP-CHAIN-ACK-READY	integration	controller-interaction	t_observed_outage_restart_is_acknowledged_then_ready	tests/integration/controller-interaction.sh
+require	stage:controller-core	OP-CHAIN-UNKNOWN-NO-ACTION	integration	controller-interaction	t_unanswerable_probes_never_act	tests/integration/controller-interaction.sh
+count	stage:controller-core	13
 require	stage:controller	OP-FAILURES-EMPTY	unit	harness-contracts	t_zero_case_group_rejected	tests/unit/harness-contracts.sh
 require	stage:controller	OP-FAILURES-CELL	unit	harness-contracts	t_matrix_each_single_cell_deletion_fails	tests/unit/harness-contracts.sh
 require	stage:controller	OP-CACHE-NOT-UPSTREAM	unit	observations	t_local_cache_healthy_while_every_route_unhealthy_stays_separate	tests/unit/observations.sh
@@ -302,7 +305,10 @@ require	stage:controller	OP-POLICY-UNKNOWN-NOT-HEALTH	unit	state-policy	t_policy
 require	stage:controller	OP-ACK-READINESS	integration	recovery-actions	t_tick_active_records_request_acknowledgement_then_readiness	tests/integration/recovery-actions.sh
 require	stage:controller	OP-ACK-IMAGE-GENERATION	integration	recovery-actions	t_image_restart_request_is_acknowledged_with_new_generation	tests/integration/recovery-actions.sh
 require	stage:controller	OP-ACK-REQUEST-NOT-ACK	integration	recovery-actions	t_request_write_is_never_an_acknowledgement	tests/integration/recovery-actions.sh
-count	stage:controller	12
+require	stage:controller	OP-CHAIN-CACHE-NOT-UPSTREAM	integration	controller-interaction	t_cached_answer_never_hides_an_upstream_outage	tests/integration/controller-interaction.sh
+require	stage:controller	OP-CHAIN-ACK-READY	integration	controller-interaction	t_observed_outage_restart_is_acknowledged_then_ready	tests/integration/controller-interaction.sh
+require	stage:controller	OP-CHAIN-UNKNOWN-NO-ACTION	integration	controller-interaction	t_unanswerable_probes_never_act	tests/integration/controller-interaction.sh
+count	stage:controller	15
 require	plan:controller	OP-CACHE-NOT-UPSTREAM	unit	observations	t_local_cache_healthy_while_every_route_unhealthy_stays_separate	tests/unit/observations.sh
 require	plan:controller	OP-OBSERVE-ROUTE-TLS-NAME	unit	observations	t_probe_uses_each_route_port_and_tls_name	tests/unit/observations.sh
 require	plan:controller	OP-OBSERVE-EVERY-ROUTE	unit	observations	t_one_record_per_route_in_table	tests/unit/observations.sh
@@ -313,5 +319,8 @@ require	plan:controller	OP-POLICY-UNKNOWN-NOT-HEALTH	unit	state-policy	t_policy_
 require	plan:controller	OP-ACK-READINESS	integration	recovery-actions	t_tick_active_records_request_acknowledgement_then_readiness	tests/integration/recovery-actions.sh
 require	plan:controller	OP-ACK-IMAGE-GENERATION	integration	recovery-actions	t_image_restart_request_is_acknowledged_with_new_generation	tests/integration/recovery-actions.sh
 require	plan:controller	OP-ACK-REQUEST-NOT-ACK	integration	recovery-actions	t_request_write_is_never_an_acknowledgement	tests/integration/recovery-actions.sh
-count	plan:controller	10
+require	plan:controller	OP-CHAIN-CACHE-NOT-UPSTREAM	integration	controller-interaction	t_cached_answer_never_hides_an_upstream_outage	tests/integration/controller-interaction.sh
+require	plan:controller	OP-CHAIN-ACK-READY	integration	controller-interaction	t_observed_outage_restart_is_acknowledged_then_ready	tests/integration/controller-interaction.sh
+require	plan:controller	OP-CHAIN-UNKNOWN-NO-ACTION	integration	controller-interaction	t_unanswerable_probes_never_act	tests/integration/controller-interaction.sh
+count	plan:controller	13
 owner	plan:controller	controller
