@@ -59,7 +59,15 @@ case "$1" in
     grep -qx "$c" "$FAKE/running" || { echo "Error: no such container $c" >&2; exit 125; }
     [ -f "$FAKE/slow" ] && sleep "$(cat "$FAKE/slow")"
     case "$1" in
-      /usr/local/bin/nice-dns-unbound-start) exit "$(cat "$FAKE/unbound_probe_rc" 2>/dev/null || echo 0)" ;;
+      /usr/local/bin/nice-dns-unbound-start)
+        # "missing": an Unbound image without the tool, as each runtime
+        # really reports it (observed 2026-09-25): podman/crun 127, Apple
+        # container exit 1 with its own message.
+        if [ "$(cat "$FAKE/unbound_probe_rc" 2>/dev/null)" = missing ]; then
+          if [ "$me" = container ]; then echo 'Error: failed to start process (cause: "internalError: "failed to find target executable /usr/local/bin/nice-dns-unbound-start"")' >&2; exit 1; fi
+          echo 'Error: crun: executable file `/usr/local/bin/nice-dns-unbound-start` not found in $PATH: No such file or directory: OCI runtime attempted to invoke a command that was not found' >&2; exit 127
+        fi
+        exit "$(cat "$FAKE/unbound_probe_rc" 2>/dev/null || echo 0)" ;;
       test) exit "$(cat "$FAKE/cap_rc" 2>/dev/null || echo 0)" ;;
       cat) f="$ctl/$(basename "$2")"; [ -f "$f" ] || exit 1; cat "$f" ;;
       sh)
@@ -564,4 +572,23 @@ t_tick_records_a_route_that_already_runs() {
   out="$(nd_recovery_tick active "$CASE_DIR/o")"
   assert_eq no-op "$(ra_field action "$out")" "and the next pass does not decide the switch again"
   assert_eq 1 "$(wc -l <"$CASE_DIR/applied" | tr -d ' ')" "apply_route ran once"
+}
+
+t_unbound_without_probe_tool_is_ready_uncorroborated_on_both_platforms() {
+  # Live evidence (Sub-plan 3 Task 2.3, mac): the deployed Unbound image has
+  # no nice-dns-unbound-start; Apple container reports a missing executable
+  # as exit 1, so an acknowledged, working Tor restart was never ready.
+  local plat now
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      now="$(date +%s)"
+      { printf 'schema\tnice-dns-recovery-journal/1\n'; printf '%s\tnd-1\ttor\tacknowledged\tx\n' "$((now - 30))"; } >"$ND_STATE_DIR/recovery.tsv"
+      { printf 'schema\tnice-dns-observations/1\nobs\truntime\thealthy\t5\trunning: x\n'
+        printf 'obs\troute:cloudflare-exit\thealthy\t9\tp\n'; } >"$CASE_DIR/o-$plat"
+      echo missing >"$FAKE/unbound_probe_rc"
+      _nd_rec_readiness "$CASE_DIR/o-$plat" "$now"
+      assert_match 'nd-1	tor	ready	.*uncorroborated' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: an Unbound image without the tool is ready, marked uncorroborated"
+    ) || exit 1
+  done
 }

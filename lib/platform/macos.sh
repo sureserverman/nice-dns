@@ -20,10 +20,25 @@ nd_platform_route_dir() {
   printf '%s\n' "${ND_ROUTE_DIR:-${HOME:?HOME is unset}/Library/Application Support/nice-dns/unbound-route}"
 }
 
+# _nd_mac_exec <container CLI> <exec args...>: `<cli> exec`, with a missing
+# executable reported as 127, as podman (crun) does. Apple container exits 1
+# with "failed to find target executable" (observed on 1.4.1), which callers
+# would otherwise read as a failed command: an Unbound image without
+# nice-dns-unbound-start then never let a working restart be ready.
+_nd_mac_exec() {
+  local bin="$1" e rc
+  shift
+  e="$(mktemp "${TMPDIR:-/tmp}/nd-mac-exec.XXXXXX")" || { "$bin" exec "$@"; return; }
+  "$bin" exec "$@" 2>"$e"; rc=$?
+  if [ "$rc" -ne 0 ] && grep -q 'failed to find target executable' "$e"; then rc=127; fi
+  cat "$e" >&2; rm -f "$e"
+  return "$rc"
+}
+
 # nd_platform_unbound_exec <cmd...>: run cmd in the Unbound container as the
 # unbound user (the only uid the control socket admits).
 nd_platform_unbound_exec() {
-  "${CONTAINER_BIN:-container}" exec --user unbound "${ND_UNBOUND_CONTAINER:-unbound}" "$@"
+  _nd_mac_exec "${CONTAINER_BIN:-container}" --user unbound "${ND_UNBOUND_CONTAINER:-unbound}" "$@"
 }
 
 # ─── Health operations (Sub-plan 3, ARCH-02) ───────────────────────────────
@@ -91,7 +106,7 @@ nd_platform_proxy_exec() {
   local c="$1" bin
   shift
   bin="$(nd_platform_runtime_bin)" || { printf 'container CLI not found\n' >&2; return 127; }
-  "$bin" exec "$c" "$@"
+  _nd_mac_exec "$bin" "$c" "$@"
 }
 
 # nd_platform_dns_owner <deadline>: "verdict<TAB>reason". macOS resolves per

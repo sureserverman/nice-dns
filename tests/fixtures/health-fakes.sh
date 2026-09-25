@@ -86,7 +86,15 @@ case "$1" in
           garbage) printf 'OCI runtime exec failed:\texec failed\nno such file\n' >&2; exit 126 ;;
           hang) sleep "$(cat "$FAKE/hang_secs")" & wait; exit 1 ;;
         esac ;;
-      /usr/local/bin/nice-dns-unbound-start) exit "$(cat "$FAKE/unbound_probe_rc" 2>/dev/null || echo 0)" ;;
+      /usr/local/bin/nice-dns-unbound-start)
+        # "missing": an Unbound image without the tool, as each runtime
+        # really reports it (observed 2026-09-25): podman/crun 127, Apple
+        # container exit 1 with its own message.
+        if [ "$(cat "$FAKE/unbound_probe_rc" 2>/dev/null)" = missing ]; then
+          if [ "$me" = container ]; then echo 'Error: failed to start process (cause: "internalError: "failed to find target executable /usr/local/bin/nice-dns-unbound-start"")' >&2; exit 1; fi
+          echo 'Error: crun: executable file `/usr/local/bin/nice-dns-unbound-start` not found in $PATH: No such file or directory: OCI runtime attempted to invoke a command that was not found' >&2; exit 127
+        fi
+        exit "$(cat "$FAKE/unbound_probe_rc" 2>/dev/null || echo 0)" ;;
       # The proxy image's acknowledged-restart control directory
       # (/app/data/control): $FAKE/ctl holds its files; $FAKE/ack (new, same
       # or refused) makes the image answer a request.
