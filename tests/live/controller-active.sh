@@ -24,8 +24,9 @@
 #   CT-RUNTIME-WEDGE     macOS: a container on the default network wedges
 #                        dnsnet; Linux: pi-hole.service stops. The controller
 #                        recovers the chain on its own
-#   CT-BRIDGES           the bridge refresh applies or keeps the set without
-#                        restarting the proxy
+#   CT-BRIDGES           (first, before the proxy is recreated) the bridge
+#                        refresh applies or keeps the set without restarting
+#                        the proxy; the recreate then starts Tor on it
 # Then, once per platform on its final cell:
 #   CT-WAKE              the user sleeps and wakes the target by hand (the
 #                        case waits up to an hour for the sleep counter): the
@@ -68,12 +69,17 @@ ca_deploy() {
     printf 'installed\t%s/%s\t%s\n' "$x" "$h" "$base" >>"$d/deploy.tsv"
   fi
   cs_t "$a" quiesce-agents >"$d/quiesce.tsv" 2>>"$d/ops.log" || fail "$a: quiesce-agents"
+  cs_t "$a" install-controller --source-sha "$sha" --mode active >"$d/install.log" 2>&1 || fail "$a: install-controller: $(tail -n 5 "$d/install.log")"
+  assert_match '^receipt	mode	active$' "$(cat "$d/install.log")" "$a: the controller is installed active (test-only activation)"
+  # CT-BRIDGES before the proxy is recreated: the refresh restarts nothing,
+  # and the recreate then starts Tor on the freshly evaluated set (live run
+  # 20260925T200235Z-e3b4de89: mint's Tor lost its thin set minutes after a
+  # recreate, which took every route down mid-scenario).
+  ca_bridges "$a"
   cs_t "$a" build-proxy --component "tor-$x" --source-sha "$psha" >"$d/build.log" 2>&1 || fail "$a: build-proxy: $(tail -n 5 "$d/build.log")"
   cs_t "$a" recreate-proxy --component "tor-$x" >"$d/recreate.log" 2>&1 || fail "$a: recreate-proxy: $(tail -n 5 "$d/recreate.log")"
   assert_eq "$(awk -F '\t' '$1 == "candidate" { print $3 }' "$d/build.log")" "$(awk -F '\t' '$1 == "image" { print $3 }' "$d/recreate.log")" \
     "$a: tor-$x runs the image built from $psha"
-  cs_t "$a" install-controller --source-sha "$sha" --mode active >"$d/install.log" 2>&1 || fail "$a: install-controller: $(tail -n 5 "$d/install.log")"
-  assert_match '^receipt	mode	active$' "$(cat "$d/install.log")" "$a: the controller is installed active (test-only activation)"
   cs_wait "$a" up 900 ca_up || fail "$a $x/$h: the chain did not answer within 15 minutes"
   {
     printf 'target\t%s\ncell\t%s/%s/%s\nimage_gen\ttor-%s=%s\n' "$a" "$CA_PLAT" "$x" "$h" "$x" "$(awk -F '\t' '$1 == "candidate" { print $3 }' "$d/build.log")"
@@ -186,16 +192,17 @@ ca_wedge() {
 }
 
 ca_bridges() {
-  local a="$1" d="$CA_CELL_DIR" g0 res
+  local a="$1" d="$CA_CELL_DIR" g0 res up0=0
   cs_report "$a" br-0 || fail "$a: report"
   g0="$(cs_gen "$d/br-0.tsv")"
+  ca_up "$d/br-0.tsv" && up0=1
   cs_t "$a" bridges-refresh >"$d/bridges.log" 2>&1 || fail "$a: bridges-refresh: $(tail -n 5 "$d/bridges.log")"
   res="$(awk -F '\t' '$1 == "result" { r = $2 } END { print r }' "$d/bridges.log")"
   case "$res" in applied|unchanged) ;; *) fail "$a: the refresh gave '$res' (applied or unchanged expected): $(tail -n 5 "$d/bridges.log")" ;; esac
   cs_report "$a" br-1 || fail "$a: report"
   assert_eq "$g0" "$(cs_gen "$d/br-1.tsv")" "$a: the refresh restarted nothing"
   assert_match '^[3-9]/|^[1-9][0-9]+/' "$(cs_bridges "$d/br-1.tsv")" "$a: a usable set of at least 3 bridges"
-  ca_up "$d/br-1.tsv" || fail "$a: the chain still answers after the refresh"
+  [ "$up0" = 0 ] || ca_up "$d/br-1.tsv" || fail "$a: the chain answered before the refresh and does not after it"
   printf 'result\t%s\nset\t%s -> %s\nproxy_generation\tunchanged\n' "$res" "$(cs_bridges "$d/br-0.tsv")" "$(cs_bridges "$d/br-1.tsv")" >"$d/bridges.txt"
   ca_observe CT-BRIDGES bridges.txt
 }
@@ -210,7 +217,6 @@ ca_cell() {
   ca_primary_only "$a" "$x"
   ca_recovery "$a" "$x"
   ca_wedge "$a"
-  ca_bridges "$a"
 }
 
 # ca_platform <platform> <alias>: every cell of the platform, the target's
