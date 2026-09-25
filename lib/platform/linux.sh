@@ -146,3 +146,22 @@ nd_platform_repair_runtime() {
     *) return 3 ;;
   esac
 }
+
+# ─── Bridge operations (Sub-plan 3, Task 2.2; ARCH-07) ─────────────────────
+#
+#   ND_BRIDGE_CONFIG_DIR   bridges.env and bridge-pool.tsv (default
+#                          $XDG_CONFIG_HOME/nice-dns)
+
+nd_platform_bridge_dir() { printf '%s\n' "${ND_BRIDGE_CONFIG_DIR:-${XDG_CONFIG_HOME:-${HOME:?HOME is unset}/.config}/nice-dns}"; }
+
+# nd_platform_bridge_eval <variant> <candidate file name> <deadline> <tmp>:
+# the proxy image's bridge-eval in manage mode (the same flags as the boot
+# unit), writing its selection to <bridge dir>/<candidate>, never to
+# bridges.env. It updates the persistent pool itself.
+nd_platform_bridge_eval() {
+  local d
+  d="$(nd_platform_bridge_dir)"
+  nd_bounded "$3" "$4/eval" "$4/eval.err" podman run --rm --userns=keep-id --pull=missing \
+    -v "$d:/pool" --entrypoint /bin/bridge-eval "docker.io/sureserver/tor-$1:latest" \
+    -pool /pool/bridge-pool.tsv -out "/pool/$2" -count 7 -window 150 -grace 20
+}

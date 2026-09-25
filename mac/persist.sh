@@ -44,18 +44,14 @@ sed -e "s/__USERNAME__/$(whoami)/" -e "s/__VARIANT__/$VARIANT/" \
 chmod 644 "$AGENT_DST"
 launchctl load "$AGENT_DST"
 
-# -- LaunchAgent: refresh bridge selection out-of-band (login + daily) --
-# Separate from the agent above on purpose. The usability probe takes ~150s;
-# running it inside the proxy at startup was measured to push tor bootstrap
-# from ~8s to ~87s, so it must not sit on the startup path.
+# The out-of-band bridge refresh is the controller's daily
+# org.nice-dns.health-bridges agent (installed below; Sub-plan 3 Task 2.2). It
+# evaluates off the startup path, as the old org.nice-dns.bridge-eval agent
+# did, but adopts a changed set only at the proxy's next start. The old agent
+# is retired once the controller has installed.
 EVAL_DST="$HOME/Library/LaunchAgents/org.nice-dns.bridge-eval.plist"
-launchctl unload "$EVAL_DST" 2>/dev/null || true
-sed -e "s/__USERNAME__/$(whoami)/g" -e "s/__VARIANT__/$VARIANT/" \
-  "$HERE/org.nice-dns.bridge-eval.plist" > "$EVAL_DST"
-chmod 644 "$EVAL_DST"
-launchctl load "$EVAL_DST"
 
-echo "LaunchAgents installed (variant=$VARIANT): start-container + bridge-eval."
+echo "LaunchAgent installed (variant=$VARIANT): start-container."
 
 # -- The controller (health/nice-dns-health; Sub-plan 3 Task 2.1): a versioned
 # bundle and the org.nice-dns.health agent running `nice-dns-health tick`
@@ -66,3 +62,10 @@ echo "LaunchAgents installed (variant=$VARIANT): start-container + bridge-eval."
   echo "The nice-dns controller did not install; the stack runs without health checks or recovery." >&2
   exit 1
 }
+# The replacement runs: retire the legacy bridge-eval agent, which wrote
+# bridges.env directly.
+if [ -f "$EVAL_DST" ]; then
+  launchctl unload "$EVAL_DST" 2>/dev/null || true
+  rm -f "${EVAL_DST:?}"
+  echo "Retired the legacy org.nice-dns.bridge-eval agent (the controller refreshes bridges daily)."
+fi

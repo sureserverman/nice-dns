@@ -47,7 +47,7 @@ if [ -f "$FAKE/rt.hang" ]; then sleep "$(cat "$FAKE/hang_secs")" & wait; exit 1;
 table() {
   printf 'ID           IMAGE                                    OS     ARCH   STATE    IP                 CPUS  MEMORY  STARTED\n'
   while IFS= read -r n; do
-    [ -n "$n" ] && printf '%-12s %-40s linux  arm64  running  172.31.240.25x/29  1     256 MB  2026-09-23T22:16:33Z\n' "$n" "$n:latest"
+    [ -n "$n" ] && printf '%-12s %-40s linux  arm64  running  172.31.240.25x/29  1     256 MB  %s\n' "$n" "$n:latest" "$(cat "$FAKE/started" 2>/dev/null || echo 2026-09-23T22:16:33Z)"
   done <"$FAKE/running"
   if [ "$1" = all ] && [ -f "$FAKE/stopped" ]; then
     while IFS= read -r n; do
@@ -103,6 +103,26 @@ case "$1" in
         fi ;;
     esac
     exit 0 ;;
+  inspect) printf 'id-1 %s running\n' "$(cat "$FAKE/started" 2>/dev/null || echo 2026-09-23T22:16:33Z)" ;;
+  run)
+    # The image's bridge-eval (Task 2.2): -v <host>:/pool, -out /pool/<file>.
+    # $FAKE/bridge_eval: "set <file>" writes that file, "fail" exits 1,
+    # "slow <secs> <file>" sleeps first.
+    pool="" out=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -v) pool="${2%%:*}"; shift ;;
+        -out) out="${2#/pool/}"; shift ;;
+      esac
+      shift
+    done
+    set -- $(cat "$FAKE/bridge_eval" 2>/dev/null || echo fail)
+    case "$1" in
+      set) cat "$2" >"$pool/$out" ;;
+      slow) sleep "$2"; cat "$3" >"$pool/$out" ;;
+      *) exit 1 ;;
+    esac
+    exit 0 ;;
   system) exit 0 ;;
 esac
 exit 0
@@ -133,6 +153,20 @@ STUB
   # shellcheck disable=SC2016  # the stubs expand these when they run
   for s in systemctl journalctl launchctl ss lsof; do
     printf '#!/bin/sh\nl=%s; for a in "$@"; do l="$l $a"; done; printf "%%s\\n" "$l" >>"$FAKE_LOG"\nexit 0\n' "$s" >"$b/$s"
+  done
+  # A service restart (systemctl --user restart, launchctl kickstart -k)
+  # gives the containers a new start time when $FAKE/restart_changes exists.
+  for s in systemctl launchctl; do
+    cat >"$b/$s" <<'STUB'
+#!/bin/sh
+me="$(basename "$0")"
+l="$me"; for a in "$@"; do l="$l $a"; done; printf '%s\n' "$l" >>"$FAKE_LOG"
+case "$me $*" in
+  "systemctl --user restart "*|"launchctl kickstart -k "*)
+    [ -f "$FAKE/restart_changes" ] && echo "restarted-$(date +%s)-$$" >"$FAKE/started" ;;
+esac
+exit 0
+STUB
   done
   # shellcheck disable=SC2016  # expanded by the stub
   printf '#!/bin/sh\nprintf "%%s\\n" "${FAKE_UNAME:-Linux}"\n' >"$b/uname"

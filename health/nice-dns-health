@@ -78,6 +78,11 @@ SYSTEMD_TIMER="$SCRIPT_NAME.timer"
 LAUNCHD_LABEL="org.nice-dns.health"
 LAUNCHD_DIR="$HOME/Library/LaunchAgents"
 LAUNCHD_PLIST="$LAUNCHD_DIR/$LAUNCHD_LABEL.plist"
+# The daily bridge refresh (Sub-plan 3 Task 2.2).
+SYSTEMD_BR_SVC="$SCRIPT_NAME-bridges.service"
+SYSTEMD_BR_TIMER="$SCRIPT_NAME-bridges.timer"
+LAUNCHD_BR_LABEL="org.nice-dns.health-bridges"
+LAUNCHD_BR_PLIST="$LAUNCHD_DIR/$LAUNCHD_BR_LABEL.plist"
 
 # Libraries (lib/health.sh, lib/platform/*.sh, routes/providers.tsv). A
 # checkout reads them from ../ next to this script; install_self rewrites the
@@ -552,7 +557,32 @@ Unit=$SYSTEMD_SVC
 [Install]
 WantedBy=default.target
 EOF
-  mv -f "$d/.$SYSTEMD_SVC.new" "$d/$SYSTEMD_SVC" && mv -f "$d/.$SYSTEMD_TIMER.new" "$d/$SYSTEMD_TIMER"
+  cat >"$d/.$SYSTEMD_BR_SVC.new" <<EOF || return 1
+[Unit]
+Description=nice-dns daily bridge refresh (evaluate, then adopt at the next proxy start)
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=$interp $INSTALLED_BIN bridges-refresh
+# The evaluation takes about 150 s; it holds no controller lock.
+TimeoutStartSec=420
+EOF
+  cat >"$d/.$SYSTEMD_BR_TIMER.new" <<EOF || return 1
+[Unit]
+Description=nice-dns daily bridge refresh
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+Unit=$SYSTEMD_BR_SVC
+
+[Install]
+WantedBy=default.target
+EOF
+  mv -f "$d/.$SYSTEMD_SVC.new" "$d/$SYSTEMD_SVC" && mv -f "$d/.$SYSTEMD_TIMER.new" "$d/$SYSTEMD_TIMER" \
+    && mv -f "$d/.$SYSTEMD_BR_SVC.new" "$d/$SYSTEMD_BR_SVC" && mv -f "$d/.$SYSTEMD_BR_TIMER.new" "$d/$SYSTEMD_BR_TIMER"
 }
 
 write_launchd_plist() {
@@ -590,7 +620,41 @@ write_launchd_plist() {
   </dict>
 </plist>
 EOF
-  chmod 644 "$LAUNCHD_PLIST.new" && mv -f "$LAUNCHD_PLIST.new" "$LAUNCHD_PLIST"
+  chmod 644 "$LAUNCHD_PLIST.new" && mv -f "$LAUNCHD_PLIST.new" "$LAUNCHD_PLIST" || return 1
+  cat >"$LAUNCHD_BR_PLIST.new" <<EOF || return 1
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>$LAUNCHD_BR_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>$interp</string>
+      <string>$INSTALLED_BIN</string>
+      <string>bridges-refresh</string>
+    </array>
+    <!-- Daily at 04:17; a run missed asleep starts on wake. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+      <key>Hour</key>
+      <integer>4</integer>
+      <key>Minute</key>
+      <integer>17</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>$LOG_DIR/bridges.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>$LOG_DIR/bridges.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+  </dict>
+</plist>
+EOF
+  chmod 644 "$LAUNCHD_BR_PLIST.new" && mv -f "$LAUNCHD_BR_PLIST.new" "$LAUNCHD_BR_PLIST"
 }
 
 cmd_install() {
@@ -615,15 +679,18 @@ cmd_install() {
   prev="${old:--}"; [ "$prev" = "$id" ] && prev="$(receipt_get previous 2>/dev/null)"; prev="${prev:--}"
   if [ "$IS_LINUX" -eq 1 ]; then
     write_systemd_units "$interp" || { echo "$SCRIPT_NAME: install failed writing the systemd units" >&2; return 1; }
-    units="$SYSTEMD_UNIT_DIR/$SYSTEMD_SVC $SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER"
+    units="$SYSTEMD_UNIT_DIR/$SYSTEMD_SVC $SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER $SYSTEMD_UNIT_DIR/$SYSTEMD_BR_SVC $SYSTEMD_UNIT_DIR/$SYSTEMD_BR_TIMER"
     systemctl --user daemon-reload
     systemctl --user enable --now "$SYSTEMD_TIMER"
+    systemctl --user enable --now "$SYSTEMD_BR_TIMER"
   else
     write_launchd_plist "$interp" || { echo "$SCRIPT_NAME: install failed writing the LaunchAgent" >&2; return 1; }
-    units="$LAUNCHD_PLIST"
+    units="$LAUNCHD_PLIST $LAUNCHD_BR_PLIST"
     # Reload to pick up edits even if the agent was already loaded.
     launchctl unload "$LAUNCHD_PLIST" 2>/dev/null || true
     launchctl load -w "$LAUNCHD_PLIST"
+    launchctl unload "$LAUNCHD_BR_PLIST" 2>/dev/null || true
+    launchctl load -w "$LAUNCHD_BR_PLIST"
   fi
   { printf 'schema\tnice-dns-health-install/1\nbundle\t%s\nprevious\t%s\nentrypoint\t%s\ninterpreter\t%s\n' "$id" "$prev" "$INSTALLED_BIN" "$interp"
     for f in $units; do printf 'schedule\t%s\n' "$f"; done; } >"$INSTALL_RECEIPT.new" && mv -f "$INSTALL_RECEIPT.new" "$INSTALL_RECEIPT"
@@ -659,7 +726,8 @@ cmd_self_check() {
 # paths this command installs.
 uninstall_owned() {
   case "$1" in
-    "${SYSTEMD_UNIT_DIR:?}/${SYSTEMD_SVC:?}"|"${SYSTEMD_UNIT_DIR:?}/${SYSTEMD_TIMER:?}"|"${LAUNCHD_PLIST:?}"|"${INSTALLED_BIN_PRIMARY:?}"|"${INSTALLED_BIN_FALLBACK:?}")
+    "${SYSTEMD_UNIT_DIR:?}/${SYSTEMD_SVC:?}"|"${SYSTEMD_UNIT_DIR:?}/${SYSTEMD_TIMER:?}"|"${LAUNCHD_PLIST:?}"|"${INSTALLED_BIN_PRIMARY:?}"|"${INSTALLED_BIN_FALLBACK:?}"|\
+    "${SYSTEMD_UNIT_DIR:?}/${SYSTEMD_BR_SVC:?}"|"${SYSTEMD_UNIT_DIR:?}/${SYSTEMD_BR_TIMER:?}"|"${LAUNCHD_BR_PLIST:?}")
       rm -f "${1:?}" ;;
   esac
 }
@@ -667,17 +735,19 @@ uninstall_owned() {
 cmd_uninstall() {
   local f own
   if [ "$IS_LINUX" -eq 1 ]; then
-    systemctl --user disable --now "$SYSTEMD_TIMER" 2>/dev/null || true
-    systemctl --user stop "$SYSTEMD_SVC" 2>/dev/null || true
+    systemctl --user disable --now "$SYSTEMD_TIMER" "$SYSTEMD_BR_TIMER" 2>/dev/null || true
+    systemctl --user stop "$SYSTEMD_SVC" "$SYSTEMD_BR_SVC" 2>/dev/null || true
   else
     launchctl unload "$LAUNCHD_PLIST" 2>/dev/null || true
+    launchctl unload "$LAUNCHD_BR_PLIST" 2>/dev/null || true
   fi
   if own="$(receipt_get schedule 2>/dev/null)" && [ -n "$own" ]; then
     # Exactly what the install recorded, nothing else in those directories.
     for f in $own "$(receipt_get entrypoint)"; do uninstall_owned "$f"; done
   else
     # An install from before the receipt: its fixed paths.
-    for f in "$SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER" "$SYSTEMD_UNIT_DIR/$SYSTEMD_SVC" "$LAUNCHD_PLIST" "$INSTALLED_BIN_PRIMARY" "$INSTALLED_BIN_FALLBACK"; do
+    for f in "$SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER" "$SYSTEMD_UNIT_DIR/$SYSTEMD_SVC" "$LAUNCHD_PLIST" "$INSTALLED_BIN_PRIMARY" "$INSTALLED_BIN_FALLBACK" \
+             "$SYSTEMD_UNIT_DIR/$SYSTEMD_BR_TIMER" "$SYSTEMD_UNIT_DIR/$SYSTEMD_BR_SVC" "$LAUNCHD_BR_PLIST"; do
       uninstall_owned "$f"
     done
   fi
@@ -807,6 +877,24 @@ cmd_tick() {
   return "$rc"
 }
 
+# bridges-refresh: evaluate the bridge pool with the proxy image's
+# bridge-eval and adopt a changed set at the proxy's next start
+# (lib/recovery.sh nd_bridges_refresh; the daily schedule calls it).
+cmd_bridges_refresh() {
+  local out rc v t c
+  if ! load_health_libs; then echo "$SCRIPT_NAME: not loading the health libraries: $HEALTH_LIB_ERROR" >&2; return 2; fi
+  mkdir -p "$LOG_DIR"
+  nd_state_init || return 2
+  t="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-br.XXXXXX")" || return 2
+  c="$(nd_platform_proxy_container "${ND_RECOVERY_CMD_DEADLINE:-15}" "$t" 2>/dev/null)"; v="${c#tor-}"
+  rm -rf "${t:?}"
+  case "$v" in haproxy|socat) ;; *) log_to_file "$(ts) BRIDGES no proxy variant found; nothing refreshed"; echo "$SCRIPT_NAME: no proxy variant found" >&2; return 2 ;; esac
+  out="$(nd_bridges_refresh "$v" 2>&1)"; rc=$?
+  log_to_file "$(ts) BRIDGES $(printf '%s\n' "$out" | awk -F '\t' '$1 == "result" { print "result=" $2 }')"
+  printf '%s\n' "$out"
+  return "$rc"
+}
+
 # ─────────────────────────────── usage / dispatch ──────────────────────────────
 
 usage() {
@@ -817,6 +905,9 @@ Usage: $SCRIPT_NAME <command>
               Linux: systemd --user timer (OnCalendar=minutely).
               macOS: launchd LaunchAgent (StartCalendarInterval, every minute).
   self-check  Check that this copy's libraries load (no stack contact).
+  bridges-refresh
+              Evaluate the bridge pool (the proxy image's bridge-eval) and
+              adopt a changed set at the proxy's next start (daily schedule).
   uninstall   Remove the schedule, bundle, entrypoint, logs and controller state
               that install recorded, and nothing else.
   start       (Re)start the timer / LaunchAgent.
@@ -863,6 +954,7 @@ main() {
     observe)    cmd_observe "$@" ;;
     tick)       cmd_tick "$@" ;;
     self-check) cmd_self_check "$@" ;;
+    bridges-refresh) cmd_bridges_refresh "$@" ;;
     logs)       cmd_logs "$@" ;;
     failures)   cmd_failures "$@" ;;
     -h|--help|help|"") usage ;;

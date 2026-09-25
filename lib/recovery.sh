@@ -589,6 +589,7 @@ nd_recovery_restart_service() {
     c=""
   fi
   if [ -n "$c" ]; then g0="$(nd_platform_container_generation "$c" "$dl" "$_ND_RX" 2>/dev/null)" || g0="-"; else g0="-"; fi
+  [ -n "$g0" ] || g0="-"
   _nd_rec_lock_ok "$id" service || { rm -rf "$_ND_RX"; return 5; }
   nd_recovery_journal "$id" service requested "$(nd_platform_restart_scope) restart for ${c:-the missing proxy}; container before: $g0"
   nd_platform_restart_proxy "$c" "$svc" "$_ND_RX"; rc=$?
@@ -636,7 +637,17 @@ repair_runtime() {
 }
 
 nd_recovery_restart_tor() {
-  local id="${1:-}" rc
+  local id="${1:-}" rc f
+  # A refreshed bridge set the running proxy has not read yet: the in-image
+  # restart reuses the container's environment, so the service restart,
+  # which recreates the container, is what adopts it.
+  if _nd_br_pending; then
+    nd_recovery_journal "$id" tor adopting "a refreshed bridge set waits for the proxy; the service restart adopts it"
+    nd_recovery_restart_service "$id-svc"; rc=$?
+    f="$(nd_platform_state_dir)/bridges.pending"
+    [ "$rc" -eq 0 ] && rm -f "${f:?}"
+    return "$rc"
+  fi
   request_recovery tor "$id"; rc=$?
   case "$rc" in
     1|3|4) nd_recovery_restart_service "$id-svc"; rc=$? ;;
@@ -771,5 +782,153 @@ nd_recovery_tick() {
   nd_state_unlock "$tok"
   printf 'action\t%s\ntarget\t%s\nresult\t%s\ngeneration\t%s\n' "$(_nd_rec_field action "$t/decision")" "$(_nd_rec_field target "$t/decision")" "$result" "$gen"
   rm -rf "$t"
+  return 0
+}
+
+# ─── Bridge refresh (Sub-plan 3, Task 2.2; ARCH-07) ─────────────────────────
+#
+#   nd_bridges_refresh <variant>           evaluate, then nd_bridges_apply
+#   nd_bridges_apply <candidate> <base>    adopt a candidate bridge set
+#
+# The proxy image's bridge-eval (nd_platform_bridge_eval) writes a candidate
+# next to bridges.env, never bridges.env itself, and runs WITHOUT the state
+# lock (it takes minutes); a refresh mutex (bridges.lock in the state
+# directory) keeps two evaluations off the shared pool. Applying is short and
+# holds the state lock:
+#   * a candidate with fewer than 3 valid obfs4 lines is not applied: the last
+#     good set stays (an outage of the distributor never empties bridges.env);
+#   * the sets are compared normalized (valid lines, sorted, unique); an
+#     unchanged set writes nothing;
+#   * bridges.env is only replaced when it still holds the set the evaluation
+#     started from, so a slow evaluation never overwrites a newer one;
+#   * a changed set replaces bridges.env atomically (the old one kept as
+#     bridges.env.prev) and restarts nothing: the proxy reads it at its next
+#     natural start. bridges.pending records the proxy container's
+#     generation, so a later Tor restart during a sustained failure can adopt
+#     the set through the service restart (nd_recovery_restart_tor); a proxy
+#     that restarted since has adopted it already.
+
+_ND_BR_LINE='^BRIDGE[0-9]+=obfs4 [0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]{1,5} [0-9A-F]{40} cert=[A-Za-z0-9+/=]+ iat-mode=[0-2]$'
+
+# _nd_br_norm <file>: the valid bridge lines, without keys, sorted, unique.
+_nd_br_norm() {
+  [ -f "$1" ] || return 0
+  grep -E "$_ND_BR_LINE" "$1" 2>/dev/null | sed 's/^BRIDGE[0-9]*=//' | LC_ALL=C sort -u
+}
+
+_nd_br_hash() {
+  local n
+  n="$(_nd_br_norm "$1")"
+  [ -n "$n" ] || { printf 'none\n'; return 0; }
+  if command -v sha256sum >/dev/null 2>&1; then printf '%s\n' "$n" | sha256sum | cut -c1-16
+  else printf '%s\n' "$n" | shasum -a 256 | cut -c1-16; fi
+}
+
+nd_bridges_apply() {
+  local cand="$1" base="$2" d live n tok i=0 cur new g c
+  d="$(nd_platform_bridge_dir)"; live="$d/bridges.env"
+  n="$(_nd_br_norm "$cand" | wc -l | tr -d ' ')"
+  if [ "$n" -lt 3 ]; then
+    nd_recovery_journal "br-$(date +%s)" bridges not-applied "the candidate has $n usable bridges; the last good set stays"
+    printf 'result\tnot-applied\n'; return 1
+  fi
+  while ! tok="$(nd_state_lock 2>/dev/null)"; do
+    i=$((i + 1)); [ "$i" -lt 60 ] || { printf 'result\tbusy\n'; return 3; }
+    sleep 0.5
+  done
+  cur="$(_nd_br_hash "$live")"; new="$(_nd_br_hash "$cand")"
+  if [ "$cur" != "$base" ]; then
+    nd_state_unlock "$tok"
+    nd_recovery_journal "br-$(date +%s)" bridges superseded "bridges.env changed while this evaluation ran ($base -> $cur); its candidate is dropped"
+    printf 'result\tsuperseded\n'; return 4
+  fi
+  if [ "$cur" = "$new" ]; then
+    nd_state_unlock "$tok"
+    nd_recovery_journal "br-$(date +%s)" bridges unchanged "the evaluated set equals the running one ($cur)"
+    printf 'result\tunchanged\n'; return 0
+  fi
+  [ -f "$live" ] && cp -p "$live" "$live.prev"
+  if ! { _nd_br_norm "$cand" | awk '{ printf "BRIDGE%d=%s\n", NR, $0 }' | (umask 077 && cat >"$live.new.$$") \
+          && mv -f "$live.new.$$" "$live"; }; then
+    rm -f "${live:?}.new.$$"; nd_state_unlock "$tok"; printf 'result\tnot-applied\n'; return 1
+  fi
+  _ND_RX="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-bridges.XXXXXX")" || _ND_RX=""
+  g="-"
+  if [ -n "$_ND_RX" ] && c="$(nd_platform_proxy_container "${ND_RECOVERY_CMD_DEADLINE:-15}" "$_ND_RX")"; then
+    g="$(nd_platform_container_generation "$c" "${ND_RECOVERY_CMD_DEADLINE:-15}" "$_ND_RX" 2>/dev/null)" || g="-"
+    [ -n "$g" ] || g="-"
+  fi
+  [ -n "$_ND_RX" ] && rm -rf "${_ND_RX:?}"
+  (umask 077 && printf '%s\t%s\n' "$new" "$g" >"$(nd_platform_state_dir)/bridges.pending")
+  nd_state_unlock "$tok"
+  nd_recovery_journal "br-$(date +%s)" bridges changed "$cur -> $new ($n bridges); adopted at the proxy's next start, no restart"
+  printf 'result\tchanged\n'; return 0
+}
+
+# _nd_br_mutex_take / _nd_br_mutex_drop: the refresh mutex (a symlink, like
+# the state lock; stale when its process is gone or from another boot).
+_nd_br_mutex_take() {
+  local m v
+  m="$(nd_platform_state_dir)/bridges.lock"
+  _ND_LK_NOW="$(date +%s)" _ND_LK_BOOT="$(_nd_state_boot)"
+  if ln -s "nd-lock:$$:$_ND_LK_BOOT:$_ND_LK_NOW:bridges" "$m" 2>/dev/null; then return 0; fi
+  v="$(readlink "$m" 2>/dev/null)" || return 1
+  ND_STATE_LEASE_S=1800 _nd_lock_stale "$v" || return 1
+  rm -f "${m:?}"
+  ln -s "nd-lock:$$:$_ND_LK_BOOT:$_ND_LK_NOW:bridges" "$m" 2>/dev/null
+}
+
+_nd_br_mutex_drop() {
+  local m
+  m="$(nd_platform_state_dir)/bridges.lock"
+  case "$(readlink "$m" 2>/dev/null)" in "nd-lock:$$:"*) rm -f "${m:?}" ;; esac
+}
+
+nd_bridges_refresh() {
+  local v="${1:-}" d base cand rc t out
+  case "$v" in haproxy|socat) ;; *) printf 'result\trefused\ndetail\tvariant must be haproxy or socat\n'; return 2 ;; esac
+  d="$(nd_platform_bridge_dir)"
+  if ! _nd_br_mutex_take; then
+    nd_recovery_journal "br-$(date +%s)" bridges skipped "another bridge refresh is running"
+    printf 'result\tskipped\n'; return 3
+  fi
+  base="$(_nd_br_hash "$d/bridges.env")"
+  cand=".bridges.env.candidate.$$"
+  t="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-bridges.XXXXXX")" || { _nd_br_mutex_drop; return 2; }
+  nd_platform_bridge_eval "$v" "$cand" "${ND_BRIDGE_EVAL_S:-300}" "$t"; rc=$?
+  rm -rf "${t:?}"
+  if [ "$rc" -ne 0 ]; then
+    rm -f "${d:?}/$cand"
+    _nd_br_mutex_drop
+    if [ "$rc" -eq 3 ]; then
+      nd_recovery_journal "br-$(date +%s)" bridges skipped "the stack is not running; nothing evaluated"
+      printf 'result\tskipped\n'; return 3
+    fi
+    nd_recovery_journal "br-$(date +%s)" bridges not-applied "bridge-eval exit $rc; the last good set stays"
+    printf 'result\tnot-applied\n'; return 1
+  fi
+  out="$(nd_bridges_apply "$d/$cand" "$base")"; rc=$?
+  rm -f "${d:?}/$cand"
+  _nd_br_mutex_drop
+  printf '%s\n' "$out"
+  return "$rc"
+}
+
+# _nd_br_pending: 0 when a refreshed set waits for the running proxy, which
+# has not been recreated since it was written. A proxy recreated since then
+# has read it; the marker is dropped.
+_nd_br_pending() {
+  local f g c cur t
+  f="$(nd_platform_state_dir)/bridges.pending"
+  [ -f "$f" ] || return 1
+  g="$(cut -f2 "$f")"
+  t="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-bridges.XXXXXX")" || return 1
+  cur="-"
+  if c="$(nd_platform_proxy_container "${ND_RECOVERY_CMD_DEADLINE:-15}" "$t")"; then
+    cur="$(nd_platform_container_generation "$c" "${ND_RECOVERY_CMD_DEADLINE:-15}" "$t" 2>/dev/null)" || cur="-"
+    [ -n "$cur" ] || cur="-"
+  fi
+  rm -rf "${t:?}"
+  if [ "$cur" != "-" ] && [ "$g" != "-" ] && [ "$cur" != "$g" ]; then rm -f "${f:?}"; return 1; fi
   return 0
 }

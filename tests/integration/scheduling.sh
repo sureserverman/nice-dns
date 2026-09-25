@@ -191,7 +191,7 @@ t_uninstall_removes_only_what_install_owns() {
       assert_file "$d/someone-else.unit" "$plat: a neighbour's unit stays"
       assert_file "$HOME/.local/bin/other-tool" "$plat: a neighbour's tool stays"
       if [ "$plat" = linux ]; then
-        assert_match '^systemctl --user disable --now nice-dns-health.timer$' "$(cat "$FAKE_LOG")" "linux: the timer is stopped first"
+        assert_match '^systemctl --user disable --now nice-dns-health.timer nice-dns-health-bridges.timer$' "$(cat "$FAKE_LOG")" "linux: both timers are stopped first"
         assert_no_path "$XDG_CONFIG_HOME/systemd/user/nice-dns-health.timer" "linux: the timer unit is removed"
       else
         assert_match "^launchctl unload $SC_UNIT\$" "$(cat "$FAKE_LOG")" "macos: the agent is unloaded first"

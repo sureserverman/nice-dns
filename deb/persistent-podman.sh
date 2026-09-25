@@ -144,6 +144,12 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+# Bridge selection stays out of startup's critical path when a usable set
+# exists (Sub-plan 3 Task 2.2, ARCH-07): with 3 or more valid bridges already
+# in bridges.env the unit is skipped (ExecCondition exit 1), and the
+# controller's daily refresh (nice-dns-health-bridges.timer) re-evaluates
+# them without a restart. \$\$ is a literal \$ for systemd.
+ExecCondition=/usr/bin/sh -c 'n=\$\$(grep -cE "^BRIDGE[0-9]+=obfs4 " %h/.config/nice-dns/bridges.env 2>/dev/null); [ "\$\${n:-0}" -lt 3 ]'
 # RemainAfterExit: run once per boot before the proxy (Wants=/After= from the
 # tor quadlets); a container restart won't re-trigger the ~150s manage cycle.
 RemainAfterExit=yes

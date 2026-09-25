@@ -1,0 +1,260 @@
+# shellcheck shell=bash
+# Group integration/bridge-lifecycle (Sub-plan 3, Task 2.2; ARCH-07; BL-019).
+#
+# Sourced by tests/run.sh (assert_* helpers; NICE_DNS_ROOT, CASE_DIR). The
+# daily bridge refresh (lib/recovery.sh nd_bridges_refresh / nd_bridges_apply)
+# and its adoption by recovery, on both platform adapters, each in its own
+# subshell, against the shared health fakes (tests/fixtures/health-fakes.sh):
+# the runtime fake plays the image's bridge-eval (`run`), the proxy's control
+# directory and the schedulers. Nothing on the host is touched.
+#
+# NICE_DNS_OPT_PLATFORMS (--platforms all|linux|macos) picks the adapters.
+
+# Each platform runs in its own subshell on purpose: exports there are local.
+# shellcheck disable=SC2030,SC2031
+. "$NICE_DNS_ROOT/tests/fixtures/health-fakes.sh"
+
+BL_TOOLS="awk basename bash cat chmod comm cp cut date dirname env expr find grep head id kill ln ls mkdir mktemp mv od ps readlink rm sed sh sha256sum sleep sort stat tail tee touch tr uniq wc xargs"
+
+bl_platforms() {
+  local p="${NICE_DNS_OPT_PLATFORMS:-all}" x out=""
+  [ "$p" = all ] && { printf 'linux macos\n'; return 0; }
+  for x in $(printf '%s' "$p" | tr ',' ' '); do
+    case "$x" in linux|macos) out="$out $x" ;; *) fail "unknown --platforms value '$x' (all, linux, macos)" ;; esac
+  done
+  printf '%s\n' "$out"
+}
+
+# bl_set <file> <n> [first octet]: n valid bridge lines.
+bl_set() {
+  local i=1
+  : >"$1"
+  while [ "$i" -le "$2" ]; do
+    printf 'BRIDGE%s=obfs4 192.0.%s.%s:443 %s cert=AAAAtest%s iat-mode=0\n' "$i" "${3:-2}" "$i" \
+      "$(printf '%040d' "$i" | tr '0' 'A')" "$i" >>"$1"
+    i=$((i + 1))
+  done
+}
+
+bl_env() {
+  local b="$CASE_DIR/bin-$1" t p
+  export FAKE="$CASE_DIR/fake-$1" FAKE_LOG="$CASE_DIR/fake-$1/calls.log"
+  rm -rf "$FAKE" "$b"
+  ob_fake_data "$FAKE" "$1"
+  ob_write_stubs "$b"
+  for t in $BL_TOOLS; do p="$(command -v "$t")" && [ ! -e "$b/$t" ] && ln -s "$p" "$b/$t"; done
+  export PATH="$b" HOME="$CASE_DIR/home-$1" TMPDIR="$CASE_DIR/tmp-$1"
+  mkdir -p "$HOME" "$TMPDIR"
+  export ND_PLATFORM="$1" ND_BOOT_ID=boot-a ND_STATE_DIR="$CASE_DIR/state-$1" ND_ROUTES_FILE="$NICE_DNS_ROOT/routes/providers.tsv"
+  export ND_BRIDGE_CONFIG_DIR="$CASE_DIR/cfg-$1" ND_CONTAINER_FALLBACK=/nonexistent
+  export ND_RECOVERY_ACK_S=3 ND_RECOVERY_SERVICE_S=4 ND_RECOVERY_CMD_DEADLINE=5 ND_BRIDGE_EVAL_S=30
+  if [ "$1" = macos ]; then export FAKE_UNAME=Darwin; else export FAKE_UNAME=Linux; fi
+  unset CONTAINER_BIN ND_PROXY_CONTAINER
+  mkdir -p "$ND_BRIDGE_CONFIG_DIR"
+  # shellcheck source=lib/recovery.sh
+  . "$NICE_DNS_ROOT/lib/recovery.sh" || fail "cannot source lib/recovery.sh"
+  assert_eq "$1" "$(nd_platform_name)" "the $1 adapter is loaded"
+  nd_state_init || fail "state init"
+  BL_LIVE="$ND_BRIDGE_CONFIG_DIR/bridges.env"
+}
+
+bl_journal() { awk -F '\t' 'NR > 1 && $3 == "bridges" { print $4 }' "$ND_STATE_DIR/recovery.tsv" 2>/dev/null; }
+bl_restarts() { grep -E 'systemctl --user restart|launchctl kickstart| sh -c ' "$FAKE_LOG" 2>/dev/null; }
+bl_get() { printf '%s\n' "$2" | awk -F '\t' -v k="$1" '$1 == k { print $2; exit }'; }
+
+t_unchanged_set_writes_nothing_and_restarts_nothing() {
+  local plat out before
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      bl_set "$BL_LIVE" 5
+      # The same set, reordered and renumbered: normalized, it is unchanged.
+      tac "$BL_LIVE" 2>/dev/null >"$CASE_DIR/cand" || awk '{ l[NR] = $0 } END { for (i = NR; i > 0; i--) print l[i] }' "$BL_LIVE" >"$CASE_DIR/cand"
+      printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+      before="$(cat "$BL_LIVE")"
+      out="$(nd_bridges_refresh haproxy)"
+      assert_rc 0 $? "$plat: refresh: $out"
+      assert_eq unchanged "$(bl_get result "$out")" "$plat: an equal set is unchanged"
+      assert_eq "$before" "$(cat "$BL_LIVE")" "$plat: bridges.env is untouched"
+      assert_no_path "$BL_LIVE.prev" "$plat: nothing replaced"
+      assert_eq "" "$(bl_restarts)" "$plat: nothing restarted"
+      assert_eq "" "$(find "$ND_BRIDGE_CONFIG_DIR" -name '.bridges.env.candidate*')" "$plat: the candidate is removed"
+    ) || exit 1
+  done
+}
+
+t_changed_set_is_adopted_at_next_start_without_restart() {
+  local plat out
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      bl_set "$BL_LIVE" 5
+      bl_set "$CASE_DIR/cand" 7 9
+      printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+      out="$(nd_bridges_refresh haproxy)"
+      assert_eq changed "$(bl_get result "$out")" "$plat: a new set is adopted: $out"
+      assert_eq 7 "$(grep -cE '^BRIDGE[0-9]+=obfs4 192\.0\.9\.' "$BL_LIVE")" "$plat: bridges.env holds the new set"
+      assert_eq 5 "$(grep -c '^BRIDGE' "$BL_LIVE.prev")" "$plat: the previous set is kept"
+      assert_eq "" "$(find "$BL_LIVE" -perm -0004 -o -perm -0040)" "$plat: bridges.env is private"
+      assert_eq "" "$(bl_restarts)" "$plat: no restart: the proxy reads it at its next start"
+      assert_file "$ND_STATE_DIR/bridges.pending" "$plat: recorded as waiting for the proxy"
+      assert_eq changed "$(bl_journal)" "$plat: journal"
+    ) || exit 1
+  done
+}
+
+t_failed_or_thin_evaluation_keeps_the_last_good_set() {
+  local plat out before
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      bl_set "$BL_LIVE" 5; before="$(cat "$BL_LIVE")"
+      echo fail >"$FAKE/bridge_eval"
+      out="$(nd_bridges_refresh haproxy)"
+      assert_eq not-applied "$(bl_get result "$out")" "$plat: a failed evaluation applies nothing"
+      assert_eq "$before" "$(cat "$BL_LIVE")" "$plat: the last good set stays"
+      bl_set "$CASE_DIR/cand" 2 7
+      printf 'BRIDGE3=obfs4 not-an-address cert=x iat-mode=0\nBRIDGE4=garbage\n' >>"$CASE_DIR/cand"
+      printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+      out="$(nd_bridges_refresh haproxy)"
+      assert_eq not-applied "$(bl_get result "$out")" "$plat: fewer than 3 valid bridges is not applied"
+      assert_eq "$before" "$(cat "$BL_LIVE")" "$plat: the last good set still stays"
+      assert_eq "$(printf 'not-applied\nnot-applied')" "$(bl_journal)" "$plat: both recorded"
+    ) || exit 1
+  done
+}
+
+t_slow_refresh_never_overwrites_a_newer_set() {
+  local plat out a
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      bl_set "$BL_LIVE" 5
+      bl_set "$CASE_DIR/cand-a" 6 7; bl_set "$CASE_DIR/cand-b" 6 8
+      printf 'slow 3 %s\n' "$CASE_DIR/cand-a" >"$FAKE/bridge_eval"
+      ( nd_bridges_refresh haproxy >"$CASE_DIR/a.out" 2>&1 ) &
+      a=$!
+      sleep 1
+      # A second refresh while A evaluates: the mutex keeps it off the pool.
+      out="$(nd_bridges_refresh haproxy)"
+      assert_eq skipped "$(bl_get result "$out")" "$plat: a concurrent refresh is skipped"
+      # Meanwhile recovery (or anything under the state lock) adopts set B.
+      out="$(nd_bridges_apply "$CASE_DIR/cand-b" "$(_nd_br_hash "$BL_LIVE")")"
+      assert_eq changed "$(bl_get result "$out")" "$plat: set B adopted"
+      wait "$a"
+      assert_eq superseded "$(bl_get result "$(cat "$CASE_DIR/a.out")")" "$plat: the slow evaluation, started from the old set, is dropped"
+      assert_eq 6 "$(grep -cE '^BRIDGE[0-9]+=obfs4 192\.0\.8\.' "$BL_LIVE")" "$plat: bridges.env still holds the newer set B"
+    ) || exit 1
+  done
+}
+
+t_recovery_adopts_a_pending_set_through_the_service_restart() {
+  local plat out
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      bl_set "$BL_LIVE" 5; bl_set "$CASE_DIR/cand" 7 9
+      printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+      nd_bridges_refresh haproxy >/dev/null
+      echo new >"$FAKE/ack"
+      # The proxy has not been recreated since, so a restart must recreate it
+      # (the fake service restart gives it a new start time).
+      : >"$FAKE/restart_changes"
+      out="$(nd_recovery_restart_tor ra-br-1)"
+      assert_eq acknowledged "$(bl_get result "$out")" "$plat: the recreated proxy is acknowledged: $out"
+      assert_no_path "$ND_STATE_DIR/bridges.pending" "$plat: the set is adopted, so nothing waits any more"
+      assert_not_match 'exec tor-haproxy sh -c' "$(cat "$FAKE_LOG")" "$plat: no in-image restart, which would keep the old bridges"
+      if [ "$plat" = macos ]; then
+        assert_match '^launchctl kickstart -k ' "$(cat "$FAKE_LOG")" "$plat: the service restart recreates the proxy"
+      else
+        assert_match '^systemctl --user restart tor-haproxy.service$' "$(cat "$FAKE_LOG")" "$plat: the service restart recreates the proxy"
+      fi
+      assert_match 'tor	adopting' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: the journal says why"
+    ) || exit 1
+  done
+}
+
+t_a_proxy_restarted_since_has_adopted_the_set() {
+  local plat out
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      bl_set "$BL_LIVE" 5; bl_set "$CASE_DIR/cand" 7 9
+      printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+      nd_bridges_refresh haproxy >/dev/null
+      # A natural restart of the proxy since the set was written.
+      echo "t-natural-restart" >"$FAKE/started"
+      echo new >"$FAKE/ack"
+      out="$(nd_recovery_restart_tor ra-br-2)"
+      assert_eq acknowledged "$(bl_get result "$out")" "$plat: the in-image restart is used: $out"
+      assert_match 'exec tor-haproxy sh -c' "$(cat "$FAKE_LOG")" "$plat: in-image request"
+      assert_no_path "$ND_STATE_DIR/bridges.pending" "$plat: the stale marker is dropped"
+    ) || exit 1
+  done
+}
+
+t_macos_probe_uses_dnsnet_and_needs_the_stack() {
+  local out
+  bl_env macos
+  bl_set "$BL_LIVE" 5; bl_set "$CASE_DIR/cand" 7 9
+  printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+  nd_bridges_refresh haproxy >/dev/null
+  assert_match '^container run --rm --network dnsnet -v ' "$(cat "$FAKE_LOG")" "every macOS probe container is on dnsnet"
+  : >"$FAKE_LOG"; printf 'pi-hole\nunbound\n' >"$FAKE/running"
+  out="$(nd_bridges_refresh haproxy)"
+  assert_eq skipped "$(bl_get result "$out")" "without the stack on its addresses the probe does not run"
+  assert_not_match ' run ' "$(cat "$FAKE_LOG")" "no probe container was started"
+}
+
+t_install_schedules_the_daily_refresh() {
+  local plat tree
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      export XDG_CONFIG_HOME="$HOME/.config" XDG_DATA_HOME="$HOME/.local/share" XDG_STATE_HOME="$HOME/.local/state"
+      unset ND_PLATFORM ND_STATE_DIR
+      tree="$CASE_DIR/tree-$plat"; mkdir -p "$tree"
+      cp -R "$NICE_DNS_ROOT/health" "$NICE_DNS_ROOT/lib" "$NICE_DNS_ROOT/routes" "$tree/"; chmod -R go-w "$tree"
+      out="$(bash "$tree/health/nice-dns-health" install 2>&1)"
+      assert_rc 0 $? "$plat: install: $out"
+      if [ "$plat" = linux ]; then
+        assert_match '^OnCalendar=daily$' "$(cat "$XDG_CONFIG_HOME/systemd/user/nice-dns-health-bridges.timer")" "linux: daily"
+        assert_match '^Persistent=true$' "$(cat "$XDG_CONFIG_HOME/systemd/user/nice-dns-health-bridges.timer")" "linux: a missed day runs on the next start"
+        assert_match 'nice-dns-health bridges-refresh$' "$(cat "$XDG_CONFIG_HOME/systemd/user/nice-dns-health-bridges.service")" "linux: runs the refresh"
+        assert_match '^systemctl --user enable --now nice-dns-health-bridges.timer$' "$(cat "$FAKE_LOG")" "linux: enabled"
+      else
+        assert_match '<string>bridges-refresh</string>' "$(cat "$HOME/Library/LaunchAgents/org.nice-dns.health-bridges.plist")" "macos: runs the refresh"
+        assert_match '<key>Hour</key>' "$(cat "$HOME/Library/LaunchAgents/org.nice-dns.health-bridges.plist")" "macos: daily calendar interval (runs on wake)"
+      fi
+      out="$(bash "$HOME/.local/bin/nice-dns-health" uninstall 2>&1)"
+      assert_eq "" "$(find "$HOME" -name 'nice-dns-health-bridges.*' -o -name 'org.nice-dns.health-bridges.plist')" "$plat: uninstall removes the refresh schedule"
+    ) || exit 1
+  done
+}
+
+t_boot_selection_is_skipped_when_a_usable_set_exists() {
+  local cond h rc
+  # The rendered ExecCondition of the Linux boot unit: \$\$ in the installer
+  # heredoc is $$ in the unit, which systemd passes to sh as $.
+  cond="$(grep '^ExecCondition=' "$NICE_DNS_ROOT/deb/persistent-podman.sh" | sed -e 's/^ExecCondition=\/usr\/bin\/sh -c //' -e 's/\\\$\\\$/$/g' -e "s/^'//" -e "s/'\$//")"
+  assert_match '^n=\$\(grep' "$cond" "the condition renders"
+  h="$CASE_DIR/home-cond"; mkdir -p "$h/.config/nice-dns"
+  sh -c "$(printf '%s' "$cond" | sed "s#%h#$h#g")"; rc=$?
+  assert_rc 0 "$rc" "no bridges.env: the boot selection runs"
+  bl_set "$h/.config/nice-dns/bridges.env" 2
+  sh -c "$(printf '%s' "$cond" | sed "s#%h#$h#g")"; rc=$?
+  assert_rc 0 "$rc" "two bridges: the boot selection runs"
+  bl_set "$h/.config/nice-dns/bridges.env" 3
+  sh -c "$(printf '%s' "$cond" | sed "s#%h#$h#g")"; rc=$?
+  assert_rc 1 "$rc" "a usable set: skipped (ExecCondition exit 1), out of startup's critical path"
+}
+
+# The patterns are literal installer text on purpose.
+# shellcheck disable=SC2016
+t_macos_installer_retires_the_legacy_bridge_agent_after_the_controller() {
+  local f="$NICE_DNS_ROOT/mac/persist.sh" ci cr
+  assert_not_match 'launchctl load "\$EVAL_DST"' "$(cat "$f")" "the legacy agent is no longer installed"
+  ci="$(grep -n '"\$HERE/\.\./health/nice-dns-health" install' "$f" | cut -d: -f1)"
+  cr="$(grep -n 'launchctl unload "\$EVAL_DST"' "$f" | cut -d: -f1)"
+  [ -n "$ci" ] && [ -n "$cr" ] && [ "$cr" -gt "$ci" ] || fail "the legacy agent must be retired only after the controller installs (install line $ci, retire line $cr)"
+}

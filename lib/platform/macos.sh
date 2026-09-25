@@ -215,3 +215,26 @@ nd_platform_repair_runtime() {
     *) return 3 ;;
   esac
 }
+
+# ─── Bridge operations (Sub-plan 3, Task 2.2; ARCH-07) ─────────────────────
+#
+#   ND_BRIDGE_CONFIG_DIR   bridges.env and bridge-pool.tsv (default
+#                          $XDG_CONFIG_HOME/nice-dns or ~/.config/nice-dns)
+
+nd_platform_bridge_dir() { printf '%s\n' "${ND_BRIDGE_CONFIG_DIR:-${XDG_CONFIG_HOME:-${HOME:?HOME is unset}/.config}/nice-dns}"; }
+
+# nd_platform_bridge_eval <variant> <candidate file name> <deadline> <tmp>:
+# the image's bridge-eval, always on dnsnet (the only network the proxy's
+# probes may use). Its container takes a free dnsnet address, so it runs only
+# while pi-hole, unbound and the proxy hold theirs (exit 3 otherwise).
+nd_platform_bridge_eval() {
+  local d bin n
+  d="$(nd_platform_bridge_dir)"
+  bin="$(nd_platform_runtime_bin)" || return 3
+  nd_platform_runtime_list "$3" "$4/running" >/dev/null 2>&1 || return 3
+  n="$(grep -cx -e pi-hole -e unbound -e "tor-$1" "$4/running")"
+  [ "$n" -eq 3 ] || return 3
+  nd_bounded "$3" "$4/eval" "$4/eval.err" "$bin" run --rm --network dnsnet \
+    -v "$d:/pool" --entrypoint /bin/bridge-eval "docker.io/sureserver/tor-$1:latest" \
+    -pool /pool/bridge-pool.tsv -out "/pool/$2" -count 7 -window 150 -grace 20
+}
