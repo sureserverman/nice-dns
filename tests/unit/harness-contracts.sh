@@ -840,3 +840,18 @@ t_real_transport_stages_have_requirements() {
     assert_match "^count	$st	[0-9]+\$" "$(cat "$f")" "$st has an exact count row"
   done
 }
+
+t_stage_and_plan_refuse_narrowed_variants() {
+  local out rc v
+  # A stage or plan is a gate scope; a narrowing option would report a
+  # pass over part of the matrix.
+  for v in "--platforms linux" "--proxies haproxy" "--pihole standard" "--matrix linux" "--variants tls" "--entrypoints deb"; do
+    # shellcheck disable=SC2086
+    out="$(bash "$NICE_DNS_RUNNER" stage controller-core $v 2>&1)"; rc=$?
+    assert_rc 2 "$rc" "stage with $v is refused: $out"
+    assert_match 'narrows a gate scope' "$out" "the refusal says why ($v)"
+    # shellcheck disable=SC2086
+    out="$(bash "$NICE_DNS_RUNNER" plan controller $v 2>&1)"; rc=$?
+    assert_rc 2 "$rc" "plan with $v is refused: $out"
+  done
+}

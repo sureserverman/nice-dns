@@ -409,6 +409,14 @@ t_policy_unknown_observations_are_never_health() {
   sp_steps "$CASE_DIR/o" $((SP_T0 + 3000))
   assert_eq no-op "$SP_ACTION" "missing route records select nothing"
   assert_eq - "$(sp_key "$CASE_DIR/cur" route)" "missing records are not health"
+  # An outage clock from earlier passes plus a pass that observed nothing:
+  # the clock is held, and nothing acts on it.
+  printf 'schema\tnice-dns-controller-state/1\nboot_id\tboot-a\nupdated\t%s\nstarted\t%s\nroute\tcloudflare-exit\noutage_since\t%s\noutage_restarts\t0\nlast_action\t-\nlast_action_at\t-\nrecovery_at\t-\n' \
+    $((SP_T0 + 3000)) $((SP_T0 - 7200)) $((SP_T0 + 2000)) >"$CASE_DIR/held"
+  sp_obs "$CASE_DIR/o" healthy indeterminate indeterminate indeterminate indeterminate
+  sp_decide "$CASE_DIR/o" "$CASE_DIR/held" $((SP_T0 + 3060))
+  assert_eq no-op "$SP_ACTION" "an old outage clock and an all-unknown pass restart nothing"
+  assert_eq $((SP_T0 + 2000)) "$(sp_key "$CASE_DIR/next" outage_since)" "the clock is held"
   printf 'garbage\n' >"$CASE_DIR/bad"
   sp_decide "$CASE_DIR/bad" "$CASE_DIR/cur" $((SP_T0 + 3060))
   assert_eq escalate "$SP_ACTION" "unreadable observations escalate"

@@ -370,7 +370,7 @@ cmd_run() {
   local now; now="$(ts)"
   if [ ${#FAILED_CHECKS[@]} -eq 0 ] && [ ${#INDETERMINATE_CHECKS[@]} -eq 0 ]; then
     log_to_file "$now OK  all checks passed"
-    maybe_clear_full_outage
+    run_controller_pass "$now"
     return 0
   fi
   local dump
@@ -379,129 +379,60 @@ cmd_run() {
     # Nothing is known to be broken, and nothing is known to work: keep any
     # outage window as it is and take no action.
     log_to_file "$now INDETERMINATE [${INDETERMINATE_CHECKS[*]}] -> $dump"
+    run_controller_pass "$now"
     return 1
   fi
   log_to_file "$now FAIL [${FAILED_CHECKS[*]}]${INDETERMINATE_CHECKS[*]:+ indeterminate=(${INDETERMINATE_CHECKS[*]})} -> $dump"
-  maybe_trigger_chain_restart "$now"
+  run_controller_pass "$now"
   return 1
 }
 
-# ───────────── Full-chain outage detection + graceful tor restart ─────────────
+# ───────────── Recovery: one controller pass per run ─────────────
 #
-# When chain-resolves has been failing for more than RESTART_GRACE_SECS,
-# we try to recover. The recovery path is the same on Linux and macOS:
-#
-#   1. fetch-bridges --force            (host-side, refresh obfs4 list)
-#   2. request_recovery tor             (lib/recovery.sh: an acknowledged
-#                                        in-image restart of only tor)
-#
-# The image's start.sh reads the request from /app/data/control, respawns
-# only tor and answers with the new Tor generation and pid. haproxy or socat
-# keep running across the restart. The restart counts as done only on that
-# answer.
-#
-# Fallback: when the image cannot acknowledge (no control directory, no
-# answer, or no proxy container), one service-level restart
-# (nd_recovery_restart_service), which counts only when the container comes
-# back with a new start.
-#
-# Critical invariant: this fires ONLY when `chain-resolves` fails, which
-# run_checks derives from the per-route observations of lib/health.sh: no
-# provider route in routes/providers.tsv (the identity-bound onion,
-# Cloudflare-exit and Quad9-exit routes, and the Cloudflare-only legacy
-# :853) answered an authenticated probe, and at least one failed. Every
-# route failing means Tor itself isn't routing. One usable route does NOT
-# trigger this. An answer through Pi-hole (the local-cache observation) may
-# come from a cache and never counts as upstream health.
+# Since Sub-plan 3's Stage 1 gate, `run` keeps no outage timer of its own.
+# After logging, it hands its observations to the same controller pass as
+# `tick` (lib/recovery.sh nd_recovery_tick active), so one policy
+# (lib/policy.sh) with one state, one lock, one cooldown and one restart cap
+# decides every action, whichever command a scheduler calls:
+#   * a full outage restarts Tor after the startup allowance plus a 5-minute
+#     grace, observed in the same pass, outside a 5-minute cooldown, at most
+#     twice per outage (then it escalates); a usable route prevents it;
+#   * the restart is request_recovery (the proxy image's acknowledged
+#     restart) and, when that is not acknowledged, one service restart
+#     (nd_recovery_restart_tor);
+#   * readiness is recorded on a later pass.
+# Before the pass, and outside the lock (a bridge fetch is slow), bridges are
+# refetched once an observed outage has outlasted the grace, as before: they
+# take effect when the proxy container is next created.
+# NICE_DNS_RESTART_GRACE_SECS still sets the grace (ND_POLICY_GRACE_S).
 
-FULL_OUTAGE_FILE="$LOG_DIR/full-outage-since"
-# Override via env for testing: NICE_DNS_RESTART_GRACE_SECS=10 nice-dns-health run
-RESTART_GRACE_SECS="${NICE_DNS_RESTART_GRACE_SECS:-300}"
+ND_POLICY_GRACE_S="${ND_POLICY_GRACE_S:-${NICE_DNS_RESTART_GRACE_SECS:-300}}"
+export ND_POLICY_GRACE_S
 
-maybe_clear_full_outage() {
-  [ -f "$FULL_OUTAGE_FILE" ] && rm -f "$FULL_OUTAGE_FILE"
-}
-
-# Detect which tor variant container is installed. Prefer running, fall
-# back to the installed quadlet (Linux) — on macOS, only the running
-# state matters because the LaunchAgent doesn't carry a per-variant file.
-detect_installed_tor_variant() {
-  local rt tv
-  rt="$(detect_runtime)"
-  tv="$(detect_tor_variant "${rt:-}")"
-  if [ -z "$tv" ]; then
-    local q="${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd"
-    for v in haproxy socat; do
-      if [ -f "$q/tor-$v.container" ]; then tv="$v"; break; fi
-    done
+run_controller_pass() {
+  local now_human="$1" since o out
+  # No libraries or no valid observations: nothing to decide on.
+  if [ -z "${HEALTH_LIBS_LOADED:-}" ] || [ -z "$HEALTH_OBS" ] || ! printf '%s\n' "$HEALTH_OBS" | nd_health_validate 2>/dev/null; then
+    log_to_file "$now_human controller skipped: no valid observations"
+    return 0
   fi
-  echo "$tv"
-}
-
-# The Tor restart goes through lib/recovery.sh: request_recovery asks the
-# proxy image for an acknowledged restart (a new Tor generation and pid); an
-# image that cannot acknowledge, or does not answer, gets one service-level
-# restart, acknowledged by a new container start. Both hold the controller's
-# state lock (lib/state.sh), so a scheduled pass never overlaps another
-# mutation. Nothing here is logged as done until it is acknowledged, and
-# readiness is the next run's observation.
-
-maybe_trigger_chain_restart() {
-  local now_human="$1"
-
-  # Only react to the "no real DNS answer" failure mode — other failures
-  # (gravity-blocks, ftl-alive, runtime-missing) want different action.
-  case " ${FAILED_CHECKS[*]} " in
-    *" chain-resolves "*) : ;;
-    *) maybe_clear_full_outage; return 0 ;;
+  case " ${FAILED_CHECKS[*]:-} " in
+    *" chain-resolves "*)
+      since="$(nd_state_load 2>/dev/null | awk -F '\t' '$1 == "outage_since" { print $2 }')"
+      case "$since" in
+        ''|-|*[!0-9]*) ;;
+        *)
+          if [ $(( $(date +%s) - since )) -ge "$ND_POLICY_GRACE_S" ] && [ -x "$HOME/.local/bin/nice-dns-fetch-bridges" ]; then
+            "$HOME/.local/bin/nice-dns-fetch-bridges" --force >>"$ROLL_LOG" 2>&1 \
+              || log_to_file "$now_human fetch-bridges --force failed (continuing)"
+          fi ;;
+      esac ;;
   esac
-
-  local now since age
-  now="$(date +%s)"
-  if [ ! -f "$FULL_OUTAGE_FILE" ]; then
-    echo "$now" > "$FULL_OUTAGE_FILE"
-    log_to_file "$now_human full-outage detected, starting grace window"
-    return 0
-  fi
-  since="$(cat "$FULL_OUTAGE_FILE" 2>/dev/null)"
-  case "$since" in ''|*[!0-9]*) since="$now" ;; esac
-  age=$((now - since))
-
-  if [ "$age" -lt "$RESTART_GRACE_SECS" ]; then
-    log_to_file "$now_human full-outage ${age}s < grace ${RESTART_GRACE_SECS}s, holding"
-    return 0
-  fi
-
-  log_to_file "$now_human full-outage ${age}s >= grace ${RESTART_GRACE_SECS}s, refetching bridges + recycling tor"
-
-  # Refetch bridges via the user-installed helper. Best-effort: if Moat
-  # is down too, the previous bridges.env stays. Bridges fetched here
-  # take effect on the NEXT full container/service restart — the
-  # graceful in-container path below reuses the bridges already in the
-  # tor process's environment.
-  if [ -x "$HOME/.local/bin/nice-dns-fetch-bridges" ]; then
-    "$HOME/.local/bin/nice-dns-fetch-bridges" --force >>"$ROLL_LOG" 2>&1 || \
-      log_to_file "$now_human fetch-bridges --force failed (continuing)"
-  fi
-
-  local tok id out rc
-  if ! nd_state_init 2>>"$ROLL_LOG" || ! tok="$(nd_state_lock 2>>"$ROLL_LOG")"; then
-    log_to_file "$now_human another controller pass holds the state lock; no restart this run"
-    return 0
-  fi
-  id="run-$(date +%s)"
-  out="$(request_recovery tor "$id" 2>&1)"; rc=$?
-  log_to_file "$now_human tor restart $id: $(printf '%s\n' "$out" | awk -F '\t' '$1 == "result" || $1 == "detail" { printf "%s%s", s, $2; s = ": " }')"
-  if [ "$rc" -eq 1 ] || [ "$rc" -eq 3 ] || [ "$rc" -eq 4 ]; then
-    out="$(nd_recovery_restart_service "$id-svc" 2>&1)"
-    log_to_file "$now_human service restart $id-svc: $(printf '%s\n' "$out" | awk -F '\t' '$1 == "result" || $1 == "detail" { printf "%s%s", s, $2; s = ": " }')"
-  fi
-  nd_state_unlock "$tok"
-
-  # Clear the outage marker so we don't restart again on the very next
-  # tick if the chain hasn't recovered yet — give it at least one full
-  # grace window after the restart.
-  rm -f "$FULL_OUTAGE_FILE"
+  o="$(mktemp "${TMPDIR:-/tmp}/nice-dns-obs.XXXXXX")" || return 0
+  printf '%s\n' "$HEALTH_OBS" >"$o"
+  out="$(nd_recovery_tick active "$o" 2>&1)"
+  rm -f "$o"
+  log_to_file "$now_human controller $(printf '%s\n' "$out" | awk -F '\t' 'NF == 2 { printf "%s%s=%s", s, $1, $2; s = " " }')"
 }
 
 # ─────────────────────────────── install / uninstall ───────────────────────────

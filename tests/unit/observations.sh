@@ -508,13 +508,13 @@ t_cli_observe_and_run_from_checkout_layout() {
     printf 'no-answer\n' >"$FAKE/probe/18531"
     ob_cli "$OB_TREE/health/nice-dns-health" run
     assert_rc 1 "$OB_RC" "$plat: an unhealthy route fails the run"
-    assert_match 'FAIL \[route:cloudflare-onion\]' "$(tail -n 1 "$(ob_logdir)/health.log")" "$plat: the failed observation is named"
-    assert_not_match 'chain-resolves' "$(tail -n 1 "$(ob_logdir)/health.log")" "$plat: a usable route is not a chain outage"
+    assert_match 'FAIL \[route:cloudflare-onion\]' "$(grep -v " controller " "$(ob_logdir)/health.log" | tail -n 1)" "$plat: the failed observation is named"
+    assert_not_match 'chain-resolves' "$(grep -v " controller " "$(ob_logdir)/health.log" | tail -n 1)" "$plat: a usable route is not a chain outage"
     rm -f "$FAKE/probe/18531"
     printf 'hang\n' >"$FAKE/probe/18531"
     ND_HEALTH_PROBE_DEADLINE=1 ob_cli "$OB_TREE/health/nice-dns-health" run
     assert_rc 1 "$OB_RC" "$plat: an indeterminate result is not a pass"
-    assert_match 'INDETERMINATE \[route:cloudflare-onion\]' "$(tail -n 1 "$(ob_logdir)/health.log")" "$plat: indeterminate is logged as such"
+    assert_match 'INDETERMINATE \[route:cloudflare-onion\]' "$(grep -v " controller " "$(ob_logdir)/health.log" | tail -n 1)" "$plat: indeterminate is logged as such"
     rm -f "$FAKE/probe/18531"
   done
 }
@@ -527,23 +527,26 @@ t_cli_run_keeps_recovery_on_upstream_outage() {
     if [ "$plat" = macos ]; then cli=container; else cli=podman; fi
     for r in 18531 18532 18533 853; do printf 'servfail\n' >"$FAKE/probe/$r"; done
     ob_tree
-    NICE_DNS_RESTART_GRACE_SECS=0 ob_cli "$OB_TREE/health/nice-dns-health" run
-    assert_match 'full-outage detected' "$(cat "$(ob_logdir)/health.log")" "$plat: first failing run starts the grace window"
-    # Sub-plan 3 Task 1.3: the restart is an acknowledged request; this fake
-    # image never answers, so it is logged as not acknowledged and followed
-    # by one service restart, which is not acknowledged either (the fake
-    # container never comes back with a new start).
-    ND_RECOVERY_ACK_S=2 ND_RECOVERY_SERVICE_S=4 NICE_DNS_RESTART_GRACE_SECS=0 ob_cli "$OB_TREE/health/nice-dns-health" run
+    # Since the Sub-plan 3 Stage 1 gate, `run` decides through the controller
+    # pass (lib/policy.sh): with no startup allowance and no grace, the first
+    # failing run restarts Tor. This fake image never answers, so the request
+    # is not acknowledged and one service restart follows, which is not
+    # acknowledged either (the container never comes back with a new start).
+    ND_POLICY_STARTUP_S=0 ND_RECOVERY_ACK_S=2 ND_RECOVERY_SERVICE_S=4 NICE_DNS_RESTART_GRACE_SECS=0 ob_cli "$OB_TREE/health/nice-dns-health" run
     assert_not_match 'tor-restart-flag' "$(cat "$FAKE_LOG")" "$plat: the unacknowledged flag is never used"
     assert_match "^$cli exec tor-haproxy test -d /app/data/control\$" "$(cat "$FAKE_LOG")" "$plat: the acknowledged restart is requested"
-    assert_match 'tor restart run-[0-9]+: not-acknowledged' "$(cat "$(ob_logdir)/health.log")" "$plat: an unanswered request is logged as not acknowledged"
+    assert_match 'controller action=restart-component target=tor result=not-acknowledged' "$(cat "$(ob_logdir)/health.log")" "$plat: the run log carries the controller's decision and its real result"
     assert_not_match 'triggered graceful' "$(cat "$(ob_logdir)/health.log")" "$plat: a request is never logged as a done restart"
     if [ "$plat" = macos ]; then
       assert_match '^launchctl kickstart -k gui/[0-9]+/org\.nice-dns\.start-container$' "$(cat "$FAKE_LOG")" "$plat: one service-level fallback"
     else
       assert_match '^systemctl --user restart tor-haproxy\.service$' "$(cat "$FAKE_LOG")" "$plat: one service-level fallback"
     fi
-    assert_match 'service restart run-[0-9]+-svc: not-acknowledged' "$(cat "$(ob_logdir)/health.log")" "$plat: a fallback without a new container start is not acknowledged"
+    # The next run is inside the cooldown: the same state stops a second restart.
+    : >"$FAKE_LOG"
+    ND_POLICY_STARTUP_S=0 NICE_DNS_RESTART_GRACE_SECS=0 ob_cli "$OB_TREE/health/nice-dns-health" run
+    assert_not_match 'test -d /app/data/control' "$(cat "$FAKE_LOG")" "$plat: no second restart inside the cooldown"
+    assert_match 'controller action=no-op' "$(tail -n 1 "$(ob_logdir)/health.log")" "$plat: the controller holds"
   done
 }
 

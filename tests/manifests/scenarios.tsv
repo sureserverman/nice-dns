@@ -146,6 +146,7 @@ OP-POLICY-IDENTITY-ONLY	PRIV-ROUTE-IDENTITY	unit	state-policy	t_policy_never_sel
 OP-POLICY-UNKNOWN-NOT-HEALTH	EVD-FAILURES-COUNTED	unit	state-policy	t_policy_unknown_observations_are_never_health	controller
 OP-ACK-IMAGE-GENERATION	REC-ACK-READINESS	integration	recovery-actions	t_image_restart_request_is_acknowledged_with_new_generation	controller
 OP-ACK-REQUEST-NOT-ACK	REC-ACK-READINESS	integration	recovery-actions	t_request_write_is_never_an_acknowledgement	controller
+OP-READY-CORROBORATED	REC-ACK-READINESS	integration	recovery-actions	t_readiness_is_per_request_and_corroborated_by_unbound	controller
 OP-CHAIN-CACHE-NOT-UPSTREAM	EVD-CACHE-NOT-UPSTREAM	integration	controller-interaction	t_cached_answer_never_hides_an_upstream_outage	controller
 OP-CHAIN-ACK-READY	REC-ACK-READINESS	integration	controller-interaction	t_observed_outage_restart_is_acknowledged_then_ready	controller
 OP-CHAIN-UNKNOWN-NO-ACTION	EVD-FAILURES-COUNTED	integration	controller-interaction	t_unanswerable_probes_never_act	controller

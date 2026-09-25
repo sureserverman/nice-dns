@@ -68,6 +68,8 @@ case "$1" in
     case "${2:-}" in -a|--all) table all ;; *) table running ;; esac
     exit 0 ;;
   exec)
+    # `exec --user U C cmd...` (the Unbound container, run as unbound).
+    if [ "$2" = --user ]; then a1="$1"; shift 3; set -- "$a1" "$@"; fi
     c="$2"; shift 2
     if ! grep -qxF "$c" "$FAKE/running"; then echo "Error: no container with name or ID \"$c\" found: no such container" >&2; exit 125; fi
     case "$1" in
@@ -83,6 +85,7 @@ case "$1" in
           garbage) printf 'OCI runtime exec failed:\texec failed\nno such file\n' >&2; exit 126 ;;
           hang) sleep "$(cat "$FAKE/hang_secs")" & wait; exit 1 ;;
         esac ;;
+      /usr/local/bin/nice-dns-unbound-start) exit "$(cat "$FAKE/unbound_probe_rc" 2>/dev/null || echo 0)" ;;
       # The proxy image's acknowledged-restart control directory
       # (/app/data/control): $FAKE/ctl holds its files; $FAKE/ack (new, same
       # or refused) makes the image answer a request.

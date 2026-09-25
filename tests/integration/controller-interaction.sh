@@ -9,6 +9,8 @@
 # platform adapters, each in its own subshell. No host runtime, resolver or
 # scheduler is touched.
 
+# Each platform runs in its own subshell on purpose: exports there are local.
+# shellcheck disable=SC2030,SC2031
 . "$NICE_DNS_ROOT/tests/fixtures/health-fakes.sh"
 
 CI_TOOLS="awk basename bash cat chmod comm cp cut date dirname env expr find grep head id kill ln ls mkdir mktemp mv od ps readlink rm sed sh sleep sort stat tail tee touch tr uniq wc xargs"
@@ -25,7 +27,7 @@ ci_env() {
   export PATH="$b" HOME="$CASE_DIR/home-$1" TMPDIR="$CASE_DIR/tmp-$1"
   mkdir -p "$HOME" "$TMPDIR"
   export ND_PLATFORM="$1" ND_BOOT_ID=boot-a ND_STATE_DIR="$CASE_DIR/state-$1" ND_ROUTES_FILE="$NICE_DNS_ROOT/routes/providers.tsv"
-  export ND_RESOLV_CONF="$CASE_DIR/resolv-$1.conf" ND_CONTAINER_FALLBACK=/nonexistent
+  export ND_RESOLV_CONF="$CASE_DIR/resolv-$1.conf" ND_CONTAINER_FALLBACK=/nonexistent ND_ROUTE_DIR="$CASE_DIR/route-$1"
   export ND_RECOVERY_ACK_S=3 ND_RECOVERY_SERVICE_S=4 ND_RECOVERY_CMD_DEADLINE=5
   if [ "$1" = macos ]; then export FAKE_UNAME=Darwin; else export FAKE_UNAME=Linux; fi
   unset CONTAINER_BIN ND_PROXY_CONTAINER ND_TOR_VARIANT
@@ -118,6 +120,7 @@ t_observed_onion_failure_switches_route_not_tor() {
     (
       ci_env "$plat"
       ci_seed cloudflare-onion - "$(printf 'streak\tcloudflare-onion\t9\t1\t1')"
+      mkdir -m 700 "$ND_ROUTE_DIR"
       apply_route() { printf 'result\tapplied\nroute\t%s\ngeneration\t%s\n' "$1" "$2"; printf '%s\n' "$1" >>"$CASE_DIR/applied-$plat"; }
       ci_routes servfail 18531
       ci_tick
@@ -145,6 +148,24 @@ t_unanswerable_probes_never_act() {
       done
       assert_eq - "$(ci_state outage_since)" "$plat: no outage clock from unknowns"
       [ ! -e "$FAKE/ctl/tor-restart-request" ] || fail "$plat: a restart was requested on indeterminate observations"
+    ) || exit 1
+  done
+}
+
+t_held_outage_clock_with_unanswerable_probes_never_acts() {
+  local plat
+  for plat in linux macos; do
+    (
+      ci_env "$plat"
+      # An outage seen an hour ago; now every probe misses its deadline.
+      ci_seed cloudflare-exit "$(( $(date +%s) - 3600 ))"
+      ci_routes hang
+      export ND_HEALTH_PROBE_DEADLINE=1
+      echo new >"$FAKE/ack"
+      ci_tick
+      assert_eq no-op "$(ci_get action "$CI_OUT")" "$plat: no restart on a pass that observed nothing"
+      [ ! -e "$FAKE/ctl/tor-restart-request" ] || fail "$plat: a restart was requested without current evidence"
+      assert_ne - "$(ci_state outage_since)" "$plat: the clock is held for the next observed pass"
     ) || exit 1
   done
 }

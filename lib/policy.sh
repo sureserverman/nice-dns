@@ -49,7 +49,8 @@
 #   * A healthy identity or compat route means Tor works: the outage clock
 #     clears and Tor is never restarted.
 #   * Full outage: no route healthy and at least one identity route
-#     unhealthy. Indeterminate-only observations hold the clock. Tor is
+#     unhealthy. Indeterminate-only observations hold the clock but never
+#     act: a restart needs the outage observed in the same pass. Tor is
 #     restarted once the outage has lasted ND_POLICY_GRACE_S (300) counted
 #     from the later of its start and the end of the startup allowance
 #     (ND_POLICY_STARTUP_S, 120), outside the cooldown (ND_POLICY_COOLDOWN_S,
@@ -229,6 +230,10 @@ nd_policy_decide() {
       reason="only the compat route answers: Tor works; the compat route is never selected (DEC-005)"
     elif [ "$s_out" = - ]; then
       reason="no identity route observed healthy or unhealthy"
+    elif [ "$unhealthy_now" != 1 ]; then
+      # A held outage clock is not current evidence: act only on a pass that
+      # itself observed the outage.
+      reason="outage since $s_out held; no route observed this pass, so nothing acts"
     else
       local from="$s_out"
       [ "$from" -lt $((s_started + startup)) ] && from=$((s_started + startup))
