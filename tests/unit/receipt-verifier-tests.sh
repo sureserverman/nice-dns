@@ -50,6 +50,10 @@ rv_artifact() {
     baseline:BL-TARGETS) printf 'coverage\t8 cells\n' ;;
     *) printf 'observed %s %s\n' "$sc" "$key" ;;
   esac >"$out"
+  # Every anchored literal content rule (^text$) of the manifest, so a rule
+  # added to a manifest is satisfied here without a hand-kept copy.
+  awk -F '\t' -v s="$sc" '$1 == "content" && $2 == s && $3 ~ /^\^[^][\\.*+?(){}|^$]*\$$/ {
+    print substr($3, 2, length($3) - 2) }' "$RV_MAN/$name.tsv" >>"$out"
 }
 
 rv_build() {
