@@ -162,6 +162,24 @@ pc_parses_dns_errors() {
   assert_rc 2 "$TP_RC" "a non-numeric port is a usage error: $TP_OUT"
 }
 
+pc_bounds_a_silent_upstream() {
+  # A frozen Tor: the listener accepts, the SOCKS stream is never granted.
+  # NICE_DNS_PROBE_TIMEOUT bounds the whole probe (dig 9.20 applies +time per
+  # stage, so a silent TLS peer took 3 x the timeout), and the verdict is
+  # no-answer, which the host counts as unhealthy, never a host-deadline kill
+  # (no verdict). Live evidence: Sub-plan 3 Task 2.3, mint, Tor SIGSTOPped.
+  local t0 el
+  pc_stack "$1"
+  tp_socks_mode delay 120
+  t0="$(date +%s)"
+  tp_pm exec "$TP_CTR" env NICE_DNS_PROBE_TIMEOUT=3 "$PC_PROBE" 18532 dns.fixture.test signed.fixture.test
+  el=$(( $(date +%s) - t0 ))
+  assert_rc 1 "$TP_RC" "$1: a silent upstream is not healthy: $TP_OUT"
+  assert_match 'result=no-answer rcode=- ms=[0-9]+ error=timeout$' "$TP_OUT" "$1: a silent upstream is no-answer, marked as the probe's own timeout"
+  [ "$el" -le 5 ] || fail "$1: the probe took ${el} s with NICE_DNS_PROBE_TIMEOUT=3 ($TP_OUT)"
+  assert_match '^[0-9]+$' "$(grep -c 'ND_HEALTH_PROBE_DEADLINE:-15' "$NICE_DNS_ROOT/lib/health.sh")" "the host deadline (15 s) stays above the probe's default bound (10 s)"
+}
+
 pc_healthcheck_uses_probe() {
   pc_stack "$1"
   tp_healthcheck_rc
@@ -235,6 +253,8 @@ t_haproxy_probe_rejects_bad_certificates() { pc_rejects_bad_certificates tor-hap
 t_socat_probe_rejects_bad_certificates() { pc_rejects_bad_certificates tor-socat; }
 t_haproxy_probe_parses_dns_errors() { pc_parses_dns_errors tor-haproxy; }
 t_socat_probe_parses_dns_errors() { pc_parses_dns_errors tor-socat; }
+t_haproxy_probe_bounds_a_silent_upstream() { pc_bounds_a_silent_upstream tor-haproxy; }
+t_socat_probe_bounds_a_silent_upstream() { pc_bounds_a_silent_upstream tor-socat; }
 t_haproxy_healthcheck_uses_verifying_probe() { pc_healthcheck_uses_probe tor-haproxy; }
 t_socat_healthcheck_uses_verifying_probe() { pc_healthcheck_uses_probe tor-socat; }
 t_haproxy_capabilities_match_listeners() { pc_capabilities tor-haproxy; }

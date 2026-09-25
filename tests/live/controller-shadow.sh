@@ -120,7 +120,13 @@ cs_each() {
   for p in $(cs_platforms); do
     cs_alias "$p"; a="$CS_ALIAS"
     mkdir -p "$(cs_dir "$a")"
-    ( "$fn" "$p" "$a" ) >"$CASE_DIR/$p.log" 2>&1 &
+    if [ "$fn" != cs_deploy ] && [ ! -f "$(cs_dir "$a")/cell.tsv" ]; then
+      # A platform whose deploy failed is not exercised on a broken target.
+      printf 'ASSERT FAIL: %s: not deployed in this run (t_1_deploy_shadow failed); %s not run\n' "$a" "$fn" >"$CASE_DIR/$p.log"
+      ( exit 1 ) &
+    else
+      ( "$fn" "$p" "$a" ) >"$CASE_DIR/$p.log" 2>&1 &
+    fi
     pids="$pids $p:$!"
   done
   for p in $pids; do

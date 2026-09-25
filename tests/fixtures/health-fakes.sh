@@ -81,6 +81,7 @@ case "$1" in
           nxdomain) echo "port=$port name=$name result=ok rcode=NXDOMAIN ms=380"; exit 0 ;;
           servfail) echo "port=$port name=$name result=dns-error rcode=SERVFAIL ms=90"; exit 1 ;;
           no-answer) echo "port=$port name=$name result=no-answer rcode=- ms=10004"; exit 1 ;;
+          timeout) echo "port=$port name=$name result=no-answer rcode=- ms=10002 error=timeout"; exit 1 ;;
           wrong-port) echo "port=1 name=$name result=ok rcode=NOERROR ms=5"; exit 0 ;;
           garbage) printf 'OCI runtime exec failed:\texec failed\nno such file\n' >&2; exit 126 ;;
           hang) sleep "$(cat "$FAKE/hang_secs")" & wait; exit 1 ;;

@@ -749,3 +749,18 @@ t_failure_dump_reads_logs_and_holds_no_bridge_material() {
     fi
   done
 }
+
+t_probe_timeout_is_unhealthy_not_indeterminate() {
+  # A frozen Tor: the probe's own timeout (error=timeout) is a verdict, so the
+  # route is unhealthy and the outage clock can run. Live evidence: Sub-plan 3
+  # Task 2.3 on mint, where probes killed by the host deadline read as
+  # indeterminate and the controller never saw the outage.
+  local plat r
+  ob_setup linux
+  for plat in $(ob_platforms); do
+    ob_platform "$plat"
+    for r in 18531 18532 18533 853; do printf 'timeout\n' >"$FAKE/probe/$r"; done
+    ob_observe
+    for r in $(ob_routes); do ob_expect "route:$r" unhealthy 'no-answer' "$plat: route $r timed out in the probe"; done
+  done
+}
