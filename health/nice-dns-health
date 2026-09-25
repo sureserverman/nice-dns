@@ -89,7 +89,7 @@ if [ "$IS_LINUX" -eq 1 ]; then
 else
   HEALTH_LIB_ROOT_INSTALLED="$HOME/Library/Application Support/$SCRIPT_NAME"
 fi
-HEALTH_LIB_FILES="lib/health.sh lib/platform/linux.sh lib/platform/macos.sh routes/providers.tsv"
+HEALTH_LIB_FILES="lib/health.sh lib/state.sh lib/policy.sh lib/recovery.sh lib/platform/linux.sh lib/platform/macos.sh routes/providers.tsv"
 
 # ─────────────────────────────── Small helpers ──────────────────────────────────
 
@@ -185,13 +185,16 @@ load_health_libs() {
   for d in "$root" "$root/lib" "$root/lib/platform" "$root/routes"; do
     health_path_safe "$d" d || return 1
   done
-  for f in lib/health.sh "lib/platform/$plat.sh" routes/providers.tsv; do
+  for f in lib/health.sh lib/state.sh lib/policy.sh lib/recovery.sh "lib/platform/$plat.sh" routes/providers.tsv; do
     health_path_safe "$root/$f" f || return 1
   done
-  ND_PLATFORM="$plat"
-  export ND_PLATFORM
+  ND_PLATFORM="$plat" ND_ROUTES_FILE="$root/routes/providers.tsv"
+  export ND_PLATFORM ND_ROUTES_FILE
   # shellcheck source=lib/health.sh
   . "$root/lib/health.sh" || { HEALTH_LIB_ERROR="$root/lib/health.sh failed to load"; return 1; }
+  # recovery.sh sources state.sh and policy.sh from the same directory.
+  # shellcheck source=lib/recovery.sh
+  . "$root/lib/recovery.sh" || { HEALTH_LIB_ERROR="$root/lib/recovery.sh failed to load"; return 1; }
   HEALTH_LIBS_LOADED=1
 }
 
@@ -208,7 +211,7 @@ run_checks() {
   INDETERMINATE_CHECKS=()
   CHECK_DETAIL=""
   HEALTH_OBS=""
-  local kind name verdict ms reason routes=0 rok=0 rbad=0
+  local kind name verdict ms reason routes=0 route_ok=0 rbad=0
 
   if ! load_health_libs; then
     FAILED_CHECKS+=("health-libs")
@@ -227,7 +230,7 @@ run_checks() {
     case "$verdict" in
       healthy)
         CHECK_DETAIL+="OK   $name: $reason (${ms} ms)"$'\n'
-        case "$name" in route:*) rok=$((rok + 1)) ;; esac ;;
+        case "$name" in route:*) route_ok=$((route_ok + 1)) ;; esac ;;
       unhealthy)
         FAILED_CHECKS+=("$name")
         CHECK_DETAIL+="FAIL $name: $reason (${ms} ms)"$'\n'
@@ -239,7 +242,7 @@ run_checks() {
   done <<EOF
 $HEALTH_OBS
 EOF
-  if [ "$routes" -gt 0 ] && [ "$rok" -eq 0 ] && [ "$rbad" -gt 0 ]; then
+  if [ "$routes" -gt 0 ] && [ "$route_ok" -eq 0 ] && [ "$rbad" -gt 0 ]; then
     FAILED_CHECKS+=("chain-resolves")
     CHECK_DETAIL+="FAIL chain-resolves: no provider route answered ($rbad of $routes unhealthy); a local-cache answer is not upstream health"$'\n'
   fi
@@ -389,19 +392,18 @@ cmd_run() {
 # we try to recover. The recovery path is the same on Linux and macOS:
 #
 #   1. fetch-bridges --force            (host-side, refresh obfs4 list)
-#   2. <runtime> exec tor-haproxy \     (in-container, graceful restart)
-#        touch /tmp/tor-restart-flag
+#   2. request_recovery tor             (lib/recovery.sh: an acknowledged
+#                                        in-image restart of only tor)
 #
-# The container's start.sh watches that flag, kills the tor child, and
-# respawns it. haproxy + the latency-aware probe keep running across
-# the restart — when the new tor finishes bootstrap, haproxy's rise/fall
-# loop notices and routes client traffic back to primary on its own.
-# Strictly better than a full container restart: no haproxy bounce, no
-# admin-socket churn, no probe-primary reset.
+# The image's start.sh reads the request from /app/data/control, respawns
+# only tor and answers with the new Tor generation and pid. haproxy or socat
+# keep running across the restart. The restart counts as done only on that
+# answer.
 #
-# Fallback: if the in-container exec fails (container missing, runtime
-# unavailable), drop to the per-platform service-level restart so the
-# recovery still happens somehow.
+# Fallback: when the image cannot acknowledge (no control directory, no
+# answer, or no proxy container), one service-level restart
+# (nd_recovery_restart_service), which counts only when the container comes
+# back with a new start.
 #
 # Critical invariant: this fires ONLY when `chain-resolves` fails, which
 # run_checks derives from the per-route observations of lib/health.sh: no
@@ -436,38 +438,13 @@ detect_installed_tor_variant() {
   echo "$tv"
 }
 
-# Graceful path: ask the running tor-haproxy container to recycle its
-# tor child by touching the restart-flag file. Returns 0 on successful
-# trigger, non-zero on failure to reach the container.
-trigger_graceful_tor_restart() {
-  local rt cname
-  rt="$(detect_runtime)"
-  if [ -z "$rt" ]; then return 1; fi
-  cname="tor-$(detect_tor_variant "$rt")"
-  case "$cname" in tor-) return 1 ;; esac
-  "$rt" exec "$cname" touch /tmp/tor-restart-flag >/dev/null 2>&1
-}
-
-# Platform fallback if the graceful path is unreachable (container down,
-# runtime broken). On Linux this is systemctl --user; on macOS we
-# kickstart the LaunchAgent which re-runs mac/start-container.sh and
-# its own rebuild path.
-trigger_service_restart_fallback() {
-  local tor_variant
-  tor_variant="$(detect_installed_tor_variant)"
-  if [ "$IS_LINUX" -eq 1 ]; then
-    if [ -n "$tor_variant" ]; then
-      systemctl --user restart "tor-$tor_variant.service" >>"$ROLL_LOG" 2>&1
-      return $?
-    fi
-    return 1
-  fi
-  # macOS path: kick the LaunchAgent. -k stops first; the agent's plist
-  # has RunAtLoad so it re-runs start-container.sh on the next load.
-  local uid
-  uid="$(id -u)"
-  launchctl kickstart -k "gui/$uid/org.nice-dns.start-container" >>"$ROLL_LOG" 2>&1
-}
+# The Tor restart goes through lib/recovery.sh: request_recovery asks the
+# proxy image for an acknowledged restart (a new Tor generation and pid); an
+# image that cannot acknowledge, or does not answer, gets one service-level
+# restart, acknowledged by a new container start. Both hold the controller's
+# state lock (lib/state.sh), so a scheduled pass never overlaps another
+# mutation. Nothing here is logged as done until it is acknowledged, and
+# readiness is the next run's observation.
 
 maybe_trigger_chain_restart() {
   local now_human="$1"
@@ -507,17 +484,19 @@ maybe_trigger_chain_restart() {
       log_to_file "$now_human fetch-bridges --force failed (continuing)"
   fi
 
-  # Graceful in-container restart first.
-  if trigger_graceful_tor_restart; then
-    log_to_file "$now_human triggered graceful in-container tor restart"
-  else
-    log_to_file "$now_human graceful path unreachable, falling back to service restart"
-    if trigger_service_restart_fallback; then
-      log_to_file "$now_human service-level restart issued"
-    else
-      log_to_file "$now_human service-level restart FAILED — nothing more to try"
-    fi
+  local tok id out rc
+  if ! nd_state_init 2>>"$ROLL_LOG" || ! tok="$(nd_state_lock 2>>"$ROLL_LOG")"; then
+    log_to_file "$now_human another controller pass holds the state lock; no restart this run"
+    return 0
   fi
+  id="run-$(date +%s)"
+  out="$(request_recovery tor "$id" 2>&1)"; rc=$?
+  log_to_file "$now_human tor restart $id: $(printf '%s\n' "$out" | awk -F '\t' '$1 == "result" || $1 == "detail" { printf "%s%s", s, $2; s = ": " }')"
+  if [ "$rc" -eq 1 ] || [ "$rc" -eq 3 ] || [ "$rc" -eq 4 ]; then
+    out="$(nd_recovery_restart_service "$id-svc" 2>&1)"
+    log_to_file "$now_human service restart $id-svc: $(printf '%s\n' "$out" | awk -F '\t' '$1 == "result" || $1 == "detail" { printf "%s%s", s, $2; s = ": " }')"
+  fi
+  nd_state_unlock "$tok"
 
   # Clear the outage marker so we don't restart again on the very next
   # tick if the chain hasn't recovered yet — give it at least one full
@@ -793,6 +772,35 @@ cmd_observe() {
   printf '%s\n' "$out"
 }
 
+# tick [--shadow]: one controller pass (lib/recovery.sh nd_recovery_tick):
+# observe, decide under the state lock, act (or, with --shadow, only record
+# what it would do, in a separate shadow state), commit. The schedules still
+# call `run`; Sub-plan 3 Task 2.1 moves them to `tick`.
+cmd_tick() {
+  local mode=active o out rc
+  case "${1:-}" in
+    --shadow) mode=shadow ;;
+    '') ;;
+    *) echo "$SCRIPT_NAME: tick takes only --shadow" >&2; return 2 ;;
+  esac
+  if ! load_health_libs; then
+    echo "$SCRIPT_NAME: not loading the health libraries: $HEALTH_LIB_ERROR" >&2
+    return 2
+  fi
+  mkdir -p "$LOG_DIR"
+  rotate_roll_log_if_needed
+  o="$(mktemp "${TMPDIR:-/tmp}/nice-dns-obs.XXXXXX")" || return 2
+  nd_health_observe >"$o"
+  if ! nd_health_validate <"$o"; then
+    rm -f "$o"; echo "$SCRIPT_NAME: the observation output is not valid" >&2; return 3
+  fi
+  out="$(nd_recovery_tick "$mode" "$o")"; rc=$?
+  rm -f "$o"
+  log_to_file "$(ts) TICK $mode $(printf '%s\n' "$out" | awk -F '\t' '{ printf "%s%s=%s", s, $1, $2; s = " " }')"
+  printf '%s\n' "$out"
+  return "$rc"
+}
+
 # ─────────────────────────────── usage / dispatch ──────────────────────────────
 
 usage() {
@@ -808,6 +816,9 @@ Usage: $SCRIPT_NAME <command>
   status      Show schedule state + last 5 log entries.
   run         Run a health check now (also called by the timer).
   observe     Print the observations as TSV (read-only: no log, no action).
+  tick        One controller pass: observe, decide (lib/policy.sh) and act
+              with acknowledged recovery (lib/recovery.sh). --shadow records
+              the decision in a separate shadow state and never acts.
   logs        Print the rolling log (one line per run).
   failures    List failure dumps. Add --last to print the most recent.
 
@@ -842,6 +853,7 @@ main() {
     status)     cmd_status "$@" ;;
     run)        cmd_run "$@" ;;
     observe)    cmd_observe "$@" ;;
+    tick)       cmd_tick "$@" ;;
     logs)       cmd_logs "$@" ;;
     failures)   cmd_failures "$@" ;;
     -h|--help|help|"") usage ;;

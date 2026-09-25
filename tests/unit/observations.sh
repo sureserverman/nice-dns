@@ -679,9 +679,21 @@ t_cli_run_keeps_recovery_on_upstream_outage() {
     ob_tree
     NICE_DNS_RESTART_GRACE_SECS=0 ob_cli "$OB_TREE/health/nice-dns-health" run
     assert_match 'full-outage detected' "$(cat "$(ob_logdir)/health.log")" "$plat: first failing run starts the grace window"
-    NICE_DNS_RESTART_GRACE_SECS=0 ob_cli "$OB_TREE/health/nice-dns-health" run
-    assert_match "^$cli exec tor-haproxy touch /tmp/tor-restart-flag\$" "$(cat "$FAKE_LOG")" "$plat: the existing graceful restart path runs"
-    assert_match 'triggered graceful in-container tor restart' "$(cat "$(ob_logdir)/health.log")" "$plat: and is logged as before"
+    # Sub-plan 3 Task 1.3: the restart is an acknowledged request; this fake
+    # image never answers, so it is logged as not acknowledged and followed
+    # by one service restart, which is not acknowledged either (the fake
+    # container never comes back with a new start).
+    ND_RECOVERY_ACK_S=2 ND_RECOVERY_SERVICE_S=4 NICE_DNS_RESTART_GRACE_SECS=0 ob_cli "$OB_TREE/health/nice-dns-health" run
+    assert_not_match 'tor-restart-flag' "$(cat "$FAKE_LOG")" "$plat: the unacknowledged flag is never used"
+    assert_match "^$cli exec tor-haproxy test -d /app/data/control\$" "$(cat "$FAKE_LOG")" "$plat: the acknowledged restart is requested"
+    assert_match 'tor restart run-[0-9]+: not-acknowledged' "$(cat "$(ob_logdir)/health.log")" "$plat: an unanswered request is logged as not acknowledged"
+    assert_not_match 'triggered graceful' "$(cat "$(ob_logdir)/health.log")" "$plat: a request is never logged as a done restart"
+    if [ "$plat" = macos ]; then
+      assert_match '^launchctl kickstart -k gui/[0-9]+/org\.nice-dns\.start-container$' "$(cat "$FAKE_LOG")" "$plat: one service-level fallback"
+    else
+      assert_match '^systemctl --user restart tor-haproxy\.service$' "$(cat "$FAKE_LOG")" "$plat: one service-level fallback"
+    fi
+    assert_match 'service restart run-[0-9]+-svc: not-acknowledged' "$(cat "$(ob_logdir)/health.log")" "$plat: a fallback without a new container start is not acknowledged"
   done
 }
 

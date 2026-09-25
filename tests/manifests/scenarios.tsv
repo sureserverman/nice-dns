@@ -89,7 +89,7 @@ OP-CONTROL-NO-NETWORK	SEC-CONTROL-LOCAL	integration	resolver-state	t_network_con
 OP-ACK-HAPROXY-PRIVATE	REC-ACK-READINESS	integration	transport-haproxy	t_restart_control_is_private_to_the_image_user	transport
 OP-ACK-SOCAT-PRIVATE	REC-ACK-READINESS	integration	transport-socat	t_restart_control_is_private_to_the_image_user	transport
 OP-OWNED-RESTORE	SEC-OWNED-RESTORE	-	-	-	installers
-OP-ACK-READINESS	REC-ACK-READINESS	-	-	-	controller
+OP-ACK-READINESS	REC-ACK-READINESS	integration	recovery-actions	t_tick_active_records_request_acknowledgement_then_readiness	controller
 OP-ACK-HAPROXY-IMAGE	REC-ACK-READINESS	integration	transport-haproxy	t_restart_request_acknowledged_with_new_generation	transport
 OP-ACK-HAPROXY-REJECT	REC-ACK-READINESS	integration	transport-haproxy	t_invalid_restart_request_rejected	transport
 OP-ACK-SOCAT-IMAGE	REC-ACK-READINESS	integration	transport-socat	t_restart_request_acknowledged_with_new_generation	transport
@@ -144,3 +144,5 @@ OP-OBSERVE-DEADLINE-KEPT	EVD-FAILURES-COUNTED	unit	observations	t_deadline_kills
 OP-OBSERVE-CONTROLLED-NAMES	PRIV-NO-QUERY-HISTORY	unit	observations	t_observations_query_only_controlled_names	controller
 OP-POLICY-IDENTITY-ONLY	PRIV-ROUTE-IDENTITY	unit	state-policy	t_policy_never_selects_the_compat_route	controller
 OP-POLICY-UNKNOWN-NOT-HEALTH	EVD-FAILURES-COUNTED	unit	state-policy	t_policy_unknown_observations_are_never_health	controller
+OP-ACK-IMAGE-GENERATION	REC-ACK-READINESS	integration	recovery-actions	t_image_restart_request_is_acknowledged_with_new_generation	controller
+OP-ACK-REQUEST-NOT-ACK	REC-ACK-READINESS	integration	recovery-actions	t_request_write_is_never_an_acknowledgement	controller

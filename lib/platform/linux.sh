@@ -95,3 +95,54 @@ nd_platform_state_dir() {
 
 # nd_platform_boot_id: an identifier that changes on every boot.
 nd_platform_boot_id() { cat /proc/sys/kernel/random/boot_id 2>/dev/null; }
+
+# ─── Recovery operations (Sub-plan 3, Task 1.3; ARCH-02, ARCH-03) ──────────
+# Used by lib/recovery.sh with nd_bounded (lib/health.sh). <tmp> is the
+# caller's scratch directory.
+#
+#   ND_PROXY_CONTAINER   the Tor proxy container (default: the running
+#                        tor-haproxy or tor-socat, else the installed one)
+
+# nd_platform_proxy_container <deadline> <tmp>: the proxy container's name.
+nd_platform_proxy_container() {
+  local v
+  if [ -n "${ND_PROXY_CONTAINER:-}" ]; then printf '%s\n' "$ND_PROXY_CONTAINER"; return 0; fi
+  if nd_platform_runtime_list "$1" "$2/running" >/dev/null 2>&1; then
+    for v in haproxy socat; do
+      grep -qx "tor-$v" "$2/running" && { printf 'tor-%s\n' "$v"; return 0; }
+    done
+  fi
+  v="$(nd_platform_installed_variant)" || return 1
+  printf 'tor-%s\n' "$v"
+}
+
+# nd_platform_container_generation <container> <deadline> <tmp>: one line
+# that changes whenever the container is recreated or restarted.
+nd_platform_container_generation() {
+  local bin
+  bin="$(nd_platform_runtime_bin)" || return 3
+  nd_bounded "$2" "$3/gen" "$3/gen.err" "$bin" inspect -f '{{.Id}} {{.State.StartedAt}} {{.State.Status}}' "$1" || return 1
+  head -n 1 "$3/gen"
+}
+
+# nd_platform_restart_scope: what nd_platform_restart_proxy restarts.
+nd_platform_restart_scope() { printf 'proxy\n'; }
+
+# nd_platform_restart_proxy <container> <deadline> <tmp>: the service-level
+# restart of the proxy alone (the quadlet service carries the container's
+# name; pi-hole and unbound keep running).
+nd_platform_restart_proxy() {
+  nd_bounded "$2" "$3/svc" "$3/svc.err" systemctl --user restart "$1.service"
+}
+
+# nd_platform_repair_runtime <fault> <deadline> <tmp>: 0 issued; 3 no repair
+# exists for this fault here. Rootless podman has no daemon to restart, so a
+# runtime that does not answer is escalated, not repaired. Missing containers
+# are started through pi-hole.service, whose Requires= pulls unbound and the
+# proxy; running units are left alone.
+nd_platform_repair_runtime() {
+  case "$1" in
+    containers-missing) nd_bounded "$2" "$3/rep" "$3/rep.err" systemctl --user start pi-hole.service ;;
+    *) return 3 ;;
+  esac
+}

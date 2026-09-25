@@ -149,3 +149,69 @@ nd_platform_state_dir() {
 
 # nd_platform_boot_id: an identifier that changes on every boot.
 nd_platform_boot_id() { sysctl -n kern.bootsessionuuid 2>/dev/null; }
+
+# ─── Recovery operations (Sub-plan 3, Task 1.3; ARCH-02, ARCH-03) ──────────
+# Used by lib/recovery.sh with nd_bounded (lib/health.sh). <tmp> is the
+# caller's scratch directory.
+#
+#   ND_PROXY_CONTAINER   the Tor proxy container (default: the running
+#                        tor-haproxy or tor-socat, else the created one)
+
+_ND_MAC_AGENT=org.nice-dns.start-container
+
+nd_platform_proxy_container() {
+  local v
+  if [ -n "${ND_PROXY_CONTAINER:-}" ]; then printf '%s\n' "$ND_PROXY_CONTAINER"; return 0; fi
+  if nd_platform_runtime_list "$1" "$2/running" >/dev/null 2>&1; then
+    for v in haproxy socat; do
+      grep -qx "tor-$v" "$2/running" && { printf 'tor-%s\n' "$v"; return 0; }
+    done
+  fi
+  v="$(nd_platform_installed_variant)" || return 1
+  printf 'tor-%s\n' "$v"
+}
+
+# nd_platform_container_generation <container> <deadline> <tmp>: the
+# container's STATE and STARTED columns of `container ls -a` (Apple
+# container names are the IDs; a recreated container has a new start time).
+# STARTED is the last field: MEMORY prints as two words ("256 MB"), so
+# header positions after it do not line up with the rows.
+nd_platform_container_generation() {
+  local bin
+  bin="$(nd_platform_runtime_bin)" || return 3
+  nd_bounded "$2" "$3/gen" "$3/gen.err" "$bin" ls -a || return 1
+  # An "Error:" banner with exit 0 is not a table (as in _nd_mac_table).
+  grep -q '^Error:' "$3/gen" "$3/gen.err" 2>/dev/null && return 1
+  # STARTED is an ISO timestamp, one token (Apple container 1.4.1, observed
+  # on macOS 26.6.2: "2026-09-23T22:16:51Z").
+  awk -v n="$1" 'NR == 1 { for (i = 1; i <= NF; i++) if ($i == "STATE") s = i; next }
+       $1 == n && s { print $1 " " $s " " $NF; f = 1; exit } END { exit !f }' "$3/gen"
+}
+
+# nd_platform_restart_scope: what nd_platform_restart_proxy restarts.
+nd_platform_restart_scope() { printf 'stack\n'; }
+
+# nd_platform_restart_proxy <container> <deadline> <tmp>: kick the stack's
+# LaunchAgent (-k stops a running instance first); mac/start-container.sh
+# recreates the whole stack (pi-hole, unbound, proxy) when the chain is not
+# healthy. This is the pre-Sub-plan-3 fallback, kept as is: a restart of the
+# proxy container alone on Apple container is not qualified yet (Task 2.3,
+# live). <container> is only verified afterwards, not targeted.
+nd_platform_restart_proxy() {
+  nd_bounded "$2" "$3/svc" "$3/svc.err" launchctl kickstart -k "gui/$(id -u)/$_ND_MAC_AGENT"
+}
+
+# nd_platform_repair_runtime <fault> <deadline> <tmp>: 0 issued; 3 no repair.
+# A runtime that does not answer: `container system start` (what the
+# LaunchAgent itself does first). Missing containers: start the LaunchAgent
+# if it is not running (no -k), which recreates what is missing.
+nd_platform_repair_runtime() {
+  local bin
+  case "$1" in
+    runtime-down)
+      bin="$(nd_platform_runtime_bin)" || return 3
+      nd_bounded "$2" "$3/rep" "$3/rep.err" "$bin" system start ;;
+    containers-missing) nd_bounded "$2" "$3/rep" "$3/rep.err" launchctl kickstart "gui/$(id -u)/$_ND_MAC_AGENT" ;;
+    *) return 3 ;;
+  esac
+}

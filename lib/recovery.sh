@@ -1,13 +1,46 @@
 # shellcheck shell=bash
-# nice-dns route application (ARCH-03 apply_route, ARCH-04). Sourced; Bash 3.2
-# compatible (macOS /bin/bash), safe under set -u. Sub-plan 3 adds the
-# recovery actions here and holds the mutation lock (lib/state.sh) around
-# every call that changes the route.
+# nice-dns route application and recovery actions (ARCH-03 apply_route and
+# request_recovery, ARCH-04, ARCH-07). Sourced; Bash 3.2 compatible (macOS
+# /bin/bash), safe under set -u.
 #
 #   apply_route <route_id> <generation>   select a route from routes/providers.tsv
 #   reconcile_route                       bring the running route to the desired one
 #   seed_route <route_id> <generation>    write the first include before Unbound starts
 #   route_readback                        route<TAB>generation<TAB>address running now
+#   request_recovery <component> <request_id>
+#                                         ask the proxy image to restart Tor and
+#                                         wait for its acknowledgement
+#   nd_recovery_restart_service <request_id>
+#                                         the service-level proxy restart
+#   repair_runtime <fault> <request_id>   repair the runtime fault observed
+#   nd_recovery_apply <decision> <request_id> <route_generation>
+#                                         carry out one lib/policy.sh decision
+#   nd_recovery_tick <active|shadow> <observations>
+#                                         one controller pass (see below)
+#
+# Recovery (Sub-plan 3, Task 1.3). Every action is recorded in the journal
+# $(nd_platform_state_dir)/recovery.tsv as separate phases:
+#   requested -> acknowledged | not-acknowledged | refused | unsupported
+#   -> (a later pass) ready | not-ready
+# An acknowledgement is the image's or runtime's own answer that the action
+# happened: a new Tor generation and pid from the proxy's control directory
+# (/app/data/control, org.nice-dns.transport.restart=control-dir-ack), or a
+# new container start for a service restart, or the runtime answering again.
+# Writing a request is never an acknowledgement, and the old
+# /tmp/tor-restart-flag is never used. Readiness is a later observation, never
+# part of the acknowledgement. Every runtime command runs under nd_bounded.
+# Tor's data is never removed: the image restarts only its tor child, and the
+# service restart recreates the container with its volumes.
+#
+# The recovery functions and the journal expect the caller to hold the state
+# lock (nd_recovery_tick and the CLI's run path do); the journal's rotation is
+# not locked on its own. The service restart is proxy-only on Linux and
+# stack-wide on macOS (nd_platform_restart_scope).
+#
+# Recovery output: key<TAB>value lines: result, component, request_id,
+# generation_before, generation, detail. Exit: 0 acknowledged; 1
+# not-acknowledged; 2 refused (bad argument); 3 unsupported (the image or
+# platform offers no such action); 4 unreachable (no proxy container).
 #
 # The route directory (nd_platform_route_dir) is mounted into the Unbound
 # container at /etc/unbound/route and holds:
@@ -47,6 +80,18 @@ _ND_CTL=/usr/share/nice-dns/control.conf
 _ND_CTR_ROUTE_DIR=/etc/unbound/route
 _ND_START=/usr/local/bin/nice-dns-unbound-start
 
+if ! declare -F nd_bounded >/dev/null; then
+  # shellcheck source=lib/health.sh
+  . "$ND_LIB_DIR/health.sh" || return 1
+fi
+if ! declare -F nd_state_lock >/dev/null; then
+  # shellcheck source=lib/state.sh
+  . "$ND_LIB_DIR/state.sh" || return 1
+fi
+if ! declare -F nd_policy_decide >/dev/null; then
+  # shellcheck source=lib/policy.sh
+  . "$ND_LIB_DIR/policy.sh" || return 1
+fi
 if ! declare -F nd_platform_route_addr >/dev/null; then
   case "${ND_PLATFORM:-$(uname -s)}" in
     linux|Linux)
@@ -378,4 +423,262 @@ seed_route() {
   _nd_route_write_desired "$dir" "$route" "$gen" || { _nd_route_out refused - - - "cannot write $dir/desired.tsv"; return 2; }
   _ND_DES_ROUTE="$route" _ND_DES_GEN="$gen"
   _nd_route_out applied "$route" "$gen" "$_ND_FWD" "seeded $dir/forward-route.conf (Unbound reads it when it starts)"
+}
+
+# ─── Recovery actions (Sub-plan 3, Task 1.3) ────────────────────────────────
+
+_ND_CTL_DIR=/app/data/control
+
+# nd_recovery_checkpoint <step>: called at request-written; tests replace it.
+nd_recovery_checkpoint() { return 0; }
+
+_nd_rec_clean() { printf '%s' "$1" | tr '\t\n\r' '   ' | cut -c1-300; }
+
+# nd_recovery_journal <request_id> <component> <phase> <detail>: append one
+# row to the journal (created with its schema line; the last 1000 rows are
+# kept once it passes 2000).
+nd_recovery_journal() {
+  local d f n
+  d="$(nd_platform_state_dir)"
+  _nd_state_dir_ok "$d" >/dev/null || return 1
+  f="$d/recovery.tsv"
+  [ -L "$f" ] && return 1
+  if [ ! -f "$f" ]; then (umask 077 && printf 'schema\tnice-dns-recovery-journal/1\n' >"$f") || return 1; fi
+  (umask 077 && printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$(_nd_rec_clean "$1")" "$(_nd_rec_clean "$2")" \
+    "$(_nd_rec_clean "$3")" "$(_nd_rec_clean "$4")" >>"$f") || return 1
+  n="$(wc -l <"$f" | tr -d ' ')"
+  if [ "$n" -gt 2001 ]; then
+    { head -n 1 "$f"; tail -n 1000 "$f"; } >"$f.tmp.$$" && mv -f "$f.tmp.$$" "$f"
+  fi
+  return 0
+}
+
+_nd_rec_out() {
+  printf 'result\t%s\ncomponent\t%s\nrequest_id\t%s\ngeneration_before\t%s\ngeneration\t%s\ndetail\t%s\n' \
+    "$1" "$2" "$3" "$4" "$5" "$(_nd_rec_clean "$6")"
+}
+
+# _nd_rec_x <deadline> <cmd...>: bounded; stdout in $_ND_RX/o, stderr in $_ND_RX/e.
+_nd_rec_x() {
+  local dl="$1"
+  shift
+  nd_bounded "$dl" "$_ND_RX/o" "$_ND_RX/e" "$@"
+}
+
+_nd_rec_field() { awk -F '\t' -v k="$1" '$1 == k { print $2; exit }' "$2" 2>/dev/null; }
+
+_nd_rec_id_ok() {
+  case "$1" in ''|legacy|*[!A-Za-z0-9._:-]*) return 1 ;; esac
+  [ "${#1}" -le 64 ]
+}
+
+request_recovery() {
+  local comp="${1:-}" id="${2:-}" dl="${ND_RECOVERY_CMD_DEADLINE:-15}" c rc g0 p0 st g p i=0 max
+  max="${ND_RECOVERY_ACK_S:-30}"
+  if [ "$comp" != tor ]; then _nd_rec_out unsupported "$comp" "$id" - - "no in-image restart for component '$comp'"; return 3; fi
+  if ! _nd_rec_id_ok "$id"; then _nd_rec_out refused "$comp" "$id" - - "request id must be 1-64 of A-Za-z0-9._:- and not 'legacy'"; return 2; fi
+  _ND_RX="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-recovery.XXXXXX")" || return 4
+  c="$(nd_platform_proxy_container "$dl" "$_ND_RX")" || {
+    nd_recovery_journal "$id" tor unreachable "no proxy container"; _nd_rec_out unreachable tor "$id" - - "no proxy container found"
+    rm -rf "$_ND_RX"; return 4; }
+  _nd_rec_x "$dl" nd_platform_proxy_exec "$c" test -d "$_ND_CTL_DIR"; rc=$?
+  if [ "$rc" -eq 1 ]; then
+    nd_recovery_journal "$id" tor unsupported "$c has no $_ND_CTL_DIR (image without the acknowledged restart)"
+    _nd_rec_out unsupported tor "$id" - - "$c does not offer the acknowledged restart"; rm -rf "$_ND_RX"; return 3
+  elif [ "$rc" -ne 0 ]; then
+    nd_recovery_journal "$id" tor unreachable "exec in $c failed (exit $rc): $(head -n 1 "$_ND_RX/e")"
+    _nd_rec_out unreachable tor "$id" - - "cannot exec in $c (exit $rc)"; rm -rf "$_ND_RX"; return 4
+  fi
+  _nd_rec_x "$dl" nd_platform_proxy_exec "$c" cat "$_ND_CTL_DIR/tor-generation" || : >"$_ND_RX/o"
+  g0="$(_nd_rec_field generation "$_ND_RX/o")"; p0="$(_nd_rec_field tor_pid "$_ND_RX/o")"
+  case "$g0" in ''|*[!0-9]*) g0=- ;; esac
+  # The image's own user writes the request atomically (tmp + mv).
+  # shellcheck disable=SC2016
+  if ! _nd_rec_x "$dl" nd_platform_proxy_exec "$c" sh -c 'printf "%s\n" "$1" >"$2/tor-restart-request.tmp" && mv "$2/tor-restart-request.tmp" "$2/tor-restart-request"' sh "$id" "$_ND_CTL_DIR"; then
+    nd_recovery_journal "$id" tor not-acknowledged "the request could not be written in $c"
+    _nd_rec_out not-acknowledged tor "$id" "$g0" - "the request could not be written in $c"; rm -rf "$_ND_RX"; return 1
+  fi
+  nd_recovery_journal "$id" tor requested "restart request in $c; generation before: $g0"
+  nd_recovery_checkpoint request-written
+  st="" g="" p=""
+  while [ "$i" -lt "$max" ]; do
+    if _nd_rec_x "$dl" nd_platform_proxy_exec "$c" cat "$_ND_CTL_DIR/tor-restart-ack" \
+       && [ "$(_nd_rec_field request_id "$_ND_RX/o")" = "$id" ]; then
+      st="$(_nd_rec_field status "$_ND_RX/o")"; g="$(_nd_rec_field generation "$_ND_RX/o")"; p="$(_nd_rec_field tor_pid "$_ND_RX/o")"
+      break
+    fi
+    i=$((i + 1)); sleep 1
+  done
+  rm -rf "$_ND_RX"
+  if [ -z "$st" ]; then
+    nd_recovery_journal "$id" tor not-acknowledged "no acknowledgement within ${max}s"
+    _nd_rec_out not-acknowledged tor "$id" "$g0" - "no acknowledgement from $c within ${max}s"; return 1
+  fi
+  if [ "$st" = respawned ] && [ "$g0" != - ] && [ "$g" -gt "$g0" ] 2>/dev/null && [ -n "$p" ] && [ "$p" != "$p0" ]; then
+    nd_recovery_journal "$id" tor acknowledged "generation $g0 -> $g, tor pid $p0 -> $p"
+    _nd_rec_out acknowledged tor "$id" "$g0" "$g" "tor respawned in $c: generation $g, pid $p"; return 0
+  fi
+  nd_recovery_journal "$id" tor not-acknowledged "answer status=$st generation=$g pid=$p (before: $g0, $p0)"
+  _nd_rec_out not-acknowledged tor "$id" "$g0" "${g:--}" "$c answered status=$st generation=$g; no new tor generation"
+  return 1
+}
+
+# _nd_rec_wait_generation <container> <before> <seconds>: 0 when the
+# container runs with a generation other than <before>. _ND_REC_GEN holds the
+# last one read.
+_nd_rec_wait_generation() {
+  local i=0
+  _ND_REC_GEN=""
+  while [ "$i" -lt "$3" ]; do
+    _ND_REC_GEN="$(nd_platform_container_generation "$1" "${ND_RECOVERY_CMD_DEADLINE:-15}" "$_ND_RX" 2>/dev/null)" || _ND_REC_GEN=""
+    if [ -n "$_ND_REC_GEN" ] && [ "$_ND_REC_GEN" != "$2" ] && nd_platform_runtime_list "${ND_RECOVERY_CMD_DEADLINE:-15}" "$_ND_RX/running" >/dev/null 2>&1 \
+       && grep -qx "$1" "$_ND_RX/running"; then
+      return 0
+    fi
+    i=$((i + 2)); sleep 2
+  done
+  return 1
+}
+
+nd_recovery_restart_service() {
+  local id="${1:-}" dl="${ND_RECOVERY_CMD_DEADLINE:-15}" svc="${ND_RECOVERY_SERVICE_S:-120}" c g0 rc
+  if ! _nd_rec_id_ok "$id"; then _nd_rec_out refused service "$id" - - "bad request id"; return 2; fi
+  _ND_RX="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-recovery.XXXXXX")" || return 4
+  c="$(nd_platform_proxy_container "$dl" "$_ND_RX")" || { _nd_rec_out unreachable service "$id" - - "no proxy container found"; rm -rf "$_ND_RX"; return 4; }
+  g0="$(nd_platform_container_generation "$c" "$dl" "$_ND_RX" 2>/dev/null)" || g0="-"
+  nd_recovery_journal "$id" service requested "$(nd_platform_restart_scope) restart for $c; container before: $g0"
+  nd_platform_restart_proxy "$c" "$svc" "$_ND_RX"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    nd_recovery_journal "$id" service not-acknowledged "the service restart of $c exited $rc: $(head -n 1 "$_ND_RX/svc.err" 2>/dev/null)"
+    _nd_rec_out not-acknowledged service "$id" "$g0" - "service restart of $c exited $rc"; rm -rf "$_ND_RX"; return 1
+  fi
+  if _nd_rec_wait_generation "$c" "$g0" "$svc"; then
+    nd_recovery_journal "$id" service acknowledged "$c restarted: $_ND_REC_GEN"
+    _nd_rec_out acknowledged service "$id" "$g0" "$_ND_REC_GEN" "$c runs as a new container start"; rm -rf "$_ND_RX"; return 0
+  fi
+  nd_recovery_journal "$id" service not-acknowledged "$c did not come back with a new start within ${svc}s (last: ${_ND_REC_GEN:-none})"
+  _nd_rec_out not-acknowledged service "$id" "$g0" "${_ND_REC_GEN:--}" "no new start of $c within ${svc}s"; rm -rf "$_ND_RX"
+  return 1
+}
+
+repair_runtime() {
+  local fault="${1:-}" id="${2:-}" dl="${ND_RECOVERY_CMD_DEADLINE:-15}" svc="${ND_RECOVERY_SERVICE_S:-120}" rc i=0 n
+  case "$fault" in runtime-down|containers-missing) ;; *) _nd_rec_out refused runtime "$id" - - "no repair for fault '$fault'"; return 2 ;; esac
+  if ! _nd_rec_id_ok "$id"; then _nd_rec_out refused runtime "$id" - - "bad request id"; return 2; fi
+  _ND_RX="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-recovery.XXXXXX")" || return 4
+  nd_platform_repair_runtime "$fault" "$svc" "$_ND_RX"; rc=$?
+  if [ "$rc" -eq 3 ]; then
+    nd_recovery_journal "$id" runtime unsupported "no repair for $fault on $(nd_platform_name)"
+    _nd_rec_out unsupported runtime "$id" - - "no repair for $fault on $(nd_platform_name)"; rm -rf "$_ND_RX"; return 3
+  fi
+  nd_recovery_journal "$id" runtime requested "repair of $fault (exit $rc)"
+  while [ "$i" -lt "$svc" ]; do
+    if nd_platform_runtime_list "$dl" "$_ND_RX/running" >/dev/null 2>&1; then
+      if [ "$fault" = runtime-down ]; then break; fi
+      n="$(grep -cx -e pi-hole -e unbound -e tor-haproxy -e tor-socat "$_ND_RX/running")"
+      [ "$n" -ge 3 ] && break
+    fi
+    i=$((i + 2)); sleep 2
+  done
+  rm -rf "$_ND_RX"
+  if [ "$i" -lt "$svc" ]; then
+    nd_recovery_journal "$id" runtime acknowledged "$fault: the runtime answers$( [ "$fault" = containers-missing ] && printf ' and the stack runs')"
+    _nd_rec_out acknowledged runtime "$id" - - "$fault repaired"; return 0
+  fi
+  nd_recovery_journal "$id" runtime not-acknowledged "$fault persists after ${svc}s"
+  _nd_rec_out not-acknowledged runtime "$id" - - "$fault persists after ${svc}s"; return 1
+}
+
+# nd_recovery_apply <decision> <request_id> <route_generation>: prints the
+# action's own output; returns its status (0 for no-op and escalate). A Tor
+# restart that the image cannot acknowledge falls back once to the service
+# restart; nothing is retried beyond that in one pass.
+nd_recovery_apply() {
+  local dec="$1" id="$2" rgen="$3" action target reason rc
+  action="$(_nd_rec_field action "$dec")"; target="$(_nd_rec_field target "$dec")"; reason="$(_nd_rec_field reason "$dec")"
+  case "$action" in
+    no-op) return 0 ;;
+    escalate) nd_recovery_journal "$id" controller escalated "$reason"; return 0 ;;
+    switch-route)
+      nd_recovery_journal "$id" route requested "switch to $target (generation $rgen): $reason"
+      apply_route "$target" "$rgen"; rc=$?
+      case "$rc" in
+        0) nd_recovery_journal "$id" route acknowledged "route $target generation $rgen reads back and resolves" ;;
+        *) nd_recovery_journal "$id" route not-acknowledged "apply_route exit $rc" ;;
+      esac
+      return "$rc" ;;
+    restart-component)
+      request_recovery "$target" "$id"; rc=$?
+      case "$rc" in
+        1|3) nd_recovery_restart_service "$id-svc"; rc=$? ;;
+      esac
+      return "$rc" ;;
+    repair-runtime) repair_runtime "$target" "$id"; return $? ;;
+    *) nd_recovery_journal "$id" controller refused "unknown action '$action'"; return 2 ;;
+  esac
+}
+
+# _nd_rec_readiness <observations> <now>: for the last acknowledged action
+# with no readiness row yet, record ready (a later observation shows the
+# component working) or not-ready (still failing after ND_RECOVERY_READY_S,
+# default 600).
+_nd_rec_readiness() {
+  local f d row id comp at ok=0 i
+  d="$(nd_platform_state_dir)"; f="$d/recovery.tsv"
+  [ -f "$f" ] || return 0
+  row="$(awk -F '\t' 'NR > 1 { if ($4 == "acknowledged") { a = $0; id = $2 } else if (($4 == "ready" || $4 == "not-ready") && $2 == id) a = "" } END { print a }' "$f")"
+  [ -n "$row" ] || return 0
+  at="$(printf '%s\n' "$row" | cut -f1)"; id="$(printf '%s\n' "$row" | cut -f2)"; comp="$(printf '%s\n' "$row" | cut -f3)"
+  case "$comp" in
+    tor|service|route)
+      awk -F '\t' '$1 == "obs" && $2 ~ /^route:/ && $3 == "healthy" { f = 1 } END { exit !f }' "$1" && ok=1 ;;
+    runtime)
+      awk -F '\t' '$1 == "obs" && $2 == "runtime" && $3 == "healthy" { f = 1 } END { exit !f }' "$1" && ok=1 ;;
+  esac
+  i=$(( $2 - at ))
+  if [ "$ok" = 1 ]; then nd_recovery_journal "$id" "$comp" ready "observed working ${i}s after the acknowledgement"
+  elif [ "$i" -ge "${ND_RECOVERY_READY_S:-600}" ]; then nd_recovery_journal "$id" "$comp" not-ready "still failing ${i}s after the acknowledgement"
+  fi
+  return 0
+}
+
+# nd_recovery_tick <active|shadow> <observations>: one controller pass under
+# the state lock: record readiness for the last acknowledged action, decide
+# (lib/policy.sh), carry the action out (active) or only record it (shadow),
+# commit the next state. Shadow mode keeps its own state and journal in the
+# state directory's shadow/ and never runs a runtime or route command.
+# Prints action, target, result and generation rows. Exit: 0 done; 3 the lock
+# is held by another pass; 2 a state or input error.
+nd_recovery_tick() {
+  local mode="${1:-}" obs="${2:-}" tok gen now boot t id rc=0 result=none rgen
+  case "$mode" in active) ;; shadow) ND_STATE_DIR="$(nd_platform_state_dir)/shadow"; export ND_STATE_DIR ;; *) printf 'tick: mode must be active or shadow\n' >&2; return 2 ;; esac
+  [ -r "$obs" ] || { printf 'tick: observations %s unreadable\n' "$obs" >&2; return 2; }
+  nd_state_init || return 2
+  tok="$(nd_state_lock)"; rc=$?
+  if [ "$rc" -ne 0 ]; then printf 'action\t-\ntarget\t-\nresult\tbusy\ngeneration\t-\n'; return "$rc"; fi
+  t="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-tick.XXXXXX")" || { nd_state_unlock "$tok"; return 2; }
+  now="$(date +%s)"; boot="$(_nd_state_boot)"
+  if ! nd_state_load >"$t/state"; then rm -rf "$t"; nd_state_unlock "$tok"; return 2; fi
+  gen="$(_nd_rec_field generation "$t/state")"
+  _nd_rec_readiness "$obs" "$now"
+  if ! nd_policy_decide "$obs" "$t/state" "$now" "$boot" >"$t/out"; then rm -rf "$t"; nd_state_unlock "$tok"; return 2; fi
+  awk '$0 == "schema\tnice-dns-controller-state/1" { s = 1 } !s' "$t/out" >"$t/decision"
+  awk '$0 == "schema\tnice-dns-controller-state/1" { s = 1 } s' "$t/out" >"$t/next"
+  id="nd-$now-$((gen + 1))"
+  rgen=$((gen + 1))
+  if [ "$(_nd_rec_field action "$t/decision")" != no-op ]; then
+    if [ "$mode" = shadow ]; then
+      nd_recovery_journal "$id" controller shadow "would $(_nd_rec_field action "$t/decision") $(_nd_rec_field target "$t/decision"): $(_nd_rec_field reason "$t/decision")"
+      result=shadow
+    else
+      nd_recovery_apply "$t/decision" "$id" "$rgen" >"$t/apply" 2>&1; rc=$?
+      # The last result row: after a fallback, the fallback's outcome.
+      result="$(awk -F '\t' '$1 == "result" { r = $2 } END { print r }' "$t/apply")"; [ -n "$result" ] || result="exit-$rc"
+    fi
+  fi
+  gen="$(nd_state_commit "$tok" "$gen" "$t/next")" || gen="-"
+  nd_state_unlock "$tok"
+  printf 'action\t%s\ntarget\t%s\nresult\t%s\ngeneration\t%s\n' "$(_nd_rec_field action "$t/decision")" "$(_nd_rec_field target "$t/decision")" "$result" "$gen"
+  rm -rf "$t"
+  return 0
 }
