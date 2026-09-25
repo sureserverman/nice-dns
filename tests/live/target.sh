@@ -85,6 +85,11 @@
 #                    pi-hole.service (the stack's containers go missing)
 #   heal-runtime     remove the macOS wedge container (Linux: nothing to undo)
 #   bridges-refresh  run the installed controller's bridges-refresh now
+#   hold-bridge-refresh
+#                    stamp the controller's outage-refresh rate limit
+#                    (bridges.last = now), so an outage in the next hour does
+#                    not re-evaluate bridges (test-only: keeps the in-image
+#                    restart path deterministic)
 #   controller-report
 #                    read-only: the controller's install receipt, tick lines,
 #                    state and journals (active and shadow), the bridge set's
@@ -123,7 +128,7 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell quiesce-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell quiesce-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh'
 FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
@@ -883,6 +888,12 @@ case "$NICE_DNS_OP" in
     "$t" bridges-refresh </dev/null >"$o" 2>&1; rc=$?
     redact <"$o"; rm -f "$o"
     exit "$rc" ;;
+  hold-bridge-refresh)
+    if [ "$plat" = macos ]; then st="$HOME/Library/Application Support/nice-dns/controller"
+    else st="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/controller"; fi
+    if [ ! -d "$st" ] || [ -L "$st" ]; then echo "no controller state directory at $st" >&2; exit 1; fi
+    (umask 077 && date +%s >"$st/bridges.last") || exit 1
+    printf 'held\t%s\n' "$(cat "$st/bridges.last")" ;;
   controller-report)
     [ "$plat" = macos ] && homebrew_path
     if [ "$plat" = macos ]; then
@@ -919,6 +930,9 @@ case "$NICE_DNS_OP" in
         tail -n 3 "${TMPDIR:-/tmp}/nd-sum.$$" | sed 's/^/line	/'
         rm -f "${TMPDIR:-/tmp}/nd-sum.$$"
       fi
+      printf 'section\tpower\n'
+      if [ "$plat" = macos ]; then printf 'sleeps\t%s\n' "$(pmset -g stats 2>/dev/null | sed -n 's/^Sleep Count:[[:space:]]*//p')"
+      else printf 'sleeps\t%s\n' "$(cat /sys/power/suspend_stats/success 2>/dev/null)"; fi
       printf 'section\tobserve\n'
       if t=$(health_tool); then "$t" observe </dev/null 2>&1; fi
     } | redact ;;
@@ -994,7 +1008,7 @@ case "$op" in
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|quiesce-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|quiesce-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"

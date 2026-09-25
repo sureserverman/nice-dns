@@ -222,7 +222,7 @@ t_mutation_without_snapshot_refused() {
     if [ "$op" = restore ]; then tg restore lin1 --targets "$CASE_DIR/targets.env"
     else tg "$op" lin1 --targets "$CASE_DIR/targets.env" --component tor-haproxy; fi
     assert_nonzero "$TG_RC" "$op without a snapshot"
-    assert_match 'snapshot' "$TG_OUT" "$op refusal names the snapshot"
+    assert_match 'no restore snapshot' "$TG_OUT" "$op refusal names the snapshot"
     assert_eq 0 "$(tg_sent)" "$op without a snapshot never contacts the host"
   done
 }
@@ -594,7 +594,7 @@ t_controller_ops_need_snapshot_and_allow_listed_values() {
     read -r -a w <<<"$v"
     tg "${w[0]}" lin1 --targets "$CASE_DIR/targets.env" "${w[@]:1}"
     assert_nonzero "$TG_RC" "${v%% *} without a snapshot"
-    assert_match 'snapshot' "$TG_OUT" "${v%% *}: the refusal names the snapshot"
+    assert_match 'no restore snapshot' "$TG_OUT" "${v%% *}: the refusal names the snapshot"
     assert_eq 0 "$(tg_sent)" "${v%% *}: nothing sent without a snapshot"
   done
   tg snapshot lin1 --targets "$CASE_DIR/targets.env"
@@ -650,6 +650,7 @@ t_controller_report_is_read_only_and_holds_no_secrets() {
     assert_match '^section	ticks$' "$TG_OUT" "$plat: tick lines section"
     assert_match '^section	journal-shadow$' "$TG_OUT" "$plat: shadow journal section"
     assert_match '^section	bridges$' "$TG_OUT" "$plat: bridge set section (a hash, never the lines)"
+    assert_match '^section	power$' "$TG_OUT" "$plat: power section (the sleep count, for the wake scenario)"
     assert_not_match '(^| )(stop|start|restart|kill|rm|delete|kickstart|bootout|load|unload|enable|disable|build|tag|tick|run|install) ' "$(grep -v '^keygen ' "$FAKE_LOG" | grep -v 'NICE_DNS_OP=')" \
       "$plat: controller-report never changes anything"
   done
@@ -699,12 +700,12 @@ t_activation_ops_need_snapshot_and_allow_listed_values() {
   # wedge and heal the runtime, and run the daily bridge refresh now.
   local v w
   tg_setup
-  for v in "thaw-on-request --component tor-haproxy" "wedge-runtime" "heal-runtime" "bridges-refresh"; do
+  for v in "thaw-on-request --component tor-haproxy" "wedge-runtime" "heal-runtime" "bridges-refresh" "hold-bridge-refresh"; do
     : >"$FAKE_LOG"
     read -r -a w <<<"$v"
     tg "${w[0]}" lin1 --targets "$CASE_DIR/targets.env" "${w[@]:1}"
     assert_nonzero "$TG_RC" "${w[0]} without a snapshot"
-    assert_match 'snapshot' "$TG_OUT" "${w[0]}: the refusal names the snapshot"
+    assert_match 'no restore snapshot' "$TG_OUT" "${w[0]}: the refusal names the snapshot"
     assert_eq 0 "$(tg_sent)" "${w[0]}: nothing sent without a snapshot"
   done
   tg snapshot lin1 --targets "$CASE_DIR/targets.env"
@@ -736,6 +737,9 @@ t_activation_ops_do_what_they_say() {
   assert_match '"\$t" bridges-refresh' "$op" "bridges-refresh runs the installed controller's refresh"
   assert_match 'redact <' "$op" "and its output is redacted"
   assert_not_match 'PIPESTATUS' "$script" "the remote script is /bin/sh (dash on Linux): no PIPESTATUS"
+  op="$(printf '%s\n' "$script" | sed -n '/^  hold-bridge-refresh)/,/;;$/p')"
+  assert_match 'nice-dns/controller' "$op" "hold-bridge-refresh writes only the controller's own rate-limit stamp"
+  assert_match 'bridges\.last' "$op" "(bridges.last, read by refresh_bridges_on_outage)"
 }
 
 t_remote_script_is_posix_sh() {
