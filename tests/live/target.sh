@@ -803,9 +803,14 @@ case "$NICE_DNS_OP" in
     if [ "$c" = tor-haproxy ]; then
       if [ "$NICE_DNS_OP" = fault-route ]; then verb=disable; else verb=enable; fi
       # Dead-man heal, started before the fault, whatever happens here.
-      [ "$verb" = disable ] && nohup sh -c 'sleep "$1"; shift; exec "$@"' nice-dns-route-watchdog "$NICE_DNS_FREEZE_MAX" \
-        "$C" exec "$c" sh -c "for s in $sv; do printf 'enable server $be/%s\\n' \"\$s\" | socat -t 5 - UNIX-CONNECT:/tmp/haproxy.sock; done" </dev/null >/dev/null 2>&1 &
-      [ "$verb" = enable ] && pkill -f nice-dns-route-watchdog 2>/dev/null
+      # (An if block: a backgrounded and-list runs in a subshell which
+      # holds ssh's stdout until the timer ends.)
+      if [ "$verb" = disable ]; then
+        nohup sh -c 'sleep "$1"; shift; exec "$@"' nice-dns-route-watchdog "$NICE_DNS_FREEZE_MAX" \
+          "$C" exec "$c" sh -c "for s in $sv; do printf 'enable server $be/%s\\n' \"\$s\" | socat -t 5 - UNIX-CONNECT:/tmp/haproxy.sock; done" </dev/null >/dev/null 2>&1 &
+      else
+        pkill -f nice-dns-route-watchdog 2>/dev/null
+      fi
       for s in $sv; do
         ctl_exec "$c" sh -c 'printf "%s\n" "$1" | socat -t 5 - UNIX-CONNECT:/tmp/haproxy.sock' sh "$verb server $be/$s" || exit 1
       done

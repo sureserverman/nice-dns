@@ -680,3 +680,15 @@ t_macos_build_uses_its_own_resolver_and_stops_the_builder() {
     || fail "the pull comes before the builder starts"
   assert_match 'PRIV-BOOTSTRAP-DECLARED' "$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG")" "the exception is declared where it is made"
 }
+
+t_dead_man_timers_never_hold_the_ssh_session() {
+  # `cond && nohup ... >/dev/null 2>&1 &` backgrounds the whole list in a
+  # subshell that keeps ssh's stdout open, so the operation returns only when
+  # the timer ends (live run 3: fault-route on tor-haproxy took the full
+  # 900 s and healed itself). Every nohup starts its own command.
+  local script
+  script="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG")"
+  assert_match 'nohup' "$script" "the remote script has dead-man timers"
+  assert_eq "" "$(printf '%s\n' "$script" | grep -nE '(&&|\|\|)[[:space:]]*nohup')" "no nohup after && or ||"
+  assert_eq "" "$(printf '%s\n' "$script" | grep -n 'nohup' | grep -vE '^[0-9]+:[[:space:]]*nohup ')" "every nohup is the first word of its line"
+}
