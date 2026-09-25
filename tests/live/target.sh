@@ -717,9 +717,23 @@ case "$NICE_DNS_OP" in
       trap 'rm -rf "$w"' EXIT
       tar -xzf "$ND_PROXY_TGZ" -C "$w" || exit 1
       rm -f "$ND_PROXY_TGZ"
-      if [ "$plat" = macos ]; then (cd "$w" && ctl build --progress plain -t "$cand" .) </dev/null >"$w.log" 2>&1
-      else podman build --format docker -t "$cand" "$w" </dev/null >"$w.log" 2>&1; fi
-      rc=$?
+      if [ "$plat" = macos ]; then
+        # Apple's builder runs on the default network, and starting it wedges
+        # dnsnet and with it the Mac's DNS (debug-monitor, 2026-09-24 and
+        # 2026-09-25). So it gets its own resolver, a declared bootstrap
+        # exception (PRIV-BOOTSTRAP-DECLARED: image pulls, never client
+        # queries), and is stopped afterwards; recreate-proxy's
+        # start-container run repairs the datapath.
+        ctl builder stop >/dev/null 2>&1
+        ctl builder start --dns 1.1.1.1 </dev/null >"$w.log" 2>&1
+        (cd "$w" && ctl build --progress plain -t "$cand" .) </dev/null >>"$w.log" 2>&1
+        rc=$?
+        ctl builder stop >/dev/null 2>&1
+        printf 'builder\tstopped\n'
+      else
+        podman build --format docker -t "$cand" "$w" </dev/null >"$w.log" 2>&1
+        rc=$?
+      fi
       tail -n 5 "$w.log"; rm -f "$w.log"
       [ "$rc" -eq 0 ] || { echo "build of $cand failed" >&2; exit 1; }
       printf 'build\t%s\tbuilt\n' "$cand"

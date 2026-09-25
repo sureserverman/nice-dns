@@ -663,3 +663,17 @@ t_quiesce_stops_only_the_legacy_mutating_agents() {
   assert_match 'nice-dns-health\.timer nice-dns-health-bridges\.timer' "$script" "Linux: the controller and bridge timers"
   assert_not_match 'bootout[^;]*start-container|bootout[^;]*debug-monitor' "$script" "the stack's own starter and the read-only debug monitor keep running"
 }
+
+t_macos_build_uses_its_own_resolver_and_stops_the_builder() {
+  # Starting Apple's builder (default network) wedges dnsnet, and with it the
+  # Mac's DNS (debug-monitor: 2026-09-24 20:54 and 2026-09-25 16:30 UTC, each
+  # ~15 s after buildkit started). The build therefore brings its own
+  # resolver (a declared bootstrap exception: image pulls, never client
+  # queries) and stops the builder whatever the result; recreate-proxy's
+  # start-container run then repairs the datapath.
+  local script
+  script="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG" | sed -n '/^  build-proxy)/,/;;$/p')"
+  assert_match 'ctl builder start --dns 1\.1\.1\.1' "$script" "macOS: the builder gets its own resolver"
+  assert_match 'ctl builder stop' "$script" "macOS: the builder is stopped after the build"
+  assert_match 'PRIV-BOOTSTRAP-DECLARED' "$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG")" "the exception is declared where it is made"
+}
