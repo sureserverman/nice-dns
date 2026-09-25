@@ -327,5 +327,6 @@ require	plan:controller	OP-CHAIN-UNKNOWN-NO-ACTION	integration	controller-intera
 require	plan:controller	OP-READY-CORROBORATED	integration	recovery-actions	t_readiness_is_per_request_and_corroborated_by_unbound	tests/integration/recovery-actions.sh
 require	plan:controller	OP-LIVE-CACHE-NOT-UPSTREAM	live	controller-shadow	t_4_whole_outage	tests/live/controller-shadow.sh
 require	plan:controller	OP-LIVE-EVIDENCE-PRIVATE	live	controller-shadow	t_5_evidence_is_private	tests/live/controller-shadow.sh
-count	plan:controller	16
+require	plan:controller	OP-LIVE-ACK-READINESS	live	controller-active	t_1_cells	tests/live/controller-active.sh
+count	plan:controller	17
 owner	plan:controller	controller

@@ -152,3 +152,4 @@ OP-CHAIN-ACK-READY	REC-ACK-READINESS	integration	controller-interaction	t_observ
 OP-CHAIN-UNKNOWN-NO-ACTION	EVD-FAILURES-COUNTED	integration	controller-interaction	t_unanswerable_probes_never_act	controller
 OP-LIVE-CACHE-NOT-UPSTREAM	EVD-CACHE-NOT-UPSTREAM	live	controller-shadow	t_4_whole_outage	controller
 OP-LIVE-EVIDENCE-PRIVATE	PRIV-NO-SECRETS	live	controller-shadow	t_5_evidence_is_private	controller
+OP-LIVE-ACK-READINESS	REC-ACK-READINESS	live	controller-active	t_1_cells	controller
