@@ -291,3 +291,16 @@ fi
 
 systemctl --user restart nice-dns-pod.service
 echo "   ✓ Services started."
+
+# The controller (health/nice-dns-health; Sub-plan 3 Task 2.1): a versioned
+# bundle under ~/.local/share/nice-dns-health and a per-minute systemd user
+# timer running `nice-dns-health tick`. It replaces the old 30-minute `run`
+# timer in place, and only after the new bundle loads. A failure here leaves
+# the stack running but unwatched, so it fails the install loudly.
+echo "   • Installing the nice-dns controller (health checks and recovery, every minute)..."
+if "$SCRIPT_DIR/../health/nice-dns-health" install; then
+  echo "   ✓ Controller installed."
+else
+  echo "   ✗ The controller did not install; the stack runs without health checks or recovery." >&2
+  exit 1
+fi

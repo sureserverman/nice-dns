@@ -56,3 +56,13 @@ chmod 644 "$EVAL_DST"
 launchctl load "$EVAL_DST"
 
 echo "LaunchAgents installed (variant=$VARIANT): start-container + bridge-eval."
+
+# -- The controller (health/nice-dns-health; Sub-plan 3 Task 2.1): a versioned
+# bundle and the org.nice-dns.health agent running `nice-dns-health tick`
+# every minute (and on wake). It replaces the old 30-minute `run` agent in
+# place, and only after the new bundle loads. A failure leaves the stack
+# running but unwatched, so it fails the install loudly.
+"$HERE/../health/nice-dns-health" install || {
+  echo "The nice-dns controller did not install; the stack runs without health checks or recovery." >&2
+  exit 1
+}

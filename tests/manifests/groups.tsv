@@ -25,3 +25,4 @@ unit	observations	tests/unit/observations.sh	local
 unit	state-policy	tests/unit/state-policy.sh	local
 integration	recovery-actions	tests/integration/recovery-actions.sh	local
 integration	controller-interaction	tests/integration/controller-interaction.sh	local
+integration	scheduling	tests/integration/scheduling.sh	local

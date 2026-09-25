@@ -17,7 +17,7 @@
 
 OB_HEALTH="$NICE_DNS_ROOT/lib/health.sh"
 OB_TAB="$(printf '\t')"
-OB_TOOLS="awk basename bash cat chmod comm cp cut date dirname env expr find grep head id kill ln ls mkdir mktemp mv od readlink rm sed sh sleep sort stat tail tee touch tr uniq wc xargs"
+OB_TOOLS="awk basename bash cat chmod comm cp cut date dirname env expr find grep head id kill ln ls mkdir mktemp mv od readlink rm sed sh sha256sum sleep sort stat tail tee touch tr uniq wc xargs"
 
 ob_platforms() {
   local p="${NICE_DNS_OPT_PLATFORMS:-all}" x out=""
@@ -551,7 +551,7 @@ t_cli_run_keeps_recovery_on_upstream_outage() {
 }
 
 t_installed_copy_finds_libraries_after_checkout_moves() {
-  local plat root
+  local plat root bundle
   ob_setup linux
   for plat in $(ob_platforms); do
     ob_platform "$plat"
@@ -559,9 +559,11 @@ t_installed_copy_finds_libraries_after_checkout_moves() {
     ob_cli "$OB_TREE/health/nice-dns-health" install
     assert_rc 0 "$OB_RC" "$plat: install with stubbed scheduler: $OB_ERR"
     if [ "$plat" = macos ]; then root="$HOME/Library/Application Support/nice-dns-health"; else root="$XDG_DATA_HOME/nice-dns-health"; fi
-    assert_file "$root/lib/health.sh" "$plat: libraries installed"
-    assert_file "$root/lib/platform/$plat.sh" "$plat: platform adapter installed"
-    assert_file "$root/routes/providers.tsv" "$plat: route table installed"
+    # Since Sub-plan 3 Task 2.1 the libraries live in a versioned bundle.
+    bundle="$root/bundles/$(awk -F '\t' '$1 == "bundle" { print $2 }' "$root/install.tsv")"
+    assert_file "$bundle/lib/health.sh" "$plat: libraries installed"
+    assert_file "$bundle/lib/platform/$plat.sh" "$plat: platform adapter installed"
+    assert_file "$bundle/routes/providers.tsv" "$plat: route table installed"
     assert_eq "" "$(find "$root" \( -perm -0020 -o -perm -0002 \) -print)" "$plat: nothing installed is group or world writable"
     rm -rf "$OB_TREE"
     ob_cli "$HOME/.local/bin/nice-dns-health" observe
@@ -579,7 +581,9 @@ t_installed_lookup_refuses_unsafe_or_symlinked_lib_dir() {
   ob_tree
   ob_cli "$OB_TREE/health/nice-dns-health" install
   assert_rc 0 "$OB_RC" "install: $OB_ERR"
+  # The installed copy reads its versioned bundle (Sub-plan 3 Task 2.1).
   root="$XDG_DATA_HOME/nice-dns-health" bin="$HOME/.local/bin/nice-dns-health"
+  root="$root/bundles/$(awk -F '\t' '$1 == "bundle" { print $2 }' "$root/install.tsv")"
   printf '\n: >"%s/canary"\n' "$CASE_DIR" >>"$root/lib/health.sh"
   ob_cli "$bin" observe
   assert_rc 0 "$OB_RC" "a safe installed tree is used: $OB_ERR"

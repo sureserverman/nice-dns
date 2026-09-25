@@ -84,6 +84,7 @@ LAUNCHD_PLIST="$LAUNCHD_DIR/$LAUNCHD_LABEL.plist"
 # layout line below to "installed" in the copy it installs, which then reads
 # the owned copy under HEALTH_LIB_ROOT_INSTALLED.
 ND_HEALTH_LAYOUT=checkout
+HEALTH_BUNDLE=
 if [ "$IS_LINUX" -eq 1 ]; then
   HEALTH_LIB_ROOT_INSTALLED="${XDG_DATA_HOME:-$HOME/.local/share}/$SCRIPT_NAME"
 else
@@ -164,10 +165,11 @@ health_path_safe() {
   return 0
 }
 
-# health_lib_root: where this copy reads its libraries.
+# health_lib_root: where this copy reads its libraries: an installed copy
+# reads its own versioned bundle (HEALTH_BUNDLE, written at install).
 health_lib_root() {
   if [ "$ND_HEALTH_LAYOUT" = installed ]; then
-    printf '%s\n' "$HEALTH_LIB_ROOT_INSTALLED"
+    printf '%s\n' "$HEALTH_LIB_ROOT_INSTALLED/bundles/$HEALTH_BUNDLE"
   else
     (cd "$(dirname "$0")/.." 2>/dev/null && pwd) || printf '%s\n' "$(dirname "$0")/.."
   fi
@@ -436,45 +438,127 @@ run_controller_pass() {
 }
 
 # ─────────────────────────────── install / uninstall ───────────────────────────
+#
+# Sub-plan 3 Task 2.1 (ARCH-01, ARCH-07). `install` builds a versioned bundle
+# (the libraries, the route table and this CLI) under
+# $HEALTH_LIB_ROOT_INSTALLED/bundles/<content id>/, keeps the previous bundle
+# for rollback and prunes older ones. The installed entrypoint
+# ($INSTALLED_BIN) names its bundle, so it never reads the checkout. Before
+# anything scheduled is replaced, the interpreter must run and the new
+# entrypoint's `self-check` must load its libraries; otherwise the working
+# install stays as it was. Then the schedules are written:
+#   Linux  nice-dns-health.service runs `<bash> <entrypoint> tick`, bounded by
+#          TimeoutStartSec (inside the state lock's lease); the timer is
+#          OnCalendar=minutely, AccuracySec=5s, Persistent=true: calendar
+#          timers catch up after suspend, monotonic ones pause (systemd.timer).
+#   macOS  the org.nice-dns.health agent runs `/bin/bash <entrypoint> tick`
+#          with an empty StartCalendarInterval (every minute; launchd starts
+#          it on wake, whereas StartInterval misses intervals asleep) and
+#          RunAtLoad.
+# The same unit and label replace the old 30-minute `run` schedule, so there
+# is never a second mutating schedule. install.tsv records what the install
+# owns; `uninstall` removes exactly that (plus the logs and the controller's
+# state), never a neighbour's file. Every removal names its variables with
+# ${VAR:?}, so an unset path aborts instead of widening the removal.
+
+INSTALL_RECEIPT="$HEALTH_LIB_ROOT_INSTALLED/install.tsv"
+# Kept within the state lock's 600 s lease (lib/state.sh).
+TICK_TIMEOUT_SECS=540
+
+health_sha() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi
+}
+
+# health_interpreter: the Bash the schedules run, checked by running it.
+health_interpreter() {
+  local b="${ND_HEALTH_INTERPRETER:-}"
+  if [ -z "$b" ]; then
+    if [ "$IS_LINUX" -eq 1 ]; then b="$(command -v bash 2>/dev/null)"; else b=/bin/bash; fi
+  fi
+  case "$b" in /*) ;; *) echo "$SCRIPT_NAME: interpreter '$b' is not an absolute path" >&2; return 1 ;; esac
+  if [ ! -x "$b" ] || ! "$b" -c 'exit 0' 2>/dev/null; then
+    echo "$SCRIPT_NAME: cannot install: the interpreter $b is missing or does not run" >&2; return 1
+  fi
+  printf '%s\n' "$b"
+}
+
+# receipt_get <key>: the values of a receipt key (data, never sourced).
+receipt_get() {
+  [ -f "$INSTALL_RECEIPT" ] && [ ! -L "$INSTALL_RECEIPT" ] || return 1
+  awk -F '\t' -v k="$1" 'NR == 1 && $0 != "schema\tnice-dns-health-install/1" { exit 1 } $1 == k { print $2 }' "$INSTALL_RECEIPT"
+}
+
+# build_bundle: stage the bundle from this checkout; print its id.
+build_bundle() {
+  local src dst f id stage
+  src="$(health_lib_root)"
+  for f in $HEALTH_LIB_FILES health/nice-dns-health; do
+    if [ ! -f "$src/$f" ] || [ -L "$src/$f" ]; then
+      echo "$SCRIPT_NAME: cannot install: $src/$f is missing or a symlink" >&2; return 1
+    fi
+  done
+  id="$(for f in $HEALTH_LIB_FILES health/nice-dns-health; do printf '%s\n' "$f"; health_sha <"$src/$f"; done | health_sha | cut -c1-16)"
+  case "$id" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;; *) echo "$SCRIPT_NAME: cannot compute the bundle id" >&2; return 1 ;; esac
+  dst="${HEALTH_LIB_ROOT_INSTALLED:?}/bundles"
+  if [ -L "$HEALTH_LIB_ROOT_INSTALLED" ] || [ -L "$dst" ]; then echo "$SCRIPT_NAME: refusing to install into a symlinked $dst" >&2; return 1; fi
+  (umask 022 && mkdir -p "$dst") || return 1
+  chmod 0755 "$HEALTH_LIB_ROOT_INSTALLED" "$dst"
+  if [ ! -d "$dst/$id" ]; then
+    stage="$dst/.new.$$"
+    rm -rf "${stage:?}"
+    (umask 022 && mkdir -p "$stage/lib/platform" "$stage/routes" "$stage/health") || return 1
+    for f in $HEALTH_LIB_FILES health/nice-dns-health; do
+      if ! { cp "$src/$f" "$stage/$f" && chmod 0644 "$stage/$f"; }; then rm -rf "${stage:?}"; return 1; fi
+    done
+    chmod 0755 "$stage" "$stage/lib" "$stage/lib/platform" "$stage/routes" "$stage/health"
+    mv "$stage" "$dst/$id" || { rm -rf "${stage:?}"; return 1; }
+  fi
+  printf '%s\n' "$id"
+}
+
+# stage_entrypoint <id>: the installed CLI naming bundle <id>, at $INSTALLED_BIN.new.
+stage_entrypoint() {
+  mkdir -p "$(dirname "$INSTALLED_BIN")" || return 1
+  sed -e 's/^ND_HEALTH_LAYOUT=checkout$/ND_HEALTH_LAYOUT=installed/' -e "s/^HEALTH_BUNDLE=\$/HEALTH_BUNDLE=$1/" \
+    "$(health_lib_root)/health/nice-dns-health" >"$INSTALLED_BIN.new" && chmod 755 "$INSTALLED_BIN.new"
+}
 
 write_systemd_units() {
-  mkdir -p "$SYSTEMD_UNIT_DIR"
-  cat > "$SYSTEMD_UNIT_DIR/$SYSTEMD_SVC" <<EOF
+  local interp="$1" d="$SYSTEMD_UNIT_DIR"
+  mkdir -p "$d" || return 1
+  cat >"$d/.$SYSTEMD_SVC.new" <<EOF || return 1
 [Unit]
-Description=nice-dns chain health check (one-shot)
+Description=nice-dns controller pass (observe, decide, act)
 After=default.target
 
 [Service]
 Type=oneshot
-ExecStart=$INSTALLED_BIN run
-# Don't tie SuccessExitStatus to anything — a non-zero exit (= a failed
-# health check) is a normal outcome we already log. Keeping ExitType
-# default means systemd records the failure in the timer's history,
-# which is helpful for \`systemctl --user list-timers\`.
+ExecStart=$interp $INSTALLED_BIN tick
+# One pass is bounded well inside the controller lock's 600 s lease.
+TimeoutStartSec=$TICK_TIMEOUT_SECS
 EOF
-  cat > "$SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER" <<EOF
+  cat >"$d/.$SYSTEMD_TIMER.new" <<EOF || return 1
 [Unit]
-Description=nice-dns chain health check (every 30 min)
+Description=nice-dns controller pass every minute
 
 [Timer]
-# OnBootSec gives the stack ~2 min to come up after a reboot before the
-# first check fires; OnUnitActiveSec spaces subsequent runs 30 min apart.
-OnBootSec=2min
-OnUnitActiveSec=30min
-# Run a missed check at most ~30s late (e.g. after suspend/resume) so we
-# don't get a stampede of catch-up runs.
-AccuracySec=30s
+# Calendar timers catch up once after suspend; monotonic ones
+# (OnUnitActiveSec) pause while suspended (systemd.timer(5)).
+OnCalendar=minutely
+AccuracySec=5s
 Persistent=true
 Unit=$SYSTEMD_SVC
 
 [Install]
 WantedBy=default.target
 EOF
+  mv -f "$d/.$SYSTEMD_SVC.new" "$d/$SYSTEMD_SVC" && mv -f "$d/.$SYSTEMD_TIMER.new" "$d/$SYSTEMD_TIMER"
 }
 
 write_launchd_plist() {
-  mkdir -p "$LAUNCHD_DIR" "$LOG_DIR"
-  cat > "$LAUNCHD_PLIST" <<EOF
+  local interp="$1"
+  mkdir -p "$LAUNCHD_DIR" "$LOG_DIR" || return 1
+  cat >"$LAUNCHD_PLIST.new" <<EOF || return 1
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -483,17 +567,17 @@ write_launchd_plist() {
     <string>$LAUNCHD_LABEL</string>
     <key>ProgramArguments</key>
     <array>
+      <string>$interp</string>
       <string>$INSTALLED_BIN</string>
-      <string>run</string>
+      <string>tick</string>
     </array>
-    <key>StartInterval</key>
-    <integer>1800</integer>
+    <!-- Every minute. An empty calendar interval is all wildcards, and
+         launchd starts a calendar job on wake; StartInterval would miss
+         the intervals that pass asleep (launchd.plist(5)). -->
+    <key>StartCalendarInterval</key>
+    <dict/>
     <key>RunAtLoad</key>
     <true/>
-    <!-- launchd's stdout/stderr capture is per-job; the script writes
-         its own logs to ~/Library/Logs/nice-dns-health/, but anything
-         that escapes (e.g. a syntax error before the rolling-log code
-         runs) still lands here so it's not lost. -->
     <key>StandardOutPath</key>
     <string>$LOG_DIR/launchd.out.log</string>
     <key>StandardErrorPath</key>
@@ -506,109 +590,100 @@ write_launchd_plist() {
   </dict>
 </plist>
 EOF
-}
-
-# Copy this script to ~/.local/bin so the timer/LaunchAgent points at a
-# stable path even if the nice-dns checkout moves or is deleted. The copy
-# reads its libraries from HEALTH_LIB_ROOT_INSTALLED.
-install_self() {
-  local self
-  self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-  install_libs || return 1
-  mkdir -p "$(dirname "$INSTALLED_BIN")"
-  if [ "$self" != "$INSTALLED_BIN" ]; then
-    if ! { sed 's/^ND_HEALTH_LAYOUT=checkout$/ND_HEALTH_LAYOUT=installed/' "$self" >"$INSTALLED_BIN.tmp" \
-           && mv -f "$INSTALLED_BIN.tmp" "$INSTALLED_BIN"; }; then
-      rm -f "$INSTALLED_BIN.tmp"; return 1
-    fi
-  fi
-  chmod 755 "$INSTALLED_BIN"
-}
-
-# Copy the libraries this script reads (HEALTH_LIB_FILES) from the checkout
-# into HEALTH_LIB_ROOT_INSTALLED: owner-writable only, staged then renamed
-# into place. An installed copy re-running install keeps what it has.
-install_libs() {
-  local src dst="$HEALTH_LIB_ROOT_INSTALLED" stage f
-  [ "$ND_HEALTH_LAYOUT" = checkout ] || return 0
-  src="$(health_lib_root)"
-  for f in $HEALTH_LIB_FILES; do
-    if [ ! -f "$src/$f" ] || [ -L "$src/$f" ]; then
-      echo "$SCRIPT_NAME: cannot install: $src/$f is missing or a symlink" >&2; return 1
-    fi
-  done
-  if [ -L "$dst" ]; then echo "$SCRIPT_NAME: refusing to install into $dst: it is a symlink" >&2; return 1; fi
-  mkdir -p "$(dirname "$dst")" || return 1
-  stage="$dst.new.$$"
-  rm -rf "$stage"
-  (umask 022 && mkdir -p "$stage/lib/platform" "$stage/routes") || return 1
-  for f in $HEALTH_LIB_FILES; do
-    if ! { cp "$src/$f" "$stage/$f" && chmod 0644 "$stage/$f"; }; then rm -rf "$stage"; return 1; fi
-  done
-  chmod 0755 "$stage" "$stage/lib" "$stage/lib/platform" "$stage/routes"
-  rm -rf "$dst" && mv "$stage" "$dst"
+  chmod 644 "$LAUNCHD_PLIST.new" && mv -f "$LAUNCHD_PLIST.new" "$LAUNCHD_PLIST"
 }
 
 cmd_install() {
-  install_self || { echo "$SCRIPT_NAME: install failed" >&2; return 1; }
+  local interp id prev units old f
+  [ "$ND_HEALTH_LAYOUT" = checkout ] || { echo "$SCRIPT_NAME: run install from a nice-dns checkout (health/nice-dns-health install)" >&2; return 1; }
+  interp="$(health_interpreter)" || return 1
+  id="$(build_bundle)" || { echo "$SCRIPT_NAME: install failed: the bundle could not be built" >&2; return 1; }
+  if ! stage_entrypoint "$id"; then
+    rm -f "${INSTALLED_BIN:?}.new"; echo "$SCRIPT_NAME: install failed: the entrypoint could not be written" >&2; return 1
+  fi
+  # The replacement must be ready before anything scheduled changes.
+  if ! "$interp" "$INSTALLED_BIN.new" self-check >/dev/null 2>"$INSTALLED_BIN.new.err"; then
+    echo "$SCRIPT_NAME: install failed: the new bundle $id does not load: $(head -n 1 "$INSTALLED_BIN.new.err")" >&2
+    rm -f "${INSTALLED_BIN:?}.new" "${INSTALLED_BIN:?}.new.err"
+    [ "$(receipt_get bundle 2>/dev/null)" = "$id" ] || rm -rf "${HEALTH_LIB_ROOT_INSTALLED:?}/bundles/${id:?}"
+    echo "$SCRIPT_NAME: the installed controller and its schedule are unchanged" >&2
+    return 1
+  fi
+  rm -f "${INSTALLED_BIN:?}.new.err"
+  mv -f "$INSTALLED_BIN.new" "$INSTALLED_BIN" || return 1
+  old="$(receipt_get bundle 2>/dev/null)"
+  prev="${old:--}"; [ "$prev" = "$id" ] && prev="$(receipt_get previous 2>/dev/null)"; prev="${prev:--}"
   if [ "$IS_LINUX" -eq 1 ]; then
-    write_systemd_units
+    write_systemd_units "$interp" || { echo "$SCRIPT_NAME: install failed writing the systemd units" >&2; return 1; }
+    units="$SYSTEMD_UNIT_DIR/$SYSTEMD_SVC $SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER"
     systemctl --user daemon-reload
     systemctl --user enable --now "$SYSTEMD_TIMER"
-    echo "Installed."
-    echo "  Script:  $INSTALLED_BIN"
-    echo "  Libs:    $HEALTH_LIB_ROOT_INSTALLED/"
-    echo "  Timer:   $SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER"
-    echo "  Logs:    $LOG_DIR/"
-    if [ "$INSTALLED_BIN" != "$INSTALLED_BIN_PRIMARY" ]; then
-      echo
-      echo "Note: $(dirname "$INSTALLED_BIN_PRIMARY") was not user-writable, so the"
-      echo "      script lives at the path above. To call it as plain"
-      echo "      '$SCRIPT_NAME' from your shell, either:"
-      echo "        sudo chown -R \$USER:\$USER $(dirname "$INSTALLED_BIN_PRIMARY")"
-      echo "        cp $INSTALLED_BIN $INSTALLED_BIN_PRIMARY"
-      echo "      or add an alias / PATH entry pointing at $INSTALLED_BIN."
-    fi
-    echo
-    systemctl --user list-timers --no-pager | head -2
-    systemctl --user list-timers --no-pager | grep -F "$SYSTEMD_TIMER" || true
   else
-    write_launchd_plist
+    write_launchd_plist "$interp" || { echo "$SCRIPT_NAME: install failed writing the LaunchAgent" >&2; return 1; }
+    units="$LAUNCHD_PLIST"
     # Reload to pick up edits even if the agent was already loaded.
     launchctl unload "$LAUNCHD_PLIST" 2>/dev/null || true
     launchctl load -w "$LAUNCHD_PLIST"
-    echo "Installed."
-    echo "  Script:       $INSTALLED_BIN"
-    echo "  Libs:         $HEALTH_LIB_ROOT_INSTALLED/"
-    echo "  LaunchAgent:  $LAUNCHD_PLIST"
-    echo "  Logs:         $LOG_DIR/"
-    if [ "$INSTALLED_BIN" != "$INSTALLED_BIN_PRIMARY" ]; then
-      echo
-      echo "Note: $(dirname "$INSTALLED_BIN_PRIMARY") was not user-writable, so the"
-      echo "      script lives at the path above. Add an alias or symlink to"
-      echo "      run it as plain '$SCRIPT_NAME' from your shell."
-    fi
+  fi
+  { printf 'schema\tnice-dns-health-install/1\nbundle\t%s\nprevious\t%s\nentrypoint\t%s\ninterpreter\t%s\n' "$id" "$prev" "$INSTALLED_BIN" "$interp"
+    for f in $units; do printf 'schedule\t%s\n' "$f"; done; } >"$INSTALL_RECEIPT.new" && mv -f "$INSTALL_RECEIPT.new" "$INSTALL_RECEIPT"
+  # Keep the current and the previous bundle; remove the rest.
+  for f in "${HEALTH_LIB_ROOT_INSTALLED:?}/bundles"/*; do
+    [ -d "$f" ] || continue
+    case "$(basename "$f")" in "$id"|"$prev") ;; *) rm -rf "${f:?}" ;; esac
+  done
+  echo "Installed."
+  echo "  Entrypoint: $INSTALLED_BIN"
+  echo "  Bundle:     $HEALTH_LIB_ROOT_INSTALLED/bundles/$id (previous: $prev)"
+  echo "  Schedule:   $units (every minute: $SCRIPT_NAME tick)"
+  echo "  Logs:       $LOG_DIR/"
+  if [ "$INSTALLED_BIN" != "$INSTALLED_BIN_PRIMARY" ]; then
     echo
-    launchctl list | grep -F "$LAUNCHD_LABEL" || true
+    echo "Note: $(dirname "$INSTALLED_BIN_PRIMARY") was not user-writable, so the"
+    echo "      entrypoint lives at the path above. Add an alias or PATH entry to"
+    echo "      run it as plain '$SCRIPT_NAME'."
   fi
 }
 
+# self-check: the libraries this copy would run load (no stack contact).
+cmd_self_check() {
+  local f
+  if ! load_health_libs; then echo "$SCRIPT_NAME: $HEALTH_LIB_ERROR" >&2; return 1; fi
+  for f in nd_health_observe nd_policy_decide nd_state_lock nd_recovery_tick; do
+    declare -F "$f" >/dev/null || { echo "$SCRIPT_NAME: $f is missing from the libraries" >&2; return 1; }
+  done
+  echo "ok $(health_lib_root)"
+}
+
+# uninstall_owned <path>: remove <path> only when it is one of the fixed
+# paths this command installs.
+uninstall_owned() {
+  case "$1" in
+    "${SYSTEMD_UNIT_DIR:?}/${SYSTEMD_SVC:?}"|"${SYSTEMD_UNIT_DIR:?}/${SYSTEMD_TIMER:?}"|"${LAUNCHD_PLIST:?}"|"${INSTALLED_BIN_PRIMARY:?}"|"${INSTALLED_BIN_FALLBACK:?}")
+      rm -f "${1:?}" ;;
+  esac
+}
+
 cmd_uninstall() {
+  local f own
   if [ "$IS_LINUX" -eq 1 ]; then
     systemctl --user disable --now "$SYSTEMD_TIMER" 2>/dev/null || true
     systemctl --user stop "$SYSTEMD_SVC" 2>/dev/null || true
-    rm -f "$SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER" "$SYSTEMD_UNIT_DIR/$SYSTEMD_SVC"
-    systemctl --user daemon-reload 2>/dev/null || true
   else
     launchctl unload "$LAUNCHD_PLIST" 2>/dev/null || true
-    rm -f "$LAUNCHD_PLIST"
   fi
-  # Remove both possible script locations — survives the case where the
-  # user moved it from the fallback dir to PATH after install, or vice
-  # versa.
-  rm -f "$INSTALLED_BIN_PRIMARY" "$INSTALLED_BIN_FALLBACK"
-  rm -rf "$HEALTH_LIB_ROOT_INSTALLED"
-  rm -rf "$LOG_DIR"
+  if own="$(receipt_get schedule 2>/dev/null)" && [ -n "$own" ]; then
+    # Exactly what the install recorded, nothing else in those directories.
+    for f in $own "$(receipt_get entrypoint)"; do uninstall_owned "$f"; done
+  else
+    # An install from before the receipt: its fixed paths.
+    for f in "$SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER" "$SYSTEMD_UNIT_DIR/$SYSTEMD_SVC" "$LAUNCHD_PLIST" "$INSTALLED_BIN_PRIMARY" "$INSTALLED_BIN_FALLBACK"; do
+      uninstall_owned "$f"
+    done
+  fi
+  if [ "$IS_LINUX" -eq 1 ]; then systemctl --user daemon-reload 2>/dev/null || true; fi
+  if load_health_libs 2>/dev/null; then f="$(nd_platform_state_dir)" && rm -rf "${f:?}"; fi
+  rm -rf "${HEALTH_LIB_ROOT_INSTALLED:?}" "${LOG_DIR:?}"
   echo "Uninstalled."
 }
 
@@ -738,10 +813,12 @@ usage() {
   cat <<EOF
 Usage: $SCRIPT_NAME <command>
 
-  install     Set up the schedule (every 30 min) and start it.
-              Linux: systemd --user timer.
-              macOS: launchd LaunchAgent (StartInterval=1800).
-  uninstall   Tear down the schedule and remove the script + logs.
+  install     Install the versioned bundle and run \`tick\` every minute.
+              Linux: systemd --user timer (OnCalendar=minutely).
+              macOS: launchd LaunchAgent (StartCalendarInterval, every minute).
+  self-check  Check that this copy's libraries load (no stack contact).
+  uninstall   Remove the schedule, bundle, entrypoint, logs and controller state
+              that install recorded, and nothing else.
   start       (Re)start the timer / LaunchAgent.
   stop        Pause the timer / unload the LaunchAgent.
   status      Show schedule state + last 5 log entries.
@@ -785,6 +862,7 @@ main() {
     run)        cmd_run "$@" ;;
     observe)    cmd_observe "$@" ;;
     tick)       cmd_tick "$@" ;;
+    self-check) cmd_self_check "$@" ;;
     logs)       cmd_logs "$@" ;;
     failures)   cmd_failures "$@" ;;
     -h|--help|help|"") usage ;;
