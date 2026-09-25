@@ -21,3 +21,6 @@ transport-images	integration	transport-socat
 transport	integration	transport-socat
 transport-images	integration	transport-interaction
 transport	integration	transport-interaction
+controller-core	unit	observations
+controller	unit	harness-contracts
+controller	unit	observations

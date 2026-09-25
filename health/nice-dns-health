@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # nice-dns-health — periodic health-check for the nice-dns DNS chain.
 #
-# Single self-contained script: subcommands manage a 30-min systemd-user
-# timer (Linux) or LaunchAgent (macOS) that re-invokes this same script
-# with `run` to perform the checks. On any failure, a detailed diagnostic
-# dump is written next to the rolling log so the culprit can be tracked
-# down without re-running the failure scenario.
+# Subcommands manage a 30-min systemd-user timer (Linux) or LaunchAgent
+# (macOS) that re-invokes this same script with `run` to perform the
+# checks. The checks are the observations of lib/health.sh and the platform
+# adapters in lib/platform/ (read from ../lib next to this script in a
+# checkout; `install` copies them to an owned directory the installed copy
+# reads). On any failure, a detailed diagnostic dump is written next to the
+# rolling log so the culprit can be tracked down without re-running the
+# failure scenario.
 #
 # Quick start:
 #   ./health/nice-dns-health install      # set up + start the schedule
 #   nice-dns-health status                 # see schedule + last 5 results
 #   nice-dns-health run                    # run a check now
+#   nice-dns-health observe                # print the observations (read-only)
 #   nice-dns-health failures               # list recent failure dumps
 #   nice-dns-health stop                   # pause without uninstalling
 #   nice-dns-health start                  # resume
@@ -75,10 +79,17 @@ LAUNCHD_LABEL="org.nice-dns.health"
 LAUNCHD_DIR="$HOME/Library/LaunchAgents"
 LAUNCHD_PLIST="$LAUNCHD_DIR/$LAUNCHD_LABEL.plist"
 
-# Containers we expect to find. Tor variant is detected at check time
-# (haproxy or socat), so the array holds the constant names plus a
-# placeholder we replace.
-EXPECTED_FIXED=(pi-hole unbound)
+# Libraries (lib/health.sh, lib/platform/*.sh, routes/providers.tsv). A
+# checkout reads them from ../ next to this script; install_self rewrites the
+# layout line below to "installed" in the copy it installs, which then reads
+# the owned copy under HEALTH_LIB_ROOT_INSTALLED.
+ND_HEALTH_LAYOUT=checkout
+if [ "$IS_LINUX" -eq 1 ]; then
+  HEALTH_LIB_ROOT_INSTALLED="${XDG_DATA_HOME:-$HOME/.local/share}/$SCRIPT_NAME"
+else
+  HEALTH_LIB_ROOT_INSTALLED="$HOME/Library/Application Support/$SCRIPT_NAME"
+fi
+HEALTH_LIB_FILES="lib/health.sh lib/platform/linux.sh lib/platform/macos.sh routes/providers.tsv"
 
 # ─────────────────────────────── Small helpers ──────────────────────────────────
 
@@ -113,10 +124,20 @@ detect_runtime() {
 
 detect_tor_variant() {
   # Returns "haproxy" or "socat" depending on which tor- container is up,
-  # or empty if neither.
-  local rt="$1" name
+  # or empty if neither. The platform adapter lists containers (Apple
+  # `container` has no `ps`); without the libraries, each OS's own listing.
+  local rt="$1" name names="" t
+  [ -n "$rt" ] || { echo ""; return; }
+  if declare -F nd_platform_runtime_list >/dev/null && t="$(mktemp -d "${TMPDIR:-/tmp}/$SCRIPT_NAME.XXXXXX")"; then
+    nd_platform_runtime_list "${ND_HEALTH_CMD_DEADLINE:-10}" "$t/running" && names="$(cat "$t/running")"
+    rm -rf "$t"
+  elif [ "$IS_LINUX" -eq 1 ]; then
+    names="$("$rt" ps --format '{{.Names}}' 2>/dev/null)"
+  else
+    names="$("$rt" ls 2>/dev/null | awk 'NR > 1 { print $1 }')"
+  fi
   for name in tor-haproxy tor-socat; do
-    if "$rt" ps --format '{{.Names}}' 2>/dev/null | grep -qxF "$name"; then
+    if printf '%s\n' "$names" | grep -qxF "$name"; then
       echo "${name#tor-}"
       return
     fi
@@ -124,89 +145,103 @@ detect_tor_variant() {
   echo ""
 }
 
-dig_first_a() {
-  # Cross-platform dig with hard-coded short timeouts so a hung Tor circuit
-  # can't stall the whole health check past the systemd/launchd budget.
-  dig @127.0.0.1 +short +time=5 +tries=2 "$1" 2>/dev/null | head -1
+# health_path_safe <path> <f|d>: a regular file or directory (not a
+# symlink) owned by this user or root and not writable by group or others.
+# Sets HEALTH_LIB_ERROR when not.
+health_path_safe() {
+  local p="$1" uid
+  uid="$(id -u)"
+  if [ -L "$p" ]; then HEALTH_LIB_ERROR="$p is a symlink"; return 1; fi
+  if { [ "$2" = d ] && [ ! -d "$p" ]; } || { [ "$2" = f ] && [ ! -f "$p" ]; }; then
+    HEALTH_LIB_ERROR="$p is missing"; return 1
+  fi
+  if [ -z "$(find "$p" -maxdepth 0 \( -user "$uid" -o -user 0 \) 2>/dev/null)" ]; then
+    HEALTH_LIB_ERROR="$p is not owned by uid $uid or root"; return 1
+  fi
+  if [ -n "$(find "$p" -maxdepth 0 \( -perm -0020 -o -perm -0002 \) 2>/dev/null)" ]; then
+    HEALTH_LIB_ERROR="$p is writable by group or others"; return 1
+  fi
+  return 0
+}
+
+# health_lib_root: where this copy reads its libraries.
+health_lib_root() {
+  if [ "$ND_HEALTH_LAYOUT" = installed ]; then
+    printf '%s\n' "$HEALTH_LIB_ROOT_INSTALLED"
+  else
+    (cd "$(dirname "$0")/.." 2>/dev/null && pwd) || printf '%s\n' "$(dirname "$0")/.."
+  fi
+}
+
+# load_health_libs: source lib/health.sh (it sources this platform's
+# adapter) after checking every directory and file on the way is safe to
+# source. Commands that do not observe never call it.
+load_health_libs() {
+  local root plat d f
+  [ -n "${HEALTH_LIBS_LOADED:-}" ] && return 0
+  HEALTH_LIB_ERROR=""
+  root="$(health_lib_root)"
+  if [ "$IS_LINUX" -eq 1 ]; then plat=linux; else plat=macos; fi
+  for d in "$root" "$root/lib" "$root/lib/platform" "$root/routes"; do
+    health_path_safe "$d" d || return 1
+  done
+  for f in lib/health.sh "lib/platform/$plat.sh" routes/providers.tsv; do
+    health_path_safe "$root/$f" f || return 1
+  done
+  ND_PLATFORM="$plat"
+  export ND_PLATFORM
+  # shellcheck source=lib/health.sh
+  . "$root/lib/health.sh" || { HEALTH_LIB_ERROR="$root/lib/health.sh failed to load"; return 1; }
+  HEALTH_LIBS_LOADED=1
 }
 
 # ─────────────────────────────── The check ─────────────────────────────────────
 
-# Fills two globals: FAILED_CHECKS (array of names), CHECK_DETAIL
-# (multiline string, what each check actually returned).
+# Fills FAILED_CHECKS (unhealthy observation names), INDETERMINATE_CHECKS
+# (observations that could not be made) and CHECK_DETAIL (multiline string,
+# what each observation returned) from lib/health.sh; HEALTH_OBS keeps the
+# raw records. chain-resolves is derived: no provider route answered an
+# authenticated probe and at least one failed. The local-cache observation
+# (an answer through Pi-hole, possibly cached) never counts as upstream.
 run_checks() {
   FAILED_CHECKS=()
+  INDETERMINATE_CHECKS=()
   CHECK_DETAIL=""
-  local rt tor_variant ip
+  HEALTH_OBS=""
+  local kind name verdict ms reason routes=0 rok=0 rbad=0
 
-  rt="$(detect_runtime)"
-  if [ -z "$rt" ]; then
-    FAILED_CHECKS+=("runtime-missing")
-    CHECK_DETAIL+="runtime-missing: no podman / container CLI on PATH"$'\n'
+  if ! load_health_libs; then
+    FAILED_CHECKS+=("health-libs")
+    CHECK_DETAIL+="FAIL health-libs: $HEALTH_LIB_ERROR"$'\n'
     return
   fi
-
-  # 1. /etc/resolv.conf points at 127.0.0.1.
-  if grep -qxF 'nameserver 127.0.0.1' /etc/resolv.conf 2>/dev/null; then
-    CHECK_DETAIL+="OK   resolv.conf: nameserver 127.0.0.1 present"$'\n'
-  else
-    FAILED_CHECKS+=("resolv.conf")
-    CHECK_DETAIL+="FAIL resolv.conf: 'nameserver 127.0.0.1' not the active line"$'\n'
-    CHECK_DETAIL+="     current contents:"$'\n'
-    CHECK_DETAIL+="$(sed 's/^/       /' /etc/resolv.conf 2>/dev/null || echo '       (unreadable)')"$'\n'
+  HEALTH_OBS="$(nd_health_observe)"
+  if ! printf '%s\n' "$HEALTH_OBS" | nd_health_validate 2>/dev/null; then
+    FAILED_CHECKS+=("health-observations")
+    CHECK_DETAIL+="FAIL health-observations: the observation output is not valid"$'\n'
+    return
   fi
-
-  # 2. Expected containers up. Tor variant is whichever was installed.
-  tor_variant="$(detect_tor_variant "$rt")"
-  local expected=("${EXPECTED_FIXED[@]}")
-  if [ -n "$tor_variant" ]; then
-    expected+=("tor-$tor_variant")
-  else
-    FAILED_CHECKS+=("tor-variant")
-    CHECK_DETAIL+="FAIL tor-variant: neither tor-haproxy nor tor-socat is running"$'\n'
-  fi
-  local missing=()
-  for n in "${expected[@]}"; do
-    if ! "$rt" ps --format '{{.Names}}' 2>/dev/null | grep -qxF "$n"; then
-      missing+=("$n")
-    fi
-  done
-  if [ ${#missing[@]} -eq 0 ]; then
-    CHECK_DETAIL+="OK   containers: ${expected[*]} all running"$'\n'
-  else
-    FAILED_CHECKS+=("containers")
-    CHECK_DETAIL+="FAIL containers: not running -> ${missing[*]}"$'\n'
-  fi
-
-  # 3. Self-resolve `pi.hole` — proves pihole-FTL is alive on :53. The
-  # answer can be 0.0.0.0 (no eth0 IP, e.g. slirp4netns) or a real IP;
-  # either is fine, what matters is that we get exactly one A record.
-  ip="$(dig_first_a pi.hole)"
-  if [ -n "$ip" ] && expr "$ip" : '[0-9.][0-9.]*$' >/dev/null; then
-    CHECK_DETAIL+="OK   pi.hole resolves -> $ip"$'\n'
-  else
-    FAILED_CHECKS+=("ftl-alive")
-    CHECK_DETAIL+="FAIL ftl-alive: dig @127.0.0.1 pi.hole returned: '$ip'"$'\n'
-  fi
-
-  # 4. Real-world domain resolves through the chain.
-  ip="$(dig_first_a cloudflare.com)"
-  if [ -n "$ip" ] \
-      && expr "$ip" : '[0-9.][0-9.]*$' >/dev/null \
-      && [ "$ip" != "0.0.0.0" ]; then
-    CHECK_DETAIL+="OK   cloudflare.com resolves -> $ip"$'\n'
-  else
+  while IFS=$'\t' read -r kind name verdict ms reason; do
+    [ "$kind" = obs ] || continue
+    case "$name" in route:*) routes=$((routes + 1)) ;; esac
+    case "$verdict" in
+      healthy)
+        CHECK_DETAIL+="OK   $name: $reason (${ms} ms)"$'\n'
+        case "$name" in route:*) rok=$((rok + 1)) ;; esac ;;
+      unhealthy)
+        FAILED_CHECKS+=("$name")
+        CHECK_DETAIL+="FAIL $name: $reason (${ms} ms)"$'\n'
+        case "$name" in route:*) rbad=$((rbad + 1)) ;; esac ;;
+      *)
+        INDETERMINATE_CHECKS+=("$name")
+        CHECK_DETAIL+="???  $name: $reason (${ms} ms)"$'\n' ;;
+    esac
+  done <<EOF
+$HEALTH_OBS
+EOF
+  if [ "$routes" -gt 0 ] && [ "$rok" -eq 0 ] && [ "$rbad" -gt 0 ]; then
     FAILED_CHECKS+=("chain-resolves")
-    CHECK_DETAIL+="FAIL chain-resolves: dig @127.0.0.1 cloudflare.com -> '$ip' (expected real A record)"$'\n'
-  fi
-
-  # 5. Blocklist is active.
-  ip="$(dig_first_a doubleclick.net)"
-  if [ "$ip" = "0.0.0.0" ]; then
-    CHECK_DETAIL+="OK   doubleclick.net sinkholed -> 0.0.0.0"$'\n'
-  else
-    FAILED_CHECKS+=("gravity-blocks")
-    CHECK_DETAIL+="FAIL gravity-blocks: dig @127.0.0.1 doubleclick.net -> '$ip' (expected 0.0.0.0)"$'\n'
+    CHECK_DETAIL+="FAIL chain-resolves: no provider route answered ($rbad of $routes unhealthy); a local-cache answer is not upstream health"$'\n'
   fi
 }
 
@@ -214,9 +249,14 @@ run_checks() {
 # self-contained .log next to the rolling log; older dumps beyond
 # FAILURE_KEEP are pruned.
 write_failure_dump() {
-  local now="$1" tor_variant rt
+  local now="$1" tor_variant rt dns_addr
   rt="$(detect_runtime)"
   tor_variant="$(detect_tor_variant "${rt:-}")"
+  # Pi-hole's client endpoint: the pod loopback on Linux, its dnsnet
+  # address on macOS (the platform adapter's, when the libraries loaded).
+  if declare -F nd_platform_dns_addr >/dev/null; then dns_addr="$(nd_platform_dns_addr)"
+  elif [ "$IS_LINUX" -eq 1 ]; then dns_addr=127.0.0.1
+  else dns_addr=172.31.240.250; fi
   local f
   f="$LOG_DIR/failure-$(date '+%Y%m%d-%H%M%S').log"
   {
@@ -224,17 +264,26 @@ write_failure_dump() {
     echo "Platform:       $PLATFORM"
     echo "Runtime:        ${rt:-(missing)}"
     echo "Tor variant:    ${tor_variant:-(none detected)}"
-    echo "Failed checks:  ${FAILED_CHECKS[*]}"
+    echo "Failed checks:  ${FAILED_CHECKS[*]:-}"
+    echo "Indeterminate:  ${INDETERMINATE_CHECKS[*]:-}"
     echo
     echo "=== Per-check detail ==="
     printf '%s' "$CHECK_DETAIL"
+    echo
+    echo "=== Observations (lib/health.sh) ==="
+    printf '%s\n' "$HEALTH_OBS" | sed 's/^/  /'
     echo
     echo "=== /etc/resolv.conf ==="
     cat /etc/resolv.conf 2>&1 | sed 's/^/  /'
     echo
     if [ -n "${rt:-}" ]; then
-      echo "=== $rt ps -a ==="
-      "$rt" ps -a 2>&1 | sed 's/^/  /'
+      if [ "$IS_LINUX" -eq 1 ]; then
+        echo "=== $rt ps -a ==="
+        "$rt" ps -a 2>&1 | sed 's/^/  /'
+      else
+        echo "=== $rt ls -a ==="
+        "$rt" ls -a 2>&1 | sed 's/^/  /'
+      fi
       echo
       local containers=(pi-hole unbound)
       [ -n "$tor_variant" ] && containers+=("tor-$tor_variant")
@@ -248,11 +297,11 @@ write_failure_dump() {
         echo
       done
     fi
-    echo "=== dig +trace @127.0.0.1 cloudflare.com (timeout 8s) ==="
-    dig @127.0.0.1 +time=4 +tries=2 cloudflare.com 2>&1 | sed 's/^/  /' | head -40
+    echo "=== dig @$dns_addr cloudflare.com (timeout 8s) ==="
+    dig "@$dns_addr" +time=4 +tries=2 cloudflare.com 2>&1 | sed 's/^/  /' | head -40
     echo
-    echo "=== dig @127.0.0.1 doubleclick.net ==="
-    dig @127.0.0.1 +time=4 +tries=1 doubleclick.net 2>&1 | sed 's/^/  /' | head -20
+    echo "=== dig @$dns_addr doubleclick.net ==="
+    dig "@$dns_addr" +time=4 +tries=1 doubleclick.net 2>&1 | sed 's/^/  /' | head -20
     echo
     if [ "$IS_LINUX" -eq 1 ]; then
       echo "=== systemctl --user state ==="
@@ -316,14 +365,20 @@ cmd_run() {
   rotate_roll_log_if_needed
   run_checks
   local now; now="$(ts)"
-  if [ ${#FAILED_CHECKS[@]} -eq 0 ]; then
+  if [ ${#FAILED_CHECKS[@]} -eq 0 ] && [ ${#INDETERMINATE_CHECKS[@]} -eq 0 ]; then
     log_to_file "$now OK  all checks passed"
     maybe_clear_full_outage
     return 0
   fi
   local dump
   dump="$(write_failure_dump "$now")"
-  log_to_file "$now FAIL [${FAILED_CHECKS[*]}] -> $dump"
+  if [ ${#FAILED_CHECKS[@]} -eq 0 ]; then
+    # Nothing is known to be broken, and nothing is known to work: keep any
+    # outage window as it is and take no action.
+    log_to_file "$now INDETERMINATE [${INDETERMINATE_CHECKS[*]}] -> $dump"
+    return 1
+  fi
+  log_to_file "$now FAIL [${FAILED_CHECKS[*]}]${INDETERMINATE_CHECKS[*]:+ indeterminate=(${INDETERMINATE_CHECKS[*]})} -> $dump"
   maybe_trigger_chain_restart "$now"
   return 1
 }
@@ -348,13 +403,14 @@ cmd_run() {
 # unavailable), drop to the per-platform service-level restart so the
 # recovery still happens somehow.
 #
-# Critical invariant: this fires ONLY when `chain-resolves` fails —
-# i.e., `dig @127.0.0.1 cloudflare.com` returns no real A record.
-# That requires ALL haproxy backends to be simultaneously broken:
-# primary (.onion), backup (1.1.1.1 via Tor exit), and fallback (9.9.9.9
-# via Tor exit) all failing means Tor itself isn't routing. A primary-
-# only outage does NOT trigger this — backup keeps the chain resolving
-# and the check passes.
+# Critical invariant: this fires ONLY when `chain-resolves` fails, which
+# run_checks derives from the per-route observations of lib/health.sh: no
+# provider route in routes/providers.tsv (the identity-bound onion,
+# Cloudflare-exit and Quad9-exit routes, and the Cloudflare-only legacy
+# :853) answered an authenticated probe, and at least one failed. Every
+# route failing means Tor itself isn't routing. One usable route does NOT
+# trigger this. An answer through Pi-hole (the local-cache observation) may
+# come from a cache and never counts as upstream health.
 
 FULL_OUTAGE_FILE="$LOG_DIR/full-outage-since"
 # Override via env for testing: NICE_DNS_RESTART_GRACE_SECS=10 nice-dns-health run
@@ -543,25 +599,55 @@ EOF
 }
 
 # Copy this script to ~/.local/bin so the timer/LaunchAgent points at a
-# stable path even if the nice-dns checkout moves or is deleted.
+# stable path even if the nice-dns checkout moves or is deleted. The copy
+# reads its libraries from HEALTH_LIB_ROOT_INSTALLED.
 install_self() {
   local self
   self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  install_libs || return 1
   mkdir -p "$(dirname "$INSTALLED_BIN")"
   if [ "$self" != "$INSTALLED_BIN" ]; then
-    cp "$self" "$INSTALLED_BIN"
+    if ! { sed 's/^ND_HEALTH_LAYOUT=checkout$/ND_HEALTH_LAYOUT=installed/' "$self" >"$INSTALLED_BIN.tmp" \
+           && mv -f "$INSTALLED_BIN.tmp" "$INSTALLED_BIN"; }; then
+      rm -f "$INSTALLED_BIN.tmp"; return 1
+    fi
   fi
   chmod 755 "$INSTALLED_BIN"
 }
 
+# Copy the libraries this script reads (HEALTH_LIB_FILES) from the checkout
+# into HEALTH_LIB_ROOT_INSTALLED: owner-writable only, staged then renamed
+# into place. An installed copy re-running install keeps what it has.
+install_libs() {
+  local src dst="$HEALTH_LIB_ROOT_INSTALLED" stage f
+  [ "$ND_HEALTH_LAYOUT" = checkout ] || return 0
+  src="$(health_lib_root)"
+  for f in $HEALTH_LIB_FILES; do
+    if [ ! -f "$src/$f" ] || [ -L "$src/$f" ]; then
+      echo "$SCRIPT_NAME: cannot install: $src/$f is missing or a symlink" >&2; return 1
+    fi
+  done
+  if [ -L "$dst" ]; then echo "$SCRIPT_NAME: refusing to install into $dst: it is a symlink" >&2; return 1; fi
+  mkdir -p "$(dirname "$dst")" || return 1
+  stage="$dst.new.$$"
+  rm -rf "$stage"
+  (umask 022 && mkdir -p "$stage/lib/platform" "$stage/routes") || return 1
+  for f in $HEALTH_LIB_FILES; do
+    if ! { cp "$src/$f" "$stage/$f" && chmod 0644 "$stage/$f"; }; then rm -rf "$stage"; return 1; fi
+  done
+  chmod 0755 "$stage" "$stage/lib" "$stage/lib/platform" "$stage/routes"
+  rm -rf "$dst" && mv "$stage" "$dst"
+}
+
 cmd_install() {
-  install_self
+  install_self || { echo "$SCRIPT_NAME: install failed" >&2; return 1; }
   if [ "$IS_LINUX" -eq 1 ]; then
     write_systemd_units
     systemctl --user daemon-reload
     systemctl --user enable --now "$SYSTEMD_TIMER"
     echo "Installed."
     echo "  Script:  $INSTALLED_BIN"
+    echo "  Libs:    $HEALTH_LIB_ROOT_INSTALLED/"
     echo "  Timer:   $SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER"
     echo "  Logs:    $LOG_DIR/"
     if [ "$INSTALLED_BIN" != "$INSTALLED_BIN_PRIMARY" ]; then
@@ -583,6 +669,7 @@ cmd_install() {
     launchctl load -w "$LAUNCHD_PLIST"
     echo "Installed."
     echo "  Script:       $INSTALLED_BIN"
+    echo "  Libs:         $HEALTH_LIB_ROOT_INSTALLED/"
     echo "  LaunchAgent:  $LAUNCHD_PLIST"
     echo "  Logs:         $LOG_DIR/"
     if [ "$INSTALLED_BIN" != "$INSTALLED_BIN_PRIMARY" ]; then
@@ -610,6 +697,7 @@ cmd_uninstall() {
   # user moved it from the fallback dir to PATH after install, or vice
   # versa.
   rm -f "$INSTALLED_BIN_PRIMARY" "$INSTALLED_BIN_FALLBACK"
+  rm -rf "$HEALTH_LIB_ROOT_INSTALLED"
   rm -rf "$LOG_DIR"
   echo "Uninstalled."
 }
@@ -689,6 +777,22 @@ cmd_failures() {
   echo "(re-run with: $SCRIPT_NAME failures --last  to print the most recent dump)"
 }
 
+# Read-only observation (ARCH-03 shadow mode): print the validated records
+# of lib/health.sh; nothing is logged, restarted or written.
+cmd_observe() {
+  local out
+  if ! load_health_libs; then
+    echo "$SCRIPT_NAME: not loading the health libraries: $HEALTH_LIB_ERROR" >&2
+    return 2
+  fi
+  out="$(nd_health_observe)"
+  if ! printf '%s\n' "$out" | nd_health_validate; then
+    echo "$SCRIPT_NAME: the observation output is not valid" >&2
+    return 3
+  fi
+  printf '%s\n' "$out"
+}
+
 # ─────────────────────────────── usage / dispatch ──────────────────────────────
 
 usage() {
@@ -703,6 +807,7 @@ Usage: $SCRIPT_NAME <command>
   stop        Pause the timer / unload the LaunchAgent.
   status      Show schedule state + last 5 log entries.
   run         Run a health check now (also called by the timer).
+  observe     Print the observations as TSV (read-only: no log, no action).
   logs        Print the rolling log (one line per run).
   failures    List failure dumps. Add --last to print the most recent.
 
@@ -710,12 +815,19 @@ Logs:
   Linux: \$XDG_STATE_HOME/$SCRIPT_NAME or ~/.local/state/$SCRIPT_NAME/
   macOS: ~/Library/Logs/$SCRIPT_NAME/
 
-What it checks:
-  1. /etc/resolv.conf still names 127.0.0.1
-  2. pi-hole, unbound, and tor-{haproxy|socat} containers are running
-  3. dig @127.0.0.1 pi.hole returns an A record (FTL alive)
-  4. dig @127.0.0.1 cloudflare.com returns a real A record (chain works)
-  5. dig @127.0.0.1 doubleclick.net returns 0.0.0.0 (gravity blocks)
+What it checks (lib/health.sh; Pi-hole is 127.0.0.1 on Linux and
+172.31.240.250 on macOS):
+  runtime        the runtime CLI answers; pi-hole, unbound and
+                 tor-{haproxy|socat} are running
+  dns-owner      the host resolves through nice-dns (Linux: resolv.conf
+                 names only 127.0.0.1; macOS: every enabled network service
+                 and scutil's resolver #1 use 172.31.240.250)
+  local-service  pi.hole has an A record (FTL alive)
+  filtering      doubleclick.net is sinkholed to 0.0.0.0
+  local-cache    Pi-hole answers cloudflare.com (may be cached; not upstream)
+  route:<id>     each route in routes/providers.tsv answers an authenticated
+                 probe; chain-resolves fails when none does
+Results are healthy, unhealthy or indeterminate (could not be observed).
 EOF
 }
 
@@ -729,6 +841,7 @@ main() {
     stop)       cmd_stop "$@" ;;
     status)     cmd_status "$@" ;;
     run)        cmd_run "$@" ;;
+    observe)    cmd_observe "$@" ;;
     logs)       cmd_logs "$@" ;;
     failures)   cmd_failures "$@" ;;
     -h|--help|help|"") usage ;;

@@ -21,3 +21,4 @@ integration	transport-interaction	tests/integration/transport-interaction.sh	loc
 integration	route-transition	tests/integration/route-transition.sh	local
 integration	probe-contract	tests/integration/probe-contract.sh	local
 integration	transport-transitions	tests/integration/transport-matrix.sh	local
+unit	observations	tests/unit/observations.sh	local
