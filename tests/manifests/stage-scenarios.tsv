@@ -325,5 +325,7 @@ require	plan:controller	OP-CHAIN-CACHE-NOT-UPSTREAM	integration	controller-inter
 require	plan:controller	OP-CHAIN-ACK-READY	integration	controller-interaction	t_observed_outage_restart_is_acknowledged_then_ready	tests/integration/controller-interaction.sh
 require	plan:controller	OP-CHAIN-UNKNOWN-NO-ACTION	integration	controller-interaction	t_unanswerable_probes_never_act	tests/integration/controller-interaction.sh
 require	plan:controller	OP-READY-CORROBORATED	integration	recovery-actions	t_readiness_is_per_request_and_corroborated_by_unbound	tests/integration/recovery-actions.sh
-count	plan:controller	14
+require	plan:controller	OP-LIVE-CACHE-NOT-UPSTREAM	live	controller-shadow	t_4_whole_outage	tests/live/controller-shadow.sh
+require	plan:controller	OP-LIVE-EVIDENCE-PRIVATE	live	controller-shadow	t_5_evidence_is_private	tests/live/controller-shadow.sh
+count	plan:controller	16
 owner	plan:controller	controller

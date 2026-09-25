@@ -150,3 +150,5 @@ OP-READY-CORROBORATED	REC-ACK-READINESS	integration	recovery-actions	t_readiness
 OP-CHAIN-CACHE-NOT-UPSTREAM	EVD-CACHE-NOT-UPSTREAM	integration	controller-interaction	t_cached_answer_never_hides_an_upstream_outage	controller
 OP-CHAIN-ACK-READY	REC-ACK-READINESS	integration	controller-interaction	t_observed_outage_restart_is_acknowledged_then_ready	controller
 OP-CHAIN-UNKNOWN-NO-ACTION	EVD-FAILURES-COUNTED	integration	controller-interaction	t_unanswerable_probes_never_act	controller
+OP-LIVE-CACHE-NOT-UPSTREAM	EVD-CACHE-NOT-UPSTREAM	live	controller-shadow	t_4_whole_outage	controller
+OP-LIVE-EVIDENCE-PRIVATE	PRIV-NO-SECRETS	live	controller-shadow	t_5_evidence_is_private	controller

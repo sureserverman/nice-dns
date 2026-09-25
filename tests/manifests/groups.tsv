@@ -27,3 +27,4 @@ integration	recovery-actions	tests/integration/recovery-actions.sh	local
 integration	controller-interaction	tests/integration/controller-interaction.sh	local
 integration	scheduling	tests/integration/scheduling.sh	local
 integration	bridge-lifecycle	tests/integration/bridge-lifecycle.sh	local
+live	controller-shadow	tests/live/controller-shadow.sh	live

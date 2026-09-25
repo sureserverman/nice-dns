@@ -579,3 +579,87 @@ t_collect_refused_by_the_collector_is_exit_2() {
   tg collect lin1 --targets "$CASE_DIR/targets.env" --workload cold --count 1 --identity "$CASE_DIR/identity.tsv"
   assert_rc 2 "$TG_RC" "collector refusal surfaces as refused (2), not failed (1): $TG_OUT"
 }
+
+# ─── controller operations (Sub-plan 3, Task 2.3) ────────────────────────────
+
+t_controller_ops_need_snapshot_and_allow_listed_values() {
+  local sha psha v w
+  sha="$(git -C "$NICE_DNS_ROOT" rev-parse HEAD)"
+  psha="$(git -C "$NICE_DNS_ROOT/../tor-haproxy" rev-parse HEAD)"
+  tg_setup
+  for v in "quiesce-agents" "build-proxy --component tor-haproxy --source-sha $psha" "recreate-proxy --component tor-haproxy" \
+           "install-controller --source-sha $sha --mode shadow" "fault-route --component tor-haproxy --route cloudflare-onion" \
+           "heal-route --component tor-haproxy --route cloudflare-onion"; do
+    : >"$FAKE_LOG"
+    read -r -a w <<<"$v"
+    tg "${w[0]}" lin1 --targets "$CASE_DIR/targets.env" "${w[@]:1}"
+    assert_nonzero "$TG_RC" "${v%% *} without a snapshot"
+    assert_match 'snapshot' "$TG_OUT" "${v%% *}: the refusal names the snapshot"
+    assert_eq 0 "$(tg_sent)" "${v%% *}: nothing sent without a snapshot"
+  done
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  for v in "build-proxy --component unbound --source-sha $psha" "build-proxy --component tor-haproxy --source-sha $sha" \
+           "build-proxy --component tor-haproxy --source-sha main" "build-proxy --component tor-haproxy" \
+           "recreate-proxy --component pi-hole" "recreate-proxy --component tor-socat;id" \
+           "install-controller --source-sha $sha" "install-controller --source-sha $sha --mode bogus" \
+           "install-controller --source-sha $psha --mode active" "install-controller --mode shadow" \
+           "fault-route --component tor-haproxy --route cloudflare-legacy" "fault-route --component tor-haproxy --route x;id" \
+           "fault-route --component unbound --route quad9-exit" "fault-route --component tor-haproxy" \
+           "quiesce-agents --component tor-haproxy" "probe --mode shadow" "probe --route quad9-exit"; do
+    : >"$FAKE_LOG"
+    read -r -a w <<<"$v"
+    tg "${w[0]}" lin1 --targets "$CASE_DIR/targets.env" "${w[@]:1}"
+    assert_rc 2 "$TG_RC" "[$v] refused: $TG_OUT"
+    assert_eq 0 "$(tg_sent)" "nothing sent for [$v]"
+  done
+  : >"$FAKE_LOG"
+  tg install-controller lin1 --targets "$CASE_DIR/targets.env" --source-sha "$sha" --mode shadow
+  assert_rc 0 "$TG_RC" "install-controller after snapshot: $TG_OUT"
+  assert_match "NICE_DNS_OP=install-controller NICE_DNS_COMPONENT= NICE_DNS_FREEZE_MAX=900 NICE_DNS_ROUTE= NICE_DNS_MODE=shadow NICE_DNS_SOURCE_SHA=$sha " "$(cat "$FAKE_LOG")" "sent as data words"
+  : >"$FAKE_LOG"
+  tg fault-route lin1 --targets "$CASE_DIR/targets.env" --component tor-socat --route cloudflare-onion
+  assert_rc 0 "$TG_RC" "fault-route after snapshot: $TG_OUT"
+  assert_match "NICE_DNS_OP=fault-route NICE_DNS_COMPONENT=tor-socat NICE_DNS_FREEZE_MAX=900 NICE_DNS_ROUTE=cloudflare-onion " "$(cat "$FAKE_LOG")" "fault sent with the dead-man maximum"
+}
+
+t_proxy_bundle_decodes_to_the_pinned_sibling_tree() {
+  local psha d="$CASE_DIR/src"
+  psha="$(git -C "$NICE_DNS_ROOT/../tor-haproxy" rev-parse HEAD)"
+  sed -n '/^BUNDLE_EOF=/p; /^proxy_bundle() {/,/^}/p' "$TG" >"$CASE_DIR/fn.sh"
+  PSIB="$NICE_DNS_ROOT/../tor-haproxy" i_sha="$psha" bash -c '. "$1"; proxy_bundle' _ "$CASE_DIR/fn.sh" >"$CASE_DIR/bundle.sh"
+  assert_rc 0 $? "bundle generated"
+  TMPDIR="$CASE_DIR" sh -c '. "$1"; mkdir "$2" && tar -xzf "$ND_PROXY_TGZ" -C "$2"' _ "$CASE_DIR/bundle.sh" "$d"
+  assert_rc 0 $? "bundle decodes and unpacks"
+  assert_eq "$(git -C "$NICE_DNS_ROOT/../tor-haproxy" show "$psha:Dockerfile" | cksum)" "$(cksum <"$d/Dockerfile")" "content is the pinned commit's"
+  assert_no_path "$d/bridge-eval/bridge-eval" "the untracked local binary is not sent (the image builds bridge-eval from source)"
+}
+
+t_controller_report_is_read_only_and_holds_no_secrets() {
+  local plat
+  for plat in Linux Darwin; do
+    tg_setup
+    tg_remote_tools "$plat"
+    if [ "$plat" = Darwin ]; then
+      tg_targets 'mac1	macos	mac1-ssh	SHA256:AAAAtestfingerprintAAAAAAAAAAAAAAAAAAAAAAAA	disposable	2026-09-22'
+      tg controller-report mac1 --targets "$CASE_DIR/targets.env"
+    else
+      tg controller-report lin1 --targets "$CASE_DIR/targets.env"
+    fi
+    assert_rc 0 "$TG_RC" "$plat: controller-report: $TG_OUT"
+    assert_match '^section	install$' "$TG_OUT" "$plat: install section"
+    assert_match '^section	ticks$' "$TG_OUT" "$plat: tick lines section"
+    assert_match '^section	journal-shadow$' "$TG_OUT" "$plat: shadow journal section"
+    assert_match '^section	bridges$' "$TG_OUT" "$plat: bridge set section (a hash, never the lines)"
+    assert_not_match '(^| )(stop|start|restart|kill|rm|delete|kickstart|bootout|load|unload|enable|disable|build|tag|tick|run|install) ' "$(grep -v '^keygen ' "$FAKE_LOG" | grep -v 'NICE_DNS_OP=')" \
+      "$plat: controller-report never changes anything"
+  done
+  assert_match 'nd_br_redact|redact' "$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG")" "the report output is redacted at the source"
+}
+
+t_quiesce_stops_only_the_legacy_mutating_agents() {
+  local script
+  script="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG")"
+  assert_match 'org\.nice-dns\.health org\.nice-dns\.bridge-eval org\.nice-dns\.health-bridges' "$script" "macOS: the old controller and both bridge agents"
+  assert_match 'nice-dns-health\.timer nice-dns-health-bridges\.timer' "$script" "Linux: the controller and bridge timers"
+  assert_not_match 'bootout[^;]*start-container|bootout[^;]*debug-monitor' "$script" "the stack's own starter and the read-only debug monitor keep running"
+}

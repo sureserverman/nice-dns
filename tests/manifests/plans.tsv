@@ -16,3 +16,4 @@ controller	integration	recovery-actions
 controller	integration	controller-interaction
 controller	integration	scheduling
 controller	integration	bridge-lifecycle
+controller	live	controller-shadow

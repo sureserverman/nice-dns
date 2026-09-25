@@ -51,6 +51,35 @@
 #                    --hardened-sha SHA must equal this checkout's sibling
 #                    ../pi-hole-hardened HEAD, whose `git archive` is sent
 #                    inline and unpacked next to the clone.
+#   quiesce-agents   stop the schedules that could mutate the stack beside the
+#                    controller under test: macOS org.nice-dns.health (the old
+#                    30-minute run), org.nice-dns.bridge-eval and
+#                    org.nice-dns.health-bridges (launchctl bootout; the
+#                    plists stay); Linux nice-dns-health.timer and
+#                    nice-dns-health-bridges.timer (stopped). The stack's own
+#                    starter and the read-only debug monitor keep running.
+#   build-proxy      build --component's image on the target from the sibling
+#                    checkout's `git archive` of --source-sha (sent inline) as
+#                    nice-dns-candidate/<component>:<sha12> and tag it as the
+#                    published docker.io/sureserver/<component>:latest the
+#                    stack runs; prints the previous and the candidate image
+#   recreate-proxy   recreate --component through the stack's own path (Linux
+#                    its quadlet service; macOS the start-container agent,
+#                    which rebuilds the whole stack) and wait for a new start
+#   install-controller
+#                    install health/nice-dns-health from this checkout's
+#                    `git archive` of --source-sha, --mode shadow|active
+#   fault-route      make one identity route (--route cloudflare-onion|
+#                    cloudflare-exit|quad9-exit) of --component fail while
+#                    every other route works: tor-haproxy puts its servers in
+#                    maintenance, tor-socat SIGSTOPs its listener; a detached
+#                    timer heals it after NICE_DNS_FREEZE_MAX_SECS
+#   heal-route       undo fault-route
+#   controller-report
+#                    read-only: the controller's install receipt, tick lines,
+#                    state and journals (active and shadow), the bridge set's
+#                    hash (never its lines), the proxy generation, the HAProxy
+#                    summary lines and one `observe`; redacted at the source
 #
 # Targets file: TSV data, never sourced; owned by the user, not a symlink and
 # not group/world-writable. One row per target:
@@ -84,7 +113,8 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell quiesce-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report'
+FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
 ND_CHECKOUT="$(cd "$(dirname "$0")/../.." && pwd -P)"
@@ -98,10 +128,10 @@ if [ "$op" != validate ]; then
   [ $# -gt 0 ] && shift
   case "$alias_" in ''|-*) die "usage: target.sh $op ALIAS --targets FILE" ;; esac
 fi
-targets='' component='' c_workload='' c_count='' c_timeout=5000 c_pause=0 c_identity='' i_cell='' i_sha='' i_hsha=''
+targets='' component='' c_workload='' c_count='' c_timeout=5000 c_pause=0 c_identity='' i_cell='' i_sha='' i_hsha='' i_route='' i_mode=''
 while [ $# -gt 0 ]; do
   case "$1" in
-    --targets|--component|--workload|--count|--timeout-ms|--pause-ms|--identity|--cell|--source-sha|--hardened-sha)
+    --targets|--component|--workload|--count|--timeout-ms|--pause-ms|--identity|--cell|--source-sha|--hardened-sha|--route|--mode)
       [ $# -ge 2 ] || die "option $1 needs a value"
       case "$1" in
         --targets) targets="$2" ;;
@@ -114,6 +144,8 @@ while [ $# -gt 0 ]; do
         --cell) i_cell="$2" ;;
         --hardened-sha) i_hsha="$2" ;;
         --source-sha) i_sha="$2" ;;
+        --route) i_route="$2" ;;
+        --mode) i_mode="$2" ;;
       esac
       shift 2 ;;
     *) die "unknown option '$1'" ;;
@@ -123,9 +155,12 @@ done
 if [ "$op" != collect ] && [ -n "$c_workload$c_count$c_identity" ]; then
   die "--workload/--count/--identity are only valid for collect"
 fi
-if [ "$op" != install-cell ] && [ -n "$i_cell$i_sha$i_hsha" ]; then
-  die "--cell/--source-sha/--hardened-sha are only valid for install-cell"
+if [ "$op" != install-cell ] && [ -n "$i_cell$i_hsha" ]; then
+  die "--cell/--hardened-sha are only valid for install-cell"
 fi
+case "$op" in install-cell|build-proxy|install-controller) ;; *) [ -z "$i_sha" ] || die "--source-sha is only valid for install-cell, build-proxy and install-controller" ;; esac
+case "$op" in fault-route|heal-route) ;; *) [ -z "$i_route" ] || die "--route is only valid for fault-route and heal-route" ;; esac
+[ "$op" = install-controller ] || [ -z "$i_mode" ] || die "--mode is only valid for install-controller"
 
 # ─── targets file (data only) ────────────────────────────────────────────────
 
@@ -174,12 +209,27 @@ load_targets "$targets"
 [ "$op" = validate ] && exit 0
 
 case "$op" in
-  sever-upstream|heal-upstream|freeze-upstream|thaw-upstream)
+  sever-upstream|heal-upstream|freeze-upstream|thaw-upstream|build-proxy|recreate-proxy|fault-route|heal-route)
     case " $UPSTREAM_COMPONENTS " in
       *" $component "*) [ -n "$component" ] || die "--component is required" ;;
       *) die "component '$component' is not an upstream component (allowed: $UPSTREAM_COMPONENTS)" ;;
     esac ;;
-  *) [ -z "$component" ] || die "--component is only valid for sever/heal/freeze/thaw-upstream" ;;
+  *) [ -z "$component" ] || die "--component is only valid for sever/heal/freeze/thaw-upstream, build/recreate-proxy and fault/heal-route" ;;
+esac
+case "$op" in
+  fault-route|heal-route)
+    case " $FAULT_ROUTES " in
+      *" $i_route "*) [ -n "$i_route" ] || die "--route is required" ;;
+      *) die "route '$i_route' cannot be faulted (allowed: $FAULT_ROUTES)" ;;
+    esac ;;
+  build-proxy)
+    [[ "$i_sha" =~ ^[0-9a-f]{40}$ ]] || die "build-proxy needs --source-sha <40-hex commit of the $component sibling>"
+    PSIB="$(cd "$ND_CHECKOUT/.." && pwd -P)/$component"
+    [ "$(git -C "$PSIB" cat-file -t "$i_sha" 2>/dev/null)" = commit ] || die "--source-sha $i_sha is not a commit in $PSIB" ;;
+  install-controller)
+    [[ "$i_sha" =~ ^[0-9a-f]{40}$ ]] || die "install-controller needs --source-sha <40-hex nice-dns commit>"
+    [ "$(git -C "$ND_CHECKOUT" cat-file -t "$i_sha" 2>/dev/null)" = commit ] || die "--source-sha $i_sha is not a commit in $ND_CHECKOUT"
+    case "$i_mode" in shadow|active) ;; *) die "install-controller needs --mode shadow|active" ;; esac ;;
 esac
 
 # collect parameters travel as NAME=value words in the ssh command, so every
@@ -309,7 +359,8 @@ remote_run() {
 
 build_payload() {
   if [ "$op" = collect ]; then remote_bundle || return 1; fi
-  if [ "$op" = install-cell ]; then source_bundle || return 1; fi
+  if [ "$op" = install-cell ] || [ "$op" = install-controller ]; then source_bundle || return 1; fi
+  if [ "$op" = build-proxy ]; then proxy_bundle || return 1; fi
   if [ "$op" = install-cell ] && [ -n "$i_hsha" ]; then hardened_bundle || return 1; fi
   remote_script
 }
@@ -334,6 +385,15 @@ source_bundle() {
   printf '%s\n' 'ND_SOURCE_TGZ=$(mktemp "${TMPDIR:-/tmp}/nice-dns-source.XXXXXX") || exit 1' \
     "{ base64 -d 2>/dev/null || base64 -D; } >\"\$ND_SOURCE_TGZ\" <<'$BUNDLE_EOF'"
   ( set -o pipefail; git -C "$ND_CHECKOUT" archive --format=tar "$i_sha" | gzip -9 | base64 ) || return 1
+  printf '%s\n' "$BUNDLE_EOF"
+}
+
+proxy_bundle() {
+  # The proxy sibling at the pinned commit (tracked files only: never the
+  # untracked local bridge-eval binary), base64 tar.gz, into ND_PROXY_TGZ.
+  printf '%s\n' 'ND_PROXY_TGZ=$(mktemp "${TMPDIR:-/tmp}/nice-dns-proxy.XXXXXX") || exit 1' \
+    "{ base64 -d 2>/dev/null || base64 -D; } >\"\$ND_PROXY_TGZ\" <<'$BUNDLE_EOF'"
+  ( set -o pipefail; git -C "$PSIB" archive --format=tar "$i_sha" | gzip -9 | base64 ) || return 1
   printf '%s\n' "$BUNDLE_EOF"
 }
 
@@ -408,6 +468,22 @@ health_tool() {
     [ -x "$t" ] && { printf '%s\n' "$t"; return 0; }
   done
   return 1
+}
+# redact: no bridge certificate or fingerprint leaves the target.
+redact() {
+  sed -E -e 's#cert=[A-Za-z0-9+/=]+#cert=<redacted>#g' \
+    -e 's/(^|[^0-9A-Fa-f])[0-9A-F]{40}([^0-9A-Fa-f]|$)/\1<fingerprint>\2/g'
+}
+homebrew_path() { PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$PATH"; export PATH; }
+# started <container>: its start time (changes on every recreate), or nothing.
+started() {
+  if [ "$plat" = macos ]; then ctl list --all | awk -v c="$1" '$1 == c && $5 == "running" { print $NF }'
+  else ctl inspect "$1" --format '{{.Id}} {{.State.StartedAt}}' 2>/dev/null; fi
+}
+image_of() {
+  if [ "$plat" = macos ]; then
+    ctl inspect "$1" 2>/dev/null | tr ',' '\n' | sed -n 's/.*"digest"[[:space:]]*:[[:space:]]*"\(sha256:[0-9a-f]*\)".*/\1/p' | head -1
+  else ctl inspect "$1" --format '{{.Image}}' 2>/dev/null; fi
 }
 tor_states() {
   # One process-state letter per tor pid in the proxy container (T = stopped).
@@ -510,7 +586,17 @@ case "$NICE_DNS_OP" in
     else
       launchctl list | awk '/nice-dns/ { printf "health\tlaunchd:%s\tlast_exit=%s\tpid=%s\n", $3, $2, $1 }'
     fi
-    if t=$(health_tool); then
+    if t=$(health_tool) && "$t" help 2>/dev/null | grep -q '^  observe '; then
+      # A controller-era tool: `run` is an active controller pass (it may
+      # switch a route or repair the runtime), so only the read-only
+      # observe runs, judged as `run` would log it.
+      o=$("$t" observe </dev/null 2>/dev/null); rc=$?
+      last=$(printf '%s\n' "$o" | awk -F '\t' '$1 == "obs" && $3 == "unhealthy" { printf "%s%s", s, $2; s = " " }
+        $1 == "obs" && $2 ~ /^route:/ { r++; if ($3 == "healthy") ok++ }
+        END { if (r > 0 && ok == 0) printf "%schain-resolves", s }')
+      if [ "$rc" -eq 0 ] && [ -z "$last" ]; then v=pass; else v=fail; [ "$rc" -eq 0 ] && rc=1; fi
+      printf 'health\tnice-dns-health\t%s\trc=%s failed=[%s]\n' "$v" "$rc" "$last"
+    elif t=$(health_tool); then
       # A huge grace keeps the tool's own recovery path unreachable: it logs only.
       NICE_DNS_RESTART_GRACE_SECS=2147483647 "$t" run </dev/null >/dev/null 2>&1; rc=$?
       last=$(tail -n 1 "$HEALTH_LOG" 2>/dev/null | sed -n 's/.*\(\[[^]]*\]\).*/\1/p')
@@ -594,6 +680,173 @@ case "$NICE_DNS_OP" in
     fi
     printf 'finished_utc\t%s\ninstaller_exit\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc"
     exit $rc ;;
+  quiesce-agents)
+    if [ "$plat" = macos ]; then
+      for l in org.nice-dns.health org.nice-dns.bridge-eval org.nice-dns.health-bridges; do
+        if launchctl list "$l" >/dev/null 2>&1; then
+          launchctl bootout "gui/$(id -u)/$l"; printf 'quiesced\t%s\trc=%s\n' "$l" "$?"
+        else printf 'absent\t%s\n' "$l"; fi
+      done
+      launchctl list | awk '$3 ~ /^org\.nice-dns\./ { printf "loaded\t%s\n", $3 }'
+    else
+      for u in nice-dns-health.timer nice-dns-health-bridges.timer; do
+        if systemctl --user is-active --quiet "$u"; then
+          systemctl --user stop "$u"; printf 'quiesced\t%s\trc=%s\n' "$u" "$?"
+        else printf 'absent\t%s\n' "$u"; fi
+      done
+      systemctl --user list-units --plain --no-legend --all 'nice-dns*' | awk '{ printf "unit\t%s\t%s\n", $1, $4 }'
+    fi ;;
+  build-proxy)
+    c="$NICE_DNS_COMPONENT"
+    [ "$plat" = macos ] && { homebrew_path; C=$(command -v container); }
+    [ -s "${ND_PROXY_TGZ:-}" ] || { echo "build without the proxy source archive" >&2; exit 2; }
+    cand="nice-dns-candidate/$c:$(printf '%s' "$NICE_DNS_SOURCE_SHA" | cut -c1-12)"
+    [ "$plat" = linux ] && cand="localhost/$cand"
+    pub="docker.io/sureserver/$c:latest"
+    if [ "$plat" = macos ]; then
+      printf 'previous\t%s\t%s\n' "$pub" "$(ctl image inspect "$pub" 2>/dev/null | tr ',' '\n' | sed -n 's/.*"digest"[[:space:]]*:[[:space:]]*"\(sha256:[0-9a-f]*\)".*/\1/p' | head -1)"
+      have() { ctl image inspect "$cand" >/dev/null 2>&1; }
+    else
+      printf 'previous\t%s\t%s\n' "$pub" "$(podman image inspect "$pub" --format '{{.Id}}' 2>/dev/null)"
+      have() { podman image exists "$cand"; }
+    fi
+    if have; then
+      printf 'build\t%s\tcached\n' "$cand"
+    else
+      w=$(mktemp -d "$HOME/.nice-dns-harness-build.XXXXXX") || exit 1
+      trap 'rm -rf "$w"' EXIT
+      tar -xzf "$ND_PROXY_TGZ" -C "$w" || exit 1
+      rm -f "$ND_PROXY_TGZ"
+      if [ "$plat" = macos ]; then (cd "$w" && ctl build --progress plain -t "$cand" .) </dev/null >"$w.log" 2>&1
+      else podman build --format docker -t "$cand" "$w" </dev/null >"$w.log" 2>&1; fi
+      rc=$?
+      tail -n 5 "$w.log"; rm -f "$w.log"
+      [ "$rc" -eq 0 ] || { echo "build of $cand failed" >&2; exit 1; }
+      printf 'build\t%s\tbuilt\n' "$cand"
+    fi
+    if [ "$plat" = macos ]; then
+      ctl image tag "$cand" "$pub" || exit 1
+      printf 'candidate\t%s\t%s\n' "$cand" "$(ctl image inspect "$pub" 2>/dev/null | tr ',' '\n' | sed -n 's/.*"digest"[[:space:]]*:[[:space:]]*"\(sha256:[0-9a-f]*\)".*/\1/p' | head -1)"
+    else
+      podman tag "$cand" "$pub" || exit 1
+      printf 'candidate\t%s\t%s\n' "$cand" "$(podman image inspect "$pub" --format '{{.Id}}')"
+    fi ;;
+  recreate-proxy)
+    c="$NICE_DNS_COMPONENT"
+    [ "$plat" = macos ] && homebrew_path
+    before=$(started "$c")
+    printf 'before\t%s\t%s\n' "$c" "${before:--}"
+    if [ "$plat" = macos ]; then
+      # Removing the proxy leaves the chain broken, so start-container.sh
+      # takes its full recreate path (its fast path needs a healthy chain).
+      ctl stop "$c" >/dev/null 2>&1; ctl delete "$c" >/dev/null 2>&1
+      launchctl kickstart -k "gui/$(id -u)/org.nice-dns.start-container" || exit 1
+    else
+      systemctl --user restart "$c.service" || exit 1
+    fi
+    i=0
+    while [ "$i" -lt 120 ]; do
+      now=$(started "$c")
+      if [ -n "$now" ] && [ "$now" != "$before" ]; then
+        printf 'after\t%s\t%s\nimage\t%s\t%s\n' "$c" "$now" "$c" "$(image_of "$c")"
+        exit 0
+      fi
+      sleep 5; i=$((i + 1))
+    done
+    echo "$c did not start again within 600 s" >&2
+    exit 1 ;;
+  install-controller)
+    [ "$plat" = macos ] && homebrew_path
+    [ -s "${ND_SOURCE_TGZ:-}" ] || { echo "install without the nice-dns source archive" >&2; exit 2; }
+    w=$(mktemp -d "$HOME/.nice-dns-harness-ctl.XXXXXX") || exit 1
+    trap 'rm -rf "$w"' EXIT
+    tar -xzf "$ND_SOURCE_TGZ" -C "$w" || exit 1
+    rm -f "$ND_SOURCE_TGZ"
+    chmod -R go-w "$w"
+    if [ "$NICE_DNS_MODE" = shadow ]; then bash "$w/health/nice-dns-health" install --shadow </dev/null 2>&1
+    else bash "$w/health/nice-dns-health" install </dev/null 2>&1; fi
+    rc=$?
+    if [ "$plat" = macos ]; then r="$HOME/Library/Application Support/nice-dns-health/install.tsv"
+    else r="${XDG_DATA_HOME:-$HOME/.local/share}/nice-dns-health/install.tsv"; fi
+    sed 's/^/receipt	/' "$r" 2>/dev/null
+    exit $rc ;;
+  fault-route|heal-route)
+    c="$NICE_DNS_COMPONENT"
+    running "$c" || { echo "$c is not running" >&2; exit 1; }
+    case "$NICE_DNS_ROUTE" in
+      cloudflare-onion) be=route_cloudflare_onion sv=onion port=18531 ;;
+      cloudflare-exit) be=route_cloudflare_exit sv='cf1 cf2' port=18532 ;;
+      quad9-exit) be=route_quad9_exit sv='q1 q2' port=18533 ;;
+      *) echo "unknown route" >&2; exit 2 ;;
+    esac
+    if [ "$c" = tor-haproxy ]; then
+      if [ "$NICE_DNS_OP" = fault-route ]; then verb=disable; else verb=enable; fi
+      # Dead-man heal, started before the fault, whatever happens here.
+      [ "$verb" = disable ] && nohup sh -c 'sleep "$1"; shift; exec "$@"' nice-dns-route-watchdog "$NICE_DNS_FREEZE_MAX" \
+        "$C" exec "$c" sh -c "for s in $sv; do printf 'enable server $be/%s\\n' \"\$s\" | socat -t 5 - UNIX-CONNECT:/tmp/haproxy.sock; done" </dev/null >/dev/null 2>&1 &
+      [ "$verb" = enable ] && pkill -f nice-dns-route-watchdog 2>/dev/null
+      for s in $sv; do
+        ctl_exec "$c" sh -c 'printf "%s\n" "$1" | socat -t 5 - UNIX-CONNECT:/tmp/haproxy.sock' sh "$verb server $be/$s" || exit 1
+      done
+      ctl_exec "$c" sh -c 'printf "%s\n" "$1" | socat -t 5 - UNIX-CONNECT:/tmp/haproxy.sock' sh "show servers state $be" |
+        awk -v b="$be" '$2 == b { printf "server\t%s/%s\tadmin=%s\n", b, $4, $7 }'
+    else
+      # The route's listener: the socat whose argv binds the port and whose
+      # parent is not a socat (forked children share the argv).
+      pid=$(ctl_exec "$c" sh -c 'for p in $(pgrep -x socat); do
+          tr "\000" " " </proc/$p/cmdline | grep -q "TCP4-LISTEN:$1," || continue
+          pp=$(awk "{ print \$4 }" /proc/$p/stat); [ "$(cat /proc/$pp/comm 2>/dev/null)" = socat ] || echo $p
+        done' sh "$port")
+      [ "$(printf '%s\n' "$pid" | grep -c '^[0-9][0-9]*$')" = 1 ] || { echo "expected one $port listener, got: $pid" >&2; exit 1; }
+      if [ "$NICE_DNS_OP" = fault-route ]; then
+        nohup sh -c 'sleep "$1"; "$2" exec "$3" kill -CONT "$4"' nice-dns-route-watchdog "$NICE_DNS_FREEZE_MAX" "$C" "$c" "$pid" </dev/null >/dev/null 2>&1 &
+        ctl_exec "$c" kill -STOP "$pid" || exit 1
+      else
+        ctl_exec "$c" kill -CONT "$pid"; rc=$?
+        pkill -f nice-dns-route-watchdog 2>/dev/null
+        [ "$rc" -eq 0 ] || exit 1
+      fi
+      printf 'listener\t%s\tstate=%s\n' "$port" "$(ctl_exec "$c" awk '{ print $3 }' "/proc/$pid/stat")"
+    fi ;;
+  controller-report)
+    [ "$plat" = macos ] && homebrew_path
+    if [ "$plat" = macos ]; then
+      data="$HOME/Library/Application Support/nice-dns-health"; st="$HOME/Library/Application Support/nice-dns/controller"
+      lg="$HOME/Library/Logs/nice-dns-health/health.log"
+    else
+      data="${XDG_DATA_HOME:-$HOME/.local/share}/nice-dns-health"; st="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/controller"
+      lg="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-health/health.log"
+    fi
+    {
+      identity
+      printf 'now\t%s\n' "$(date +%s)"
+      printf 'section\tinstall\n'; cat "$data/install.tsv" 2>/dev/null
+      printf 'section\tticks\n'; grep -E ' (TICK|controller) ' "$lg" 2>/dev/null | tail -n 400
+      printf 'section\tstate-active\n'; cat "$st/state.tsv" 2>/dev/null
+      printf 'section\tstate-shadow\n'; cat "$st/shadow/state.tsv" 2>/dev/null
+      printf 'section\tjournal-active\n'; tail -n 200 "$st/recovery.tsv" 2>/dev/null
+      printf 'section\tjournal-shadow\n'; tail -n 200 "$st/shadow/recovery.tsv" 2>/dev/null
+      printf 'section\tbridges\n'
+      bf="${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges.env"
+      bl=$(grep -E '^BRIDGE[0-9]+=obfs4 [0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]{1,5} [0-9A-F]{40} cert=[A-Za-z0-9+/=]+ iat-mode=[0-2]$' "$bf" 2>/dev/null | sed 's/^BRIDGE[0-9]*=//' | LC_ALL=C sort -u)
+      if [ -n "$bl" ]; then printf 'set\t%s\t%s\n' "$(printf '%s\n' "$bl" | grep -c .)" "$(printf '%s\n' "$bl" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-16)"
+      else printf 'set\t0\tnone\n'; fi
+      printf 'section\tproxy\n'
+      for c in tor-haproxy tor-socat; do
+        running "$c" || continue
+        printf 'proxy\t%s\t%s\t%s\n' "$c" "$(started "$c")" "$(image_of "$c")"
+        printf 'tor_state\t%s\n' "$(tor_states "$c")"
+      done
+      printf 'section\tsummary\n'
+      if running tor-haproxy; then
+        if [ "$plat" = macos ]; then ctl logs tor-haproxy 2>/dev/null; else ctl logs tor-haproxy 2>&1; fi | grep '^backends ' >"${TMPDIR:-/tmp}/nd-sum.$$"
+        printf 'count\t%s\n' "$(grep -c . "${TMPDIR:-/tmp}/nd-sum.$$")"
+        tail -n 3 "${TMPDIR:-/tmp}/nd-sum.$$" | sed 's/^/line	/'
+        rm -f "${TMPDIR:-/tmp}/nd-sum.$$"
+      fi
+      printf 'section\tobserve\n'
+      if t=$(health_tool); then "$t" observe </dev/null 2>&1; fi
+    } | redact ;;
   sever-upstream) ctl stop "$NICE_DNS_COMPONENT" ;;
   heal-upstream) ctl start "$NICE_DNS_COMPONENT" ;;
   restore)
@@ -654,7 +907,7 @@ case "$op" in
     } >"$STATE/receipt.tsv"
     log_op 0
     printf 'snapshot %s -> %s\n' "$alias_" "$STATE/snapshot.tsv" ;;
-  config|health)
+  config|health|controller-report)
     # Read-only; the output starts with the identity lines, which are checked.
     preconnect_guards
     probe_identity "$op"
@@ -666,7 +919,7 @@ case "$op" in
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|quiesce-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"
@@ -683,7 +936,7 @@ case "$op" in
       done
       remote_run "NICE_DNS_OP=restore NICE_DNS_COMPONENTS='${names# }'"; rc=$?
     else
-      remote_run "NICE_DNS_OP=$op NICE_DNS_COMPONENT=$component NICE_DNS_FREEZE_MAX=$freeze_max"; rc=$?
+      remote_run "NICE_DNS_OP=$op NICE_DNS_COMPONENT=$component NICE_DNS_FREEZE_MAX=$freeze_max NICE_DNS_ROUTE=$i_route NICE_DNS_MODE=$i_mode NICE_DNS_SOURCE_SHA=$i_sha"; rc=$?
     fi
     log_op "$rc"
     [ "$rc" -eq 0 ] || exit 1 ;;
