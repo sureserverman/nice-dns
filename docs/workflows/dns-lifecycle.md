@@ -6,13 +6,13 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the
 - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)
   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.
 - Baseline source: this repository at commit
-  `e81697fd6f07cd0f0f3c673ec42be969271daaa1`. Citations are `path:line` at that commit.
+  `6bf29f3829e25a063e3e453ae0ba39c5a2e13e44`. Citations are `path:line` at that commit.
   The eight-cell baseline receipt measured b85bc9b. The document was first
   written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,
   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02
   re-pins after each change to a cited file (Task 1.1: 04b98cf, Unbound
   anchor and control; Task 1.3: d6c1a1f, Pi-hole HealthCmd; Stage 1 gate: 80d6c18, control refusal; Task 2.1: 9e71d32, route include; Task 2.3: bc846b2, Unbound WORKDIR; Stage 2 gate: 94a9c60, route resolution check). Sub-plan 03 re-pins the same
-  way (Task 1.1: ba144fd, health observations and platform adapters; Task 1.2: e81697f, state directory and boot identity appended to the platform adapters). `check-contracts` fails when a cited file changes
+  way (Task 1.1: ba144fd, health observations and platform adapters; Task 1.2: e81697f, state directory and boot identity appended to the platform adapters; Task 1.3: 6bf29f3, acknowledged recovery). `check-contracts` fails when a cited file changes
   after this commit.
 - Checked by `bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md`.
   The check needs every workflow ID below, every operation ID in
@@ -138,12 +138,12 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   `nice-dns-route.invalid.` TXT marker through the control socket, then
   resolves through the new forwarder with a fresh TLS session
   (`nice-dns-unbound-start probe-route`, unbound/start.sh:211-227; the cache
-  cannot answer it) (lib/recovery.sh:272-332). A route that does not resolve
+  cannot answer it) (lib/recovery.sh:317-377). A route that does not resolve
   is rolled back. A failure after the rename restores the
   previous include the same way; if that also fails the result is
   `escalate` and the forward-zone stays in place. An unchanged route is not
   reloaded. `reconcile_route` finishes an interrupted change
-  (lib/recovery.sh:334-360). The Linux adapter uses 127.0.0.1, the macOS
+  (lib/recovery.sh:379-405). The Linux adapter uses 127.0.0.1, the macOS
   adapter 172.31.240.252 (lib/platform/linux.sh:15, lib/platform/macos.sh:17).
   Deployments do not mount a route directory yet, so the image default runs
   until a later sub-plan wires the mount [PRIV-ROUTE-IDENTITY]. On macOS
@@ -178,7 +178,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   unverified. The proxy config lives in the sibling repos and was not read
   here. Since Sub-plan 3 Task 1.1 its recovery comment names the routes of
   routes/providers.tsv and a Cloudflare-only legacy :853
-  (health/nice-dns-health:406-413).
+  (health/nice-dns-health:408-415).
 - Unbound validates against the root anchor in
   `auto-trust-anchor-file: "/var/lib/unbound/root.key"`
   (unbound/etc/unbound.conf:30-34). That directory is persistent state owned
@@ -225,7 +225,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   `doubleclick.net`, plus `pi.hole` (lib/health.sh:421-423). Route probes pass
   no query name, so the image probe asks its default `.` SOA
   (lib/health.sh:355-408). Its failure dump copies the last 50 log lines of
-  every container (health/nice-dns-health:295-296). Whether those lines can contain client
+  every container (health/nice-dns-health:298-299). Whether those lines can contain client
   query names is baseline: unverified [PRIV-NO-QUERY-HISTORY].
 
 ### Platform notes
@@ -288,12 +288,12 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   installer. It is installed by hand (health/nice-dns-health:14). Whether it
   runs on a deployed host is baseline: unverified.
 - Schedule: a systemd user timer with `OnBootSec=2min` and
-  `OnUnitActiveSec=30min` (health/nice-dns-health:552-553), or launchd
-  `StartInterval` 1800 (health/nice-dns-health:579-580).
-- Grace is `RESTART_GRACE_SECS` = 300 (health/nice-dns-health:417). With
+  `OnUnitActiveSec=30min` (health/nice-dns-health:531-532), or launchd
+  `StartInterval` 1800 (health/nice-dns-health:558-559).
+- Grace is `RESTART_GRACE_SECS` = 300 (health/nice-dns-health:419). With
   30-minute polling, the first action comes on the second failing run, about
   30 minutes after onset. It cannot be five-minute recovery.
-- The checks are the lib/health.sh observations (health/nice-dns-health:218).
+- The checks are the lib/health.sh observations (health/nice-dns-health:221).
   Until Sub-plan 3 Task 1.1 both platforms read /etc/resolv.conf and queried
   `@127.0.0.1`. Now the platform adapter picks Pi-hole's endpoint: 127.0.0.1
   on Linux (lib/platform/linux.sh:36) and 172.31.240.250 on macOS
@@ -304,26 +304,41 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   with unit fakes built from captured macOS output. Whether it passes on a
   live Mac is baseline: unverified.
 - The action is `nice-dns-fetch-bridges --force`
-  (health/nice-dns-health:505-508). Then it runs
-  `<runtime> exec tor-<variant> touch /tmp/tor-restart-flag`
-  (health/nice-dns-health:448). A successful exec is logged as "triggered"
-  (health/nice-dns-health:511-512). There is no acknowledgement check
-  [REC-ACK-READINESS]. The outage marker is removed right after the action
-  (health/nice-dns-health:525). No readiness check follows. The design notes
-  that tor-socat has no consumer for that flag. baseline: unverified here,
-  because it is sibling source.
-- If the exec cannot run, the fallback is
-  `systemctl --user restart tor-<variant>.service` or
-  `launchctl kickstart -k` of the start-container agent
-  (health/nice-dns-health:455-470).
-- The only persisted state is the outage marker
-  (health/nice-dns-health:415). nice-dns-health keeps no lock and no cooldown.
+  (health/nice-dns-health:482-485). Then, under the controller's state lock
+  (health/nice-dns-health:488), `request_recovery tor` asks the proxy image
+  for an acknowledged restart (health/nice-dns-health:493). Since Sub-plan 3
+  Task 1.3 the old `touch /tmp/tor-restart-flag`, logged as "triggered"
+  without any answer, is gone. request_recovery writes the request into the
+  image's `/app/data/control` and counts it done only on the image's answer
+  with a newer Tor generation and a different pid (lib/recovery.sh:475-524,
+  lib/recovery.sh:517) [REC-ACK-READINESS]. The run log records the result
+  (acknowledged, not-acknowledged, unsupported or unreachable). The outage
+  marker is removed after the action (health/nice-dns-health:504).
+- When the image cannot acknowledge, one service-level restart follows
+  (health/nice-dns-health:496, lib/recovery.sh:543-562). It counts only when
+  the container comes back with a new start. On Linux it restarts the proxy
+  alone with `systemctl --user restart tor-<variant>.service`
+  (lib/platform/linux.sh:134). On macOS it is `launchctl kickstart -k` of the
+  start-container agent, which recreates the whole stack
+  (lib/platform/macos.sh:200). The deployed Mac's published proxy image has
+  no `/app/data/control` (observed 2026-09-25), so there the request is
+  unsupported and the stack restart runs.
+- The `run` path persists only the outage marker
+  (health/nice-dns-health:417) and holds the state lock
+  (lib/state.sh:203) around the restart. It keeps no cooldown and commits no
+  controller state. The new `tick` command (lib/recovery.sh:652-684) is the
+  controller pass: observe, decide (lib/policy.sh), act, commit, with the
+  journal's requested, acknowledged and, on a later pass, ready or not-ready
+  phases (lib/recovery.sh:625-643). The schedules still call `run`; Sub-plan
+  3 Task 2.1 moves them to `tick`.
 - On macOS the start-container agent and bridge-eval share a `mkdir` stack lock
   (mac/start-container.sh:57, mac/start-container.sh:247, mac/start-container.sh:509).
   A holder whose stored PID fails `kill -0` is taken over. After a crash, a reused
   PID in that persistent state file blocks the start for up to 600 s. Two waiters
-  can also both take over a dead holder. This is carried to Sub-plan 3
-  (state.sh owns locks) [REC-ACK-READINESS].
+  can also both take over a dead holder. lib/state.sh now provides the
+  controller lock (boot, pid and lease staleness, compare-and-delete;
+  lib/state.sh:203). mac/start-container.sh moves to it with the installed
+  bundle (Sub-plan 3 Task 2.1) [REC-ACK-READINESS].
 - Cache masking: Unbound serves expired answers for up to 24 h
   (unbound/etc/unbound.conf:99-101). dnsmasq has `use-stale-cache=3600`
   (pihole/etc/dnsmasq.conf:58). Until Sub-plan 3 Task 1.1 the `chain-resolves`
@@ -335,7 +350,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   and the proxy `healthy` while 0/5 uncached queries were answered and 5/5
   cached ones were. No restart fired. Every macOS cell answered cached names
   the same way. Now `chain-resolves` fails when no route answers an
-  authenticated probe and at least one fails (health/nice-dns-health:242-244,
+  authenticated probe and at least one fails (health/nice-dns-health:245-247,
   lib/health.sh:355-408). The Pi-hole answer is a separate `local-cache`
   observation (lib/health.sh:301-305). unit/observations proves the split
   with fakes; on live hosts it is baseline: unverified.
