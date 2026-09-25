@@ -724,8 +724,15 @@ case "$NICE_DNS_OP" in
         # exception (PRIV-BOOTSTRAP-DECLARED: image pulls, never client
         # queries), and is stopped afterwards; recreate-proxy's
         # start-container run repairs the datapath.
+        # The host's image service fetches the base images, and the wedge
+        # takes the host's DNS too: pull them first, while it answers.
+        : >"$w.log"
+        for im in $(awk '$1 == "FROM" { for (i = 2; i <= NF; i++) if ($i !~ /^--/) { print $i; break } }' "$w/Dockerfile" | sort -u); do
+          case "$im" in */*) ;; *) im="docker.io/library/$im" ;; esac
+          ctl image pull "$im" </dev/null >>"$w.log" 2>&1 || { tail -n 3 "$w.log"; echo "pull of $im failed" >&2; exit 1; }
+        done
         ctl builder stop >/dev/null 2>&1
-        ctl builder start --dns 1.1.1.1 </dev/null >"$w.log" 2>&1
+        ctl builder start --dns 1.1.1.1 </dev/null >>"$w.log" 2>&1
         (cd "$w" && ctl build --progress plain -t "$cand" .) </dev/null >>"$w.log" 2>&1
         rc=$?
         ctl builder stop >/dev/null 2>&1

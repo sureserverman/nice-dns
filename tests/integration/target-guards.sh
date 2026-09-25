@@ -675,5 +675,8 @@ t_macos_build_uses_its_own_resolver_and_stops_the_builder() {
   script="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG" | sed -n '/^  build-proxy)/,/;;$/p')"
   assert_match 'ctl builder start --dns 1\.1\.1\.1' "$script" "macOS: the builder gets its own resolver"
   assert_match 'ctl builder stop' "$script" "macOS: the builder is stopped after the build"
+  assert_match 'ctl image pull' "$script" "macOS: the base images are pulled before the builder starts (the host fetches them, and the wedge takes the host's DNS)"
+  [ "$(printf '%s\n' "$script" | grep -n 'ctl image pull' | head -1 | cut -d: -f1)" -lt "$(printf '%s\n' "$script" | grep -n 'ctl builder start' | head -1 | cut -d: -f1)" ] \
+    || fail "the pull comes before the builder starts"
   assert_match 'PRIV-BOOTSTRAP-DECLARED' "$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG")" "the exception is declared where it is made"
 }
