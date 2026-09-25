@@ -75,6 +75,16 @@
 #                    maintenance, tor-socat SIGSTOPs its listener; a detached
 #                    timer heals it after NICE_DNS_FREEZE_MAX_SECS
 #   heal-route       undo fault-route
+#   thaw-on-request  wait (up to NICE_DNS_FREEZE_MAX_SECS) until the image
+#                    claims the controller's restart request, then SIGCONT
+#                    the frozen tor of --component: its pending TERM ends it
+#                    and the image respawns it (the in-image acknowledged
+#                    restart); after the wait it thaws anyway and fails
+#   wedge-runtime    macOS: start a container on the default network (the
+#                    observed trigger of the dnsnet wedge); Linux: stop
+#                    pi-hole.service (the stack's containers go missing)
+#   heal-runtime     remove the macOS wedge container (Linux: nothing to undo)
+#   bridges-refresh  run the installed controller's bridges-refresh now
 #   controller-report
 #                    read-only: the controller's install receipt, tick lines,
 #                    state and journals (active and shadow), the bridge set's
@@ -113,7 +123,7 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell quiesce-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell quiesce-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh'
 FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
@@ -209,12 +219,12 @@ load_targets "$targets"
 [ "$op" = validate ] && exit 0
 
 case "$op" in
-  sever-upstream|heal-upstream|freeze-upstream|thaw-upstream|build-proxy|recreate-proxy|fault-route|heal-route)
+  sever-upstream|heal-upstream|freeze-upstream|thaw-upstream|build-proxy|recreate-proxy|fault-route|heal-route|thaw-on-request)
     case " $UPSTREAM_COMPONENTS " in
       *" $component "*) [ -n "$component" ] || die "--component is required" ;;
       *) die "component '$component' is not an upstream component (allowed: $UPSTREAM_COMPONENTS)" ;;
     esac ;;
-  *) [ -z "$component" ] || die "--component is only valid for sever/heal/freeze/thaw-upstream, build/recreate-proxy and fault/heal-route" ;;
+  *) [ -z "$component" ] || die "--component is only valid for sever/heal/freeze/thaw-upstream, build/recreate-proxy, fault/heal-route and thaw-on-request" ;;
 esac
 case "$op" in
   fault-route|heal-route)
@@ -834,6 +844,45 @@ case "$NICE_DNS_OP" in
       fi
       printf 'listener\t%s\tstate=%s\n' "$port" "$(ctl_exec "$c" awk '{ print $3 }' "/proc/$pid/stat")"
     fi ;;
+  thaw-on-request)
+    c="$NICE_DNS_COMPONENT"; i=0
+    while [ "$i" -lt "$NICE_DNS_FREEZE_MAX" ]; do
+      # The image claims a request (tor-restart-request -> tor-restart-pending)
+      # before it sends TERM; a frozen tor holds that TERM until it is thawed.
+      if ctl_exec "$c" sh -c 'test -e /app/data/control/tor-restart-pending || test -e /app/data/control/tor-restart-request' 2>/dev/null; then
+        ctl_exec "$c" pkill -CONT -x tor
+        pkill -f nice-dns-freeze-watchdog 2>/dev/null
+        printf 'thawed\t%s\n' "$i"
+        exit 0
+      fi
+      sleep 1; i=$((i + 1))
+    done
+    ctl_exec "$c" pkill -CONT -x tor
+    echo "no restart request in $c within ${NICE_DNS_FREEZE_MAX}s; thawed anyway" >&2
+    exit 1 ;;
+  wedge-runtime)
+    if [ "$plat" = macos ]; then
+      homebrew_path
+      # Any container on the default network; the image is one the proxy
+      # build pulled (alpine), run for at most the freeze maximum.
+      ctl run -d --name nice-dns-wedge docker.io/library/alpine:3.23.4 sleep "$NICE_DNS_FREEZE_MAX" </dev/null || exit 1
+    else
+      systemctl --user stop pi-hole.service || exit 1
+    fi
+    printf 'wedged\t%s\n' "$(date +%s)" ;;
+  heal-runtime)
+    if [ "$plat" = macos ]; then
+      homebrew_path
+      ctl delete --force nice-dns-wedge >/dev/null 2>&1
+    fi
+    printf 'healed\t%s\n' "$(date +%s)" ;;
+  bridges-refresh)
+    [ "$plat" = macos ] && homebrew_path
+    t=$(health_tool) || { echo "no installed controller" >&2; exit 1; }
+    o=$(mktemp "${TMPDIR:-/tmp}/nd-br.XXXXXX") || exit 1
+    "$t" bridges-refresh </dev/null >"$o" 2>&1; rc=$?
+    redact <"$o"; rm -f "$o"
+    exit "$rc" ;;
   controller-report)
     [ "$plat" = macos ] && homebrew_path
     if [ "$plat" = macos ]; then
@@ -945,7 +994,7 @@ case "$op" in
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|quiesce-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|quiesce-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"

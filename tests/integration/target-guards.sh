@@ -692,3 +692,61 @@ t_dead_man_timers_never_hold_the_ssh_session() {
   assert_eq "" "$(printf '%s\n' "$script" | grep -nE '(&&|\|\|)[[:space:]]*nohup')" "no nohup after && or ||"
   assert_eq "" "$(printf '%s\n' "$script" | grep -n 'nohup' | grep -vE '^[0-9]+:[[:space:]]*nohup ')" "every nohup is the first word of its line"
 }
+
+t_activation_ops_need_snapshot_and_allow_listed_values() {
+  # Sub-plan 3 Task 2.3, the test-only activation faults: thaw Tor when the
+  # controller's restart request lands (the in-image acknowledged path),
+  # wedge and heal the runtime, and run the daily bridge refresh now.
+  local v w
+  tg_setup
+  for v in "thaw-on-request --component tor-haproxy" "wedge-runtime" "heal-runtime" "bridges-refresh"; do
+    : >"$FAKE_LOG"
+    read -r -a w <<<"$v"
+    tg "${w[0]}" lin1 --targets "$CASE_DIR/targets.env" "${w[@]:1}"
+    assert_nonzero "$TG_RC" "${w[0]} without a snapshot"
+    assert_match 'snapshot' "$TG_OUT" "${w[0]}: the refusal names the snapshot"
+    assert_eq 0 "$(tg_sent)" "${w[0]}: nothing sent without a snapshot"
+  done
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  for v in "thaw-on-request" "thaw-on-request --component unbound" "wedge-runtime --component tor-haproxy" "bridges-refresh --route quad9-exit"; do
+    : >"$FAKE_LOG"
+    read -r -a w <<<"$v"
+    tg "${w[0]}" lin1 --targets "$CASE_DIR/targets.env" "${w[@]:1}"
+    assert_rc 2 "$TG_RC" "[$v] refused: $TG_OUT"
+    assert_eq 0 "$(tg_sent)" "nothing sent for [$v]"
+  done
+  : >"$FAKE_LOG"
+  tg thaw-on-request lin1 --targets "$CASE_DIR/targets.env" --component tor-socat
+  assert_rc 0 "$TG_RC" "thaw-on-request after snapshot: $TG_OUT"
+  assert_match 'NICE_DNS_OP=thaw-on-request NICE_DNS_COMPONENT=tor-socat NICE_DNS_FREEZE_MAX=900 ' "$(cat "$FAKE_LOG")" "sent with its maximum wait"
+}
+
+t_activation_ops_do_what_they_say() {
+  local script op
+  script="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG")"
+  op="$(printf '%s\n' "$script" | sed -n '/^  thaw-on-request)/,/;;$/p')"
+  assert_match 'tor-restart-pending' "$op" "thaw-on-request waits for the image to claim the controller's request"
+  assert_match 'pkill -CONT -x tor' "$op" "and then thaws Tor, whose pending TERM ends it"
+  op="$(printf '%s\n' "$script" | sed -n '/^  wedge-runtime)/,/;;$/p')"
+  assert_match 'run -d --name nice-dns-wedge' "$op" "macOS: a container on the default network (the observed wedge trigger)"
+  assert_match 'systemctl --user stop pi-hole\.service' "$op" "Linux: the stack's containers go missing"
+  op="$(printf '%s\n' "$script" | sed -n '/^  heal-runtime)/,/;;$/p')"
+  assert_match 'delete --force nice-dns-wedge' "$op" "macOS: the wedge container is removed"
+  op="$(printf '%s\n' "$script" | sed -n '/^  bridges-refresh)/,/;;$/p')"
+  assert_match '"\$t" bridges-refresh' "$op" "bridges-refresh runs the installed controller's refresh"
+  assert_match 'redact <' "$op" "and its output is redacted"
+  assert_not_match 'PIPESTATUS' "$script" "the remote script is /bin/sh (dash on Linux): no PIPESTATUS"
+}
+
+t_remote_script_is_posix_sh() {
+  # The remote script runs as `/bin/sh -s`: dash on Linux, bash-as-sh on
+  # macOS. Bash-only syntax (PIPESTATUS, [[ ]], arrays) silently misbehaves
+  # under dash.
+  sed -n "/^remote_script() {/,/^SH\$/p" "$TG" | sed '1,2d;$d' >"$CASE_DIR/remote.sh"
+  assert_match 'NICE_DNS_OP' "$(cat "$CASE_DIR/remote.sh")" "extracted the remote script"
+  if command -v dash >/dev/null 2>&1; then
+    dash -n "$CASE_DIR/remote.sh"; assert_rc 0 $? "dash parses the remote script"
+  fi
+  shellcheck -s sh -S warning "$CASE_DIR/remote.sh" >"$CASE_DIR/sc.txt" 2>&1
+  assert_rc 0 $? "shellcheck as POSIX sh: $(head -n 5 "$CASE_DIR/sc.txt")"
+}
