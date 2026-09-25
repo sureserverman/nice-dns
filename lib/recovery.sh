@@ -760,9 +760,10 @@ nd_recovery_tick() {
       # The last result row: after a fallback, the fallback's outcome.
       result="$(awk -F '\t' '$1 == "result" { r = $2 } END { print r }' "$t/apply")"; [ -n "$result" ] || result="exit-$rc"
     fi
-    # A route is recorded as selected only once it was applied; otherwise the
-    # previous one stays, and the next pass decides the switch again.
-    if [ "$act" = switch-route ] && { [ "$mode" = shadow ] || [ "$result" != applied ]; }; then
+    # A route is recorded as selected only once apply_route succeeded (exit 0:
+    # applied, or unchanged when it already ran); otherwise the previous one
+    # stays, and the next pass decides the switch again.
+    if [ "$act" = switch-route ] && { [ "$mode" = shadow ] || [ "$result" = unmanaged ] || [ "$rc" -ne 0 ]; }; then
       [ "$mode" = shadow ] || awk -F '\t' -v r="$(_nd_rec_field route "$t/state")" 'BEGIN { OFS = "\t" } $1 == "route" { $2 = r } { print }' "$t/next" >"$t/next.2" && mv "$t/next.2" "$t/next"
     fi
   fi

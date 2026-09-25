@@ -546,3 +546,22 @@ t_two_processes_racing_one_tick_wins() {
   assert_ne busy "$a" "the first process acts: $(cat "$CASE_DIR/tick.1")"
   assert_eq 1 "$(grep -c ' exec tor-haproxy sh -c ' "$FAKE_LOG")" "one restart request written in total"
 }
+
+# apply_route is replaced; nd_recovery_apply calls it.
+# shellcheck disable=SC2329
+t_tick_records_a_route_that_already_runs() {
+  local out
+  ra_fake linux
+  ra_route_state
+  ra_obs_onion_down "$CASE_DIR/o"
+  mkdir -m 700 "$ND_ROUTE_DIR"
+  # The exit already runs (for example seeded at install): apply_route
+  # succeeds with nothing to reload.
+  apply_route() { echo "$1" >>"$CASE_DIR/applied"; printf 'result\tunchanged\nroute\t%s\n' "$1"; return 0; }
+  out="$(nd_recovery_tick active "$CASE_DIR/o")"
+  assert_eq unchanged "$(ra_field result "$out")" "reported unchanged"
+  assert_eq cloudflare-exit "$(nd_state_load | awk -F '\t' '$1 == "route" { print $2 }')" "a route that already runs is recorded"
+  out="$(nd_recovery_tick active "$CASE_DIR/o")"
+  assert_eq no-op "$(ra_field action "$out")" "and the next pass does not decide the switch again"
+  assert_eq 1 "$(wc -l <"$CASE_DIR/applied" | tr -d ' ')" "apply_route ran once"
+}
