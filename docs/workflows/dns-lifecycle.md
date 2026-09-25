@@ -6,12 +6,13 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the
 - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)
   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.
 - Baseline source: this repository at commit
-  `94a9c604b6c71be1f887a3d063e4e06c38bc4bd1`. Citations are `path:line` at that commit.
+  `ba144fd6c2062ac8e71a08a260fc9b3ecec4d9ad`. Citations are `path:line` at that commit.
   The eight-cell baseline receipt measured b85bc9b. The document was first
   written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,
   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02
   re-pins after each change to a cited file (Task 1.1: 04b98cf, Unbound
-  anchor and control; Task 1.3: d6c1a1f, Pi-hole HealthCmd; Stage 1 gate: 80d6c18, control refusal; Task 2.1: 9e71d32, route include; Task 2.3: bc846b2, Unbound WORKDIR; Stage 2 gate: 94a9c60, route resolution check). `check-contracts` fails when a cited file changes
+  anchor and control; Task 1.3: d6c1a1f, Pi-hole HealthCmd; Stage 1 gate: 80d6c18, control refusal; Task 2.1: 9e71d32, route include; Task 2.3: bc846b2, Unbound WORKDIR; Stage 2 gate: 94a9c60, route resolution check). Sub-plan 03 re-pins the same
+  way (Task 1.1: ba144fd, health observations and platform adapters). `check-contracts` fails when a cited file changes
   after this commit.
 - Checked by `bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md`.
   The check needs every workflow ID below, every operation ID in
@@ -171,11 +172,13 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   forwards to `172.31.240.252@853` (install-mac.sh:227-229).
 - Provider identity is mixed today. The default route authenticates
   `tor.cloudflare-dns.com` (unbound/route/forward-route.conf:17). The health script
-  describes the proxy backends as the onion primary, a 1.1.1.1 backup and a
-  9.9.9.9 fallback via Tor exit (health/nice-dns-health:353-356). A Quad9
-  backend would receive a Cloudflare-named TLS session. That breaks
-  [PRIV-ROUTE-IDENTITY]. baseline: unverified. The proxy config lives in the
-  sibling repos and was not read here.
+  used to describe the proxy backends as the onion primary, a 1.1.1.1 backup
+  and a 9.9.9.9 fallback via Tor exit. A Quad9 backend there would receive a
+  Cloudflare-named TLS session. That breaks [PRIV-ROUTE-IDENTITY]. baseline:
+  unverified. The proxy config lives in the sibling repos and was not read
+  here. Since Sub-plan 3 Task 1.1 its recovery comment names the routes of
+  routes/providers.tsv and a Cloudflare-only legacy :853
+  (health/nice-dns-health:406-413).
 - Unbound validates against the root anchor in
   `auto-trust-anchor-file: "/var/lib/unbound/root.key"`
   (unbound/etc/unbound.conf:30-34). That directory is persistent state owned
@@ -218,10 +221,11 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   The stated reason is bootstrap (deb/quadlet/nice-dns.pod:7-11). This is
   container-level traffic, not client traffic. Which in-pod processes use it
   at runtime is baseline: unverified [PRIV-BOOTSTRAP-DECLARED].
-- The health check probes real public names: `cloudflare.com` and
-  `doubleclick.net` (health/nice-dns-health:193, health/nice-dns-health:204).
-  Its failure dump copies the last 50 log lines of every container
-  (health/nice-dns-health:246-247). Whether those lines can contain client
+- The health observations probe fixed public names: `cloudflare.com` and
+  `doubleclick.net`, plus `pi.hole` (lib/health.sh:421-423). Route probes pass
+  no query name, so the image probe asks its default `.` SOA
+  (lib/health.sh:355-408). Its failure dump copies the last 50 log lines of
+  every container (health/nice-dns-health:295-296). Whether those lines can contain client
   query names is baseline: unverified [PRIV-NO-QUERY-HISTORY].
 
 ### Platform notes
@@ -281,34 +285,39 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
 ### Current baseline (observed in source)
 
 - No installer installs the health checker. `nice-dns-health` appears in no
-  installer. It is installed by hand (health/nice-dns-health:11). Whether it
+  installer. It is installed by hand (health/nice-dns-health:14). Whether it
   runs on a deployed host is baseline: unverified.
 - Schedule: a systemd user timer with `OnBootSec=2min` and
-  `OnUnitActiveSec=30min` (health/nice-dns-health:496-497), or launchd
-  `StartInterval` 1800 (health/nice-dns-health:523-524).
-- Grace is `RESTART_GRACE_SECS` = 300 (health/nice-dns-health:361). With
+  `OnUnitActiveSec=30min` (health/nice-dns-health:552-553), or launchd
+  `StartInterval` 1800 (health/nice-dns-health:579-580).
+- Grace is `RESTART_GRACE_SECS` = 300 (health/nice-dns-health:417). With
   30-minute polling, the first action comes on the second failing run, about
   30 minutes after onset. It cannot be five-minute recovery.
-- The checks use the same logic on both platforms. They require
-  `nameserver 127.0.0.1` in /etc/resolv.conf (health/nice-dns-health:149-157)
-  and query `@127.0.0.1` (health/nice-dns-health:130). On macOS, Pi-hole is at
-  172.31.240.250 (mac/start-container.sh:24). Whether these checks can pass on
-  macOS is baseline: unverified.
+- The checks are the lib/health.sh observations (health/nice-dns-health:218).
+  Until Sub-plan 3 Task 1.1 both platforms read /etc/resolv.conf and queried
+  `@127.0.0.1`. Now the platform adapter picks Pi-hole's endpoint: 127.0.0.1
+  on Linux (lib/platform/linux.sh:36) and 172.31.240.250 on macOS
+  (lib/platform/macos.sh:41, mac/start-container.sh:24). DNS ownership is
+  resolv.conf naming only 127.0.0.1 on Linux (lib/platform/linux.sh:74-85).
+  On macOS, every enabled network service and scutil's resolver #1 must use
+  172.31.240.250 (lib/platform/macos.sh:102-139). The macOS path is proven
+  with unit fakes built from captured macOS output. Whether it passes on a
+  live Mac is baseline: unverified.
 - The action is `nice-dns-fetch-bridges --force`
-  (health/nice-dns-health:449-452). Then it runs
+  (health/nice-dns-health:505-508). Then it runs
   `<runtime> exec tor-<variant> touch /tmp/tor-restart-flag`
-  (health/nice-dns-health:392). A successful exec is logged as "triggered"
-  (health/nice-dns-health:455-456). There is no acknowledgement check
+  (health/nice-dns-health:448). A successful exec is logged as "triggered"
+  (health/nice-dns-health:511-512). There is no acknowledgement check
   [REC-ACK-READINESS]. The outage marker is removed right after the action
-  (health/nice-dns-health:469). No readiness check follows. The design notes
+  (health/nice-dns-health:525). No readiness check follows. The design notes
   that tor-socat has no consumer for that flag. baseline: unverified here,
   because it is sibling source.
 - If the exec cannot run, the fallback is
   `systemctl --user restart tor-<variant>.service` or
   `launchctl kickstart -k` of the start-container agent
-  (health/nice-dns-health:399-414).
+  (health/nice-dns-health:455-470).
 - The only persisted state is the outage marker
-  (health/nice-dns-health:359). nice-dns-health keeps no lock and no cooldown.
+  (health/nice-dns-health:415). nice-dns-health keeps no lock and no cooldown.
 - On macOS the start-container agent and bridge-eval share a `mkdir` stack lock
   (mac/start-container.sh:57, mac/start-container.sh:247, mac/start-container.sh:509).
   A holder whose stored PID fails `kill -0` is taken over. After a crash, a reused
@@ -317,14 +326,19 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   (state.sh owns locks) [REC-ACK-READINESS].
 - Cache masking: Unbound serves expired answers for up to 24 h
   (unbound/etc/unbound.conf:99-101). dnsmasq has `use-stale-cache=3600`
-  (pihole/etc/dnsmasq.conf:58). The `chain-resolves` check on `cloudflare.com`
-  (health/nice-dns-health:193-201) can therefore pass while the upstream is
-  down. This is the BL-018 blind spot [EVD-CACHE-NOT-UPSTREAM]. Reproduced by
+  (pihole/etc/dnsmasq.conf:58). Until Sub-plan 3 Task 1.1 the `chain-resolves`
+  check read `cloudflare.com` through Pi-hole, so it could pass while the
+  upstream was down. This is the BL-018 blind spot [EVD-CACHE-NOT-UPSTREAM].
+  Reproduced by
   the baseline receipt (run 20260923T214611Z-a97c6844): with tor stopped in
   the proxy container for 120 s, every Linux quadlet cell kept pi-hole, unbound
   and the proxy `healthy` while 0/5 uncached queries were answered and 5/5
   cached ones were. No restart fired. Every macOS cell answered cached names
-  the same way.
+  the same way. Now `chain-resolves` fails when no route answers an
+  authenticated probe and at least one fails (health/nice-dns-health:242-244,
+  lib/health.sh:355-408). The Pi-hole answer is a separate `local-cache`
+  observation (lib/health.sh:301-305). unit/observations proves the split
+  with fakes; on live hosts it is baseline: unverified.
 - Linux container health checks only test that a port is open: `nc -z` on
   853 and 5335 (deb/quadlet/tor-haproxy.container:54,
   deb/quadlet/unbound.container:22). Pi-hole's check is a `pi.hole` lookup
@@ -522,7 +536,7 @@ Sources: ARCH-07, design "Bridge lifecycle".
   container start (deb/quadlet/tor-haproxy.container:23). A changed selection
   takes effect only on the next container start.
 - Health recovery runs `nice-dns-fetch-bridges --force`
-  (health/nice-dns-health:449-452). That installed script is the raw Moat
+  (health/nice-dns-health:505-508). That installed script is the raw Moat
   fetcher (deb/persistent-podman.sh:130). It writes the same `bridges.env`
   that bridge-eval writes its evaluated set to
   (scripts/fetch-bridges.sh:49-51, deb/persistent-podman.sh:163). Recovery can
