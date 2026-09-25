@@ -279,7 +279,7 @@ cs_restart_intent() {
 }
 
 cs_whole() {
-  local plat="$1" a="$2" d proxy g0 f=0 cache=""
+  local plat="$1" a="$2" d proxy g0 f=0 cache="" os
   d="$(cs_dir "$a")"
   cs_report "$a" whole-0 || fail "$a: report"
   proxy="$(cs_proxy "$d/whole-0.tsv")"; g0="$(cs_gen "$d/whole-0.tsv")"
@@ -295,11 +295,16 @@ cs_whole() {
   cs_t "$a" thaw-upstream --component "$proxy" >>"$d/freeze.log" 2>&1 || fail "$a: thaw-upstream: $(cat "$d/freeze.log")"
   [ "$f" -ne 1 ] || fail "$a: the routes were never all observed down with Tor frozen"
   [ "$f" -ne 2 ] || fail "$a: no shadow Tor restart intent within 12 minutes: $(cs_journal "$d/whole-2.tsv" "$CS_SINCE")"
-  assert_match '^[0-9]+$' "$(cs_field "$d/whole-1.tsv" state-shadow outage_since)" "$a: the outage clock runs whatever the cache answers (local-cache: $cache)"
+  # The clock starts on the first pass after the routes went down (the
+  # sample itself may precede that pass by up to a minute).
+  os="$(cs_field "$d/whole-2.tsv" state-shadow outage_since)"
+  assert_match '^[0-9]+$' "$os" "$a: the outage clock runs whatever the cache answers (local-cache: $cache)"
+  [ "$os" -le $(( $(cs_now "$d/whole-1.tsv") + 120 )) ] \
+    || fail "$a: the outage clock ($os) started more than one pass after every route was observed down ($(cs_now "$d/whole-1.tsv"))"
   assert_eq "$g0" "$(cs_gen "$d/whole-2.tsv")" "$a: shadow restarted nothing (same proxy generation)"
   assert_match '(^| )T( |$)' "$(cs_field "$d/whole-2.tsv" proxy tor_state)" "$a: Tor stayed frozen until the test thawed it"
   assert_eq "$(cs_sec "$d/whole-0.tsv" journal-active)" "$(cs_sec "$d/whole-2.tsv" journal-active)" "$a: no active journal row"
-  { printf 'local_cache_during_outage\t%s\noutage_since\t%s\n' "$cache" "$(cs_field "$d/whole-1.tsv" state-shadow outage_since)"
+  { printf 'local_cache_during_outage\t%s\noutage_since\t%s\n' "$cache" "$os"
     cs_journal "$d/whole-2.tsv" "$CS_SINCE"; } >"$d/whole-outage.txt"
   cs_wait "$a" whole-3 600 cs_route_up || fail "$a: no route answered within 10 minutes of the thaw"
 }
