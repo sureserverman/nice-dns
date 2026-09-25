@@ -255,9 +255,17 @@ EOF
   fi
 }
 
+# redact_bridges: diagnostics never carry bridge material (PRIV-NO-SECRETS):
+# certificates, fingerprints and bridge addresses are replaced.
+redact_bridges() {
+  sed -E -e 's#cert=[A-Za-z0-9+/=]+#cert=<redacted>#g' \
+    -e 's/[0-9A-Fa-f]{40}/<fingerprint>/g' \
+    -e 's/(obfs4|[Bb]ridge[^ ]*( [^ ]+)? at) [0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]+/\1 <address>/g'
+}
+
 # Detailed dump invoked when run_checks reports any failure. Writes one
-# self-contained .log next to the rolling log; older dumps beyond
-# FAILURE_KEEP are pruned.
+# self-contained .log next to the rolling log (every line through
+# redact_bridges); older dumps beyond FAILURE_KEEP are pruned.
 write_failure_dump() {
   local now="$1" tor_variant rt dns_addr
   rt="$(detect_runtime)"
@@ -298,12 +306,20 @@ write_failure_dump() {
       local containers=(pi-hole unbound)
       [ -n "$tor_variant" ] && containers+=("tor-$tor_variant")
       for c in "${containers[@]}"; do
-        echo "=== $rt inspect $c (state) ==="
-        "$rt" inspect "$c" --format \
-          '  status={{.State.Status}} health={{if .State.Healthcheck}}{{.State.Healthcheck.Status}}{{else}}none{{end}} restarts={{.RestartCount}} pid={{.State.Pid}}' 2>&1 \
-          | sed 's/^/  /'
-        echo "=== $rt logs --tail 50 $c ==="
-        "$rt" logs --tail 50 "$c" 2>&1 | sed 's/^/  /'
+        if [ "$IS_LINUX" -eq 1 ]; then
+          echo "=== $rt inspect $c (state) ==="
+          "$rt" inspect "$c" --format \
+            '  status={{.State.Status}} health={{if .State.Healthcheck}}{{.State.Healthcheck.Status}}{{else}}none{{end}} restarts={{.RestartCount}} pid={{.State.Pid}}' 2>&1 \
+            | sed 's/^/  /'
+          echo "=== $rt logs --tail 50 $c ==="
+          "$rt" logs --tail 50 "$c" 2>&1 | sed 's/^/  /'
+        else
+          # Apple container: the state is in the ls table above; its inspect
+          # JSON carries the proxy's BRIDGE environment, so it is not dumped.
+          # Its logs take -n (there is no --tail).
+          echo "=== $rt logs -n 50 $c ==="
+          "$rt" logs -n 50 "$c" 2>&1 | sed 's/^/  /'
+        fi
         echo
       done
     fi
@@ -345,7 +361,7 @@ write_failure_dump() {
         echo
       done < <(networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | grep -v '^\*')
     fi
-  } > "$f" 2>&1
+  } 2>&1 | redact_bridges > "$f"
 
   # Prune older dumps beyond FAILURE_KEEP.
   # shellcheck disable=SC2012
@@ -545,7 +561,8 @@ stage_entrypoint() {
 }
 
 write_systemd_units() {
-  local interp="$1" d="$SYSTEMD_UNIT_DIR"
+  local interp="$1" mode="$2" d="$SYSTEMD_UNIT_DIR" arg=""
+  [ "$mode" = shadow ] && arg=" --shadow"
   mkdir -p "$d" || return 1
   cat >"$d/.$SYSTEMD_SVC.new" <<EOF || return 1
 [Unit]
@@ -554,7 +571,7 @@ After=default.target
 
 [Service]
 Type=oneshot
-ExecStart=$interp $INSTALLED_BIN tick
+ExecStart=$interp $INSTALLED_BIN tick$arg
 # One pass is bounded well inside the controller lock's 600 s lease.
 TimeoutStartSec=$TICK_TIMEOUT_SECS
 EOF
@@ -573,6 +590,10 @@ Unit=$SYSTEMD_SVC
 [Install]
 WantedBy=default.target
 EOF
+  if [ "$mode" = shadow ]; then
+    mv -f "$d/.$SYSTEMD_SVC.new" "$d/$SYSTEMD_SVC" && mv -f "$d/.$SYSTEMD_TIMER.new" "$d/$SYSTEMD_TIMER"
+    return
+  fi
   cat >"$d/.$SYSTEMD_BR_SVC.new" <<EOF || return 1
 [Unit]
 Description=nice-dns daily bridge refresh (evaluate, then adopt at the next proxy start)
@@ -602,7 +623,9 @@ EOF
 }
 
 write_launchd_plist() {
-  local interp="$1"
+  local interp="$1" mode="$2" arg=""
+  [ "$mode" = shadow ] && arg="
+      <string>--shadow</string>"
   mkdir -p "$LAUNCHD_DIR" "$LOG_DIR" || return 1
   cat >"$LAUNCHD_PLIST.new" <<EOF || return 1
 <?xml version="1.0" encoding="UTF-8"?>
@@ -615,7 +638,7 @@ write_launchd_plist() {
     <array>
       <string>$interp</string>
       <string>$INSTALLED_BIN</string>
-      <string>tick</string>
+      <string>tick</string>$arg
     </array>
     <!-- Every minute. An empty calendar interval is all wildcards, and
          launchd starts a calendar job on wake; StartInterval would miss
@@ -637,6 +660,7 @@ write_launchd_plist() {
 </plist>
 EOF
   chmod 644 "$LAUNCHD_PLIST.new" && mv -f "$LAUNCHD_PLIST.new" "$LAUNCHD_PLIST" || return 1
+  [ "$mode" = shadow ] && return 0
   cat >"$LAUNCHD_BR_PLIST.new" <<EOF || return 1
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -674,7 +698,12 @@ EOF
 }
 
 cmd_install() {
-  local interp id prev units old f
+  local interp id prev units old f mode=active
+  case "${1:-}" in
+    --shadow) mode=shadow ;;
+    '') ;;
+    *) echo "$SCRIPT_NAME: install takes only --shadow" >&2; return 2 ;;
+  esac
   [ "$ND_HEALTH_LAYOUT" = checkout ] || { echo "$SCRIPT_NAME: run install from a nice-dns checkout (health/nice-dns-health install)" >&2; return 1; }
   interp="$(health_interpreter)" || return 1
   id="$(build_bundle)" || { echo "$SCRIPT_NAME: install failed: the bundle could not be built" >&2; return 1; }
@@ -694,21 +723,38 @@ cmd_install() {
   old="$(receipt_get bundle 2>/dev/null)"
   prev="${old:--}"; [ "$prev" = "$id" ] && prev="$(receipt_get previous 2>/dev/null)"; prev="${prev:--}"
   if [ "$IS_LINUX" -eq 1 ]; then
-    write_systemd_units "$interp" || { echo "$SCRIPT_NAME: install failed writing the systemd units" >&2; return 1; }
-    units="$SYSTEMD_UNIT_DIR/$SYSTEMD_SVC $SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER $SYSTEMD_UNIT_DIR/$SYSTEMD_BR_SVC $SYSTEMD_UNIT_DIR/$SYSTEMD_BR_TIMER"
+    write_systemd_units "$interp" "$mode" || { echo "$SCRIPT_NAME: install failed writing the systemd units" >&2; return 1; }
+    units="$SYSTEMD_UNIT_DIR/$SYSTEMD_SVC $SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER"
+    if [ "$mode" = shadow ]; then
+      # Observation only: an earlier active install's bridge refresh goes.
+      if [ -e "$SYSTEMD_UNIT_DIR/$SYSTEMD_BR_TIMER" ]; then
+        systemctl --user disable --now "$SYSTEMD_BR_TIMER" 2>/dev/null || true
+        uninstall_owned "$SYSTEMD_UNIT_DIR/$SYSTEMD_BR_TIMER"; uninstall_owned "$SYSTEMD_UNIT_DIR/$SYSTEMD_BR_SVC"
+      fi
+    else
+      units="$units $SYSTEMD_UNIT_DIR/$SYSTEMD_BR_SVC $SYSTEMD_UNIT_DIR/$SYSTEMD_BR_TIMER"
+    fi
     systemctl --user daemon-reload
     systemctl --user enable --now "$SYSTEMD_TIMER"
-    systemctl --user enable --now "$SYSTEMD_BR_TIMER"
+    [ "$mode" = shadow ] || systemctl --user enable --now "$SYSTEMD_BR_TIMER"
   else
-    write_launchd_plist "$interp" || { echo "$SCRIPT_NAME: install failed writing the LaunchAgent" >&2; return 1; }
-    units="$LAUNCHD_PLIST $LAUNCHD_BR_PLIST"
+    write_launchd_plist "$interp" "$mode" || { echo "$SCRIPT_NAME: install failed writing the LaunchAgent" >&2; return 1; }
+    units="$LAUNCHD_PLIST"
     # Reload to pick up edits even if the agent was already loaded.
     launchctl unload "$LAUNCHD_PLIST" 2>/dev/null || true
     launchctl load -w "$LAUNCHD_PLIST"
-    launchctl unload "$LAUNCHD_BR_PLIST" 2>/dev/null || true
-    launchctl load -w "$LAUNCHD_BR_PLIST"
+    if [ "$mode" = shadow ]; then
+      if [ -e "$LAUNCHD_BR_PLIST" ]; then
+        launchctl unload "$LAUNCHD_BR_PLIST" 2>/dev/null || true
+        uninstall_owned "$LAUNCHD_BR_PLIST"
+      fi
+    else
+      units="$units $LAUNCHD_BR_PLIST"
+      launchctl unload "$LAUNCHD_BR_PLIST" 2>/dev/null || true
+      launchctl load -w "$LAUNCHD_BR_PLIST"
+    fi
   fi
-  { printf 'schema\tnice-dns-health-install/1\nbundle\t%s\nprevious\t%s\nentrypoint\t%s\ninterpreter\t%s\n' "$id" "$prev" "$INSTALLED_BIN" "$interp"
+  { printf 'schema\tnice-dns-health-install/1\nbundle\t%s\nprevious\t%s\nentrypoint\t%s\ninterpreter\t%s\nmode\t%s\n' "$id" "$prev" "$INSTALLED_BIN" "$interp" "$mode"
     for f in $units; do printf 'schedule\t%s\n' "$f"; done; } >"$INSTALL_RECEIPT.new" && mv -f "$INSTALL_RECEIPT.new" "$INSTALL_RECEIPT"
   # Keep the current and the previous bundle; remove the rest.
   for f in "${HEALTH_LIB_ROOT_INSTALLED:?}/bundles"/*; do
@@ -718,7 +764,11 @@ cmd_install() {
   echo "Installed."
   echo "  Entrypoint: $INSTALLED_BIN"
   echo "  Bundle:     $HEALTH_LIB_ROOT_INSTALLED/bundles/$id (previous: $prev)"
-  echo "  Schedule:   $units (every minute: $SCRIPT_NAME tick)"
+  if [ "$mode" = shadow ]; then
+    echo "  Schedule:   $units (every minute: $SCRIPT_NAME tick --shadow; records, never acts)"
+  else
+    echo "  Schedule:   $units (every minute: $SCRIPT_NAME tick)"
+  fi
   echo "  Logs:       $LOG_DIR/"
   if [ "$INSTALLED_BIN" != "$INSTALLED_BIN_PRIMARY" ]; then
     echo
@@ -796,6 +846,10 @@ cmd_stop() {
 }
 
 cmd_status() {
+  local mode
+  # A receipt from before modes existed is an active install.
+  if mode="$(receipt_get mode 2>/dev/null)"; then echo "Mode: ${mode:-active}"; else echo "Mode: not installed"; fi
+  echo
   if [ "$IS_LINUX" -eq 1 ]; then
     echo "=== Timer ==="
     systemctl --user list-timers --all --no-pager 2>&1 | grep -E "NEXT|$SYSTEMD_TIMER" || true
@@ -918,7 +972,11 @@ usage() {
   cat <<EOF
 Usage: $SCRIPT_NAME <command>
 
-  install     Install the versioned bundle and run \`tick\` every minute.
+  install [--shadow]
+              Install the versioned bundle and run \`tick\` every minute.
+              --shadow runs \`tick --shadow\` instead (observation only: it
+              records what it would do) and schedules no bridge refresh;
+              a later plain install activates the same schedule in place.
               Linux: systemd --user timer (OnCalendar=minutely).
               macOS: launchd LaunchAgent (StartCalendarInterval, every minute).
   self-check  Check that this copy's libraries load (no stack contact).

@@ -722,3 +722,30 @@ INNER
     assert_not_match "^err-$p: .*(unbound variable|syntax error|command not found|bad substitution)" "$out" "$p: no Bash 3.2 shell error from the CLI"
   done
 }
+
+t_failure_dump_reads_logs_and_holds_no_bridge_material() {
+  # Task 2.3 privacy-safe diagnostics (PRIV-NO-SECRETS): the dump reads each
+  # container's recent log with the platform CLI's own flag and never carries
+  # bridge lines, certificates or fingerprints (Tor's log and, on macOS,
+  # `container inspect`, whose JSON holds the proxy's BRIDGE environment).
+  local plat r d fp=0123456789ABCDEF0123456789ABCDEF01234567
+  ob_setup linux
+  for plat in $(ob_platforms); do
+    ob_platform "$plat"
+    for r in 18531 18532 18533 853; do printf 'no-answer\n' >"$FAKE/probe/$r"; done
+    printf '%s\n' "Sep 25 [notice] Bootstrapped 100% (done): Done" \
+      "Sep 25 [warn] Bridge at obfs4 192.0.2.9:443 $fp cert=AbCdEfGhIjKlMnOpQrStUv0123+/= iat-mode=0 unreachable" \
+      "BRIDGE1=obfs4 192.0.2.10:443 $fp cert=ZyXwVuTsRqPoNmLkJiHg9876+/= iat-mode=0" >"$FAKE/logs"
+    ob_tree
+    ob_cli "$OB_TREE/health/nice-dns-health" run
+    d="$(cat "$(ob_logdir)"/failure-*.log)"
+    assert_match 'Bootstrapped 100%' "$d" "$plat: the dump holds the containers' recent log"
+    assert_not_match 'unknown option' "$d" "$plat: read with the CLI's own tail flag"
+    assert_not_match 'cert=[A-Za-z0-9+/=]{6}' "$d" "$plat: no bridge certificate"
+    assert_not_match "$fp" "$d" "$plat: no bridge fingerprint"
+    assert_not_match '192\.0\.2\.(9|10):443' "$d" "$plat: no bridge address"
+    if [ "$plat" = macos ]; then
+      assert_not_match '^container inspect' "$(cat "$FAKE_LOG")" "macos: the dump never runs container inspect (its JSON holds the BRIDGE environment)"
+    fi
+  done
+}

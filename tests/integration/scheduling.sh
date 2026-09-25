@@ -82,6 +82,53 @@ t_install_schedules_tick_every_minute_and_on_wake() {
   done
 }
 
+t_shadow_install_observes_only_and_activation_switches_in_place() {
+  # Task 2.3 (ARCH-09): a deployment starts in observation mode. The shadow
+  # schedule runs `tick --shadow` every minute and nothing else: no bridge
+  # refresh, which writes bridges.env. A plain install activates the same
+  # unit in place; a later shadow install retires the refresh again.
+  local plat br
+  for plat in $(sc_platforms); do
+    (
+      sc_env "$plat"
+      if [ "$plat" = linux ]; then br="$XDG_CONFIG_HOME/systemd/user/nice-dns-health-bridges.timer"
+      else br="$HOME/Library/LaunchAgents/org.nice-dns.health-bridges.plist"; fi
+      sc_cli "$SC_TREE/health/nice-dns-health" install --bogus
+      assert_rc 2 "$SC_RC" "$plat: an unknown install option is refused"
+      assert_no_path "$SC_UNIT" "$plat: and nothing is written"
+      sc_cli "$SC_TREE/health/nice-dns-health" install --shadow
+      assert_rc 0 "$SC_RC" "$plat: install --shadow: $SC_OUT"
+      assert_eq shadow "$(sc_receipt mode)" "$plat: the receipt records the shadow mode"
+      if [ "$plat" = linux ]; then
+        assert_match "^ExecStart=$(sc_receipt interpreter) $SC_BIN tick --shadow\$" "$(cat "$SC_UNIT")" "linux: the minutely pass only records"
+      else
+        assert_eq "/bin/bash|$SC_BIN|tick|--shadow" \
+          "$("$SC_PY" -c 'import plistlib,sys; print("|".join(plistlib.load(open(sys.argv[1],"rb"))["ProgramArguments"]))' "$SC_UNIT")" \
+          "macos: the minutely pass only records"
+      fi
+      assert_no_path "$br" "$plat: no bridge refresh schedule in shadow"
+      assert_not_match 'health-bridges' "$(cat "$FAKE_LOG")" "$plat: no bridge refresh was enabled"
+      assert_not_match 'health-bridges' "$(awk -F '\t' '$1 == "schedule"' "$SC_ROOT/install.tsv")" "$plat: the receipt owns no bridge schedule"
+      sc_cli "$SC_BIN" status
+      assert_match '^Mode: shadow' "$SC_OUT" "$plat: status names the mode"
+      sc_cli "$SC_TREE/health/nice-dns-health" install
+      assert_rc 0 "$SC_RC" "$plat: activation: $SC_OUT"
+      assert_eq active "$(sc_receipt mode)" "$plat: the receipt records the active mode"
+      assert_not_match 'tick --shadow|<string>--shadow</string>' "$(cat "$SC_UNIT")" "$plat: the same unit now acts"
+      assert_file "$br" "$plat: the bridge refresh is scheduled once active"
+      : >"$FAKE_LOG"
+      sc_cli "$SC_TREE/health/nice-dns-health" install --shadow
+      assert_rc 0 "$SC_RC" "$plat: back to shadow: $SC_OUT"
+      assert_no_path "$br" "$plat: returning to shadow removes the bridge refresh"
+      if [ "$plat" = linux ]; then
+        assert_match '^systemctl --user disable --now nice-dns-health-bridges.timer$' "$(cat "$FAKE_LOG")" "linux: and stops its timer"
+      else
+        assert_match "^launchctl unload $br\$" "$(cat "$FAKE_LOG")" "macos: and unloads its agent"
+      fi
+    ) || exit 1
+  done
+}
+
 t_installed_controller_runs_without_the_checkout() {
   local plat
   for plat in $(sc_platforms); do

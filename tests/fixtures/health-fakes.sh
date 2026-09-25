@@ -103,6 +103,12 @@ case "$1" in
         fi ;;
     esac
     exit 0 ;;
+  logs)
+    # Each CLI's own tail flag: podman --tail N, Apple container -n N (it has
+    # no --tail). $FAKE/logs holds the container output.
+    if [ "$me" = container ]; then want=-n; else want=--tail; fi
+    if [ "$2" != "$want" ]; then echo "Error: unknown option '$2'" >&2; exit 64; fi
+    cat "$FAKE/logs" 2>/dev/null; exit 0 ;;
   inspect) printf 'id-1 %s running\n' "$(cat "$FAKE/started" 2>/dev/null || echo 2026-09-23T22:16:33Z)" ;;
   run)
     # The image's bridge-eval (Task 2.2): -v <host>:/pool, -out /pool/<file>.
