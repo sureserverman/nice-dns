@@ -137,3 +137,15 @@ nd_platform_dns_owner() {
   fi
   printf 'healthy\tall %s active services use %s; scutil resolver #1 is %s\n' "$n" "$_ND_MAC_PIHOLE" "$ns"
 }
+
+# ─── State operations (Sub-plan 3, ARCH-02 state.sh) ───────────────────────
+#
+#   ND_STATE_DIR   the controller state directory (default
+#                  ~/Library/Application Support/nice-dns/controller)
+
+nd_platform_state_dir() {
+  printf '%s\n' "${ND_STATE_DIR:-${HOME:?HOME is unset}/Library/Application Support/nice-dns/controller}"
+}
+
+# nd_platform_boot_id: an identifier that changes on every boot.
+nd_platform_boot_id() { sysctl -n kern.bootsessionuuid 2>/dev/null; }

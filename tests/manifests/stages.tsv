@@ -22,5 +22,8 @@ transport	integration	transport-socat
 transport-images	integration	transport-interaction
 transport	integration	transport-interaction
 controller-core	unit	observations
+controller-core	unit	state-policy
 controller	unit	harness-contracts
 controller	unit	observations
+controller	unit	state-policy
+controller	unit	receipt-verifier

@@ -284,7 +284,9 @@ require	stage:controller-core	OP-OBSERVE-ROUTE-TLS-NAME	unit	observations	t_prob
 require	stage:controller-core	OP-OBSERVE-EVERY-ROUTE	unit	observations	t_one_record_per_route_in_table	tests/unit/observations.sh
 require	stage:controller-core	OP-OBSERVE-DEADLINE-KEPT	unit	observations	t_deadline_kills_hung_command_tree_within_budget	tests/unit/observations.sh
 require	stage:controller-core	OP-OBSERVE-CONTROLLED-NAMES	unit	observations	t_observations_query_only_controlled_names	tests/unit/observations.sh
-count	stage:controller-core	5
+require	stage:controller-core	OP-POLICY-IDENTITY-ONLY	unit	state-policy	t_policy_never_selects_the_compat_route	tests/unit/state-policy.sh
+require	stage:controller-core	OP-POLICY-UNKNOWN-NOT-HEALTH	unit	state-policy	t_policy_unknown_observations_are_never_health	tests/unit/state-policy.sh
+count	stage:controller-core	7
 require	stage:controller	OP-FAILURES-EMPTY	unit	harness-contracts	t_zero_case_group_rejected	tests/unit/harness-contracts.sh
 require	stage:controller	OP-FAILURES-CELL	unit	harness-contracts	t_matrix_each_single_cell_deletion_fails	tests/unit/harness-contracts.sh
 require	stage:controller	OP-CACHE-NOT-UPSTREAM	unit	observations	t_local_cache_healthy_while_every_route_unhealthy_stays_separate	tests/unit/observations.sh
@@ -292,10 +294,14 @@ require	stage:controller	OP-OBSERVE-ROUTE-TLS-NAME	unit	observations	t_probe_use
 require	stage:controller	OP-OBSERVE-EVERY-ROUTE	unit	observations	t_one_record_per_route_in_table	tests/unit/observations.sh
 require	stage:controller	OP-OBSERVE-DEADLINE-KEPT	unit	observations	t_deadline_kills_hung_command_tree_within_budget	tests/unit/observations.sh
 require	stage:controller	OP-OBSERVE-CONTROLLED-NAMES	unit	observations	t_observations_query_only_controlled_names	tests/unit/observations.sh
-count	stage:controller	7
+require	stage:controller	OP-POLICY-IDENTITY-ONLY	unit	state-policy	t_policy_never_selects_the_compat_route	tests/unit/state-policy.sh
+require	stage:controller	OP-POLICY-UNKNOWN-NOT-HEALTH	unit	state-policy	t_policy_unknown_observations_are_never_health	tests/unit/state-policy.sh
+count	stage:controller	9
 require	plan:controller	OP-CACHE-NOT-UPSTREAM	unit	observations	t_local_cache_healthy_while_every_route_unhealthy_stays_separate	tests/unit/observations.sh
 require	plan:controller	OP-OBSERVE-ROUTE-TLS-NAME	unit	observations	t_probe_uses_each_route_port_and_tls_name	tests/unit/observations.sh
 require	plan:controller	OP-OBSERVE-EVERY-ROUTE	unit	observations	t_one_record_per_route_in_table	tests/unit/observations.sh
 require	plan:controller	OP-OBSERVE-DEADLINE-KEPT	unit	observations	t_deadline_kills_hung_command_tree_within_budget	tests/unit/observations.sh
 require	plan:controller	OP-OBSERVE-CONTROLLED-NAMES	unit	observations	t_observations_query_only_controlled_names	tests/unit/observations.sh
-count	plan:controller	5
+require	plan:controller	OP-POLICY-IDENTITY-ONLY	unit	state-policy	t_policy_never_selects_the_compat_route	tests/unit/state-policy.sh
+require	plan:controller	OP-POLICY-UNKNOWN-NOT-HEALTH	unit	state-policy	t_policy_unknown_observations_are_never_health	tests/unit/state-policy.sh
+count	plan:controller	7

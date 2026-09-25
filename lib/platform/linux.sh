@@ -83,3 +83,15 @@ nd_platform_dns_owner() {
     *) printf 'unhealthy\t%s: active nameserver is not 127.0.0.1: %s\n' "$f" "$ns" ;;
   esac
 }
+
+# ─── State operations (Sub-plan 3, ARCH-02 state.sh) ───────────────────────
+#
+#   ND_STATE_DIR   the controller state directory (default
+#                  $XDG_STATE_HOME/nice-dns/controller)
+
+nd_platform_state_dir() {
+  printf '%s\n' "${ND_STATE_DIR:-${XDG_STATE_HOME:-${HOME:?HOME is unset}/.local/state}/nice-dns/controller}"
+}
+
+# nd_platform_boot_id: an identifier that changes on every boot.
+nd_platform_boot_id() { cat /proc/sys/kernel/random/boot_id 2>/dev/null; }

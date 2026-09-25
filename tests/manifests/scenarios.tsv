@@ -142,3 +142,5 @@ OP-OBSERVE-ROUTE-TLS-NAME	SEC-TLS-NAME	unit	observations	t_probe_uses_each_route
 OP-OBSERVE-EVERY-ROUTE	EVD-FAILURES-COUNTED	unit	observations	t_one_record_per_route_in_table	controller
 OP-OBSERVE-DEADLINE-KEPT	EVD-FAILURES-COUNTED	unit	observations	t_deadline_kills_hung_command_tree_within_budget	controller
 OP-OBSERVE-CONTROLLED-NAMES	PRIV-NO-QUERY-HISTORY	unit	observations	t_observations_query_only_controlled_names	controller
+OP-POLICY-IDENTITY-ONLY	PRIV-ROUTE-IDENTITY	unit	state-policy	t_policy_never_selects_the_compat_route	controller
+OP-POLICY-UNKNOWN-NOT-HEALTH	EVD-FAILURES-COUNTED	unit	state-policy	t_policy_unknown_observations_are_never_health	controller
