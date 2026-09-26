@@ -52,12 +52,16 @@ ca_rows() { cs_jrows "$1" journal-active "$2" | awk -F '\t' -v c="$3" -v p="$4" 
 # ─────────────────────────── one cell ────────────────────────────────────────
 
 ca_deploy() {
-  local a="$1" x="$2" h="$3" fresh="$4" d="$CA_CELL_DIR" sha psha base args
+  local a="$1" x="$2" h="$3" fresh="$4" d="$CA_CELL_DIR" sha psha base args ub
   sha="$(git -C "$NICE_DNS_ROOT" rev-parse HEAD)"
   assert_eq "" "$(cs_clean "$CS_SIBS/tor-$x")" "$a: the tor-$x sibling is committed"
   psha="$(git -C "$CS_SIBS/tor-$x" rev-parse HEAD)"
   if [ "$fresh" = 1 ]; then
-    base="$(git -C "$NICE_DNS_ROOT" rev-parse origin/main)"
+    # Linux installs this checkout's commit: install-deb.sh runs from the
+    # inline archive, so the quadlets and the Unbound image qualified are the
+    # ones under test (Sub-plan 3 close-out B1, M2, M4). install-mac.sh
+    # clones GitHub main itself, so macOS installs origin/main.
+    if [ "$CA_PLAT" = linux ]; then base="$sha"; else base="$(git -C "$NICE_DNS_ROOT" rev-parse origin/main)"; fi
     args=(--cell "$x/$h" --source-sha "$base")
     [ "$h" = hardened ] && args+=(--hardened-sha "$(git -C "$CS_SIBS/pi-hole-hardened" rev-parse HEAD)")
     # The installer's output may carry bridge lines: it stays out of the evidence.
@@ -92,8 +96,12 @@ ca_deploy() {
   cs_t "$a" set-tunables --mode default >>"$d/ops.log" 2>&1 || fail "$a: set-tunables default"
   cs_wait "$a" up 900 ca_up || fail "$a $x/$h: the chain did not answer within 15 minutes"
   if [ "$CA_TIMERS" = fast ]; then cs_t "$a" set-tunables --mode fast >>"$d/ops.log" 2>&1 || fail "$a: set-tunables fast"; fi
+  # The Unbound image the cell ran (M4: readiness corroboration depends on it).
+  cs_t "$a" config >"$d/config.tsv" 2>>"$d/ops.log" || fail "$a: config"
+  ub="$(awk -F '\t' '$1 == "image" && $2 == "unbound" { print $4; exit }' "$d/config.tsv")"
+  [ -n "$ub" ] && [ "$ub" != - ] || fail "$a: no Unbound image identity in config"
   {
-    printf 'target\t%s\ncell\t%s/%s/%s\nimage_gen\ttor-%s=%s\n' "$a" "$CA_PLAT" "$x" "$h" "$x" "$(awk -F '\t' '$1 == "candidate" { print $3 }' "$d/build.log")"
+    printf 'target\t%s\ncell\t%s/%s/%s\nimage_gen\ttor-%s=%s;unbound=%s\n' "$a" "$CA_PLAT" "$x" "$h" "$x" "$(awk -F '\t' '$1 == "candidate" { print $3 }' "$d/build.log")" "$ub"
     printf 'nice_dns\t%s\nproxy_source\ttor-%s\t%s\n' "$sha" "$x" "$psha"
     printf 'bundle\t%s\n' "$(awk -F '\t' '$1 == "receipt" && $2 == "bundle" { print $3 }' "$d/install.log")"
     printf 'timers\t%s\n' "$CA_TIMERS"

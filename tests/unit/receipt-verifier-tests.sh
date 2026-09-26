@@ -409,3 +409,52 @@ t_content_rules_keep_their_tabs() {
   assert_match 'BL-RESTORED \(linux/haproxy/standard\).*no line matching' "$RV_OUT" "a stopped container is not restored evidence"
   assert_match 'BL-CONFIG \(linux/haproxy/standard\).*no line matching' "$RV_OUT" "^image<TAB> keeps its tab"
 }
+
+t_platform_proxies_requirement() {
+  # Sub-plan 3 close-out M3: --require-proxies all is satisfied by any
+  # platform having each proxy; the controller's representative gate needs
+  # each proxy on each platform (standard Pi-hole), so it asks for
+  # --require-platform-proxies all.
+  rv_build controller "$CASE_DIR/c"
+  rv "$CASE_DIR/c/receipt.tsv" --require-platform-proxies all
+  assert_rc 0 "$RV_RC" "every platform x proxy standard cell observed: $RV_OUT"
+  rv_edit "$CASE_DIR/c/receipt.tsv" '$1 == "cell" && $2 == "macos" && $3 == "socat" { next } $1 == "scenario" && $3 ~ /^macos\/socat\// { next } { print }'
+  rv "$CASE_DIR/c/receipt.tsv" --require-proxies all
+  assert_rc 0 "$RV_RC" "linux/socat still satisfies the cross-platform --require-proxies: $RV_OUT"
+  rv "$CASE_DIR/c/receipt.tsv" --require-platform-proxies all
+  assert_nonzero "$RV_RC" "macOS without socat fails the per-platform requirement"
+  assert_match 'macos/socat/standard' "$RV_OUT" "names the missing platform x proxy cell"
+}
+
+t_failed_cell_is_named_never_green() {
+  # M3: the controller receipt records a cell that did not pass every
+  # scenario as failed instead of dropping it; a failed cell never verifies.
+  rv_build controller "$CASE_DIR/c"
+  rv_edit "$CASE_DIR/c/receipt.tsv" '$1 == "cell" && $2 == "macos" && $3 == "socat" && $4 == "standard" { $7 = "failed" } $1 == "scenario" && $3 == "macos/socat/standard" { next } { print }'
+  rv "$CASE_DIR/c/receipt.tsv"
+  assert_nonzero "$RV_RC" "a failed cell never verifies"
+  assert_match 'cell macos/socat/standard failed' "$RV_OUT" "says the cell failed"
+}
+
+t_limit_rows_are_checked_and_counted() {
+  # M4: what a run did not prove is recorded as a limit with the sub-plan
+  # that owns it, never implied by a passing scenario.
+  rv_build controller "$CASE_DIR/c"
+  printf 'limit\troute-apply\t-\tscope=sub-plan-4\tno deployment mounts the route directory; switch-route was not applied live\n' >>"$CASE_DIR/c/receipt.tsv"
+  printf 'limit\tready-corroboration\tmacos/haproxy/standard\tscope=sub-plan-4\tthe Unbound image has no probe-route\n' >>"$CASE_DIR/c/receipt.tsv"
+  rv "$CASE_DIR/c/receipt.tsv"
+  assert_rc 0 "$RV_RC" "declared limits verify: $RV_OUT"
+  assert_match 'limits=2' "$RV_OUT" "the summary counts the limits"
+  cp "$CASE_DIR/c/receipt.tsv" "$CASE_DIR/orig.tsv"
+  printf 'limit\troute-apply\t-\tsub-plan-4\tno scope key\n' >>"$CASE_DIR/c/receipt.tsv"
+  rv "$CASE_DIR/c/receipt.tsv"
+  assert_nonzero "$RV_RC" "a limit without scope=sub-plan-N fails"
+  cp "$CASE_DIR/orig.tsv" "$CASE_DIR/c/receipt.tsv"
+  printf 'limit\tready-corroboration\tlinux/haproxy/nosuch\tscope=sub-plan-4\ttext\n' >>"$CASE_DIR/c/receipt.tsv"
+  rv "$CASE_DIR/c/receipt.tsv"
+  assert_nonzero "$RV_RC" "a limit naming a cell that is not observed fails"
+  cp "$CASE_DIR/orig.tsv" "$CASE_DIR/c/receipt.tsv"
+  printf 'limit\troute-apply\t-\tscope=sub-plan-4\t\n' >>"$CASE_DIR/c/receipt.tsv"
+  rv "$CASE_DIR/c/receipt.tsv"
+  assert_nonzero "$RV_RC" "a limit without a reason fails"
+}

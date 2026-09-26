@@ -3,9 +3,10 @@
 # controller: assembles <artifact root>/receipts/controller/RUN_ID/ from this
 # run's live/controller-active cells and live/controller-wake evidence and
 # verifies it (--require-platforms all, the transport receipt linked; under
-# --matrix all also --require-proxies all, with the hardened cells recorded
-# blocked by scope: the representative gate, user decision 2026-09-26). It
-# observes nothing itself.
+# --matrix all also every proxy on every platform, with the hardened cells
+# recorded blocked by scope: the representative gate, user decision
+# 2026-09-26). A cell that did not pass is recorded failed, and what the run
+# did not prove is recorded as a limit row. It observes nothing itself.
 
 # shellcheck source=tests/live/controller-lib.sh
 . "$NICE_DNS_ROOT/tests/live/controller-lib.sh"
@@ -47,24 +48,42 @@ t_1_receipt() {
     cell="$(awk -F '\t' '$1 == "cell" { print $2 }' "$d/cell.tsv")"
     key="$(printf '%s' "$cell" | tr / -)"
     gen="$(awk -F '\t' '$1 == "image_gen" { print $2 }' "$d/cell.tsv")"
-    [ "$(grep -c pass "$d/observations.tsv")" -eq 6 ] || continue
-    n=$((n + 1))
     mkdir -p "$out/cells/$key"
-    for f in cell.tsv observations.tsv; do cp "$d/$f" "$out/cells/$key/"; done
+    for f in cell.tsv observations.tsv; do [ -f "$d/$f" ] && cp "$d/$f" "$out/cells/$key/"; done
+    # A cell that did not pass all six scenarios stays in the denominator as
+    # failed, and the receipt then never verifies (ARCH-09; close-out M3).
+    if [ "$(grep -c pass "$d/observations.tsv" 2>/dev/null)" -ne 6 ]; then
+      printf 'cell\t%s\t%s\t%s\t%s\t%s\tfailed\n' "${cell%%/*}" "$(printf '%s' "$cell" | cut -d/ -f2)" "${cell##*/}" \
+        "$(awk -F '\t' '$1 == "target" { print $2 }' "$d/cell.tsv")" "$gen" >>"$r"
+      continue
+    fi
+    n=$((n + 1))
     printf 'cell\t%s\t%s\t%s\t%s\t%s\tobserved\n' "${cell%%/*}" "$(printf '%s' "$cell" | cut -d/ -f2)" "${cell##*/}" \
       "$(awk -F '\t' '$1 == "target" { print $2 }' "$d/cell.tsv")" "$gen" >>"$r"
     while IFS="$(printf '\t')" read -r id st f; do
       cp "$d/$f" "$out/cells/$key/$f"
       printf 'scenario\t%s\t%s\t%s\tcells/%s/%s\t%s\t%s\n' "$id" "$cell" "$st" "$key" "$f" "$(sha256sum "$out/cells/$key/$f" | cut -d' ' -f1)" "$gen" >>"$r"
     done <"$d/observations.tsv"
+    # What this cell did not prove (close-out M4). Readiness is corroborated
+    # host-side only by an Unbound image with probe-route (DEC-006).
+    if grep -q 'uncorroborated' "$d/recovery-ack.txt" 2>/dev/null; then
+      printf 'limit\tready-corroboration\t%s\tscope=sub-plan-4\treadiness was not corroborated through Unbound: the deployed Unbound image has no probe-route\n' "$cell" >>"$r"
+    elif ! grep -q '	ready	' "$d/recovery-ack.txt" 2>/dev/null; then
+      printf 'limit\tready-corroboration\t%s\tscope=sub-plan-4\tthe recovery evidence holds no ready row\n' "$cell" >>"$r"
+    fi
   done
+  # A route switch is proven live only by an acknowledged route:* journal row;
+  # before Sub-plan 4 mounts /etc/unbound/route every switch is unmanaged.
+  if ! cat "$CA_ROOT_DIR"/*-*-*/*.txt 2>/dev/null | awk -F '\t' '$3 ~ /^route:/ && $4 == "acknowledged" { f = 1 } END { exit !f }'; then
+    printf 'limit\troute-apply\t-\tscope=sub-plan-4\tno switch-route was applied live: no deployment mounts /etc/unbound/route, so the result is unmanaged; route application rests on the transport receipt\n' >>"$r"
+  fi
   assert_match '^[1-9]' "$n" "at least one fully passed cell"
   req=(--require-platforms all --require-dep transport)
   if ca_matrix_all; then
     # The representative gate (user decision 2026-09-26): every proxy on
     # every platform with standard Pi-hole; the hardened cells are Sub-plan
     # 5's final matrix, recorded here as blocked by scope, never as passed.
-    req+=(--require-proxies all)
+    req+=(--require-proxies all --require-platform-proxies all)
     for p in linux macos; do for x in haproxy socat; do
       awk -F '\t' -v p="$p" -v x="$x" '$1 == "cell" && $2 == p && $3 == x && $4 == "hardened" { f = 1 } END { exit !f }' "$r" \
         || printf 'cell\t%s\t%s\thardened\tscope\tscope=sub-plan-5\tblocked\n' "$p" "$x" >>"$r"
