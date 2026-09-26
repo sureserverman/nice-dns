@@ -213,6 +213,10 @@ nd_platform_restart_scope() { printf 'stack\n'; }
 # proxy container alone on Apple container is not qualified yet (Task 2.3,
 # live). <container> is only verified afterwards, not targeted.
 nd_platform_restart_proxy() {
+  local d="${XDG_STATE_HOME:-${HOME:?HOME is unset}/.local/state}/nice-dns"
+  # The agent's fast path keeps a stack that looks healthy; a restart the
+  # controller decided must rebuild it (mac/start-container.sh fast_path_ok).
+  (umask 077 && mkdir -p "$d" && printf '%s\n' "controller $(date +%s)" >"$d/restart-requested") || return 1
   nd_bounded "$2" "$3/svc" "$3/svc.err" launchctl kickstart -k "gui/$(id -u)/$_ND_MAC_AGENT"
 }
 

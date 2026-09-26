@@ -775,7 +775,9 @@ nd_recovery_tick() {
     # applied, or unchanged when it already ran); otherwise the previous one
     # stays, and the next pass decides the switch again.
     if [ "$act" = switch-route ] && { [ "$mode" = shadow ] || [ "$result" = unmanaged ] || [ "$rc" -ne 0 ]; }; then
-      [ "$mode" = shadow ] || awk -F '\t' -v r="$(_nd_rec_field route "$t/state")" 'BEGIN { OFS = "\t" } $1 == "route" { $2 = r } { print }' "$t/next" >"$t/next.2" && mv "$t/next.2" "$t/next"
+      if [ "$mode" != shadow ]; then
+        awk -F '\t' -v r="$(_nd_rec_field route "$t/state")" 'BEGIN { OFS = "\t" } $1 == "route" { $2 = r } { print }' "$t/next" >"$t/next.2" && mv "$t/next.2" "$t/next"
+      fi
     fi
   fi
   gen="$(nd_state_commit "$tok" "$gen" "$t/next")" || gen="-"

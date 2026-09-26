@@ -592,3 +592,66 @@ t_unbound_without_probe_tool_is_ready_uncorroborated_on_both_platforms() {
     ) || exit 1
   done
 }
+
+t_macos_restart_rebuilds_even_when_the_cache_answers() {
+  # Live evidence (Sub-plan 3 Task 2.3, run 20260926T124836Z-31c322f9, mac):
+  # with Tor frozen, both service fallbacks ran `launchctl kickstart -k` and
+  # mac/start-container.sh logged "stack already healthy ... reusing existing
+  # state": its fast path took Pi-hole's cached answer as chain health, so the
+  # proxy never restarted and the controller escalated.
+  # 1. The controller's restart leaves a request the agent honours.
+  local sc="$NICE_DNS_ROOT/mac/start-container.sh" out
+  (
+    ra_fake macos
+    export XDG_STATE_HOME="$CASE_DIR/xdg"
+    nd_platform_restart_proxy tor-haproxy 5 "$TMPDIR"
+    assert_file "$XDG_STATE_HOME/nice-dns/restart-requested" "the restart leaves its request for the agent"
+    assert_match '^launchctl kickstart -k gui/[0-9]+/org\.nice-dns\.start-container$' "$(cat "$FAKE_LOG")" "then kicks the agent"
+  ) || exit 1
+  # 2. The agent's fast path, run from the script's own functions with stubs.
+  sed -n '/^dns_healthy() {/,/^}/p; /^route_verified() {/,/^}/p; /^fast_path_ok() {/,/^}/p' "$sc" >"$CASE_DIR/fp.sh"
+  assert_match 'fast_path_ok' "$(cat "$CASE_DIR/fp.sh")" "the fast-path decision is a function of the script"
+  cat >"$CASE_DIR/run.sh" <<'RUN'
+set -u
+PIHOLE_IP=172.31.240.250 HEALTH_PROBE=cloudflare.com TOR_CONTAINER=tor-haproxy
+RESTART_REQUEST="$W/restart-requested"
+log() { printf 'log: %s\n' "$*"; }
+stack_addressed_correctly() { return 0; }
+dig() { printf '104.16.132.229\n'; }   # Pi-hole answers (from cache)
+container() {
+  case "$MODE" in
+    ok) echo "port=853 name=tor.cloudflare-dns.com result=ok rcode=NOERROR ms=400" ;;
+    frozen) echo "port=853 name=tor.cloudflare-dns.com result=no-answer rcode=- ms=10010 error=timeout"; return 1 ;;
+    old) echo 'Error: failed to start process (cause: "internalError: "failed to find target executable /usr/local/bin/nice-dns-route-probe"")' >&2; return 1 ;;
+  esac
+}
+. "$W/fp.sh"
+if fast_path_ok; then echo decision=keep; else echo decision=rebuild; fi
+RUN
+  f() { W="$CASE_DIR" MODE="$1" bash "$CASE_DIR/run.sh" 2>&1; }
+  assert_match 'decision=keep' "$(f ok)" "a verified route and an answering Pi-hole keep the stack"
+  assert_match 'decision=rebuild' "$(f frozen)" "a cached answer in front of a dead route is rebuilt"
+  assert_match 'decision=keep' "$(f old)" "an image without the probe is judged as before (Pi-hole answers)"
+  printf 'nd-1-svc\n' >"$CASE_DIR/restart-requested"
+  out="$(f ok)"
+  assert_match 'decision=rebuild' "$out" "a restart the controller requested always rebuilds"
+  assert_match 'restart requested by the controller \(nd-1-svc\)' "$out" "and says so"
+  assert_no_path "$CASE_DIR/restart-requested" "the request is consumed once"
+  assert_match 'decision=keep' "$(f ok)" "the next start judges the stack again"
+}
+
+t_shadow_route_decision_writes_nothing_to_stderr() {
+  # The mac agent's error log held "mv: .../next.2: No such file or directory"
+  # for every shadow switch-route pass: `[ shadow ] || awk ... && mv ...` ran
+  # the mv in shadow mode.
+  (
+    ra_fake linux
+    { printf 'schema\tnice-dns-observations/1\nobs\truntime\thealthy\t5\trunning: x\n'
+      printf 'obs\troute:cloudflare-onion\thealthy\t9\tp\nobs\troute:cloudflare-exit\thealthy\t9\tp\n'
+      printf 'obs\troute:quad9-exit\thealthy\t9\tp\nobs\troute:cloudflare-legacy\thealthy\t9\tp\n'; } >"$CASE_DIR/o"
+    out="$(nd_recovery_tick shadow "$CASE_DIR/o" 2>"$CASE_DIR/err")"
+    assert_match '^action	switch-route$' "$out" "a first pass with healthy routes selects one"
+    assert_match '^result	shadow$' "$out" "and only records it"
+    assert_eq "" "$(cat "$CASE_DIR/err")" "nothing on stderr"
+  ) || exit 1
+}

@@ -55,6 +55,7 @@ BRIDGE_SENTINEL="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/bootstrap-failed
 # and pinned dnsnet, so the rebuild could neither delete the network nor get
 # the addresses the configs hardcode. Keep the path in sync with bridge-eval.sh.
 STACK_LOCK="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/stack.lock"
+RESTART_REQUEST="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/restart-requested"
 # Every BRIDGEn in bridges.env, as ready-made `container run -e` arguments.
 BRIDGE_ARGS=()
 BRIDGE_COUNT=0
@@ -140,6 +141,30 @@ wait_for_tor_bootstrap() {
 dns_healthy() {
   dig @"$PIHOLE_IP" +time=3 +tries=1 +short "$HEALTH_PROBE" 2>/dev/null \
     | grep -Eq '^[0-9.]+$'
+}
+
+# route_verified: the proxy image's verifying probe (the one its HEALTHCHECK
+# and the controller use) answers on the legacy listener through Tor. Pi-hole
+# answering is not enough: it answers from cache in front of a dead upstream
+# (live, 2026-09-26: Tor frozen, "stack already healthy"). An image without
+# the probe (published before nice-dns Sub-plan 2) is not asked.
+route_verified() {
+  local out
+  out="$(container exec "$TOR_CONTAINER" /usr/local/bin/nice-dns-route-probe 853 tor.cloudflare-dns.com </dev/null 2>&1)" && return 0
+  case "$out" in *'failed to find target executable'*) return 0 ;; esac
+  return 1
+}
+
+# fast_path_ok: 0 when the running stack may be kept as it is. A restart the
+# controller requested (nice-dns-health's service fallback leaves
+# RESTART_REQUEST) always rebuilds, and the request is consumed.
+fast_path_ok() {
+  if [ -e "$RESTART_REQUEST" ]; then
+    log "restart requested by the controller ($(head -c 64 "$RESTART_REQUEST" 2>/dev/null | tr -d '\n')); rebuilding"
+    rm -f "$RESTART_REQUEST"
+    return 1
+  fi
+  stack_addressed_correctly && dns_healthy && route_verified
 }
 
 # Match the ID column exactly. `grep -w NAME` over the whole line also matched
@@ -571,7 +596,7 @@ log "container system ready"
 # ever recreating it. dns_healthy alone cannot distinguish a working chain
 # from a warm cache in front of a missing one. Require every container to be
 # running on the address the configs are wired for as well.
-if stack_addressed_correctly && dns_healthy; then
+if fast_path_ok; then
   run_root_helper post || log "post-start helper failed"
   log "stack already healthy (variant=$VARIANT) — reusing existing state"
   exit 0
