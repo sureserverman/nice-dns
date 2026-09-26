@@ -218,10 +218,17 @@ probe_route() {
     || die "cannot read a forwarder ADDR@PORT#NAME from $ROUTE"
   bundle="$(unbound-checkconf -o tls-cert-bundle 2>/dev/null)"
   [ -r "$bundle" ] || die "tls-cert-bundle '$bundle' is not readable"
-  out="$(dig +tls +tls-ca="$bundle" +tls-hostname="$name" +tries=1 +retry=0 \
-    +time="${NICE_DNS_PROBE_TIMEOUT:-15}" -p "$port" "@$addr" "$qname" SOA 2>&1)"
+  # dig 9.20 does not bound a TLS session by +time (20-30 s at +time=3), so
+  # the whole query runs under timeout(1); an expiry is reported as one.
+  t="${NICE_DNS_PROBE_TIMEOUT:-15}"
+  case "$t" in ''|*[!0-9]*|0) die "NICE_DNS_PROBE_TIMEOUT '$t' is not a positive number of seconds" ;; esac
+  out="$(timeout -s KILL "$t" dig +tls +tls-ca="$bundle" +tls-hostname="$name" +tries=1 +retry=0 \
+    +time="$t" -p "$port" "@$addr" "$qname" SOA 2>&1)"
+  drc=$?
   rcode="$(printf '%s\n' "$out" | sed -n 's/^;; ->>HEADER<<- opcode: [A-Z]*, status: \([A-Z]*\), id: [0-9]*$/\1/p' | head -n 1)"
-  printf 'forwarder=%s qname=%s rcode=%s\n' "$fwd" "$qname" "${rcode:--}"
+  extra=""
+  [ "$drc" -eq 137 ] && [ -z "$rcode" ] && extra=" error=timeout"
+  printf 'forwarder=%s qname=%s rcode=%s%s\n' "$fwd" "$qname" "${rcode:--}" "$extra"
   case "$rcode" in NOERROR|NXDOMAIN) return 0 ;; esac
   return 1
 }

@@ -730,3 +730,28 @@ RUN
   out="$(W="$CASE_DIR" USABLE=1 bash "$CASE_DIR/rot-run.sh")"
   assert_match 'rotate=no' "$out" "a usable set after a clean bootstrap is reused"
 }
+
+t_unbound_probe_route_is_bounded() {
+  # nice-dns-unbound-start probe-route is the host-side readiness
+  # corroboration (DEC-006) and, since the Sub-plan 3 close-out, Unbound's
+  # container health check. dig 9.20 does not bound a TLS session by +time
+  # (Sub-plan 3 Task 2.3, the proxies' route probe: 20-30 s at +time=3), so
+  # the whole dig runs under timeout(1). Run here on the host under busybox
+  # sh (the image's shell) with the route file moved and dig stubbed to hang.
+  local bb sh b s t0 t1 out rc
+  bb="$(command -v busybox)" || { echo "SKIP-REASON: no busybox for the image's shell" >&2; return 1; }
+  b="$CASE_DIR/bin"; mkdir -p "$b"
+  for t in awk sed head cat printf timeout sleep; do ln -sf "$bb" "$b/$t"; done
+  printf '#!%s sh\nexec sleep 60\n' "$bb" >"$b/dig"
+  printf '#!%s sh\nprintf "%%s\\n" "%s"\n' "$bb" "$CASE_DIR/ca.pem" >"$b/unbound-checkconf"
+  chmod +x "$b/dig" "$b/unbound-checkconf"; : >"$CASE_DIR/ca.pem"
+  printf 'forward-zone:\n  name: "."\n  forward-tls-upstream: yes\n  forward-addr: 127.0.0.1@18532#one.one.one.one\n' >"$CASE_DIR/route.conf"
+  s="$CASE_DIR/start.sh"
+  sed "s|^ROUTE=.*|ROUTE=$CASE_DIR/route.conf|" "$NICE_DNS_ROOT/unbound/start.sh" >"$s"
+  t0="$(date +%s)"
+  out="$(PATH="$b" NICE_DNS_PROBE_TIMEOUT=2 "$bb" sh "$s" probe-route 2>&1)"; rc=$?
+  t1="$(date +%s)"
+  assert_ne 0 "$rc" "a probe whose dig never answers fails: $out"
+  [ $((t1 - t0)) -le 10 ] || fail "probe-route ran $((t1 - t0)) s with a 2 s bound: $out"
+  assert_match 'forwarder=127\.0\.0\.1@18532#one\.one\.one\.one .*rcode=- error=timeout' "$out" "the expiry is reported as a timeout"
+}
