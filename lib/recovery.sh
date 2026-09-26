@@ -675,8 +675,11 @@ nd_recovery_apply() {
       esac
       return "$rc" ;;
     restart-component)
-      if [ "$target" != tor ]; then nd_recovery_journal "$id" controller refused "no restart for component '$target'"; return 2; fi
-      nd_recovery_restart_tor "$id"; return $? ;;
+      case "$target" in
+        tor) nd_recovery_restart_tor "$id"; return $? ;;
+        proxy) nd_recovery_restart_service "$id"; return $? ;;
+        *) nd_recovery_journal "$id" controller refused "no restart for component '$target'"; return 2 ;;
+      esac ;;
     repair-runtime) repair_runtime "$target" "$id"; return $? ;;
     *) nd_recovery_journal "$id" controller refused "unknown action '$action'"; return 2 ;;
   esac

@@ -663,3 +663,22 @@ t_shadow_route_decision_writes_nothing_to_stderr() {
     assert_eq "" "$(cat "$CASE_DIR/err")" "nothing on stderr"
   ) || exit 1
 }
+
+t_proxy_restart_goes_straight_to_the_service_restart() {
+  # The policy's second restart of an outage (target proxy): no in-image
+  # request, one service restart, acknowledged by a new container start.
+  local plat
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      export XDG_STATE_HOME="$CASE_DIR/xdg-$plat"
+      printf 'schema\tnice-dns-decision/1\naction\trestart-component\ntarget\tproxy\nreason\tx\n' >"$CASE_DIR/d-$plat"
+      ( sleep 1; echo t1-new >"$FAKE/started" ) &
+      ND_RECOVERY_LOCK_TOKEN="$(nd_state_lock)" nd_recovery_apply "$CASE_DIR/d-$plat" nd-9 5 >"$CASE_DIR/out-$plat" 2>&1
+      assert_rc 0 $? "$plat: the proxy restart is acknowledged: $(cat "$CASE_DIR/out-$plat")"
+      assert_eq "service requested
+service acknowledged" "$(ra_journal)" "$plat: straight to the service restart, acknowledged"
+      assert_no_path "$FAKE/ctl/tor-restart-request" "$plat: no in-image request"
+    ) || exit 1
+  done
+}

@@ -15,7 +15,7 @@
 #   schema  nice-dns-decision/1
 #   action  no-op | switch-route | refresh-bridges | restart-component |
 #           repair-runtime | escalate
-#   target  a route id (switch-route), tor (restart-component), the runtime
+#   target  a route id (switch-route), tor or proxy (restart-component), the runtime
 #           fault (repair-runtime), or -
 #   reason  one line
 # followed by the proposed next state (nice-dns-controller-state/1, without a
@@ -55,7 +55,10 @@
 #     from the later of its start and the end of the startup allowance
 #     (ND_POLICY_STARTUP_S, 120), outside the cooldown (ND_POLICY_COOLDOWN_S,
 #     300 after the last restart or repair), at most ND_POLICY_MAX_RESTARTS (2)
-#     times per outage; then it escalates.
+#     times per outage; then it escalates. The first restart of an outage is
+#     Tor's (target tor: the image's in-image restart, falling back to the
+#     service); a later one is the proxy's (target proxy: the service restart
+#     directly), since the outage outlived a Tor restart.
 
 ND_POLICY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
@@ -241,6 +244,11 @@ nd_policy_decide() {
       elif [ $((now - from)) -lt "$grace" ]; then reason="full outage for $((now - s_out)) s; grace $grace s"
       elif [ "$in_cool" = 1 ]; then reason="full outage; inside the recovery cooldown"
       elif [ "$s_rest" -ge "$maxr" ]; then action=escalate reason="full outage persists after $s_rest Tor restarts"
+      elif [ "$s_rest" -ge 1 ]; then
+        # The outage outlasted an in-image restart: the fault is not Tor's
+        # process, so the next step recreates the proxy (macOS: the stack).
+        action=restart-component target=proxy reason="full outage since $s_out persists after a Tor restart; restarting the proxy service"
+        s_rest=$((s_rest + 1)) s_rec="$now"
       else
         action=restart-component target=tor reason="full outage since $s_out; no identity route healthy"
         s_rest=$((s_rest + 1)) s_rec="$now"

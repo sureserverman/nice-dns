@@ -445,6 +445,11 @@ t_policy_full_outage_waits_grace_then_restarts_tor_once_per_cooldown() {
   done
   sp_steps "$CASE_DIR/o" $((SP_T0 + 660))
   assert_eq restart-component "$SP_ACTION" "after the cooldown a second restart is allowed"
+  # Live (Sub-plan 3 Task 2.3, mac runtime wedge): two acknowledged in-image
+  # restarts never helped a fault outside Tor. The second restart of one
+  # outage is the service restart, which recreates the proxy (macOS: the
+  # whole stack, which also repairs a wedged datapath).
+  assert_eq proxy "$SP_TARGET" "the second restart of one outage restarts the proxy service"
   sp_steps "$CASE_DIR/o" $((SP_T0 + 960))
   assert_eq escalate "$SP_ACTION" "restarts that do not recover escalate instead of looping"
   # Recovery clears the outage and its restart count.
