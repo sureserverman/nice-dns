@@ -208,7 +208,7 @@ cmd_check() {
 }
 
 finish() {
-  printf 'receipt=%s cells=%s scenarios=%s limits=%s errors=%s file=%s\n' "${4:-?}" "$2" "$3" "${LIMITS:-0}" "$ERRS" "$1"
+  printf 'receipt=%s cells=%s scenarios=%s errors=%s limits=%s file=%s\n' "${4:-?}" "$2" "$3" "$ERRS" "${LIMITS:-0}" "$1"
   [ "$ERRS" -eq 0 ] || exit 1
   exit 0
 }
