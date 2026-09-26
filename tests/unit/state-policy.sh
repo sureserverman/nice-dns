@@ -17,7 +17,7 @@ SP_T0=1760000000
 sp_env() {
   export ND_STATE_DIR="$CASE_DIR/state" ND_BOOT_ID="boot-a" ND_PLATFORM=linux
   export ND_ROUTES_FILE="$NICE_DNS_ROOT/routes/providers.tsv"
-  unset ND_STATE_LEASE_S ND_POLICY_STARTUP_S ND_POLICY_GRACE_S ND_POLICY_COOLDOWN_S \
+  unset ND_STATE_LEASE_S ND_POLICY_STARTUP_S ND_POLICY_GRACE_S ND_POLICY_COOLDOWN_S ND_POLICY_LADDER_S \
     ND_POLICY_PROMOTE ND_POLICY_DEMOTE ND_POLICY_MAX_RESTARTS
 }
 
@@ -443,19 +443,29 @@ t_policy_full_outage_waits_grace_then_restarts_tor_once_per_cooldown() {
     sp_steps "$CASE_DIR/o" $((SP_T0 + 60 * t))
     assert_eq no-op "$SP_ACTION" "minute $t is inside the 5-minute cooldown"
   done
-  sp_steps "$CASE_DIR/o" $((SP_T0 + 660))
-  assert_eq restart-component "$SP_ACTION" "after the cooldown a second restart is allowed"
+  # The ladder's next step waits out the first restart's readiness window
+  # (ND_POLICY_LADDER_S, 660: 600 s from the acknowledgement plus a minute
+  # for it), not only the cooldown: a proxy restart 300 s in would land on a
+  # Tor still bootstrapping (close-out evaluator M1; the receipt's service
+  # fallback became ready 433 s after its acknowledgement).
+  for t in 11 12 13 14 15 16; do
+    sp_steps "$CASE_DIR/o" $((SP_T0 + 60 * t))
+    assert_eq no-op "$SP_ACTION" "minute $t is inside the first restart's readiness window"
+  done
+  assert_match 'readiness window' "$SP_REASON" "the hold says it waits for the first restart's readiness"
+  sp_steps "$CASE_DIR/o" $((SP_T0 + 1020))
+  assert_eq restart-component "$SP_ACTION" "after the readiness window a second restart is allowed"
   # Live (Sub-plan 3 Task 2.3, mac runtime wedge): two acknowledged in-image
   # restarts never helped a fault outside Tor. The second restart of one
   # outage is the service restart, which recreates the proxy (macOS: the
   # whole stack, which also repairs a wedged datapath).
   assert_eq proxy "$SP_TARGET" "the second restart of one outage restarts the proxy service"
-  sp_steps "$CASE_DIR/o" $((SP_T0 + 960))
+  sp_steps "$CASE_DIR/o" $((SP_T0 + 1320))
   assert_eq escalate "$SP_ACTION" "restarts that do not recover escalate instead of looping"
   assert_match 'after 2 restarts \(tor, then proxy\)' "$SP_REASON" "the reason names the ladder's restarts, not two Tor restarts"
   # Recovery clears the outage and its restart count.
   sp_obs "$CASE_DIR/o" healthy unhealthy healthy unhealthy unhealthy
-  sp_steps "$CASE_DIR/o" $((SP_T0 + 1020))
+  sp_steps "$CASE_DIR/o" $((SP_T0 + 1380))
   assert_eq - "$(sp_key "$CASE_DIR/cur" outage_since)" "a healthy route clears the outage"
   assert_eq 0 "$(sp_key "$CASE_DIR/cur" outage_restarts)" "and its restart count"
 }

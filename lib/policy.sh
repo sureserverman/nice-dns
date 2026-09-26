@@ -59,7 +59,11 @@
 #     times per outage; then it escalates. The first restart of an outage is
 #     Tor's (target tor: the image's in-image restart, falling back to the
 #     service); a later one is the proxy's (target proxy: the service restart
-#     directly), since the outage outlived a Tor restart.
+#     directly), since the outage outlived a Tor restart. That later step also
+#     waits ND_POLICY_LADDER_S (660) after the first: the first restart's
+#     readiness window (lib/recovery.sh ND_RECOVERY_READY_S, 600 s from the
+#     acknowledgement) plus a minute for the acknowledgement, so it never
+#     lands on a Tor that is still bootstrapping.
 
 ND_POLICY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
@@ -69,7 +73,7 @@ nd_policy_decide() {
   local obs="${1:-}" stf="${2:-}" now="${3:-}" boot="${4:-}"
   local startup="${ND_POLICY_STARTUP_S:-120}" grace="${ND_POLICY_GRACE_S:-300}" cool="${ND_POLICY_COOLDOWN_S:-300}"
   local promote="${ND_POLICY_PROMOTE:-5}" demote="${ND_POLICY_DEMOTE:-2}" maxr="${ND_POLICY_MAX_RESTARTS:-2}"
-  local stale="${ND_POLICY_STALE:-5}"
+  local stale="${ND_POLICY_STALE:-5}" ladder="${ND_POLICY_LADDER_S:-660}"
   local routes="${ND_ROUTES_FILE:-$ND_POLICY_LIB_DIR/../routes/providers.tsv}"
   local tab=$'\t' cr=$'\r' a b c d e rest i j n=0 v
   local -a rid=() rok=() rfail=() runk=() robs=()
@@ -245,6 +249,8 @@ nd_policy_decide() {
       elif [ $((now - from)) -lt "$grace" ]; then reason="full outage for $((now - s_out)) s; grace $grace s"
       elif [ "$in_cool" = 1 ]; then reason="full outage; inside the recovery cooldown"
       elif [ "$s_rest" -ge "$maxr" ]; then action=escalate reason="full outage persists after $s_rest restarts (tor, then proxy)"
+      elif [ "$s_rest" -ge 1 ] && _nd_p_num "$s_rec" && [ $((now - s_rec)) -lt "$ladder" ]; then
+        reason="full outage; waiting out the last restart's readiness window ($((now - s_rec)) of $ladder s)"
       elif [ "$s_rest" -ge 1 ]; then
         # The outage outlasted an in-image restart: the fault is not Tor's
         # process, so the next step recreates the proxy (macOS: the stack).

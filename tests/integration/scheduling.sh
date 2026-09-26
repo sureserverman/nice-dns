@@ -311,9 +311,9 @@ t_installed_controller_reads_its_timers_from_the_tunables_file() {
       export ND_BOOT_ID=boot-a
       sc_cli "$SC_BIN" tick --shadow
       assert_match '^action	no-op$' "$SC_OUT" "$plat: a 60 s outage is inside the default 300 s grace: $SC_OUT"
-      printf 'ND_POLICY_GRACE_S\t30\nND_POLICY_COOLDOWN_S\t30\nND_POLICY_STARTUP_S\t30\n' >"$SC_ROOT/tunables.tsv"; chmod 600 "$SC_ROOT/tunables.tsv"
+      printf 'ND_POLICY_GRACE_S\t30\nND_POLICY_COOLDOWN_S\t30\nND_POLICY_STARTUP_S\t30\nND_POLICY_LADDER_S\t60\n' >"$SC_ROOT/tunables.tsv"; chmod 600 "$SC_ROOT/tunables.tsv"
       sc_cli "$SC_BIN" tick --shadow
-      assert_match '^action	restart-component$' "$SC_OUT" "$plat: with a 30 s grace from the tunables file the same outage restarts"
+      assert_match '^action	restart-component$' "$SC_OUT" "$plat: with a 30 s grace from the tunables file (the ladder hold is an allowed key too) the same outage restarts"
       printf 'ND_POLICY_GRACE_S\t30\nPATH\t/tmp\n' >"$SC_ROOT/tunables.tsv"
       sc_cli "$SC_BIN" tick --shadow
       assert_match 'tunables' "$SC_OUT" "$plat: an unknown key refuses the file, and says so"

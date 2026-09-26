@@ -91,7 +91,8 @@
 #                    Mac's sudo asks for no credential; nothing prompts). A cell
 #                    installed from origin/main otherwise keeps its old agent
 #   set-tunables     --mode fast writes the installed controller's
-#                    tunables.tsv (30 s startup allowance, grace and cooldown:
+#                    tunables.tsv (30 s startup allowance, grace and cooldown,
+#                    a 60 s ladder hold:
 #                    the live gate's extra configurations, user decision
 #                    2026-09-26); --mode default removes it (the real timers)
 #   hold-bridge-refresh
@@ -903,7 +904,7 @@ case "$NICE_DNS_OP" in
     else f="${XDG_DATA_HOME:-$HOME/.local/share}/nice-dns-health/tunables.tsv"; fi
     [ -d "$(dirname "$f")" ] || { echo "no installed controller at $(dirname "$f")" >&2; exit 1; }
     if [ "$NICE_DNS_MODE" = fast ]; then
-      (umask 077 && printf 'ND_POLICY_STARTUP_S\t30\nND_POLICY_GRACE_S\t30\nND_POLICY_COOLDOWN_S\t30\n' >"$f") || exit 1
+      (umask 077 && printf 'ND_POLICY_STARTUP_S\t30\nND_POLICY_GRACE_S\t30\nND_POLICY_COOLDOWN_S\t30\nND_POLICY_LADDER_S\t60\n' >"$f") || exit 1
     else
       rm -f "$f"
     fi
