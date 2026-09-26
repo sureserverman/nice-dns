@@ -62,6 +62,13 @@ ca_deploy() {
     printf 'installed\t%s/%s\t%s\n' "$x" "$h" "$base" >>"$d/deploy.tsv"
   fi
   cs_t "$a" quiesce-agents >"$d/quiesce.tsv" 2>>"$d/ops.log" || fail "$a: quiesce-agents"
+  if [ "$CA_PLAT" = macos ]; then
+    # The LaunchAgent's script is part of what is qualified (the service
+    # fallback runs it); a cell installed from origin/main has the old one.
+    cs_t "$a" install-agent --source-sha "$sha" >"$d/agent.log" 2>&1 || fail "$a: install-agent: $(cat "$d/agent.log")"
+    assert_eq "$(git -C "$NICE_DNS_ROOT" show "$sha:mac/start-container.sh" | sha256sum | cut -d' ' -f1)" "$(awk -F '\t' '$1 == "agent" { print $2 }' "$d/agent.log")" \
+      "$a: the LaunchAgent runs this checkout's start-container.sh"
+  fi
   cs_t "$a" install-controller --source-sha "$sha" --mode active >"$d/install.log" 2>&1 || fail "$a: install-controller: $(tail -n 5 "$d/install.log")"
   assert_match '^receipt	mode	active$' "$(cat "$d/install.log")" "$a: the controller is installed active (test-only activation)"
   # CT-BRIDGES before the proxy is recreated: the refresh restarts nothing,

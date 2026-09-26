@@ -85,6 +85,11 @@
 #                    pi-hole.service (the stack's containers go missing)
 #   heal-runtime     remove the macOS wedge container (Linux: nothing to undo)
 #   bridges-refresh  run the installed controller's bridges-refresh now
+#   install-agent    macOS: replace the LaunchAgent's root-owned
+#                    /usr/local/sbin/start-container.sh with this checkout's
+#                    `git archive` of --source-sha (sudo -n: the disposable
+#                    Mac's sudo asks for no credential; nothing prompts). A cell
+#                    installed from origin/main otherwise keeps its old agent
 #   hold-bridge-refresh
 #                    stamp the controller's outage-refresh rate limit
 #                    (bridges.last = now), so an outage in the next hour does
@@ -128,7 +133,7 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell quiesce-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell quiesce-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh install-agent'
 FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
@@ -173,7 +178,7 @@ fi
 if [ "$op" != install-cell ] && [ -n "$i_cell$i_hsha" ]; then
   die "--cell/--hardened-sha are only valid for install-cell"
 fi
-case "$op" in install-cell|build-proxy|install-controller) ;; *) [ -z "$i_sha" ] || die "--source-sha is only valid for install-cell, build-proxy and install-controller" ;; esac
+case "$op" in install-cell|build-proxy|install-controller|install-agent) ;; *) [ -z "$i_sha" ] || die "--source-sha is only valid for install-cell, build-proxy, install-controller and install-agent" ;; esac
 case "$op" in fault-route|heal-route) ;; *) [ -z "$i_route" ] || die "--route is only valid for fault-route and heal-route" ;; esac
 [ "$op" = install-controller ] || [ -z "$i_mode" ] || die "--mode is only valid for install-controller"
 
@@ -241,10 +246,10 @@ case "$op" in
     [[ "$i_sha" =~ ^[0-9a-f]{40}$ ]] || die "build-proxy needs --source-sha <40-hex commit of the $component sibling>"
     PSIB="$(cd "$ND_CHECKOUT/.." && pwd -P)/$component"
     [ "$(git -C "$PSIB" cat-file -t "$i_sha" 2>/dev/null)" = commit ] || die "--source-sha $i_sha is not a commit in $PSIB" ;;
-  install-controller)
-    [[ "$i_sha" =~ ^[0-9a-f]{40}$ ]] || die "install-controller needs --source-sha <40-hex nice-dns commit>"
+  install-controller|install-agent)
+    [[ "$i_sha" =~ ^[0-9a-f]{40}$ ]] || die "$op needs --source-sha <40-hex nice-dns commit>"
     [ "$(git -C "$ND_CHECKOUT" cat-file -t "$i_sha" 2>/dev/null)" = commit ] || die "--source-sha $i_sha is not a commit in $ND_CHECKOUT"
-    case "$i_mode" in shadow|active) ;; *) die "install-controller needs --mode shadow|active" ;; esac ;;
+    [ "$op" = install-agent ] || case "$i_mode" in shadow|active) ;; *) die "install-controller needs --mode shadow|active" ;; esac ;;
 esac
 
 # collect parameters travel as NAME=value words in the ssh command, so every
@@ -374,7 +379,7 @@ remote_run() {
 
 build_payload() {
   if [ "$op" = collect ]; then remote_bundle || return 1; fi
-  if [ "$op" = install-cell ] || [ "$op" = install-controller ]; then source_bundle || return 1; fi
+  case "$op" in install-cell|install-controller|install-agent) source_bundle || return 1 ;; esac
   if [ "$op" = build-proxy ]; then proxy_bundle || return 1; fi
   if [ "$op" = install-cell ] && [ -n "$i_hsha" ]; then hardened_bundle || return 1; fi
   remote_script
@@ -888,6 +893,15 @@ case "$NICE_DNS_OP" in
     "$t" bridges-refresh </dev/null >"$o" 2>&1; rc=$?
     redact <"$o"; rm -f "$o"
     exit "$rc" ;;
+  install-agent)
+    if [ "$plat" != macos ]; then echo "install-agent is for macOS targets" >&2; exit 2; fi
+    [ -s "${ND_SOURCE_TGZ:-}" ] || { echo "install-agent without the nice-dns source archive" >&2; exit 2; }
+    w=$(mktemp -d "$HOME/.nice-dns-harness-agent.XXXXXX") || exit 1
+    trap 'rm -rf "$w"' EXIT
+    tar -xzf "$ND_SOURCE_TGZ" -C "$w" mac/start-container.sh || exit 1
+    rm -f "$ND_SOURCE_TGZ"
+    sudo -n install -m 755 "$w/mac/start-container.sh" /usr/local/sbin/start-container.sh || exit 1
+    printf 'agent\t%s\n' "$(shasum -a 256 /usr/local/sbin/start-container.sh | cut -d' ' -f1)" ;;
   hold-bridge-refresh)
     if [ "$plat" = macos ]; then st="$HOME/Library/Application Support/nice-dns/controller"
     else st="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/controller"; fi
@@ -1010,7 +1024,7 @@ case "$op" in
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|quiesce-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|quiesce-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|install-agent)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"

@@ -754,3 +754,25 @@ t_remote_script_is_posix_sh() {
   shellcheck -s sh -S warning "$CASE_DIR/remote.sh" >"$CASE_DIR/sc.txt" 2>&1
   assert_rc 0 $? "shellcheck as POSIX sh: $(head -n 5 "$CASE_DIR/sc.txt")"
 }
+
+t_install_agent_is_macos_only_and_pinned() {
+  # Sub-plan 3 Task 2.3: a cell installed from origin/main carries its
+  # old mac/start-container.sh; install-agent replaces the LaunchAgent's
+  # root-owned copy with this checkout's at --source-sha (the target has
+  # sudo that asks for no credential; sudo -n never prompts).
+  local sha script op
+  sha="$(git -C "$NICE_DNS_ROOT" rev-parse HEAD)"
+  tg_setup
+  tg install-agent lin1 --targets "$CASE_DIR/targets.env" --source-sha "$sha"
+  assert_nonzero "$TG_RC" "install-agent without a snapshot"
+  assert_match 'no restore snapshot' "$TG_OUT" "names the snapshot"
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  : >"$FAKE_LOG"
+  tg install-agent lin1 --targets "$CASE_DIR/targets.env"
+  assert_rc 2 "$TG_RC" "install-agent needs --source-sha"
+  assert_eq 0 "$(tg_sent)" "nothing sent"
+  script="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG")"
+  op="$(printf '%s\n' "$script" | sed -n '/^  install-agent)/,/;;$/p')"
+  assert_match 'sudo -n install -m 755 "\$w/mac/start-container\.sh" /usr/local/sbin/start-container\.sh' "$op" "installs exactly the agent script, never prompting"
+  assert_match 'plat" != macos' "$op" "refused off macOS"
+}
