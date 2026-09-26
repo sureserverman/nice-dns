@@ -27,14 +27,8 @@
 #   CT-BRIDGES           (first, before the proxy is recreated) the bridge
 #                        refresh applies or keeps the set without restarting
 #                        the proxy; the recreate then starts Tor on it
-# Then, once per platform on its final cell:
-#   CT-WAKE              the user sleeps and wakes the target by hand (the
-#                        case waits up to an hour for the sleep counter): the
-#                        schedule runs again on wake, one pass a minute, with
-#                        no recovery caused by the time jump
-# t_3_receipt assembles <artifact root>/receipts/controller/RUN_ID/ from the
-# cells of this run and verifies it (--require-platforms all, the transport
-# receipt linked; --require-matrix all under --matrix all).
+# live/controller-wake then covers CT-WAKE, and live/controller-receipt
+# assembles and verifies the controller receipt from this run's evidence.
 
 # shellcheck source=tests/live/controller-lib.sh
 . "$NICE_DNS_ROOT/tests/live/controller-lib.sh"
@@ -50,7 +44,6 @@ ca_observe() { printf '%s\tpass\t%s\n' "$1" "$2" >>"$CA_CELL_DIR/observations.ts
 # ca_rows <report> <since> <component> <phase>: active journal rows.
 ca_rows() { cs_jrows "$1" journal-active "$2" | awk -F '\t' -v c="$3" -v p="$4" '$3 == c && $4 == p'; }
 
-ca_up() { cs_route_up "$1" && [ "$(cs_obs "$1" local-service)" = healthy ]; }
 
 # ─────────────────────────── one cell ────────────────────────────────────────
 
@@ -257,101 +250,3 @@ t_1_cells() {
   assert_eq "" "$bad" "every platform's cells passed (failed:$bad)"
 }
 
-# ─────────────────────────── wake (by hand) ─────────────────────────────────
-
-ca_woke() {
-  local n
-  n="$(cs_sleeps "$1")"
-  case "$n" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$n" -gt "$CA_SLEEPS0" ] || return 1
-  # Three passes after the gap the sleep left in the tick lines.
-  cs_ticks "$1" "$CA_SINCE" | awk 'NR > 1 && $1 - p >= 120 { g = NR } { p = $1; n = NR } END { exit !(g && n - g >= 2) }'
-}
-
-ca_wake() {
-  local plat="$1" a="$2" d
-  CA_CELL_DIR="$CA_ROOT_DIR/wake-$a"; d="$CA_CELL_DIR"; mkdir -p "$d"
-  cs_report "$a" wake-0 || fail "$a: report"
-  CA_SINCE="$(cs_now "$d/wake-0.tsv")"; CA_SLEEPS0="$(cs_sleeps "$d/wake-0.tsv")"
-  case "$CA_SLEEPS0" in ''|*[!0-9]*) fail "$a: no sleep counter in the report" ;; esac
-  # The operator is asked through this marker (the session relays it).
-  printf '%s\t%s\tsleep the machine for at least 3 minutes, then wake it\n' "$(date -u +%H:%M:%S)" "$a" >"$ARTIFACT_DIR/WAKE-REQUEST-$a"
-  printf 'ACTION NEEDED: sleep %s for at least 3 minutes, then wake it (waiting up to 60 minutes)\n' "$a"
-  cs_wait "$a" wake-1 3600 ca_woke || fail "$a: no sleep and wake with three later passes within 60 minutes"
-  rm -f "$ARTIFACT_DIR/WAKE-REQUEST-$a"
-  cs_ticks "$d/wake-1.tsv" "$CA_SINCE" >"$d/wake-ticks.txt"
-  assert_eq "" "$(awk 'NR > 1 { g = $1 - p; if (g >= 120) seen = 1; else if (seen && (g < 30 || g > 120)) print g } { p = $1 }' "$d/wake-ticks.txt")" \
-    "$a: after the wake, one pass a minute again"
-  assert_eq "" "$(cs_jrows "$d/wake-1.tsv" journal-active "$CA_SINCE" | awk -F '\t' '$4 == "requested"')" "$a: the time jump caused no recovery action"
-  ca_up "$d/wake-1.tsv" || fail "$a: the chain answers after the wake"
-  { printf 'target\t%s\nplatform\t%s\nsleeps\t%s -> %s\n' "$a" "$plat" "$CA_SLEEPS0" "$(cs_sleeps "$d/wake-1.tsv")"
-    awk 'NR > 1 && $1 - p >= 120 { printf "gap\t%s s before the pass at %s\n", $1 - p, $1 } { p = $1 }' "$d/wake-ticks.txt"; } >"$d/wake.txt"
-}
-
-t_2_wake() {
-  local p
-  cs_selection
-  CA_ROOT_DIR="$ARTIFACT_DIR/controller-active"
-  # One target at a time: the operator handles one machine, then the next.
-  for p in $(cs_platforms); do
-    cs_alias "$p"
-    ( ca_wake "$p" "$CS_ALIAS" ) || fail "wake on $CS_ALIAS failed (see the case log)"
-  done
-  cat "$CA_ROOT_DIR"/wake-*/wake.txt >"$CA_ROOT_DIR/wake.txt"
-}
-
-# ─────────────────────────── receipt ────────────────────────────────────────
-
-t_3_receipt() {
-  local root out r t repo cd st d key gen cell id f n=0 v req
-  CA_ROOT_DIR="$ARTIFACT_DIR/controller-active"
-  root="$(dirname "$(dirname "$ARTIFACT_DIR")")"
-  out="$root/receipts/controller/$RUN_ID"; r="$out/receipt.tsv"
-  t="$(for t in "$root"/receipts/transport/*/receipt.tsv; do [ -f "$t" ] && printf '%s\n' "$t"; done | LC_ALL=C sort | tail -1)"
-  assert_ne "" "$t" "a transport receipt exists to link"
-  assert_file "$CA_ROOT_DIR/wake.txt" "the wake scenario ran in this run"
-  assert_no_path "$out" "this run has no controller receipt yet"
-  mkdir -p "$out/cells" || fail "cannot create $out"
-  {
-    printf '# schema\tnice-dns-receipt/1\n'
-    printf 'receipt\tcontroller\nrun_id\t%s\ncreated_utc\t%s\n' "$RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    for repo in nice-dns tor-haproxy tor-socat hardened-unbound pi-hole-hardened; do
-      if [ "$repo" = nice-dns ]; then cd="$NICE_DNS_ROOT"; else cd="$CS_SIBS/$repo"; fi
-      if [ -n "$(cs_clean "$cd")" ]; then st=dirty; else st=clean; fi
-      printf 'source\t%s\t%s\t%s\n' "$repo" "$(git -C "$cd" rev-parse HEAD)" "$st"
-    done
-    for repo in tor-haproxy tor-socat hardened-unbound pi-hole-hardened; do
-      printf 'arch\t%s\t%s\t%s\n' "$repo" "$(git -C "$CS_SIBS/$repo" rev-parse HEAD)" \
-        "$(git -C "$CS_SIBS/$repo" show HEAD:.github/workflows/main.yml |
-          awk '/^ *platform: *$/ { on = 1; next } on && /^ *- *linux\// { sub(/^ *- */, ""); print; next } on { on = 0 }' |
-          sort | paste -sd, -)"
-    done
-    printf 'requires\ttransport\t%s\t%s\n' "$t" "$(sha256sum "$t" | cut -d' ' -f1)"
-  } >"$r"
-  cp "$CA_ROOT_DIR/wake.txt" "$out/CT-WAKE.txt"
-  printf 'scenario\tCT-WAKE\t-\tpass\tCT-WAKE.txt\t%s\t-\n' "$(sha256sum "$out/CT-WAKE.txt" | cut -d' ' -f1)" >>"$r"
-  for d in "$CA_ROOT_DIR"/*-*-*/; do
-    [ -f "$d/cell.tsv" ] || continue
-    cell="$(awk -F '\t' '$1 == "cell" { print $2 }' "$d/cell.tsv")"
-    key="$(printf '%s' "$cell" | tr / -)"
-    gen="$(awk -F '\t' '$1 == "image_gen" { print $2 }' "$d/cell.tsv")"
-    [ "$(grep -c pass "$d/observations.tsv")" -eq 6 ] || continue
-    n=$((n + 1))
-    mkdir -p "$out/cells/$key"
-    for f in cell.tsv observations.tsv; do cp "$d/$f" "$out/cells/$key/"; done
-    printf 'cell\t%s\t%s\t%s\t%s\t%s\tobserved\n' "${cell%%/*}" "$(printf '%s' "$cell" | cut -d/ -f2)" "${cell##*/}" \
-      "$(awk -F '\t' '$1 == "target" { print $2 }' "$d/cell.tsv")" "$gen" >>"$r"
-    while IFS="$(printf '\t')" read -r id st f; do
-      cp "$d/$f" "$out/cells/$key/$f"
-      printf 'scenario\t%s\t%s\t%s\tcells/%s/%s\t%s\t%s\n' "$id" "$cell" "$st" "$key" "$f" "$(sha256sum "$out/cells/$key/$f" | cut -d' ' -f1)" "$gen" >>"$r"
-    done <"$d/observations.tsv"
-  done
-  assert_match '^[1-9]' "$n" "at least one fully passed cell"
-  req=(--require-platforms all --require-dep transport)
-  ca_matrix_all && req+=(--require-matrix all)
-  v="$(bash "$NICE_DNS_ROOT/tests/reports/verify.sh" check "$r" "${req[@]}" 2>&1)"
-  assert_rc 0 "$?" "the controller receipt verifies: $v"
-  assert_eq "" "$(grep -rlE 'cert=[A-Za-z0-9+/]{20}|(^|[^0-9A-Fa-f])[0-9A-F]{40}([^0-9A-Fa-f]|$)|PRIVATE KEY|pwhash|BRIDGE[0-9]+=' "$out" "$CA_ROOT_DIR" 2>/dev/null)" \
-    "no bridge line, certificate, fingerprint, key or password hash in the receipt or the evidence"
-  printf 'receipt\t%s\n' "$r" >"$CASE_DIR/receipt-path.tsv"
-}

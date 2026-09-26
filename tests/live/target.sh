@@ -931,7 +931,9 @@ case "$NICE_DNS_OP" in
         rm -f "${TMPDIR:-/tmp}/nd-sum.$$"
       fi
       printf 'section\tpower\n'
-      if [ "$plat" = macos ]; then printf 'sleeps\t%s\n' "$(pmset -g stats 2>/dev/null | sed -n 's/^Sleep Count:[[:space:]]*//p')"
+      # macOS: Sleep entries of the power log (pmset's "Sleep Count" stayed 0
+      # across a logged sleep on the target, 2026-09-26).
+      if [ "$plat" = macos ]; then printf 'sleeps\t%s\n' "$(pmset -g log 2>/dev/null | grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8} [+-][0-9]{4} Sleep ')"
       else printf 'sleeps\t%s\n' "$(cat /sys/power/suspend_stats/success 2>/dev/null)"; fi
       printf 'section\tobserve\n'
       if t=$(health_tool); then "$t" observe </dev/null 2>&1; fi

@@ -117,3 +117,6 @@ cs_route_up() { [ "$(cs_routes_healthy "$1")" -ge 1 ] && [ -n "$(cs_proxy "$1")"
 # or after <since> (epoch<TAB>id<TAB>component<TAB>phase<TAB>detail).
 cs_jrows() { cs_sec "$1" "$2" | awk -F '\t' -v s="$3" '$1 ~ /^[0-9]+$/ && $1 >= s'; }
 cs_sleeps() { cs_field "$1" power sleeps; }
+
+# ca_up <report>: an answering route and Pi-hole's own name (the chain works).
+ca_up() { cs_route_up "$1" && [ "$(cs_obs "$1" local-service)" = healthy ]; }
