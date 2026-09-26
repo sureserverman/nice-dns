@@ -389,6 +389,8 @@ rotate_roll_log_if_needed() {
 cmd_run() {
   mkdir -p "$LOG_DIR"
   rotate_roll_log_if_needed
+  # As in tick: the slow bridge re-evaluation comes before the observations.
+  if load_health_libs && nd_state_init 2>/dev/null; then refresh_bridges_on_outage "$(ts)"; fi
   run_checks
   local now; now="$(ts)"
   if [ ${#FAILED_CHECKS[@]} -eq 0 ] && [ ${#INDETERMINATE_CHECKS[@]} -eq 0 ]; then
@@ -466,7 +468,6 @@ run_controller_pass() {
     log_to_file "$now_human controller skipped: no valid observations"
     return 0
   fi
-  nd_state_init 2>/dev/null && refresh_bridges_on_outage "$now_human"
   o="$(mktemp "${TMPDIR:-/tmp}/nice-dns-obs.XXXXXX")" || return 0
   printf '%s\n' "$HEALTH_OBS" >"$o"
   out="$(nd_recovery_tick active "$o" 2>&1)"
@@ -935,12 +936,14 @@ cmd_tick() {
   fi
   mkdir -p "$LOG_DIR"
   rotate_roll_log_if_needed
+  # The outage re-evaluation of the bridges takes minutes: it runs first, so
+  # the pass decides on observations taken after it.
+  if [ "$mode" = active ] && nd_state_init 2>/dev/null; then refresh_bridges_on_outage "$(ts)"; fi
   o="$(mktemp "${TMPDIR:-/tmp}/nice-dns-obs.XXXXXX")" || return 2
   nd_health_observe >"$o"
   if ! nd_health_validate <"$o"; then
     rm -f "$o"; echo "$SCRIPT_NAME: the observation output is not valid" >&2; return 3
   fi
-  if [ "$mode" = active ] && nd_state_init 2>/dev/null; then refresh_bridges_on_outage "$(ts)"; fi
   out="$(nd_recovery_tick "$mode" "$o")"; rc=$?
   rm -f "$o"
   log_to_file "$(ts) TICK $mode $(printf '%s\n' "$out" | awk -F '\t' '{ printf "%s%s=%s", s, $1, $2; s = " " }')"

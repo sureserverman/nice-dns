@@ -47,7 +47,10 @@ if [ -f "$FAKE/rt.hang" ]; then sleep "$(cat "$FAKE/hang_secs")" & wait; exit 1;
 table() {
   printf 'ID           IMAGE                                    OS     ARCH   STATE    IP                 CPUS  MEMORY  STARTED\n'
   while IFS= read -r n; do
-    [ -n "$n" ] && printf '%-12s %-40s linux  arm64  running  172.31.240.25x/29  1     256 MB  %s\n' "$n" "$n:latest" "$(cat "$FAKE/started" 2>/dev/null || echo 2026-09-23T22:16:33Z)"
+    # The stack's addresses (mac/start-container.sh); $FAKE/ip_<name> overrides.
+    case "$n" in pi-hole) ip=172.31.240.250 ;; unbound) ip=172.31.240.251 ;; tor-*) ip=172.31.240.252 ;; *) ip=172.31.240.253 ;; esac
+    [ -f "$FAKE/ip_$n" ] && ip="$(cat "$FAKE/ip_$n")"
+    [ -n "$n" ] && printf '%-12s %-40s linux  arm64  running  %s/29  1     256 MB  %s\n' "$n" "$n:latest" "$ip" "$(cat "$FAKE/started" 2>/dev/null || echo 2026-09-23T22:16:33Z)"
   done <"$FAKE/running"
   if [ "$1" = all ] && [ -f "$FAKE/stopped" ]; then
     while IFS= read -r n; do

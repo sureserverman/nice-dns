@@ -640,7 +640,9 @@ RUN
   assert_match 'decision=keep' "$out" "a verified route and an answering Pi-hole keep the stack"
   assert_match 'stack=kept' "$out" "and a correctly addressed stack is left alone"
   assert_match 'decision=rebuild' "$(f frozen)" "a cached answer in front of a dead route is rebuilt"
-  assert_match 'decision=keep' "$(f old)" "an image without the probe is judged as before (Pi-hole answers)"
+  out="$(f old)"
+  assert_match 'decision=keep' "$out" "an image without the probe is judged as before (Pi-hole answers)"
+  assert_match 'no verifying probe in tor-haproxy' "$out" "and the log says the route was not verified (second-pass review)"
   printf 'nd-1-svc\n' >"$CASE_DIR/restart-requested"
   out="$(f ok)"
   assert_match 'decision=rebuild' "$out" "a restart the controller requested always rebuilds"
@@ -699,4 +701,32 @@ t_macos_stopped_container_has_no_generation() {
     printf 'pi-hole\nunbound\ntor-haproxy\n' >"$FAKE/running"; : >"$FAKE/stopped"; echo 2026-09-26T16:49:00Z >"$FAKE/started"
     assert_eq 'tor-haproxy running 2026-09-26T16:49:00Z' "$(nd_platform_container_generation tor-haproxy 5 "$TMPDIR")" "a running proxy's generation is its start time"
   ) || exit 1
+}
+
+t_macos_agent_refetches_bridges_only_without_a_usable_set() {
+  # Gate evaluator, Material 2: after a failed bootstrap the agent ran the raw
+  # Moat fetcher over a usable set (no lock, no base check, no .prev), the
+  # same class d934ed5 removed from the controller. The raw fetch is now the
+  # bootstrap exception only (no usable set), as on Linux; re-selecting a
+  # usable set is the controller's evaluated refresh.
+  local sc="$NICE_DNS_ROOT/mac/start-container.sh" out
+  sed -n '/^bridges_rotate_needed() {/,/^}/p' "$sc" >"$CASE_DIR/rot.sh"
+  assert_match 'bridges_rotate_needed' "$(cat "$CASE_DIR/rot.sh")" "the decision is a function of the script"
+  cat >"$CASE_DIR/rot-run.sh" <<'RUN'
+set -u
+BRIDGE_SENTINEL="$W/sentinel"
+log() { printf 'log: %s\n' "$*"; }
+load_bridges() { [ "$USABLE" = 1 ]; }
+. "$W/rot.sh"
+if bridges_rotate_needed; then echo rotate=yes; else echo rotate=no; fi
+RUN
+  out="$(W="$CASE_DIR" USABLE=0 bash "$CASE_DIR/rot-run.sh")"
+  assert_match 'rotate=yes' "$out" "no usable set: the bootstrap fetch runs"
+  : >"$CASE_DIR/sentinel"
+  out="$(W="$CASE_DIR" USABLE=1 bash "$CASE_DIR/rot-run.sh")"
+  assert_match 'rotate=no' "$out" "a failed bootstrap with a usable set does not overwrite it"
+  assert_match 'controller' "$out" "and says the controller's evaluated refresh re-selects"
+  assert_no_path "$CASE_DIR/sentinel" "the sentinel is cleared either way"
+  out="$(W="$CASE_DIR" USABLE=1 bash "$CASE_DIR/rot-run.sh")"
+  assert_match 'rotate=no' "$out" "a usable set after a clean bootstrap is reused"
 }

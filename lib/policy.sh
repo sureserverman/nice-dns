@@ -20,8 +20,9 @@
 #   reason  one line
 # followed by the proposed next state (nice-dns-controller-state/1, without a
 # generation row). Exit 0; 2 on a bad argument or route table.
-# refresh-bridges is part of the vocabulary; no rule selects it yet (bridge
-# application is Task 2.2's).
+# refresh-bridges is part of the vocabulary but no rule here selects it: the
+# outage re-evaluation is health/nice-dns-health's refresh_bridges_on_outage
+# (before the pass observes), and the daily one is its own schedule.
 #
 # Rules, in order (tunables in seconds unless noted):
 #   * Unreadable observations escalate; the state is only time-stamped.
@@ -243,7 +244,7 @@ nd_policy_decide() {
       if [ "$in_startup" = 1 ]; then reason="full outage inside the startup allowance"
       elif [ $((now - from)) -lt "$grace" ]; then reason="full outage for $((now - s_out)) s; grace $grace s"
       elif [ "$in_cool" = 1 ]; then reason="full outage; inside the recovery cooldown"
-      elif [ "$s_rest" -ge "$maxr" ]; then action=escalate reason="full outage persists after $s_rest Tor restarts"
+      elif [ "$s_rest" -ge "$maxr" ]; then action=escalate reason="full outage persists after $s_rest restarts (tor, then proxy)"
       elif [ "$s_rest" -ge 1 ]; then
         # The outage outlasted an in-image restart: the fault is not Tor's
         # process, so the next step recreates the proxy (macOS: the stack).

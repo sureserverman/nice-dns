@@ -143,6 +143,26 @@ dns_healthy() {
     | grep -Eq '^[0-9.]+$'
 }
 
+# bridges_rotate_needed: 0 when the raw Moat fetch must write bridges.env:
+# only when no usable set exists (the bootstrap exception, as the Linux boot
+# unit). After a failed bootstrap a usable set is kept: re-selecting it is
+# the controller's evaluated refresh (nd_bridges_refresh), which never
+# overwrites a newer set and keeps .prev. The sentinel is cleared either way.
+bridges_rotate_needed() {
+  if ! load_bridges; then
+    log "bridges.env missing or incomplete; fetching a set"
+    rm -f "$BRIDGE_SENTINEL"
+    return 0
+  fi
+  if [ -f "$BRIDGE_SENTINEL" ]; then
+    log "previous run failed to bootstrap; keeping the usable set (the controller's evaluated refresh re-selects it)"
+    rm -f "$BRIDGE_SENTINEL"
+    return 1
+  fi
+  log "reusing existing bridge set (bootstrapped cleanly last run)"
+  return 1
+}
+
 # route_verified: the proxy image's verifying probe (the one its HEALTHCHECK
 # and the controller use) answers on the legacy listener through Tor. Pi-hole
 # answering is not enough: it answers from cache in front of a dead upstream
@@ -151,7 +171,11 @@ dns_healthy() {
 route_verified() {
   local out
   out="$(container exec "$TOR_CONTAINER" /usr/local/bin/nice-dns-route-probe 853 tor.cloudflare-dns.com </dev/null 2>&1)" && return 0
-  case "$out" in *'failed to find target executable'*) return 0 ;; esac
+  case "$out" in
+    *'failed to find target executable'*)
+      log "no verifying probe in $TOR_CONTAINER (image before nice-dns Sub-plan 2): the route is not verified, Pi-hole's answer is trusted"
+      return 0 ;;
+  esac
   return 1
 }
 
@@ -556,16 +580,7 @@ acquire_stack_lock || exit 1
 # refetch only when it's missing/incomplete or the previous run failed to
 # bootstrap (BRIDGE_SENTINEL, set at the bottom of this script).
 mkdir -p "$(dirname "$BRIDGE_SENTINEL")"
-rotate_bridges=0
-if ! load_bridges; then
-  rotate_bridges=1
-  log "bridges.env missing or incomplete; fetching a set"
-elif [[ -f "$BRIDGE_SENTINEL" ]]; then
-  rotate_bridges=1
-  log "previous run failed to bootstrap; rotating bridges"
-fi
-
-if (( rotate_bridges )); then
+if bridges_rotate_needed; then
   if [[ -x "$FETCH_BRIDGES_BIN" ]]; then
     "$FETCH_BRIDGES_BIN" --force >>"$LOG" 2>&1 \
       || log "bridge refetch failed — keeping previous bridges.env"
@@ -573,9 +588,6 @@ if (( rotate_bridges )); then
   else
     log "warning: $FETCH_BRIDGES_BIN not installed; cannot rotate bridges"
   fi
-  rm -f "$BRIDGE_SENTINEL"
-else
-  log "reusing existing bridge set (bootstrapped cleanly last run)"
 fi
 
 # 1) apiserver + default kernel must be up. `container system start` is

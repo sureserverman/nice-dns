@@ -30,7 +30,7 @@ _nd_mac_exec() {
   shift
   e="$(mktemp "${TMPDIR:-/tmp}/nd-mac-exec.XXXXXX")" || { "$bin" exec "$@"; return; }
   "$bin" exec "$@" 2>"$e"; rc=$?
-  if [ "$rc" -ne 0 ] && grep -q 'failed to find target executable' "$e"; then rc=127; fi
+  if [ "$rc" -ne 0 ] && grep -q '^Error: .*failed to find target executable' "$e"; then rc=127; fi
   cat "$e" >&2; rm -f "$e"
   return "$rc"
 }
@@ -248,14 +248,52 @@ nd_platform_bridge_dir() { printf '%s\n' "${ND_BRIDGE_CONFIG_DIR:-${XDG_CONFIG_H
 # the image's bridge-eval, always on dnsnet (the only network the proxy's
 # probes may use). Its container takes a free dnsnet address, so it runs only
 # while pi-hole, unbound and the proxy hold theirs (exit 3 otherwise).
+# _nd_mac_stack_addressed <proxy variant> <deadline> <tmp>: 0 when pi-hole,
+# unbound and the proxy run on .250/.251/.252 (mac/start-container.sh's
+# addresses): a probe container started otherwise could take one of them
+# (the 2026-09-21/23 incident, measured by the legacy mac/bridge-eval.sh).
+_nd_mac_stack_addressed() {
+  local bin
+  bin="$(nd_platform_runtime_bin)" || return 1
+  nd_bounded "$2" "$3/addr" "$3/addr.err" "$bin" ls || return 1
+  awk -v t="tor-$1" 'NR == 1 { next }
+    { ip = ""; for (i = 2; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\//) { ip = $i; sub(/\/.*/, "", ip) } }
+    $1 == "pi-hole" && ip == "172.31.240.250" { a++ } $1 == "unbound" && ip == "172.31.240.251" { a++ } $1 == t && ip == "172.31.240.252" { a++ }
+    END { exit !(a == 3) }' "$3/addr"
+}
+
+# The start-container agent's stack lock (mac/start-container.sh STACK_LOCK):
+# a mkdir lock whose pid file names the holder; a holder that no longer
+# runs is reaped, as the agent does.
+_ND_MAC_STACK_LOCK="${XDG_STATE_HOME:-${HOME:?HOME is unset}/.local/state}/nice-dns/stack.lock"
+_nd_mac_stack_lock() {
+  local i=0 max="${ND_BRIDGE_STACK_LOCK_S:-600}" holder
+  mkdir -p "$(dirname "$_ND_MAC_STACK_LOCK")" || return 1
+  until mkdir "$_ND_MAC_STACK_LOCK" 2>/dev/null; do
+    holder="$(cat "$_ND_MAC_STACK_LOCK/pid" 2>/dev/null)"
+    if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then rm -rf "${_ND_MAC_STACK_LOCK:?}"; continue; fi
+    i=$((i + 1)); [ "$i" -lt "$max" ] || return 1
+    sleep 1
+  done
+  printf '%s\n' "$$" >"$_ND_MAC_STACK_LOCK/pid"
+}
+
 nd_platform_bridge_eval() {
-  local d bin n
+  local d bin n rc
   d="$(nd_platform_bridge_dir)"
   bin="$(nd_platform_runtime_bin)" || return 3
   nd_platform_runtime_list "$3" "$4/running" >/dev/null 2>&1 || return 3
   n="$(grep -cx -e pi-hole -e unbound -e "tor-$1" "$4/running")"
   [ "$n" -eq 3 ] || return 3
+  _nd_mac_stack_addressed "$1" "$3" "$4" || return 3
+  # Hold the agent's stack lock while the probe container exists, so no
+  # stack rebuild starts underneath it; re-check the addresses once held.
+  _nd_mac_stack_lock || return 3
+  if ! _nd_mac_stack_addressed "$1" "$3" "$4"; then rm -rf "${_ND_MAC_STACK_LOCK:?}"; return 3; fi
   nd_bounded "$3" "$4/eval" "$4/eval.err" "$bin" run --rm --network dnsnet \
     -v "$d:/pool" --entrypoint /bin/bridge-eval "docker.io/sureserver/tor-$1:latest" \
     -pool /pool/bridge-pool.tsv -out "/pool/$2" -count 7 -window 150 -grace 20
+  rc=$?
+  rm -rf "${_ND_MAC_STACK_LOCK:?}"
+  return "$rc"
 }

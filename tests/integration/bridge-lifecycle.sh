@@ -204,6 +204,25 @@ t_macos_probe_uses_dnsnet_and_needs_the_stack() {
   out="$(nd_bridges_refresh haproxy)"
   assert_eq skipped "$(bl_get result "$out")" "without the stack on its addresses the probe does not run"
   assert_not_match ' run ' "$(cat "$FAKE_LOG")" "no probe container was started"
+  # Running is not enough: each on its own address (a probe container would
+  # otherwise take one; the 2026-09-21/23 incident), and not while the
+  # start-container agent holds the stack lock (gate evaluator, Material 3).
+  printf 'pi-hole\nunbound\ntor-haproxy\n' >"$FAKE/running"; echo 172.31.240.253 >"$FAKE/ip_tor-haproxy"
+  : >"$FAKE_LOG"; out="$(nd_bridges_refresh haproxy)"
+  assert_eq skipped "$(bl_get result "$out")" "a stack off its addresses is not probed"
+  assert_not_match ' run ' "$(cat "$FAKE_LOG")" "no probe container on a misaddressed stack"
+  rm -f "$FAKE/ip_tor-haproxy"
+  mkdir -p "$HOME/.local/state/nice-dns/stack.lock"
+  sleep 600 & lockpid=$!
+  printf '%s\n' "$lockpid" >"$HOME/.local/state/nice-dns/stack.lock/pid"
+  : >"$FAKE_LOG"; out="$(ND_BRIDGE_STACK_LOCK_S=2 nd_bridges_refresh haproxy)"
+  # Reap it: an unreaped child is a zombie, which still answers kill -0.
+  kill "$lockpid" 2>/dev/null; wait "$lockpid" 2>/dev/null
+  assert_eq skipped "$(bl_get result "$out")" "the agent's stack lock held by a live process: no probe"
+  assert_not_match ' run ' "$(cat "$FAKE_LOG")" "no probe container while the agent holds the stack"
+  : >"$FAKE_LOG"; out="$(nd_bridges_refresh haproxy)"
+  assert_match ' run --rm --network dnsnet ' "$(cat "$FAKE_LOG")" "a dead holder's lock is taken over and the probe runs"
+  assert_no_path "$HOME/.local/state/nice-dns/stack.lock" "and the lock is released afterwards"
 }
 
 t_install_schedules_the_daily_refresh() {
@@ -279,6 +298,10 @@ t_outage_refresh_is_evaluated_and_rate_limited() {
       mkdir -p "$HOME/.local/bin"; printf '#!/bin/sh\necho RAW >>"%s"\n' "$FAKE_LOG" >"$HOME/.local/bin/nice-dns-fetch-bridges"; chmod 755 "$HOME/.local/bin/nice-dns-fetch-bridges"
       bash "$tree/health/nice-dns-health" tick >"$CASE_DIR/t1" 2>&1
       assert_eq 1 "$(grep -c ' run --rm ' "$FAKE_LOG")" "$plat: the outage past the grace re-evaluates the bridges once: $(cat "$CASE_DIR/t1")"
+      # The evaluation takes minutes: the pass decides on observations taken
+      # after it, never on ones from before (gate evaluator, Material 1).
+      assert_eq 1 "$(awk '/ run --rm / { r = NR } /nice-dns-route-probe/ { if (!p) p = NR } END { print (r && p && r < p) ? 1 : 0 }' "$FAKE_LOG")" \
+        "$plat: the bridges are evaluated before the pass observes the routes"
       assert_eq 7 "$(grep -cE '^BRIDGE[0-9]+=obfs4 192\.0\.9\.' "$BL_LIVE")" "$plat: the evaluated set is applied under its rules"
       assert_not_match 'RAW' "$(cat "$FAKE_LOG")" "$plat: the raw Moat fetcher is never used"
       bash "$tree/health/nice-dns-health" tick >"$CASE_DIR/t2" 2>&1

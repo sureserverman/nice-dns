@@ -452,6 +452,7 @@ t_policy_full_outage_waits_grace_then_restarts_tor_once_per_cooldown() {
   assert_eq proxy "$SP_TARGET" "the second restart of one outage restarts the proxy service"
   sp_steps "$CASE_DIR/o" $((SP_T0 + 960))
   assert_eq escalate "$SP_ACTION" "restarts that do not recover escalate instead of looping"
+  assert_match 'after 2 restarts \(tor, then proxy\)' "$SP_REASON" "the reason names the ladder's restarts, not two Tor restarts"
   # Recovery clears the outage and its restart count.
   sp_obs "$CASE_DIR/o" healthy unhealthy healthy unhealthy unhealthy
   sp_steps "$CASE_DIR/o" $((SP_T0 + 1020))
