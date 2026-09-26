@@ -198,9 +198,11 @@ nd_platform_container_generation() {
   # An "Error:" banner with exit 0 is not a table (as in _nd_mac_table).
   grep -q '^Error:' "$3/gen" "$3/gen.err" 2>/dev/null && return 1
   # STARTED is an ISO timestamp, one token (Apple container 1.4.1, observed
-  # on macOS 26.6.2: "2026-09-23T22:16:51Z").
+  # on macOS 26.6.2: "2026-09-23T22:16:51Z"). Only a running row has one: a
+  # stopped row ends in its memory unit ("MB"), which is no start at all.
   awk -v n="$1" 'NR == 1 { for (i = 1; i <= NF; i++) if ($i == "STATE") s = i; next }
-       $1 == n && s { print $1 " " $s " " $NF; f = 1; exit } END { exit !f }' "$3/gen"
+       $1 == n && s && $s == "running" { print $1 " " $s " " $NF; f = 1; exit }
+       END { exit !f }' "$3/gen"
 }
 
 # nd_platform_restart_scope: what nd_platform_restart_proxy restarts.

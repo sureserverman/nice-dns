@@ -48,7 +48,9 @@ case "$1" in
     done <"$FAKE/running"
     if [ "$2" = -a ] && [ -f "$FAKE/stopped" ]; then
       while IFS= read -r n; do
-        [ -n "$n" ] && printf '%-12s %-16s linux  arm64  stopped  -                  1     256 MB  -\n' "$n" "$n:latest"
+        # A stopped row has no STARTED value (live, Apple container 1.4.1:
+        # "tor-haproxy ... stopped ... 512 MB").
+        [ -n "$n" ] && printf '%-12s %-16s linux  arm64  stopped                     1     256 MB\n' "$n" "$n:latest"
       done <"$FAKE/stopped"
     fi ;;
   inspect) printf 'id-1 %s running\n' "$(cat "$FAKE/started")" ;;
@@ -681,4 +683,20 @@ service acknowledged" "$(ra_journal)" "$plat: straight to the service restart, a
       assert_no_path "$FAKE/ctl/tor-restart-request" "$plat: no in-image request"
     ) || exit 1
   done
+}
+
+t_macos_stopped_container_has_no_generation() {
+  # Live run 20260926T162022Z-955da358 (mac): a service restart was
+  # acknowledged with the generation "tor-haproxy stopped MB", read from the
+  # stopped container's row (no STARTED; its last field is the memory unit).
+  # A stopped row is not a start; only a running row's start time counts.
+  (
+    ra_fake macos
+    printf 'pi-hole\nunbound\n' >"$FAKE/running"; printf 'tor-haproxy\n' >"$FAKE/stopped"
+    out="$(nd_platform_container_generation tor-haproxy 5 "$TMPDIR" 2>&1)"
+    assert_nonzero $? "a stopped proxy has no generation: $out"
+    assert_not_match 'MB' "$out" "and none is invented from its memory column"
+    printf 'pi-hole\nunbound\ntor-haproxy\n' >"$FAKE/running"; : >"$FAKE/stopped"; echo 2026-09-26T16:49:00Z >"$FAKE/started"
+    assert_eq 'tor-haproxy running 2026-09-26T16:49:00Z' "$(nd_platform_container_generation tor-haproxy 5 "$TMPDIR")" "a running proxy's generation is its start time"
+  ) || exit 1
 }
