@@ -6,13 +6,13 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the
 - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)
   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.
 - Baseline source: this repository at commit
-  `8f10ffed7f8d265b89c4e3d55b2f0781871f2386`. Citations are `path:line` at that commit.
+  `e6436ad6dd557237f1b1aacfadc0fd70cfeb9c35`. Citations are `path:line` at that commit.
   The eight-cell baseline receipt measured b85bc9b. The document was first
   written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,
   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02
   re-pins after each change to a cited file (Task 1.1: 04b98cf, Unbound
   anchor and control; Task 1.3: d6c1a1f, Pi-hole HealthCmd; Stage 1 gate: 80d6c18, control refusal; Task 2.1: 9e71d32, route include; Task 2.3: bc846b2, Unbound WORKDIR; Stage 2 gate: 94a9c60, route resolution check). Sub-plan 03 re-pins the same
-  way (Task 1.1: ba144fd, health observations and platform adapters; Task 1.2: e81697f, state directory and boot identity appended to the platform adapters; Task 1.3: 6bf29f3, acknowledged recovery; Stage 1 gate: 4b11779, one controller pass; 20589e8, route recorded on success; Task 2.1: 3a4b4d6, bundle and minute schedules; Task 2.2: d934ed5, bridge lifecycle; Task 2.3: b8b9bb8, shadow install and privacy-safe failure dump; 93a9122, macOS exec reports a missing executable as 127; 674635f, the macOS fallback always rebuilds; 8f10ffe, it rebuilds the whole stack). `check-contracts` fails when a cited file changes
+  way (Task 1.1: ba144fd, health observations and platform adapters; Task 1.2: e81697f, state directory and boot identity appended to the platform adapters; Task 1.3: 6bf29f3, acknowledged recovery; Stage 1 gate: 4b11779, one controller pass; 20589e8, route recorded on success; Task 2.1: 3a4b4d6, bundle and minute schedules; Task 2.2: d934ed5, bridge lifecycle; Task 2.3: b8b9bb8, shadow install and privacy-safe failure dump; 93a9122, macOS exec reports a missing executable as 127; 674635f, the macOS fallback always rebuilds; 8f10ffe, it rebuilds the whole stack; e6436ad, restart ladder). `check-contracts` fails when a cited file changes
   after this commit.
 - Checked by `bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md`.
   The check needs every workflow ID below, every operation ID in
@@ -342,7 +342,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   live Mac is baseline: unverified.
 - Since the Sub-plan 3 Stage 1 gate, `run` has no outage timer of its own.
   After logging, it hands its observations to the same controller pass as
-  `tick` (health/nice-dns-health:462-475, lib/recovery.sh:739-788). One
+  `tick` (health/nice-dns-health:462-475, lib/recovery.sh:742-791). One
   policy, one state, one lock, one cooldown and one restart cap decide
   every action, whichever command the schedule calls. The pass observes,
   decides with lib/policy.sh, acts, and commits the state. Readiness
@@ -352,6 +352,11 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   (nd_bridges_refresh) once an observed outage has outlasted the grace. This
   happens at most once an hour (health/nice-dns-health:444-460). Nothing in
   the controller writes `bridges.env` directly (WF-DNS-004).
+- Restart ladder since Sub-plan 3 Task 2.3: the first restart of an outage
+  is Tor's (below); a later one of the same outage targets the proxy, the
+  service restart directly (lib/policy.sh:250). Live on the Mac, a wedged
+  runtime made two in-image restarts acknowledge and never become ready; only
+  the stack rebuild repairs it.
 - The Tor restart is nd_recovery_restart_tor (lib/recovery.sh:639-656):
   - A refreshed bridge set may be waiting for a proxy that has not been
     recreated. Then the restart goes straight to the service restart, which
@@ -381,7 +386,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   bounded in wall-clock seconds.
 - A Tor restart is ready when an identity route answers and Unbound
   resolves over its TLS-verified route, which is host-side evidence the
-  proxy cannot forge (lib/recovery.sh:696-730, DEC-006). An Unbound image
+  proxy cannot forge (lib/recovery.sh:699-733, DEC-006). An Unbound image
   without nice-dns-unbound-start gives "ready, uncorroborated" (exit 126 or
   127). Since Sub-plan 3 Task 2.3 the macOS adapter reports Apple container's
   missing executable (exit 1) as 127 (lib/platform/macos.sh:28-36). Before
@@ -619,8 +624,8 @@ Sources: ARCH-07, design "Bridge lifecycle".
   health/nice-dns-health:613) runs `nice-dns-health bridges-refresh`.
   - The image's bridge-eval writes a candidate, never `bridges.env`
     (lib/platform/linux.sh:161-167). It runs outside the state lock, under
-    a refresh mutex (lib/recovery.sh:889-917).
-  - nd_bridges_apply (lib/recovery.sh:829-868) holds the lock:
+    a refresh mutex (lib/recovery.sh:892-920).
+  - nd_bridges_apply (lib/recovery.sh:832-871) holds the lock:
     - a candidate with fewer than 3 valid lines is not applied, so the last
       good set stays;
     - normalized equal sets write nothing;
@@ -630,7 +635,7 @@ Sources: ARCH-07, design "Bridge lifecycle".
       nothing.
   - The proxy reads the new set at its next natural start. During a
     sustained failure, the Tor restart adopts it through the service restart
-    (lib/recovery.sh:922-936, lib/recovery.sh:639-656).
+    (lib/recovery.sh:925-939, lib/recovery.sh:639-656).
 - Exit 1 is tolerated (deb/persistent-podman.sh:173). A missing `BRIDGE1`
   fails loudly (deb/persistent-podman.sh:179).
 - The Linux proxy reads `bridges.env` through `EnvironmentFile=` at
