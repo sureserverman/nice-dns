@@ -2,8 +2,10 @@
 # Group live/controller-receipt (Sub-plan 3; ARCH-09). The last row of plan
 # controller: assembles <artifact root>/receipts/controller/RUN_ID/ from this
 # run's live/controller-active cells and live/controller-wake evidence and
-# verifies it (--require-platforms all, the transport receipt linked;
-# --require-matrix all under --matrix all). It observes nothing itself.
+# verifies it (--require-platforms all, the transport receipt linked; under
+# --matrix all also --require-proxies all, with the hardened cells recorded
+# blocked by scope: the representative gate, user decision 2026-09-26). It
+# observes nothing itself.
 
 # shellcheck source=tests/live/controller-lib.sh
 . "$NICE_DNS_ROOT/tests/live/controller-lib.sh"
@@ -58,7 +60,16 @@ t_1_receipt() {
   done
   assert_match '^[1-9]' "$n" "at least one fully passed cell"
   req=(--require-platforms all --require-dep transport)
-  ca_matrix_all && req+=(--require-matrix all)
+  if ca_matrix_all; then
+    # The representative gate (user decision 2026-09-26): every proxy on
+    # every platform with standard Pi-hole; the hardened cells are Sub-plan
+    # 5's final matrix, recorded here as blocked by scope, never as passed.
+    req+=(--require-proxies all)
+    for p in linux macos; do for x in haproxy socat; do
+      awk -F '\t' -v p="$p" -v x="$x" '$1 == "cell" && $2 == p && $3 == x && $4 == "hardened" { f = 1 } END { exit !f }' "$r" \
+        || printf 'cell\t%s\t%s\thardened\tscope\tscope=sub-plan-5\tblocked\n' "$p" "$x" >>"$r"
+    done; done
+  fi
   v="$(bash "$NICE_DNS_ROOT/tests/reports/verify.sh" check "$r" "${req[@]}" 2>&1)"
   assert_rc 0 "$?" "the controller receipt verifies: $v"
   assert_eq "" "$(grep -rlE 'cert=[A-Za-z0-9+/]{20}|(^|[^0-9A-Fa-f])[0-9A-F]{40}([^0-9A-Fa-f]|$)|PRIVATE KEY|pwhash|BRIDGE[0-9]+=' "$out" "$CA_ROOT_DIR" 2>/dev/null)" \

@@ -289,3 +289,37 @@ INNER
   assert_match '^uninstall=0$' "$out" "bash 3.2: uninstall"
   assert_match '^agent-gone$' "$out" "bash 3.2: the agent is removed"
 }
+
+t_installed_controller_reads_its_timers_from_the_tunables_file() {
+  # The scheduled pass has no environment of its own, so a test (or an
+  # operator) sets the policy timers in <install root>/tunables.tsv: only
+  # ND_POLICY_{STARTUP,GRACE,COOLDOWN}_S, 1..86400, in a private regular
+  # file. The live gate uses 30 s in its extra configurations (user
+  # decision, 2026-09-26) and the real timers in one per machine.
+  local plat now st
+  for plat in $(sc_platforms); do
+    (
+      sc_env "$plat"
+      sc_cli "$SC_TREE/health/nice-dns-health" install --shadow
+      assert_rc 0 "$SC_RC" "$plat: install: $SC_OUT"
+      for p in 18531 18532 18533 853; do echo servfail >"$FAKE/probe/$p"; done
+      now="$(date +%s)"
+      if [ "$plat" = macos ]; then st="$HOME/Library/Application Support/nice-dns/controller/shadow"; else st="$XDG_STATE_HOME/nice-dns/controller/shadow"; fi
+      mkdir -p "$st" && chmod 700 "$(dirname "$st")" "$st"
+      printf 'schema\tnice-dns-controller-state/1\ngeneration\t1\nboot_id\tboot-a\nupdated\t%s\nstarted\t%s\nroute\tcloudflare-exit\noutage_since\t%s\noutage_restarts\t0\nlast_action\t-\nlast_action_at\t-\nrecovery_at\t-\n' \
+        "$((now - 60))" "$((now - 7200))" "$((now - 60))" >"$st/state.tsv"; chmod 600 "$st/state.tsv"
+      export ND_BOOT_ID=boot-a
+      sc_cli "$SC_BIN" tick --shadow
+      assert_match '^action	no-op$' "$SC_OUT" "$plat: a 60 s outage is inside the default 300 s grace: $SC_OUT"
+      printf 'ND_POLICY_GRACE_S\t30\nND_POLICY_COOLDOWN_S\t30\nND_POLICY_STARTUP_S\t30\n' >"$SC_ROOT/tunables.tsv"; chmod 600 "$SC_ROOT/tunables.tsv"
+      sc_cli "$SC_BIN" tick --shadow
+      assert_match '^action	restart-component$' "$SC_OUT" "$plat: with a 30 s grace from the tunables file the same outage restarts"
+      printf 'ND_POLICY_GRACE_S\t30\nPATH\t/tmp\n' >"$SC_ROOT/tunables.tsv"
+      sc_cli "$SC_BIN" tick --shadow
+      assert_match 'tunables' "$SC_OUT" "$plat: an unknown key refuses the file, and says so"
+      printf 'ND_POLICY_GRACE_S\t30\n' >"$SC_ROOT/tunables.tsv"; chmod 666 "$SC_ROOT/tunables.tsv"
+      sc_cli "$SC_BIN" tick --shadow
+      assert_match 'tunables' "$SC_OUT" "$plat: a group- or world-writable file is refused"
+    ) || exit 1
+  done
+}

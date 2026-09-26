@@ -776,3 +776,29 @@ t_install_agent_is_macos_only_and_pinned() {
   assert_match 'sudo -n install -m 755 "\$w/mac/start-container\.sh" /usr/local/sbin/start-container\.sh' "$op" "installs exactly the agent script, never prompting"
   assert_match 'plat" != macos' "$op" "refused off macOS"
 }
+
+t_set_tunables_writes_only_the_controller_timers() {
+  # Live gate, user decision 2026-09-26: extra configurations run with 30 s
+  # policy timers; one per machine keeps the real ones. The operation writes
+  # (fast) or removes (default) exactly the controller's tunables file.
+  local script op v w
+  tg_setup
+  tg set-tunables lin1 --targets "$CASE_DIR/targets.env" --mode fast
+  assert_match 'no restore snapshot' "$TG_OUT" "set-tunables needs a snapshot"
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  for v in "set-tunables" "set-tunables --mode shadow" "set-tunables --mode fast;id"; do
+    : >"$FAKE_LOG"
+    read -r -a w <<<"$v"
+    tg "${w[0]}" lin1 --targets "$CASE_DIR/targets.env" "${w[@]:1}"
+    assert_rc 2 "$TG_RC" "[$v] refused"
+    assert_eq 0 "$(tg_sent)" "nothing sent for [$v]"
+  done
+  : >"$FAKE_LOG"
+  tg set-tunables lin1 --targets "$CASE_DIR/targets.env" --mode fast
+  assert_rc 0 "$TG_RC" "fast after snapshot: $TG_OUT"
+  assert_match 'NICE_DNS_OP=set-tunables .*NICE_DNS_MODE=fast ' "$(cat "$FAKE_LOG")" "sent as data words"
+  script="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG")"
+  op="$(printf '%s\n' "$script" | sed -n '/^  set-tunables)/,/;;$/p')"
+  assert_match 'nice-dns-health/tunables\.tsv' "$op" "only the controller's tunables file"
+  assert_match 'ND_POLICY_GRACE_S' "$op" "the policy timers"
+}

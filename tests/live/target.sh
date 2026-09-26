@@ -90,6 +90,10 @@
 #                    `git archive` of --source-sha (sudo -n: the disposable
 #                    Mac's sudo asks for no credential; nothing prompts). A cell
 #                    installed from origin/main otherwise keeps its old agent
+#   set-tunables     --mode fast writes the installed controller's
+#                    tunables.tsv (30 s startup allowance, grace and cooldown:
+#                    the live gate's extra configurations, user decision
+#                    2026-09-26); --mode default removes it (the real timers)
 #   hold-bridge-refresh
 #                    stamp the controller's outage-refresh rate limit
 #                    (bridges.last = now), so an outage in the next hour does
@@ -133,7 +137,7 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell quiesce-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh install-agent'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell quiesce-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh install-agent set-tunables'
 FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
@@ -180,7 +184,8 @@ if [ "$op" != install-cell ] && [ -n "$i_cell$i_hsha" ]; then
 fi
 case "$op" in install-cell|build-proxy|install-controller|install-agent) ;; *) [ -z "$i_sha" ] || die "--source-sha is only valid for install-cell, build-proxy, install-controller and install-agent" ;; esac
 case "$op" in fault-route|heal-route) ;; *) [ -z "$i_route" ] || die "--route is only valid for fault-route and heal-route" ;; esac
-[ "$op" = install-controller ] || [ -z "$i_mode" ] || die "--mode is only valid for install-controller"
+case "$op" in install-controller|set-tunables) ;; *) [ -z "$i_mode" ] || die "--mode is only valid for install-controller and set-tunables" ;; esac
+if [ "$op" = set-tunables ]; then case "$i_mode" in fast|default) ;; *) die "set-tunables needs --mode fast|default" ;; esac; fi
 
 # ─── targets file (data only) ────────────────────────────────────────────────
 
@@ -893,6 +898,16 @@ case "$NICE_DNS_OP" in
     "$t" bridges-refresh </dev/null >"$o" 2>&1; rc=$?
     redact <"$o"; rm -f "$o"
     exit "$rc" ;;
+  set-tunables)
+    if [ "$plat" = macos ]; then f="$HOME/Library/Application Support/nice-dns-health/tunables.tsv"
+    else f="${XDG_DATA_HOME:-$HOME/.local/share}/nice-dns-health/tunables.tsv"; fi
+    [ -d "$(dirname "$f")" ] || { echo "no installed controller at $(dirname "$f")" >&2; exit 1; }
+    if [ "$NICE_DNS_MODE" = fast ]; then
+      (umask 077 && printf 'ND_POLICY_STARTUP_S\t30\nND_POLICY_GRACE_S\t30\nND_POLICY_COOLDOWN_S\t30\n' >"$f") || exit 1
+    else
+      rm -f "$f"
+    fi
+    printf 'tunables\t%s\n' "$NICE_DNS_MODE" ;;
   install-agent)
     if [ "$plat" != macos ]; then echo "install-agent is for macOS targets" >&2; exit 2; fi
     [ -s "${ND_SOURCE_TGZ:-}" ] || { echo "install-agent without the nice-dns source archive" >&2; exit 2; }
@@ -1024,7 +1039,7 @@ case "$op" in
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|quiesce-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|install-agent)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|quiesce-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|install-agent|set-tunables)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"

@@ -6,9 +6,13 @@
 #
 # The controller acts here (install-controller --mode active), on the
 # designated disposable targets only, with the proxy image built there from
-# the sibling checkout. Per cell (all four of a platform with --matrix all,
-# each installed fresh with the product's installer at origin/main and the
-# target's original cell last; otherwise the cell the target runs):
+# the sibling checkout. Cells, per platform (user decision 2026-09-26, the
+# representative gate): with --matrix all, the other proxy with standard
+# Pi-hole, installed fresh at origin/main and run with 30 s policy timers
+# (set-tunables fast), then the target's original cell, reinstalled and run
+# with the real timers; the hardened cells are Sub-plan 5's final matrix and
+# are recorded blocked-by-scope in the receipt. Without --matrix all: the
+# cell the target runs, real timers. Per cell:
 #   CT-PROBES            the observations of a working chain; one active pass
 #                        a minute
 #   CT-PRIMARY-ONLY      the preferred route fails while the others work: no
@@ -80,11 +84,14 @@ ca_deploy() {
   cs_t "$a" recreate-proxy --component "tor-$x" >"$d/recreate.log" 2>&1 || fail "$a: recreate-proxy: $(tail -n 5 "$d/recreate.log")"
   assert_eq "$(awk -F '\t' '$1 == "candidate" { print $3 }' "$d/build.log")" "$(awk -F '\t' '$1 == "image" { print $3 }' "$d/recreate.log")" \
     "$a: tor-$x runs the image built from $psha"
+  if [ "$CA_TIMERS" = fast ]; then cs_t "$a" set-tunables --mode fast >>"$d/ops.log" 2>&1 || fail "$a: set-tunables fast"
+  else cs_t "$a" set-tunables --mode default >>"$d/ops.log" 2>&1 || fail "$a: set-tunables default"; fi
   cs_wait "$a" up 900 ca_up || fail "$a $x/$h: the chain did not answer within 15 minutes"
   {
     printf 'target\t%s\ncell\t%s/%s/%s\nimage_gen\ttor-%s=%s\n' "$a" "$CA_PLAT" "$x" "$h" "$x" "$(awk -F '\t' '$1 == "candidate" { print $3 }' "$d/build.log")"
     printf 'nice_dns\t%s\nproxy_source\ttor-%s\t%s\n' "$sha" "$x" "$psha"
     printf 'bundle\t%s\n' "$(awk -F '\t' '$1 == "receipt" && $2 == "bundle" { print $3 }' "$d/install.log")"
+    printf 'timers\t%s\n' "$CA_TIMERS"
   } >"$d/cell.tsv"
 }
 
@@ -140,7 +147,11 @@ ca_recovery() {
   cs_wait "$a" ack-2 1080 ca_tor_acked || { wait "$tp"; fail "$a: no acknowledged Tor restart within 18 minutes: $(cs_jrows "$d/ack-2.tsv" journal-active "$CA_SINCE")"; }
   wait "$tp"; trc=$?
   assert_rc 0 "$trc" "$a: Tor was thawed when the image claimed the request: $(cat "$d/thaw.log")"
-  assert_match '^thawed	([2-9][0-9]{2}|[1-9][0-9]{3})$' "$(cat "$d/thaw.log")" "$a: the request came after the grace, not from a stale file"
+  if [ "$CA_TIMERS" = fast ]; then
+    assert_match '^thawed	([2-9][0-9]|[1-9][0-9]{2,3})$' "$(cat "$d/thaw.log")" "$a: the request came after the 30 s grace, not from a stale file"
+  else
+    assert_match '^thawed	([2-9][0-9]{2}|[1-9][0-9]{3})$' "$(cat "$d/thaw.log")" "$a: the request came after the grace, not from a stale file"
+  fi
   assert_ne "" "$(ca_rows "$d/ack-2.tsv" "$CA_SINCE" tor requested)" "$a: the restart was requested"
   assert_match 'generation [0-9]+ -> [0-9]+, tor pid' "$(ca_rows "$d/ack-2.tsv" "$CA_SINCE" tor acknowledged)" "$a: acknowledged by a new tor generation (in-image)"
   assert_eq "" "$(ca_rows "$d/ack-2.tsv" "$CA_SINCE" service requested)" "$a: no service fallback when the image acknowledged"
@@ -216,6 +227,7 @@ ca_bridges() {
 
 ca_cell() {
   local a="$1" x="$2" h="$3" fresh="$4"
+  CA_TIMERS="${5:-production}"
   CA_CELL_DIR="$CA_ROOT_DIR/$CA_PLAT-$x-$h"
   mkdir -p "$CA_CELL_DIR" && : >"$CA_CELL_DIR/observations.tsv"
   printf '== cell %s/%s/%s %s\n' "$CA_PLAT" "$x" "$h" "$(date -u +%H:%M:%S)"
@@ -240,8 +252,11 @@ ca_platform() {
   case "$x0/$h0" in haproxy/standard|haproxy/hardened|socat/standard|socat/hardened) ;; *) fail "$a: unknown current cell '$x0/$h0'" ;; esac
   printf 'original\t%s/%s\n' "$x0" "$h0" >"$CA_ROOT_DIR/$CA_PLAT-original.tsv"
   if ca_matrix_all; then
-    cells="$(awk -F '\t' -v p="$CA_PLAT" -v o="$x0/$h0" '!/^#/ && $1 == p && $2 "/" $3 != o { print $2 "/" $3 }' "$NICE_DNS_ROOT/tests/manifests/matrix.tsv") $x0/$h0"
-    for c in $cells; do ( ca_cell "$a" "${c%/*}" "${c#*/}" 1 ) || bad="$bad $c"; done
+    # The representative gate: the other proxy (standard Pi-hole) on fast
+    # timers, then the original cell, reinstalled, on the real timers.
+    cells="$(awk -F '\t' -v p="$CA_PLAT" -v o="$x0" '!/^#/ && $1 == p && $2 != o && $3 == "standard" { print $2 "/" $3 }' "$NICE_DNS_ROOT/tests/manifests/matrix.tsv")"
+    for c in $cells; do ( ca_cell "$a" "${c%/*}" "${c#*/}" 1 fast ) || bad="$bad $c"; done
+    ( ca_cell "$a" "$x0" "$h0" 1 production ) || bad="$bad $x0/$h0"
   else
     ( ca_cell "$a" "$x0" "$h0" 0 ) || bad="$bad $x0/$h0"
   fi

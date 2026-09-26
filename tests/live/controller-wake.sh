@@ -75,10 +75,28 @@ ca_wake() {
     awk 'NR > 1 && $1 - p >= 120 { printf "gap\t%s s before the pass at %s\n", $1 - p, $1 } { p = $1 }' "$d/wake-ticks.txt"; } >"$d/wake.txt"
 }
 
+# ca_reuse_wake <alias>: NICE_DNS_WAKE_REUSE_RUN names an earlier run whose
+# live/controller-wake passed; its evidence for <alias> is copied with the run
+# and the nice-dns revision it was taken at (user decision 2026-09-26: the
+# representative gate reuses the day's wake instead of sleeping the machines
+# again; the revision says it predates later fixes).
+ca_reuse_wake() {
+  local src="$NICE_DNS_WAKE_REUSE_RUN" a="$1"
+  assert_match '	t_1_wake	pass$' "$(grep -F 'live/controller-wake' "$src/results.tsv" 2>/dev/null)" "the reused run's wake passed ($src)"
+  assert_file "$src/controller-active/wake-$a/wake.txt" "$a: the reused run has wake evidence"
+  mkdir -p "$CA_ROOT_DIR/wake-$a" && cp "$src/controller-active/wake-$a/"* "$CA_ROOT_DIR/wake-$a/" || fail "cannot copy the wake evidence"
+  printf 'reused_from\t%s\tnice-dns %s\n' "$(basename "$src")" "$(awk -F '\t' '$1 == "git_head" { print $2 }' "$src/receipt.tsv")" >>"$CA_ROOT_DIR/wake-$a/wake.txt"
+}
+
 t_1_wake() {
   local p
   cs_selection
   CA_ROOT_DIR="$ARTIFACT_DIR/controller-active"
+  if [ -n "${NICE_DNS_WAKE_REUSE_RUN:-}" ]; then
+    for p in $(cs_platforms); do cs_alias "$p"; ca_reuse_wake "$CS_ALIAS"; done
+    cat "$CA_ROOT_DIR"/wake-*/wake.txt >"$CA_ROOT_DIR/wake.txt"
+    return 0
+  fi
   # One target at a time: the operator handles one machine, then the next.
   for p in $(cs_platforms); do
     cs_alias "$p"

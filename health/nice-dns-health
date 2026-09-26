@@ -431,6 +431,32 @@ cmd_run() {
 # (refresh_bridges_on_outage); a changed set is adopted by the service
 # restart.
 # NICE_DNS_RESTART_GRACE_SECS still sets the grace (ND_POLICY_GRACE_S).
+#
+# The scheduled pass has no environment of its own, so the policy timers can
+# also come from $HEALTH_LIB_ROOT_INSTALLED/tunables.tsv (data, never
+# sourced): lines "ND_POLICY_STARTUP_S|ND_POLICY_GRACE_S|ND_POLICY_COOLDOWN_S
+# <TAB> 1..86400", in a regular file that health_path_safe accepts (owned by
+# this user or root, not group- or world-writable). Anything else refuses the whole file (the defaults stay)
+# and says so on stderr. The environment wins over the file. The live gate
+# sets 30 s here in its extra configurations (Sub-plan 3 Task 2.3).
+load_tunables() {
+  local f="$HEALTH_LIB_ROOT_INSTALLED/tunables.tsv" bad k v
+  [ -e "$f" ] || [ -L "$f" ] || return 0
+  if ! health_path_safe "$f" f; then echo "$SCRIPT_NAME: tunables refused: $HEALTH_LIB_ERROR; ignored" >&2; return 0; fi
+  bad="$(awk -F '\t' 'NF == 0 || /^#/ { next }
+    NF != 2 || $1 !~ /^ND_POLICY_(STARTUP|GRACE|COOLDOWN)_S$/ || $2 !~ /^[1-9][0-9]{0,4}$/ || $2 > 86400 { print NR; exit }' "$f")"
+  if [ -n "$bad" ]; then echo "$SCRIPT_NAME: tunables $f line $bad is not an allowed timer; ignored" >&2; return 0; fi
+  while IFS="$(printf '\t')" read -r k v; do
+    case "$k" in
+      ND_POLICY_STARTUP_S) [ -n "${ND_POLICY_STARTUP_S:-}" ] || ND_POLICY_STARTUP_S="$v" ;;
+      ND_POLICY_GRACE_S) [ -n "${ND_POLICY_GRACE_S:-}${NICE_DNS_RESTART_GRACE_SECS:-}" ] || ND_POLICY_GRACE_S="$v" ;;
+      ND_POLICY_COOLDOWN_S) [ -n "${ND_POLICY_COOLDOWN_S:-}" ] || ND_POLICY_COOLDOWN_S="$v" ;;
+    esac
+  done <"$f"
+  export ND_POLICY_STARTUP_S ND_POLICY_COOLDOWN_S 2>/dev/null
+  return 0
+}
+load_tunables
 
 ND_POLICY_GRACE_S="${ND_POLICY_GRACE_S:-${NICE_DNS_RESTART_GRACE_SECS:-300}}"
 export ND_POLICY_GRACE_S
