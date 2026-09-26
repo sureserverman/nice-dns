@@ -60,8 +60,14 @@ ca_wake() {
   done
   rm -f "$ARTIFACT_DIR/WAKE-REQUEST-$a"
   cs_ticks "$d/wake-1.tsv" "$CA_SINCE" >"$d/wake-ticks.txt"
-  assert_eq "" "$(awk 'NR > 1 { g = $1 - p; if (g >= 120) seen = 1; else if (seen && (g < 30 || g > 120)) print g } { p = $1 }' "$d/wake-ticks.txt")" \
-    "$a: after the wake, one pass a minute again"
+  # After the gap: the pass the wake brings (a calendar schedule catches up
+  # on resume: systemd Persistent=true, launchd StartCalendarInterval), then
+  # the next wall-clock minute's pass, which may come seconds later (live,
+  # mint 2026-09-26: 13:03:04 catch-up, 13:03:15 minute pass), then one a
+  # minute. So the first interval after the gap is free; every later one is
+  # 30..120 s.
+  assert_eq "" "$(awk 'NR > 1 { g = $1 - p; if (g >= 120) { seen = 1; first = 1 } else if (seen && first) first = 0; else if (seen && (g < 30 || g > 120)) print g } { p = $1 }' "$d/wake-ticks.txt")" \
+    "$a: after the wake's catch-up pass, one pass a minute again"
   assert_eq "" "$(cs_jrows "$d/wake-1.tsv" journal-active "$CA_SINCE" | awk -F '\t' '$4 == "requested"')" "$a: the time jump caused no recovery action"
   ca_up "$d/wake-1.tsv" || fail "$a: the chain answers after the wake"
   { printf 'target\t%s\nplatform\t%s\nsleeps\t%s -> %s\n' "$a" "$plat" "$CA_SLEEPS0" "$(cs_sleeps "$d/wake-1.tsv")"
