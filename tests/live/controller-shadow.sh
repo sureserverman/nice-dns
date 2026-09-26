@@ -239,6 +239,9 @@ t_5_evidence_is_private() {
     cs_alias "$p"; a="$CS_ALIAS"
     assert_file "$(cs_dir "$a")/whole-outage.txt" "$a: the run reached the whole-outage evidence"
   done
-  assert_eq "" "$(grep -rlE 'cert=[A-Za-z0-9+/]{20}|(^|[^0-9A-Fa-f])[0-9A-F]{40}([^0-9A-Fa-f]|$)|PRIVATE KEY|pwhash|BRIDGE[0-9]+=' "$ARTIFACT_DIR/controller-shadow" "$ARTIFACT_DIR/cases" 2>/dev/null)" \
+  # This group's evidence only: in a plan run $ARTIFACT_DIR/cases also holds
+  # other groups' cases, whose fixtures plant bridge-shaped strings on purpose
+  # (unit/observations proves the dump redacts them).
+  assert_eq "" "$(grep -rlE 'cert=[A-Za-z0-9+/]{20}|(^|[^0-9A-Fa-f])[0-9A-F]{40}([^0-9A-Fa-f]|$)|PRIVATE KEY|pwhash|BRIDGE[0-9]+=' "$ARTIFACT_DIR/controller-shadow" "$ARTIFACT_DIR/cases/live-controller-shadow" 2>/dev/null)" \
     "no bridge line, certificate, fingerprint, key or password hash in the evidence"
 }

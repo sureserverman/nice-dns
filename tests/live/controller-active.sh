@@ -84,9 +84,14 @@ ca_deploy() {
   cs_t "$a" recreate-proxy --component "tor-$x" >"$d/recreate.log" 2>&1 || fail "$a: recreate-proxy: $(tail -n 5 "$d/recreate.log")"
   assert_eq "$(awk -F '\t' '$1 == "candidate" { print $3 }' "$d/build.log")" "$(awk -F '\t' '$1 == "image" { print $3 }' "$d/recreate.log")" \
     "$a: tor-$x runs the image built from $psha"
-  if [ "$CA_TIMERS" = fast ]; then cs_t "$a" set-tunables --mode fast >>"$d/ops.log" 2>&1 || fail "$a: set-tunables fast"
-  else cs_t "$a" set-tunables --mode default >>"$d/ops.log" 2>&1 || fail "$a: set-tunables default"; fi
+  # The real timers until the chain answers: with a 30 s grace, the
+  # recreate's ordinary bootstrap outage would already trigger the outage
+  # bridge refresh, and its pending set would route the in-image scenario's
+  # restart to the service restart (live, mac socat, run
+  # 20260926T190619Z-bcd92da5: "adopting").
+  cs_t "$a" set-tunables --mode default >>"$d/ops.log" 2>&1 || fail "$a: set-tunables default"
   cs_wait "$a" up 900 ca_up || fail "$a $x/$h: the chain did not answer within 15 minutes"
+  if [ "$CA_TIMERS" = fast ]; then cs_t "$a" set-tunables --mode fast >>"$d/ops.log" 2>&1 || fail "$a: set-tunables fast"; fi
   {
     printf 'target\t%s\ncell\t%s/%s/%s\nimage_gen\ttor-%s=%s\n' "$a" "$CA_PLAT" "$x" "$h" "$x" "$(awk -F '\t' '$1 == "candidate" { print $3 }' "$d/build.log")"
     printf 'nice_dns\t%s\nproxy_source\ttor-%s\t%s\n' "$sha" "$x" "$psha"
