@@ -6,13 +6,13 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the
 - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)
   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.
 - Baseline source: this repository at commit
-  `e6436ad6dd557237f1b1aacfadc0fd70cfeb9c35`. Citations are `path:line` at that commit.
+  `dca5b572729a61d892295016b7e97a79ea06d235`. Citations are `path:line` at that commit.
   The eight-cell baseline receipt measured b85bc9b. The document was first
   written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,
   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02
   re-pins after each change to a cited file (Task 1.1: 04b98cf, Unbound
   anchor and control; Task 1.3: d6c1a1f, Pi-hole HealthCmd; Stage 1 gate: 80d6c18, control refusal; Task 2.1: 9e71d32, route include; Task 2.3: bc846b2, Unbound WORKDIR; Stage 2 gate: 94a9c60, route resolution check). Sub-plan 03 re-pins the same
-  way (Task 1.1: ba144fd, health observations and platform adapters; Task 1.2: e81697f, state directory and boot identity appended to the platform adapters; Task 1.3: 6bf29f3, acknowledged recovery; Stage 1 gate: 4b11779, one controller pass; 20589e8, route recorded on success; Task 2.1: 3a4b4d6, bundle and minute schedules; Task 2.2: d934ed5, bridge lifecycle; Task 2.3: b8b9bb8, shadow install and privacy-safe failure dump; 93a9122, macOS exec reports a missing executable as 127; 674635f, the macOS fallback always rebuilds; 8f10ffe, it rebuilds the whole stack; e6436ad, restart ladder). `check-contracts` fails when a cited file changes
+  way (Task 1.1: ba144fd, health observations and platform adapters; Task 1.2: e81697f, state directory and boot identity appended to the platform adapters; Task 1.3: 6bf29f3, acknowledged recovery; Stage 1 gate: 4b11779, one controller pass; 20589e8, route recorded on success; Task 2.1: 3a4b4d6, bundle and minute schedules; Task 2.2: d934ed5, bridge lifecycle; Task 2.3: b8b9bb8, shadow install and privacy-safe failure dump; 93a9122, macOS exec reports a missing executable as 127; 674635f, the macOS fallback always rebuilds; 8f10ffe, it rebuilds the whole stack; e6436ad, restart ladder; dca5b57, a stopped macOS container has no generation). `check-contracts` fails when a cited file changes
   after this commit.
 - Checked by `bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md`.
   The check needs every workflow ID below, every operation ID in
@@ -372,7 +372,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
     `systemctl --user restart tor-<variant>.service`
     (lib/platform/linux.sh:134). On macOS it is `launchctl kickstart -k` of
     the start-container agent, which recreates the whole stack
-    (lib/platform/macos.sh:215).
+    (lib/platform/macos.sh:217).
   - The in-image restart keeps Tor's data. The service restart recreates
     the `--rm` container, which loses it until a volume is mounted
     (Sub-plan 4).
@@ -434,7 +434,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   with Tor frozen, the controller's service fallback was answered "stack
   already healthy" twice and never restarted the proxy. A restart the
   controller decides always rebuilds: nd_platform_restart_proxy leaves
-  restart-requested, which fast_path_ok consumes (lib/platform/macos.sh:215-221),
+  restart-requested, which fast_path_ok consumes (lib/platform/macos.sh:217-223),
   and keep_running_stack then refuses to leave the stack alone, so the whole
   stack is rebuilt (a second live run had stopped at "leaving it alone").
   The macOS installers wait on the same Pi-hole-only check before pinning DNS
@@ -657,7 +657,7 @@ Sources: ARCH-07, design "Bridge lifecycle".
   `org.nice-dns.health-bridges` agent (a daily `StartCalendarInterval`,
   which runs on wake; health/nice-dns-health:677). Its probe container runs
   only on `dnsnet`, and only while pi-hole, unbound and the proxy hold their
-  addresses (lib/platform/macos.sh:249-259).
+  addresses (lib/platform/macos.sh:251-261).
   - `mac/persist.sh` no longer installs the legacy `org.nice-dns.bridge-eval`
     agent. It retires that agent after the controller installs
     (mac/persist.sh:61).
