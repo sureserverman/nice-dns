@@ -49,6 +49,33 @@ ca_observe() { printf '%s\tpass\t%s\n' "$1" "$2" >>"$CA_CELL_DIR/observations.ts
 ca_rows() { cs_jrows "$1" journal-active "$2" | awk -F '\t' -v c="$3" -v p="$4" '$3 == c && $4 == p'; }
 
 
+# ca_health <alias> <file>: the target's health op (Podman health and start
+# time per container on Linux).
+ca_health() { cs_t "$1" health >"$2" 2>>"$CA_CELL_DIR/ops.log"; }
+ca_hstate() { awk -F '\t' -v c="podman:$2" '$1 == "health" && $2 == c { print $3; exit }' "$1"; }
+ca_started() { awk -F '\t' -v c="podman:$2" '$1 == "started" && $2 == c { print $3; exit }' "$1"; }
+
+# ca_quadlet_health <alias> <proxy>: Linux. The proxy's and Unbound's
+# quadlet health checks verify the chain and only report (close-out B1): on
+# the working chain both read healthy, and Podman never restarts them.
+ca_quadlet_health() {
+  local a="$1" x="$2" d="$CA_CELL_DIR" t0 c
+  cs_t "$a" config >"$d/qh-config.tsv" 2>>"$d/ops.log" || fail "$a: config"
+  for c in "tor-$x" unbound; do
+    assert_match "^healthcheck	$c	.*	on_failure=none$" "$(grep "^healthcheck	$c	" "$d/qh-config.tsv")" "$a: $c's health check never restarts it"
+  done
+  assert_match "nice-dns-route-probe" "$(grep "^healthcheck	tor-$x	" "$d/qh-config.tsv")" "$a: the proxy's check is the verifying route probe"
+  assert_match "probe-route" "$(grep "^healthcheck	unbound	" "$d/qh-config.tsv")" "$a: Unbound's check resolves over its route"
+  t0="$(date +%s)"
+  while :; do
+    ca_health "$a" "$d/qh.tsv" || fail "$a: health"
+    [ "$(ca_hstate "$d/qh.tsv" "tor-$x")" = healthy ] && [ "$(ca_hstate "$d/qh.tsv" unbound)" = healthy ] && break
+    [ $(( $(date +%s) - t0 )) -lt 600 ] || fail "$a: tor-$x and unbound not both healthy within 10 minutes of the chain answering: $(grep -E '^health' "$d/qh.tsv" | tr '\n' ' ')"
+    sleep 30
+  done
+  { grep -E "^healthcheck	(tor-$x|unbound)	" "$d/qh-config.tsv"; grep -E "^health	podman:(tor-$x|unbound)	" "$d/qh.tsv"; } >"$d/quadlet-health.txt"
+}
+
 # ─────────────────────────── one cell ────────────────────────────────────────
 
 ca_deploy() {
@@ -122,6 +149,7 @@ ca_probes() {
   done
   [ "$(cs_routes_healthy "$d/probes.tsv")" -ge 1 ] || fail "$a: at least one route answers"
   { printf 'mode\tactive\npasses\t%s\n' "$n"; cs_sec "$d/probes.tsv" observe; } >"$d/probes.txt"
+  if [ "$CA_PLAT" = linux ]; then ca_quadlet_health "$a" "$CA_PROXY"; cat "$d/quadlet-health.txt" >>"$d/probes.txt"; fi
   ca_observe CT-PROBES probes.txt
 }
 
@@ -180,6 +208,7 @@ ca_recovery() {
   assert_match '^nd-[0-9]+-[0-9]+$' "$id" "$a: the restart (and so the outage clock) ran whatever the cache answered (local-cache: $cache, outage_since: $os)"
   ca_observe CT-CACHE-VS-UPSTREAM cache.txt
   # 2. Service fallback: Tor stays frozen; the refresh is not held.
+  if [ "$CA_PLAT" = linux ]; then ca_health "$a" "$d/svc-h0.tsv" || fail "$a: health"; fi
   cs_report "$a" svc-0 || fail "$a: report"
   CA_SINCE="$(cs_now "$d/svc-0.tsv")"; g0="$(cs_gen "$d/svc-0.tsv")"
   NICE_DNS_FREEZE_MAX_SECS=1500 cs_t "$a" freeze-upstream --component "tor-$x" >>"$d/freeze.log" 2>&1 || fail "$a: freeze-upstream: $(cat "$d/freeze.log")"
@@ -191,6 +220,16 @@ ca_recovery() {
   CA_COMP=service
   cs_wait "$a" svc-2 900 ca_ready || fail "$a: no readiness within 15 minutes of the fallback"
   { printf 'path\tservice-fallback\n'; cs_jrows "$d/svc-2.tsv" journal-active "$CA_SINCE"; } >>"$d/recovery-ack.txt"
+  if [ "$CA_PLAT" = linux ]; then
+    # Linux restarts the proxy alone (close-out M2: Wants=, not Requires=):
+    # Unbound, with its cache, and Pi-hole keep running through it.
+    ca_health "$a" "$d/svc-h1.tsv" || fail "$a: health"
+    for c in unbound pi-hole; do
+      assert_ne "" "$(ca_started "$d/svc-h0.tsv" "$c")" "$a: $c's start time is read"
+      assert_eq "$(ca_started "$d/svc-h0.tsv" "$c")" "$(ca_started "$d/svc-h1.tsv" "$c")" "$a: the proxy's service restart did not restart $c"
+      printf 'kept_running\t%s\t%s\n' "$c" "$(ca_started "$d/svc-h1.tsv" "$c")" >>"$d/recovery-ack.txt"
+    done
+  fi
   ca_observe CT-RECOVERY-ACK recovery-ack.txt
 }
 
@@ -240,7 +279,7 @@ ca_bridges() {
 
 ca_cell() {
   local a="$1" x="$2" h="$3" fresh="$4"
-  CA_TIMERS="${5:-production}"
+  CA_TIMERS="${5:-production}" CA_PROXY="$x"
   CA_CELL_DIR="$CA_ROOT_DIR/$CA_PLAT-$x-$h"
   mkdir -p "$CA_CELL_DIR" && : >"$CA_CELL_DIR/observations.tsv"
   printf '== cell %s/%s/%s %s\n' "$CA_PLAT" "$x" "$h" "$(date -u +%H:%M:%S)"

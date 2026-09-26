@@ -608,6 +608,9 @@ case "$NICE_DNS_OP" in
         # The runtime's retained check history: start time and exit code of each.
         hl=$(ctl inspect "$c" --format '{{range .State.Health.Log}}{{.Start}} rc={{.ExitCode}}; {{end}}' 2>/dev/null)
         [ -n "$hl" ] && printf 'health_log\tpodman:%s\t%s\n' "$c" "$hl"
+        # When this container instance started: a restart of a unit that
+        # requires another would show here (Sub-plan 3 close-out, M2).
+        sa=$(ctl inspect "$c" --format '{{.State.StartedAt}}' 2>/dev/null) && printf 'started\tpodman:%s\t%s\n' "$c" "$sa"
       done
     else
       launchctl list | awk '/nice-dns/ { printf "health\tlaunchd:%s\tlast_exit=%s\tpid=%s\n", $3, $2, $1 }'
