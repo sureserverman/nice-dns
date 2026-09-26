@@ -6,13 +6,13 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the
 - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)
   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.
 - Baseline source: this repository at commit
-  `969945e0a31e43029b8342a095f8f067c9bde018`. Citations are `path:line` at that commit.
+  `5de0e7d85994a37f4d5793298ae2b83a9ab4721f`. Citations are `path:line` at that commit.
   The eight-cell baseline receipt measured b85bc9b. The document was first
   written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,
   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02
   re-pins after each change to a cited file (Task 1.1: 04b98cf, Unbound
   anchor and control; Task 1.3: d6c1a1f, Pi-hole HealthCmd; Stage 1 gate: 80d6c18, control refusal; Task 2.1: 9e71d32, route include; Task 2.3: bc846b2, Unbound WORKDIR; Stage 2 gate: 94a9c60, route resolution check). Sub-plan 03 re-pins the same
-  way (Task 1.1: ba144fd, health observations and platform adapters; Task 1.2: e81697f, state directory and boot identity appended to the platform adapters; Task 1.3: 6bf29f3, acknowledged recovery; Stage 1 gate: 4b11779, one controller pass; 20589e8, route recorded on success; Task 2.1: 3a4b4d6, bundle and minute schedules; Task 2.2: d934ed5, bridge lifecycle; Task 2.3: b8b9bb8, shadow install and privacy-safe failure dump; 93a9122, macOS exec reports a missing executable as 127; 674635f, the macOS fallback always rebuilds; 8f10ffe, it rebuilds the whole stack; e6436ad, restart ladder; dca5b57, a stopped macOS container has no generation; Stage 2 gate: 969945e, bridge refresh ownership). `check-contracts` fails when a cited file changes
+  way (Task 1.1: ba144fd, health observations and platform adapters; Task 1.2: e81697f, state directory and boot identity appended to the platform adapters; Task 1.3: 6bf29f3, acknowledged recovery; Stage 1 gate: 4b11779, one controller pass; 20589e8, route recorded on success; Task 2.1: 3a4b4d6, bundle and minute schedules; Task 2.2: d934ed5, bridge lifecycle; Task 2.3: b8b9bb8, shadow install and privacy-safe failure dump; 93a9122, macOS exec reports a missing executable as 127; 674635f, the macOS fallback always rebuilds; 8f10ffe, it rebuilds the whole stack; e6436ad, restart ladder; dca5b57, a stopped macOS container has no generation; Stage 2 gate: 969945e, bridge refresh ownership; 5de0e7d, policy timers from tunables.tsv). `check-contracts` fails when a cited file changes
   after this commit.
 - Checked by `bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md`.
   The check needs every workflow ID below, every operation ID in
@@ -177,7 +177,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   Cloudflare-named TLS session. That breaks [PRIV-ROUTE-IDENTITY]. baseline:
   unverified. The proxy config lives in the sibling repos and was not read
   here. Since the Sub-plan 3 Stage 1 gate the health CLI's recovery comment
-  describes the single controller pass (health/nice-dns-health:415-436); the
+  describes the single controller pass (health/nice-dns-health:415-462); the
   routes and their classes are in routes/providers.tsv.
 - Unbound validates against the root anchor in
   `auto-trust-anchor-file: "/var/lib/unbound/root.key"`
@@ -296,36 +296,41 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   controller, and fail when it does not install (deb/persistent-podman.sh:307,
   mac/persist.sh:61).
   - `install` builds a versioned bundle, then checks that the new bundle
-    loads (health/nice-dns-health:715). Only then does it replace the
-    schedule (health/nice-dns-health:701-780).
+    loads (health/nice-dns-health:741). Only then does it replace the
+    schedule (health/nice-dns-health:727-806).
   - `uninstall` removes only what the install receipt lists
-    (health/nice-dns-health:802-825).
+    (health/nice-dns-health:828-851).
   - Until Task 2.1 no installer installed it; it was installed by hand
     (health/nice-dns-health:14).
   - Deployed hosts still carry the older hand-installed copies. What runs
     there is baseline: unverified.
 - Schedule: `tick`, every minute.
   - Linux: a systemd user timer with `OnCalendar=minutely`,
-    `AccuracySec=5s` and `Persistent=true` (health/nice-dns-health:586-588).
+    `AccuracySec=5s` and `Persistent=true` (health/nice-dns-health:612-614).
     The service runs `<bash> <entrypoint> tick` with
     `TimeoutStartSec=540`, inside the lock lease
-    (health/nice-dns-health:575-577).
+    (health/nice-dns-health:601-603).
   - macOS: the agent's all-wildcard `StartCalendarInterval`
-    (health/nice-dns-health:647-648).
+    (health/nice-dns-health:673-674).
   - Observation mode since Sub-plan 3 Task 2.3: `install --shadow` writes the
-    same unit or agent running `tick --shadow` (health/nice-dns-health:566,
+    same unit or agent running `tick --shadow` (health/nice-dns-health:592,
     628), which records what it would do and never acts, and schedules no
     bridge refresh; a later shadow install stops and removes one
-    (health/nice-dns-health:729-734, 746-750). The receipt records `mode`
-    (health/nice-dns-health:758) and `status` prints it
-    (health/nice-dns-health:852). A plain install activates the same
+    (health/nice-dns-health:755-760, 746-750). The receipt records `mode`
+    (health/nice-dns-health:784) and `status` prints it
+    (health/nice-dns-health:878). A plain install activates the same
     schedule in place. Live shadow behavior is baseline: unverified until
     live/controller-shadow runs.
   - Calendar schedules run after a suspend or sleep, whereas monotonic timers
     and `StartInterval` do not (systemd.timer(5), launchd.plist(5)). Behavior
     on live hosts is baseline: unverified until the Stage 2 gate.
+- Since the Stage 2 gate the scheduled pass also reads the policy timers
+  from an optional tunables.tsv in the install root (allow-listed keys,
+  checked like the libraries; the environment wins)
+  (health/nice-dns-health:442-458). The live gate uses it for 30 s timers
+  in its extra configurations.
 - Grace is `ND_POLICY_GRACE_S` = 300, still settable through
-  `NICE_DNS_RESTART_GRACE_SECS` (health/nice-dns-health:435). lib/policy.sh
+  `NICE_DNS_RESTART_GRACE_SECS` (health/nice-dns-health:461). lib/policy.sh
   counts it from the later of the outage's start and the end of the 120 s
   startup allowance. With one-minute passes, a full outage observed from its
   onset becomes eligible for a restart after five minutes, subject to the
@@ -342,7 +347,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   live Mac is baseline: unverified.
 - Since the Sub-plan 3 Stage 1 gate, `run` has no outage timer of its own.
   After logging, it hands its observations to the same controller pass as
-  `tick` (health/nice-dns-health:464-476, lib/recovery.sh:742-791). One
+  `tick` (health/nice-dns-health:490-502, lib/recovery.sh:742-791). One
   policy, one state, one lock, one cooldown and one restart cap decide
   every action, whichever command the schedule calls. The pass observes,
   decides with lib/policy.sh, acts, and commits the state. Readiness
@@ -350,7 +355,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   an outage observed in that same pass.
 - Before the pass, and outside the lock, the bridges are re-evaluated
   (nd_bridges_refresh) once an observed outage has outlasted the grace. This
-  happens at most once an hour (health/nice-dns-health:446-462). Since the
+  happens at most once an hour (health/nice-dns-health:472-488). Since the
   Stage 2 gate it runs before the pass observes, so the decision never rests
   on observations older than the evaluation. Nothing in
   the controller writes `bridges.env` directly (WF-DNS-004).
@@ -623,7 +628,7 @@ Sources: ARCH-07, design "Bridge lifecycle".
     startup's critical path when a usable set exists.
 - Daily refresh since Task 2.2 (BL-019): the controller's
   `nice-dns-health-bridges.timer` (`OnCalendar=daily`, `Persistent=true`;
-  health/nice-dns-health:614) runs `nice-dns-health bridges-refresh`.
+  health/nice-dns-health:640) runs `nice-dns-health bridges-refresh`.
   - The image's bridge-eval writes a candidate, never `bridges.env`
     (lib/platform/linux.sh:161-167). It runs outside the state lock, under
     a refresh mutex (lib/recovery.sh:892-920).
@@ -645,7 +650,7 @@ Sources: ARCH-07, design "Bridge lifecycle".
   takes effect only on the next container start.
 - Health recovery re-evaluates with nd_bridges_refresh, at most once an
   hour, once an observed outage has outlasted the grace
-  (health/nice-dns-health:446-462).
+  (health/nice-dns-health:472-488).
   - Until Task 2.2 it ran the raw Moat fetcher
     (deb/persistent-podman.sh:130), which writes an unranked pool into the
     same `bridges.env` (scripts/fetch-bridges.sh:49-51) and could replace an
@@ -657,7 +662,7 @@ Sources: ARCH-07, design "Bridge lifecycle".
   container recreation on Linux is baseline: unverified (ARCH-06).
 - macOS daily refresh since Task 2.2: the controller's
   `org.nice-dns.health-bridges` agent (a daily `StartCalendarInterval`,
-  which runs on wake; health/nice-dns-health:678). Its probe container runs
+  which runs on wake; health/nice-dns-health:704). Its probe container runs
   only on `dnsnet`, only while pi-hole, unbound and the proxy run on
   .250/.251/.252, and it holds the start-container agent's stack lock while
   the probe container exists (lib/platform/macos.sh:255-299).
