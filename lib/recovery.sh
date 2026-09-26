@@ -62,10 +62,9 @@
 #   .forward-route.conf.staged  a candidate being validated
 #   .forward-route.conf.prev    the include before the last change (rollback)
 #   desired.tsv                 schema, route and generation last requested
-#                               (Sub-plan 3's lib/state.sh becomes the owner of
-#                               desired state and generations; this file and
-#                               the stale-generation check here then serve as
-#                               the route layer's own guard)
+#                               (lib/state.sh owns desired state and
+#                               generations; this file and the stale-generation
+#                               check here are the route layer's own guard)
 #
 # apply_route: record the desired route; stage the include; have the image
 # validate it (nice-dns-unbound-start check-route: shape, then

@@ -219,7 +219,10 @@ nd_platform_restart_proxy() {
   # The agent's fast path keeps a stack that looks healthy; a restart the
   # controller decided must rebuild it (mac/start-container.sh fast_path_ok).
   (umask 077 && mkdir -p "$d" && printf '%s\n' "controller $(date +%s)" >"$d/restart-requested") || return 1
-  nd_bounded "$2" "$3/svc" "$3/svc.err" launchctl kickstart -k "gui/$(id -u)/$_ND_MAC_AGENT"
+  # A kickstart that failed withdraws the request, or a later ordinary run of
+  # the agent would rebuild a stack nobody asked it to rebuild.
+  nd_bounded "$2" "$3/svc" "$3/svc.err" launchctl kickstart -k "gui/$(id -u)/$_ND_MAC_AGENT" && return 0
+  set -- "$?"; rm -f "$d/restart-requested"; return "$1"
 }
 
 # nd_platform_repair_runtime <fault> <deadline> <tmp>: 0 issued; 3 no repair.

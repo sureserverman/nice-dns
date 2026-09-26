@@ -105,6 +105,7 @@ STUB
   cat >"$b/launchctl" <<'STUB'
 #!/bin/sh
 l=launchctl; for a in "$@"; do l="$l $a"; done; printf '%s\n' "$l" >>"$FAKE_LOG"
+[ -f "$FAKE/launchctl_fails" ] && exit 5
 if [ "$2" = -k ]; then [ -f "$FAKE/restart_changes" ] && echo "t$(date +%s)-new" >"$FAKE/started"
   [ -f "$FAKE/restart_brings_up" ] && ! grep -qx tor-haproxy "$FAKE/running" && echo tor-haproxy >>"$FAKE/running"
 else [ -f "$FAKE/start_brings_up" ] && printf 'pi-hole\nunbound\ntor-haproxy\n' >"$FAKE/running"; fi
@@ -609,6 +610,13 @@ t_macos_restart_rebuilds_even_when_the_cache_answers() {
     nd_platform_restart_proxy tor-haproxy 5 "$TMPDIR"
     assert_file "$XDG_STATE_HOME/nice-dns/restart-requested" "the restart leaves its request for the agent"
     assert_match '^launchctl kickstart -k gui/[0-9]+/org\.nice-dns\.start-container$' "$(cat "$FAKE_LOG")" "then kicks the agent"
+    # A kickstart that fails leaves no request behind: a stale one would force
+    # a later, unrequested rebuild (close-out evaluator, Minor).
+    rm -f "$XDG_STATE_HOME/nice-dns/restart-requested"; touch "$FAKE/launchctl_fails"
+    nd_platform_restart_proxy tor-haproxy 5 "$TMPDIR"
+    assert_nonzero "$?" "a failed kickstart fails the restart"
+    assert_no_path "$XDG_STATE_HOME/nice-dns/restart-requested" "and withdraws its request"
+    rm -f "$FAKE/launchctl_fails"
   ) || exit 1
   # 2. The agent's fast path, run from the script's own functions with stubs.
   sed -n '/^dns_healthy() {/,/^}/p; /^route_verified() {/,/^}/p; /^fast_path_ok() {/,/^}/p; /^keep_running_stack() {/,/^}/p' "$sc" >"$CASE_DIR/fp.sh"

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # nice-dns-health — periodic health-check for the nice-dns DNS chain.
 #
-# Subcommands manage a 30-min systemd-user timer (Linux) or LaunchAgent
-# (macOS) that re-invokes this same script with `run` to perform the
-# checks. The checks are the observations of lib/health.sh and the platform
+# Subcommands manage a minutely systemd-user timer (Linux) or LaunchAgent
+# (macOS) that re-invokes the installed copy with `tick`: one controller pass
+# (observe, decide, act) under the state lock. The checks are the observations of lib/health.sh and the platform
 # adapters in lib/platform/ (read from ../lib next to this script in a
 # checkout; `install` copies them to an owned directory the installed copy
 # reads). On any failure, a detailed diagnostic dump is written next to the
