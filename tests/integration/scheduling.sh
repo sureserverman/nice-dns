@@ -323,3 +323,45 @@ t_installed_controller_reads_its_timers_from_the_tunables_file() {
     ) || exit 1
   done
 }
+
+t_quadlets_leave_chain_restarts_to_the_controller() {
+  # Close-out evaluator B1 and M2 (Sub-plan 3). The controller is the only
+  # actor that restarts the Tor proxy or Unbound for a chain fault (ARCH-02,
+  # Stage 1's single owner). Podman's HealthOnFailure=restart on a loopback
+  # `nc -z` was a second restart owner that never saw the real fault: in
+  # Sub-plan 1's live freeze it stayed green, then restarted Unbound and
+  # Pi-hole while the frozen proxy was left alone. So:
+  #  - the proxy and Unbound health checks verify the chain (the image's
+  #    route probe; Unbound's own authenticated probe-route) and only report;
+  #  - Unbound and Pi-hole do not Require= the unit before them, because an
+  #    explicit restart of a required unit restarts its dependents
+  #    (systemd.unit(5), Requires=): the controller's proxy restart would
+  #    otherwise drop Unbound's cache and restart Pi-hole.
+  # Checked on the units Podman's own generator writes, per variant, as
+  # deb/persistent-podman.sh installs them. The generator escapes spaces in
+  # --health-cmd as \x20, so each unit is unescaped before it is matched.
+  local gen="${NICE_DNS_QUADLET:-/usr/libexec/podman/quadlet}" q v u out unit
+  [ -x "$gen" ] || { echo "SKIP-REASON: no podman quadlet generator at $gen" >&2; return 1; }
+  for v in haproxy socat; do
+    q="$CASE_DIR/quadlet-$v"; mkdir -p "$q"
+    cp "$NICE_DNS_ROOT"/deb/quadlet/{nice-dns.network,nice-dns.pod,unbound.container,pi-hole.container,tor-$v.container} "$q/"
+    sed -i "s/__VARIANT__/$v/g" "$q/unbound.container"
+    out="$(QUADLET_UNIT_DIRS="$q" "$gen" -dryrun -user 2>&1)" || { echo "$out" >&2; assert_eq 0 1 "$v: the quadlet generator accepts the units"; }
+    for u in tor-$v unbound; do
+      unit="$(printf '%s\n' "$out" | awk -v s="---$u.service---" '$0 == s { p = 1; next } /^---.*---$/ { p = 0 } p' | sed 's/\\x20/ /g')"
+      assert_match 'ExecStart=.*--health-on-failure none' "$unit" "$v: $u's health check never restarts it (the controller owns that)"
+      assert_not_match 'nc -z 127\.0\.0\.1' "$(printf '%s\n' "$unit" | grep '^ExecStart=')" "$v: $u's health check is not a loopback port check"
+    done
+    unit="$(printf '%s\n' "$out" | awk -v s="---tor-$v.service---" '$0 == s { p = 1; next } /^---.*---$/ { p = 0 } p' | sed 's/\\x20/ /g')"
+    assert_match 'health-cmd .*nice-dns-route-probe 853 tor\.cloudflare-dns\.com' "$unit" "$v: the proxy health check is the image's verifying route probe"
+    unit="$(printf '%s\n' "$out" | awk '$0 == "---unbound.service---" { p = 1; next } /^---.*---$/ { p = 0 } p' | sed 's/\\x20/ /g')"
+    assert_match 'health-cmd .*unbound-control .*status.*nice-dns-unbound-start probe-route' "$unit" "$v: Unbound's health check needs Unbound answering control and its authenticated route resolving"
+    assert_not_match '^Requires=tor-' "$unit" "$v: a proxy restart does not restart Unbound"
+    assert_match "^Wants=tor-$v\\.service" "$unit" "$v: Unbound still pulls in its proxy"
+    assert_match "^After=tor-$v\\.service" "$unit" "$v: and starts after it"
+    unit="$(printf '%s\n' "$out" | awk '$0 == "---pi-hole.service---" { p = 1; next } /^---.*---$/ { p = 0 } p' | sed 's/\\x20/ /g')"
+    assert_not_match '^Requires=unbound' "$unit" "$v: an Unbound restart does not restart Pi-hole"
+    assert_match '^Wants=unbound\.service' "$unit" "$v: Pi-hole still pulls in Unbound"
+    assert_match '^After=unbound\.service' "$unit" "$v: and starts after it"
+  done
+}

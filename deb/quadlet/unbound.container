@@ -1,13 +1,14 @@
 [Unit]
 Description=Unbound recursive DNS resolver
-# Requires= (not just After=) so unbound blocks on tor-haproxy.service
-# reaching Active=active. tor-haproxy reports active as soon as its
-# container is up (Notify= deliberately unset there — see its file for
-# rationale), so unbound starts shortly after haproxy is listening,
-# even if the chain isn't yet resolving end-to-end. unbound's own
-# healthcheck catches the "starting but not serving" window, and
-# pi-hole chains on this same Requires=.
-Requires=tor-__VARIANT__.service
+# Wants= plus After= (not Requires=): unbound starts after
+# tor-__VARIANT__.service reaches Active=active. tor-haproxy reports active
+# as soon as its container is up (Notify= deliberately unset there — see its
+# file for rationale), so unbound starts shortly after the proxy is
+# listening, even if the chain isn't yet resolving end-to-end. Not
+# Requires=: under systemd.unit(5) an explicit restart of a required unit
+# also restarts this one, so the controller's proxy restart would drop
+# Unbound's cache and restart Pi-hole (Sub-plan 3 close-out, M2).
+Wants=tor-__VARIANT__.service
 After=tor-__VARIANT__.service
 
 [Container]
@@ -15,22 +16,19 @@ ContainerName=unbound
 Image=localhost/unbound:latest
 Pod=nice-dns.pod
 NoNewPrivileges=true
-# Port-level check: is unbound listening on 5335? Same rationale as
-# tor-haproxy.container — we test process aliveness here, and let
-# nice-dns-health's chain-resolves check (Stage 5) detect end-to-end
-# failures with its own grace window and graceful restart.
-HealthCmd=nc -z 127.0.0.1 5335
-HealthInterval=30s
-# `nc -z` returns in <100ms. 5s is plenty.
-HealthTimeout=5s
-HealthRetries=5
-# Match tor-haproxy's 60s start period. unbound depends on tor-haproxy for
-# any successful upstream query, but with the wait-for-healthy gate
-# (Stage 2 of the reliability plan) unbound only starts after tor-haproxy
-# is already healthy, so unbound's own start period only needs to cover
-# its internal init (cert load, cache prime) — sub-10s.
-HealthStartPeriod=60s
-HealthOnFailure=restart
+# Health reports; it never restarts (see tor-haproxy.container: the
+# nice-dns-health controller is the one restart owner). Healthy means Unbound
+# answers on its local control socket and its selected route resolves in a
+# fresh authenticated TLS session that bypasses the cache (probe-route,
+# bounded by NICE_DNS_PROBE_TIMEOUT, 15 s). It therefore also reads unhealthy
+# while Tor is down: that is the truth about uncached names.
+HealthCmd=unbound-control -c /usr/share/nice-dns/control.conf status >/dev/null && nice-dns-unbound-start probe-route >/dev/null
+HealthInterval=60s
+HealthTimeout=30s
+HealthRetries=3
+# Unbound's upstream is the proxy, which may still be bootstrapping Tor.
+HealthStartPeriod=300s
+HealthOnFailure=none
 
 [Service]
 Restart=on-failure

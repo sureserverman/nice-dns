@@ -1,10 +1,11 @@
 [Unit]
 Description=Pi-hole DNS sinkhole
-# Requires= (not just After=) so pi-hole blocks on unbound.service reaching
-# Active=active. With unbound chained on tor-haproxy and tor-haproxy waiting
-# for healthy, this means pi-hole only starts answering port 53 once the
-# full chain is serving.
-Requires=unbound.service
+# Wants= plus After= (not Requires=): pi-hole starts after unbound.service
+# reaches Active=active. Not Requires=: under systemd.unit(5) an explicit
+# restart of a required unit also restarts this one, so a restart of Unbound
+# or of the proxy before it would restart Pi-hole too (Sub-plan 3 close-out,
+# M2).
+Wants=unbound.service
 After=unbound.service
 
 [Container]
