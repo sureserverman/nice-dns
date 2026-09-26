@@ -32,7 +32,7 @@ ca_woke() {
 }
 
 ca_wake() {
-  local plat="$1" a="$2" d
+  local plat="$1" a="$2" d t0
   CA_CELL_DIR="$CA_ROOT_DIR/wake-$a"; d="$CA_CELL_DIR"; mkdir -p "$d"
   cs_report "$a" wake-0 || fail "$a: report"
   CA_SINCE="$(cs_now "$d/wake-0.tsv")"; CA_SLEEPS0="$(cs_sleeps "$d/wake-0.tsv")"
@@ -40,7 +40,14 @@ ca_wake() {
   # The operator is asked through this marker (the session relays it).
   printf '%s\t%s\tsleep the machine for at least 3 minutes, then wake it\n' "$(date -u +%H:%M:%S)" "$a" >"$ARTIFACT_DIR/WAKE-REQUEST-$a"
   printf 'ACTION NEEDED: sleep %s for at least 3 minutes, then wake it (waiting up to 60 minutes)\n' "$a"
-  cs_wait "$a" wake-1 3600 ca_woke || fail "$a: no sleep and wake with three later passes within 60 minutes"
+  # A sleeping target does not answer: a failed report here means "still
+  # asleep" (live run 20260926T115513Z-0e67b953 quit on the first one).
+  t0="$(date +%s)"
+  while :; do
+    if cs_report "$a" wake-1 && ca_woke "$d/wake-1.tsv"; then break; fi
+    [ $(( $(date +%s) - t0 )) -lt 3600 ] || fail "$a: no sleep and wake with three later passes within 60 minutes"
+    sleep 30
+  done
   rm -f "$ARTIFACT_DIR/WAKE-REQUEST-$a"
   cs_ticks "$d/wake-1.tsv" "$CA_SINCE" >"$d/wake-ticks.txt"
   assert_eq "" "$(awk 'NR > 1 { g = $1 - p; if (g >= 120) seen = 1; else if (seen && (g < 30 || g > 120)) print g } { p = $1 }' "$d/wake-ticks.txt")" \
