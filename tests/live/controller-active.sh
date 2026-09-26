@@ -191,7 +191,7 @@ ca_bridges() {
   ca_up "$d/br-0.tsv" && up0=1
   cs_t "$a" bridges-refresh >"$d/bridges.log" 2>&1 || fail "$a: bridges-refresh: $(tail -n 5 "$d/bridges.log")"
   res="$(awk -F '\t' '$1 == "result" { r = $2 } END { print r }' "$d/bridges.log")"
-  case "$res" in applied|unchanged) ;; *) fail "$a: the refresh gave '$res' (applied or unchanged expected): $(tail -n 5 "$d/bridges.log")" ;; esac
+  case "$res" in changed|unchanged) ;; *) fail "$a: the refresh gave '$res' (changed or unchanged expected: nd_bridges_apply's results): $(tail -n 5 "$d/bridges.log")" ;; esac
   cs_report "$a" br-1 || fail "$a: report"
   assert_eq "$g0" "$(cs_gen "$d/br-1.tsv")" "$a: the refresh restarted nothing"
   assert_match '^[3-9]/|^[1-9][0-9]+/' "$(cs_bridges "$d/br-1.tsv")" "$a: a usable set of at least 3 bridges"
