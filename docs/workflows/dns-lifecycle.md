@@ -6,13 +6,13 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the
 - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)
   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.
 - Baseline source: this repository at commit
-  `dca5b572729a61d892295016b7e97a79ea06d235`. Citations are `path:line` at that commit.
+  `969945e0a31e43029b8342a095f8f067c9bde018`. Citations are `path:line` at that commit.
   The eight-cell baseline receipt measured b85bc9b. The document was first
   written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,
   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02
   re-pins after each change to a cited file (Task 1.1: 04b98cf, Unbound
   anchor and control; Task 1.3: d6c1a1f, Pi-hole HealthCmd; Stage 1 gate: 80d6c18, control refusal; Task 2.1: 9e71d32, route include; Task 2.3: bc846b2, Unbound WORKDIR; Stage 2 gate: 94a9c60, route resolution check). Sub-plan 03 re-pins the same
-  way (Task 1.1: ba144fd, health observations and platform adapters; Task 1.2: e81697f, state directory and boot identity appended to the platform adapters; Task 1.3: 6bf29f3, acknowledged recovery; Stage 1 gate: 4b11779, one controller pass; 20589e8, route recorded on success; Task 2.1: 3a4b4d6, bundle and minute schedules; Task 2.2: d934ed5, bridge lifecycle; Task 2.3: b8b9bb8, shadow install and privacy-safe failure dump; 93a9122, macOS exec reports a missing executable as 127; 674635f, the macOS fallback always rebuilds; 8f10ffe, it rebuilds the whole stack; e6436ad, restart ladder; dca5b57, a stopped macOS container has no generation). `check-contracts` fails when a cited file changes
+  way (Task 1.1: ba144fd, health observations and platform adapters; Task 1.2: e81697f, state directory and boot identity appended to the platform adapters; Task 1.3: 6bf29f3, acknowledged recovery; Stage 1 gate: 4b11779, one controller pass; 20589e8, route recorded on success; Task 2.1: 3a4b4d6, bundle and minute schedules; Task 2.2: d934ed5, bridge lifecycle; Task 2.3: b8b9bb8, shadow install and privacy-safe failure dump; 93a9122, macOS exec reports a missing executable as 127; 674635f, the macOS fallback always rebuilds; 8f10ffe, it rebuilds the whole stack; e6436ad, restart ladder; dca5b57, a stopped macOS container has no generation; Stage 2 gate: 969945e, bridge refresh ownership). `check-contracts` fails when a cited file changes
   after this commit.
 - Checked by `bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md`.
   The check needs every workflow ID below, every operation ID in
@@ -111,7 +111,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   (pihole/etc/pihole.toml:12-14). The Linux quadlet sets
   `DNS1=127.0.0.1#5335` (deb/quadlet/pi-hole.container:26).
 - On macOS the installer and LaunchAgent override the upstream to
-  `172.31.240.251#5335` (install-mac.sh:273-274, mac/start-container.sh:444-445).
+  `172.31.240.251#5335` (install-mac.sh:273-274, mac/start-container.sh:468-469).
 - Pi-hole query logging is off in the shipped config
   (pihole/etc/pihole.toml:197). dnsmasq `log-queries` is commented out
   (pihole/etc/dnsmasq.conf:48). baseline: unverified at runtime for both
@@ -177,7 +177,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   Cloudflare-named TLS session. That breaks [PRIV-ROUTE-IDENTITY]. baseline:
   unverified. The proxy config lives in the sibling repos and was not read
   here. Since the Sub-plan 3 Stage 1 gate the health CLI's recovery comment
-  describes the single controller pass (health/nice-dns-health:413-434); the
+  describes the single controller pass (health/nice-dns-health:415-436); the
   routes and their classes are in routes/providers.tsv.
 - Unbound validates against the root anchor in
   `auto-trust-anchor-file: "/var/lib/unbound/root.key"`
@@ -245,7 +245,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
 - macOS: Apple `container` gives each container its own address on `dnsnet`.
   The configs hardcode .250/.251/.252 (mac/start-container.sh:24-26). The
   LaunchAgent refuses a stack whose addresses do not match
-  (mac/start-container.sh:203-211, mac/start-container.sh:670-678).
+  (mac/start-container.sh:227-235, mac/start-container.sh:682-690).
 
 ## WF-DNS-002 Recovery
 
@@ -296,36 +296,36 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   controller, and fail when it does not install (deb/persistent-podman.sh:307,
   mac/persist.sh:61).
   - `install` builds a versioned bundle, then checks that the new bundle
-    loads (health/nice-dns-health:714). Only then does it replace the
-    schedule (health/nice-dns-health:700-779).
+    loads (health/nice-dns-health:715). Only then does it replace the
+    schedule (health/nice-dns-health:701-780).
   - `uninstall` removes only what the install receipt lists
-    (health/nice-dns-health:801-824).
+    (health/nice-dns-health:802-825).
   - Until Task 2.1 no installer installed it; it was installed by hand
     (health/nice-dns-health:14).
   - Deployed hosts still carry the older hand-installed copies. What runs
     there is baseline: unverified.
 - Schedule: `tick`, every minute.
   - Linux: a systemd user timer with `OnCalendar=minutely`,
-    `AccuracySec=5s` and `Persistent=true` (health/nice-dns-health:585-587).
+    `AccuracySec=5s` and `Persistent=true` (health/nice-dns-health:586-588).
     The service runs `<bash> <entrypoint> tick` with
     `TimeoutStartSec=540`, inside the lock lease
-    (health/nice-dns-health:574-576).
+    (health/nice-dns-health:575-577).
   - macOS: the agent's all-wildcard `StartCalendarInterval`
-    (health/nice-dns-health:646-647).
+    (health/nice-dns-health:647-648).
   - Observation mode since Sub-plan 3 Task 2.3: `install --shadow` writes the
-    same unit or agent running `tick --shadow` (health/nice-dns-health:565,
+    same unit or agent running `tick --shadow` (health/nice-dns-health:566,
     628), which records what it would do and never acts, and schedules no
     bridge refresh; a later shadow install stops and removes one
-    (health/nice-dns-health:728-733, 746-750). The receipt records `mode`
-    (health/nice-dns-health:757) and `status` prints it
-    (health/nice-dns-health:851). A plain install activates the same
+    (health/nice-dns-health:729-734, 746-750). The receipt records `mode`
+    (health/nice-dns-health:758) and `status` prints it
+    (health/nice-dns-health:852). A plain install activates the same
     schedule in place. Live shadow behavior is baseline: unverified until
     live/controller-shadow runs.
   - Calendar schedules run after a suspend or sleep, whereas monotonic timers
     and `StartInterval` do not (systemd.timer(5), launchd.plist(5)). Behavior
     on live hosts is baseline: unverified until the Stage 2 gate.
 - Grace is `ND_POLICY_GRACE_S` = 300, still settable through
-  `NICE_DNS_RESTART_GRACE_SECS` (health/nice-dns-health:433). lib/policy.sh
+  `NICE_DNS_RESTART_GRACE_SECS` (health/nice-dns-health:435). lib/policy.sh
   counts it from the later of the outage's start and the end of the 120 s
   startup allowance. With one-minute passes, a full outage observed from its
   onset becomes eligible for a restart after five minutes, subject to the
@@ -342,7 +342,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   live Mac is baseline: unverified.
 - Since the Sub-plan 3 Stage 1 gate, `run` has no outage timer of its own.
   After logging, it hands its observations to the same controller pass as
-  `tick` (health/nice-dns-health:462-475, lib/recovery.sh:742-791). One
+  `tick` (health/nice-dns-health:464-476, lib/recovery.sh:742-791). One
   policy, one state, one lock, one cooldown and one restart cap decide
   every action, whichever command the schedule calls. The pass observes,
   decides with lib/policy.sh, acts, and commits the state. Readiness
@@ -350,11 +350,13 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   an outage observed in that same pass.
 - Before the pass, and outside the lock, the bridges are re-evaluated
   (nd_bridges_refresh) once an observed outage has outlasted the grace. This
-  happens at most once an hour (health/nice-dns-health:444-460). Nothing in
+  happens at most once an hour (health/nice-dns-health:446-462). Since the
+  Stage 2 gate it runs before the pass observes, so the decision never rests
+  on observations older than the evaluation. Nothing in
   the controller writes `bridges.env` directly (WF-DNS-004).
 - Restart ladder since Sub-plan 3 Task 2.3: the first restart of an outage
   is Tor's (below); a later one of the same outage targets the proxy, the
-  service restart directly (lib/policy.sh:250). Live on the Mac, a wedged
+  service restart directly (lib/policy.sh:251). Live on the Mac, a wedged
   runtime made two in-image restarts acknowledge and never become ready; only
   the stack rebuild repairs it.
 - The Tor restart is nd_recovery_restart_tor (lib/recovery.sh:639-656):
@@ -394,7 +396,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   20260925T200235Z-e3b4de89).
 - The schedules still call `run`; Sub-plan 3 Task 2.1 moves them to `tick`.
 - On macOS the start-container agent and bridge-eval share a `mkdir` stack lock
-  (mac/start-container.sh:57, mac/start-container.sh:282, mac/start-container.sh:544).
+  (mac/start-container.sh:57, mac/start-container.sh:306, mac/start-container.sh:568).
   A holder whose stored PID fails `kill -0` is taken over. After a crash, a reused
   PID in that persistent state file blocks the start for up to 600 s. Two waiters
   can also both take over a dead holder. lib/state.sh now provides the
@@ -429,8 +431,8 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   unverified.
 - The macOS fast path exits when the addresses are correct, Pi-hole answers
   and, since Sub-plan 3 Task 2.3, the proxy image's verifying probe answers
-  through Tor (mac/start-container.sh:151-178, mac/start-container.sh:609-613).
-  Until then a warm cache satisfied it (mac/start-container.sh:602-608): live,
+  through Tor (mac/start-container.sh:171-202, mac/start-container.sh:621-625).
+  Until then a warm cache satisfied it (mac/start-container.sh:614-620): live,
   with Tor frozen, the controller's service fallback was answered "stack
   already healthy" twice and never restarted the proxy. A restart the
   controller decides always rebuilds: nd_platform_restart_proxy leaves
@@ -440,12 +442,12 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   The macOS installers wait on the same Pi-hole-only check before pinning DNS
   (install-mac.sh:333, install-mac-hardened.sh:245); installers are Sub-plan 4's.
 - A wedged datapath is detected by a probe between containers
-  (mac/start-container.sh:244-253). The fix is a runtime restart
-  (mac/start-container.sh:622-630).
+  (mac/start-container.sh:268-277). The fix is a runtime restart
+  (mac/start-container.sh:634-642).
 - The stack is rebuilt once only when Tor never bootstrapped
-  (mac/start-container.sh:715-725). If the chain is unhealthy but Tor did
+  (mac/start-container.sh:727-737). If the chain is unhealthy but Tor did
   bootstrap, the script exits without pinning DNS
-  (mac/start-container.sh:704-714).
+  (mac/start-container.sh:716-726).
 
 ### Platform notes
 
@@ -621,7 +623,7 @@ Sources: ARCH-07, design "Bridge lifecycle".
     startup's critical path when a usable set exists.
 - Daily refresh since Task 2.2 (BL-019): the controller's
   `nice-dns-health-bridges.timer` (`OnCalendar=daily`, `Persistent=true`;
-  health/nice-dns-health:613) runs `nice-dns-health bridges-refresh`.
+  health/nice-dns-health:614) runs `nice-dns-health bridges-refresh`.
   - The image's bridge-eval writes a candidate, never `bridges.env`
     (lib/platform/linux.sh:161-167). It runs outside the state lock, under
     a refresh mutex (lib/recovery.sh:892-920).
@@ -643,7 +645,7 @@ Sources: ARCH-07, design "Bridge lifecycle".
   takes effect only on the next container start.
 - Health recovery re-evaluates with nd_bridges_refresh, at most once an
   hour, once an observed outage has outlasted the grace
-  (health/nice-dns-health:444-460).
+  (health/nice-dns-health:446-462).
   - Until Task 2.2 it ran the raw Moat fetcher
     (deb/persistent-podman.sh:130), which writes an unranked pool into the
     same `bridges.env` (scripts/fetch-bridges.sh:49-51) and could replace an
@@ -655,9 +657,10 @@ Sources: ARCH-07, design "Bridge lifecycle".
   container recreation on Linux is baseline: unverified (ARCH-06).
 - macOS daily refresh since Task 2.2: the controller's
   `org.nice-dns.health-bridges` agent (a daily `StartCalendarInterval`,
-  which runs on wake; health/nice-dns-health:677). Its probe container runs
-  only on `dnsnet`, and only while pi-hole, unbound and the proxy hold their
-  addresses (lib/platform/macos.sh:251-261).
+  which runs on wake; health/nice-dns-health:678). Its probe container runs
+  only on `dnsnet`, only while pi-hole, unbound and the proxy run on
+  .250/.251/.252, and it holds the start-container agent's stack lock while
+  the probe container exists (lib/platform/macos.sh:255-299).
   - `mac/persist.sh` no longer installs the legacy `org.nice-dns.bridge-eval`
     agent. It retires that agent after the controller installs
     (mac/persist.sh:61).
@@ -671,11 +674,15 @@ Sources: ARCH-07, design "Bridge lifecycle".
   in its log (mac/bridge-eval.sh:162). It keeps the existing file on failure
   (mac/bridge-eval.sh:171-174).
 - The macOS LaunchAgent refetches only when the pool is missing or
-  incomplete, or after a failed bootstrap (mac/start-container.sh:558-579).
+  incomplete (mac/start-container.sh:151-164, mac/start-container.sh:583-591).
+  Until the Stage 2 gate it also refetched after a failed bootstrap, writing
+  over a usable set without the controller's lock, base check or `.prev`;
+  now it keeps the set, and re-selection is the controller's evaluated
+  refresh.
   It recreates Tor only when the bridge fingerprint changed
-  (mac/start-container.sh:461-477). On a change it drops the guard sample
+  (mac/start-container.sh:485-501). On a change it drops the guard sample
   and keeps the cache (mac/start-container.sh:117-119). Tor's DataDirectory
-  persists (mac/start-container.sh:42, mac/start-container.sh:481).
+  persists (mac/start-container.sh:42, mac/start-container.sh:505).
 - The macOS installer runs the fetcher without `--force`
   (install-mac.sh:284). It requires at least three bridges
   (install-mac.sh:305-308).
