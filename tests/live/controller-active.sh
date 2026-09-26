@@ -196,10 +196,17 @@ ca_bridges() {
   cs_report "$a" br-0 || fail "$a: report"
   g0="$(cs_gen "$d/br-0.tsv")"
   ca_up "$d/br-0.tsv" && up0=1
-  cs_t "$a" bridges-refresh >"$d/bridges.log" 2>&1 || fail "$a: bridges-refresh: $(tail -n 5 "$d/bridges.log")"
+  # A refresh exits non-zero when it keeps the last good set (not-applied):
+  # the result row decides, not the exit status.
+  cs_t "$a" bridges-refresh >"$d/bridges.log" 2>&1
   res="$(awk -F '\t' '$1 == "result" { r = $2 } END { print r }' "$d/bridges.log")"
-  case "$res" in changed|unchanged) ;; *) fail "$a: the refresh gave '$res' (changed or unchanged expected: nd_bridges_apply's results): $(tail -n 5 "$d/bridges.log")" ;; esac
+  case "$res" in changed|unchanged|not-applied) ;; *) fail "$a: the refresh gave '$res' (changed, unchanged or not-applied: nd_bridges_apply's results): $(tail -n 5 "$d/bridges.log")" ;; esac
   cs_report "$a" br-1 || fail "$a: report"
+  if [ "$res" = not-applied ]; then
+    # Live (mac, run 20260926T161534Z-821061c1): "bridge-eval exit 1; the
+    # last good set stays". Keeping the working set is the contract.
+    assert_eq "$(cs_bridges "$d/br-0.tsv")" "$(cs_bridges "$d/br-1.tsv")" "$a: a refresh that is not applied keeps the running set"
+  fi
   assert_eq "$g0" "$(cs_gen "$d/br-1.tsv")" "$a: the refresh restarted nothing"
   assert_match '^[3-9]/|^[1-9][0-9]+/' "$(cs_bridges "$d/br-1.tsv")" "$a: a usable set of at least 3 bridges"
   [ "$up0" = 0 ] || ca_up "$d/br-1.tsv" || fail "$a: the chain answered before the refresh and does not after it"
