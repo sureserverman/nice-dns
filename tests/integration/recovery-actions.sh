@@ -609,7 +609,7 @@ t_macos_restart_rebuilds_even_when_the_cache_answers() {
     assert_match '^launchctl kickstart -k gui/[0-9]+/org\.nice-dns\.start-container$' "$(cat "$FAKE_LOG")" "then kicks the agent"
   ) || exit 1
   # 2. The agent's fast path, run from the script's own functions with stubs.
-  sed -n '/^dns_healthy() {/,/^}/p; /^route_verified() {/,/^}/p; /^fast_path_ok() {/,/^}/p' "$sc" >"$CASE_DIR/fp.sh"
+  sed -n '/^dns_healthy() {/,/^}/p; /^route_verified() {/,/^}/p; /^fast_path_ok() {/,/^}/p; /^keep_running_stack() {/,/^}/p' "$sc" >"$CASE_DIR/fp.sh"
   assert_match 'fast_path_ok' "$(cat "$CASE_DIR/fp.sh")" "the fast-path decision is a function of the script"
   cat >"$CASE_DIR/run.sh" <<'RUN'
 set -u
@@ -627,15 +627,23 @@ container() {
 }
 . "$W/fp.sh"
 if fast_path_ok; then echo decision=keep; else echo decision=rebuild; fi
+# The agent's next step keeps a correctly addressed stack unless the
+# controller asked for the restart (live run 20260926T143428Z-75c41c54:
+# "restart requested ... rebuilding", then "stack running on expected
+# addresses; leaving it alone").
+if keep_running_stack; then echo stack=kept; else echo stack=rebuilt; fi
 RUN
   f() { W="$CASE_DIR" MODE="$1" bash "$CASE_DIR/run.sh" 2>&1; }
-  assert_match 'decision=keep' "$(f ok)" "a verified route and an answering Pi-hole keep the stack"
+  out="$(f ok)"
+  assert_match 'decision=keep' "$out" "a verified route and an answering Pi-hole keep the stack"
+  assert_match 'stack=kept' "$out" "and a correctly addressed stack is left alone"
   assert_match 'decision=rebuild' "$(f frozen)" "a cached answer in front of a dead route is rebuilt"
   assert_match 'decision=keep' "$(f old)" "an image without the probe is judged as before (Pi-hole answers)"
   printf 'nd-1-svc\n' >"$CASE_DIR/restart-requested"
   out="$(f ok)"
   assert_match 'decision=rebuild' "$out" "a restart the controller requested always rebuilds"
   assert_match 'restart requested by the controller \(nd-1-svc\)' "$out" "and says so"
+  assert_match 'stack=rebuilt' "$out" "and the stack is rebuilt, not left alone because its addresses are right"
   assert_no_path "$CASE_DIR/restart-requested" "the request is consumed once"
   assert_match 'decision=keep' "$(f ok)" "the next start judges the stack again"
 }

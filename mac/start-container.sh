@@ -157,14 +157,24 @@ route_verified() {
 
 # fast_path_ok: 0 when the running stack may be kept as it is. A restart the
 # controller requested (nice-dns-health's service fallback leaves
-# RESTART_REQUEST) always rebuilds, and the request is consumed.
+# RESTART_REQUEST) always rebuilds: the request is consumed and
+# FORCE_REBUILD makes keep_running_stack refuse too.
+FORCE_REBUILD=0
 fast_path_ok() {
   if [ -e "$RESTART_REQUEST" ]; then
     log "restart requested by the controller ($(head -c 64 "$RESTART_REQUEST" 2>/dev/null | tr -d '\n')); rebuilding"
     rm -f "$RESTART_REQUEST"
+    FORCE_REBUILD=1
     return 1
   fi
   stack_addressed_correctly && dns_healthy && route_verified
+}
+
+# keep_running_stack: 0 when step 5 may leave the stack alone: every container
+# on its address and no controller restart pending. A restart has to rebuild
+# the whole stack (recreating one container scrambles the addresses).
+keep_running_stack() {
+  [ "${FORCE_REBUILD:-0}" = 0 ] && stack_addressed_correctly
 }
 
 # Match the ID column exactly. `grep -w NAME` over the whole line also matched
@@ -648,7 +658,7 @@ fi
 # completely alone. Otherwise tear down the network and recreate in order,
 # which is the only operation that restores them. There is no middle path —
 # recreating a single container is what scrambles the assignment.
-if stack_addressed_correctly; then
+if keep_running_stack; then
   log "stack running on expected addresses; leaving it alone"
 else
   log_addresses
