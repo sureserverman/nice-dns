@@ -260,8 +260,13 @@ ca_platform() {
     # The representative gate: the other proxy (standard Pi-hole) on fast
     # timers, then the original cell, reinstalled, on the real timers.
     cells="$(awk -F '\t' -v p="$CA_PLAT" -v o="$x0" '!/^#/ && $1 == p && $2 != o && $3 == "standard" { print $2 "/" $3 }' "$NICE_DNS_ROOT/tests/manifests/matrix.tsv")"
-    for c in $cells; do ( ca_cell "$a" "${c%/*}" "${c#*/}" 1 fast ) || bad="$bad $c"; done
-    ( ca_cell "$a" "$x0" "$h0" 1 production ) || bad="$bad $x0/$h0"
+    # NICE_DNS_ACTIVE_CELLS (fix-scope only: a single group run, never a
+    # plan): re-run just these cells, e.g. "socat/standard"; the original
+    # cell is then reinstalled last only if it is listed too.
+    for c in $cells; do
+      case " ${NICE_DNS_ACTIVE_CELLS:-$c} " in *" $c "*) ( ca_cell "$a" "${c%/*}" "${c#*/}" 1 fast ) || bad="$bad $c" ;; esac
+    done
+    case " ${NICE_DNS_ACTIVE_CELLS:-$x0/$h0} " in *" $x0/$h0 "*) ( ca_cell "$a" "$x0" "$h0" 1 production ) || bad="$bad $x0/$h0" ;; esac
   else
     ( ca_cell "$a" "$x0" "$h0" 0 ) || bad="$bad $x0/$h0"
   fi
@@ -271,6 +276,10 @@ ca_platform() {
 t_1_cells() {
   local p a pids="" rc bad=""
   cs_selection
+  if [ -n "${NICE_DNS_ACTIVE_CELLS:-}" ]; then
+    assert_eq 1 "$(awk -F '\t' '$1 == "command" && $2 ~ /run\.sh (live|integration|unit) / { f = 1 } END { print f + 0 }' "$ARTIFACT_DIR/receipt.tsv")" \
+      "NICE_DNS_ACTIVE_CELLS narrows a single group run only, never a stage or plan"
+  fi
   CA_ROOT_DIR="$ARTIFACT_DIR/controller-active"
   for p in $(cs_platforms); do
     cs_alias "$p"; a="$CS_ALIAS"
