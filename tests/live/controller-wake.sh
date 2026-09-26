@@ -34,7 +34,17 @@ ca_woke() {
 ca_wake() {
   local plat="$1" a="$2" d t0
   CA_CELL_DIR="$CA_ROOT_DIR/wake-$a"; d="$CA_CELL_DIR"; mkdir -p "$d"
-  cs_report "$a" wake-0 || fail "$a: report"
+  # NICE_DNS_WAKE_BASELINE_DIR: an earlier run's artifact dir whose
+  # wake-<alias>/wake-0.tsv was taken before a sleep the operator already did
+  # (so a sleep is never asked for twice). It is copied into this run's
+  # evidence and named in wake.txt.
+  if [ -n "${NICE_DNS_WAKE_BASELINE_DIR:-}" ] && [ -f "$NICE_DNS_WAKE_BASELINE_DIR/controller-active/wake-$a/wake-0.tsv" ]; then
+    cp "$NICE_DNS_WAKE_BASELINE_DIR/controller-active/wake-$a/wake-0.tsv" "$d/wake-0.tsv" || fail "$a: cannot copy the baseline"
+    printf 'baseline	%s
+' "$NICE_DNS_WAKE_BASELINE_DIR" >"$d/baseline.tsv"
+  else
+    cs_report "$a" wake-0 || fail "$a: report"
+  fi
   CA_SINCE="$(cs_now "$d/wake-0.tsv")"; CA_SLEEPS0="$(cs_sleeps "$d/wake-0.tsv")"
   case "$CA_SLEEPS0" in ''|*[!0-9]*) fail "$a: no sleep counter in the report" ;; esac
   # The operator is asked through this marker (the session relays it).
@@ -55,6 +65,7 @@ ca_wake() {
   assert_eq "" "$(cs_jrows "$d/wake-1.tsv" journal-active "$CA_SINCE" | awk -F '\t' '$4 == "requested"')" "$a: the time jump caused no recovery action"
   ca_up "$d/wake-1.tsv" || fail "$a: the chain answers after the wake"
   { printf 'target\t%s\nplatform\t%s\nsleeps\t%s -> %s\n' "$a" "$plat" "$CA_SLEEPS0" "$(cs_sleeps "$d/wake-1.tsv")"
+    [ -f "$d/baseline.tsv" ] && cat "$d/baseline.tsv"
     awk 'NR > 1 && $1 - p >= 120 { printf "gap\t%s s before the pass at %s\n", $1 - p, $1 } { p = $1 }' "$d/wake-ticks.txt"; } >"$d/wake.txt"
 }
 
