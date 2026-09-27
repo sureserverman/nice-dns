@@ -153,3 +153,13 @@ OP-CHAIN-UNKNOWN-NO-ACTION	EVD-FAILURES-COUNTED	integration	controller-interacti
 OP-LIVE-CACHE-NOT-UPSTREAM	EVD-CACHE-NOT-UPSTREAM	live	controller-shadow	t_4_whole_outage	controller
 OP-LIVE-EVIDENCE-PRIVATE	PRIV-NO-SECRETS	live	controller-shadow	t_5_evidence_is_private	controller
 OP-LIVE-ACK-READINESS	REC-ACK-READINESS	live	controller-active	t_1_cells	controller
+OP-ADMIN-AUTH-IMAGES	SEC-ADMIN-AUTH	integration	deployment-security	t_images_enforce_the_deployment_password	installers
+OP-ADMIN-AUTH-UNUSABLE	SEC-ADMIN-AUTH	integration	deployment-security	t_images_refuse_an_unusable_secret	installers
+OP-ADMIN-AUTH-HARDENED-DEFAULT	SEC-ADMIN-AUTH	integration	deployment-security	t_hardened_image_never_serves_an_open_admin	installers
+OP-ADMIN-AUTH-PROVISION	SEC-ADMIN-AUTH	integration	deployment-security	t_installers_provision_a_private_credential	installers
+OP-ADMIN-AUTH-KEPT	SEC-ADMIN-AUTH	integration	deployment-security	t_reinstall_keeps_the_credential	installers
+OP-ADMIN-AUTH-UNSAFE	SEC-ADMIN-AUTH	integration	deployment-security	t_unsafe_credential_state_is_refused	installers
+OP-ADMIN-AUTH-UNINSTALL	SEC-ADMIN-AUTH	integration	deployment-security	t_uninstall_removes_the_credential	installers
+OP-ADMIN-AUTH-MAC-AGREE	SEC-ADMIN-AUTH	integration	deployment-security	t_macos_launch_paths_agree	installers
+OP-LISTENERS	SEC-LISTENERS	integration	deployment-security	t_images_enforce_the_deployment_password	installers
+OP-LEAST-PRIV	SEC-LEAST-PRIV	integration	deployment-security	t_images_enforce_the_deployment_password	installers

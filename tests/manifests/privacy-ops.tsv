@@ -23,3 +23,6 @@ SEC-OWNED-RESTORE	Installers snapshot only the DNS state they own and restore ex
 REC-ACK-READINESS	Every recovery action records a request, an acknowledgement and a separate later readiness observation; a flag write is not an acknowledgement
 EVD-CACHE-NOT-UPSTREAM	A cached or stale local answer never certifies upstream health; cache and upstream states are recorded separately
 EVD-FAILURES-COUNTED	Every attempted query, including errors and timeouts, stays in the denominators; missing rows or skipped cells are BLOCKED, never green
+SEC-ADMIN-AUTH	The Pi-hole admin API accepts only the deployment's own password, delivered without printing it; neither image serves it without a password or starts with an unusable secret
+SEC-LISTENERS	Each stack listener is reachable only by its intended callers: DNS and the admin UI on the host loopback (Linux) or the host-only network (macOS); no unused listener
+SEC-LEAST-PRIV	Stack containers run non-root with only the capabilities shown to be needed, each set proven with its ports bound
