@@ -31,3 +31,4 @@ live	controller-shadow	tests/live/controller-shadow.sh	live
 live	controller-active	tests/live/controller-active.sh	live
 live	controller-wake	tests/live/controller-wake.sh	live
 live	controller-receipt	tests/live/controller-receipt.sh	live
+integration	install-prepare	tests/integration/install-prepare.sh	local

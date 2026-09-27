@@ -525,16 +525,22 @@ t_shipped_table_is_valid_and_identity_bound() {
 }
 
 t_mac_installers_rewrite_the_route_include() {
-  local f expr out
+  # Since Sub-plan 4 Task 1.1 the rewrite lives in lib/install.sh
+  # (nd_install_macos_rewrite_tree), which both macOS entrypoints reach
+  # through nd_install_macos_stage_tree.
+  local f expr out d="$CASE_DIR/tree"
   for f in install-mac.sh install-mac-hardened.sh; do
-    # The rewrite is `sed -i '' -e '<expr>' \` followed by `"$_rconf"`.
-    expr="$(grep -o "'s|^    forward-addr: 127[^']*'" "$NICE_DNS_ROOT/$f" | tr -d "'")"
-    assert_eq 1 "$(printf '%s\n' "$expr" | grep -c .)" "$f carries exactly one forward-address rewrite"
-    assert_match "^_rconf=\"\\\$HERE/unbound/route/forward-route\\.conf\"\$" "$(grep '^_rconf=' "$NICE_DNS_ROOT/$f")" "$f names the route include"
-    # shellcheck disable=SC2016  # a literal $_rconf in the installer source
-    assert_match '^ +"\$_rconf"$' "$(grep -A1 "forward-addr: 127" "$NICE_DNS_ROOT/$f" | tail -1)" "$f applies the rewrite to the route include"
-    out="$(sed -e "$expr" "$NICE_DNS_ROOT/unbound/route/forward-route.conf")"
-    assert_match '^    forward-addr: 172\.31\.240\.252@853#tor\.cloudflare-dns\.com$' "$out" "$f's rewrite points the default route at the proxy container"
-    assert_not_match '127\.0\.0\.1@' "$out" "$f leaves no loopback forwarder"
+    assert_eq 1 "$(grep -c '^nd_install_macos_stage_tree$' "$NICE_DNS_ROOT/$f")" "$f stages (and rewrites) its build tree"
   done
+  expr="$(grep -o "'s|^    forward-addr: 127[^']*'" "$NICE_DNS_ROOT/lib/install.sh" | tr -d "'")"
+  assert_eq 1 "$(printf '%s\n' "$expr" | grep -c .)" "lib/install.sh carries exactly one forward-address rewrite"
+  mkdir -p "$d/unbound/etc" "$d/unbound/route"
+  cp "$NICE_DNS_ROOT/unbound/etc/unbound.conf" "$d/unbound/etc/"
+  cp "$NICE_DNS_ROOT/unbound/route/forward-route.conf" "$d/unbound/route/"
+  # shellcheck source=/dev/null
+  ( . "$NICE_DNS_ROOT/lib/install.sh" && nd_install_macos_rewrite_tree "$d" )
+  assert_rc 0 "$?" "the macOS rewrite applies"
+  out="$(cat "$d/unbound/route/forward-route.conf")"
+  assert_match '^    forward-addr: 172\.31\.240\.252@853#tor\.cloudflare-dns\.com$' "$out" "the rewrite points the default route at the proxy container"
+  assert_not_match '127\.0\.0\.1@' "$out" "no loopback forwarder is left"
 }
