@@ -227,6 +227,11 @@ ip_env() {
   if [ "$plat" = linux ]; then
     IP_STATE="$IP_HOME/.local/state/nice-dns-install"
     IP_UNAME=Linux IP_ARCH=x86_64
+    # The subordinate id files the lib reads (ND_INST_ETC): by default the
+    # user already has ranges, as on any host that ran rootless podman.
+    mkdir -p "$IP_W/etc"
+    printf 'tester:100000:65536\n' >"$IP_W/etc/subuid"
+    printf 'tester:100000:65536\n' >"$IP_W/etc/subgid"
   else
     IP_STATE="$IP_HOME/Library/Application Support/nice-dns-install"
     IP_UNAME=Darwin IP_ARCH=arm64
@@ -240,7 +245,7 @@ ip_run() {
   IP_OUT="$(cd "$cwd" && env -i HOME="$IP_HOME" USER=tester LOGNAME=tester PATH="$IP_BIN" \
     TMPDIR="$IP_W/tmp" XDG_STATE_HOME="$IP_HOME/.local/state" XDG_CONFIG_HOME="$IP_HOME/.config" \
     XDG_RUNTIME_DIR="$IP_W/run" FAKE="$FAKE" FAKE_LOG="$FAKE_LOG" FAKE_UNAME="$IP_UNAME" FAKE_ARCH="$IP_ARCH" \
-    bash "$@" 2>&1 </dev/null)"
+    ND_INST_ETC="$IP_W/etc" bash "$@" 2>&1 </dev/null)"
   IP_RC=$?
 }
 ip_install() { ip_run "$IP_TREE/$1.sh" "${@:2}"; }
@@ -505,6 +510,40 @@ t_standard_and_hardened_share_build_flags() {
       assert_eq "$want" "$flags" "$ep: every other build (unbound, pi-hole and any base) uses exactly [$want]:
 $(grep -E '^(podman|container) build ' "$FAKE_LOG")"
       assert_eq "$([ "$(ip_flavor "$ep")" = hardened ] && echo 3 || echo 2)" "$(grep -cE '^(podman|container) build ' "$FAKE_LOG")" "$ep: the expected number of builds"
+    ) || exit 1
+  done
+}
+
+# A host where the user has no subordinate ids yet (a first install): the
+# ranges usermod adds reach podman only through `podman system migrate`, so it
+# runs right after usermod and before the builds, which need the ranges.
+# With ranges present it stays in the interruption window.
+t_new_subids_are_migrated_before_the_builds() {
+  local ep
+  ip_select
+  for ep in $IP_EPS; do
+    [ "$(ip_platform "$ep")" = linux ] || continue
+    (
+      local um mig b first
+      ip_env "$ep"
+      : >"$IP_W/etc/subuid"; : >"$IP_W/etc/subgid"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: $IP_OUT"
+      um="$(ip_last "$FAKE_LOG" '^sudo usermod --add-sub[ug]ids ')"
+      mig="$(ip_first "$FAKE_LOG" '^podman system migrate')"
+      b="$(ip_first "$FAKE_LOG" '^podman build ')"
+      assert_ne "" "$um" "$ep: the missing ranges are added"
+      assert_ne "" "$mig" "$ep: podman is migrated"
+      assert_eq 1 "$((um < mig && mig < b))" "$ep: usermod (line $um), then migrate (line $mig), then the first build (line $b):
+$(cat -n "$FAKE_LOG")"
+    ) || exit 1
+    (
+      ip_env "$ep"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: $IP_OUT"
+      assert_eq "" "$(ip_lines "$FAKE_LOG" '^sudo usermod ')" "$ep: existing ranges are kept"
+      first="$(ip_first "$FAKE_LOG" '^podman system migrate')"
+      assert_eq 1 "$((first > $(ip_last "$FAKE_LOG" '^podman build ')))" "$ep: with ranges present, migrate waits for the interruption"
     ) || exit 1
   done
 }

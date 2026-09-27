@@ -506,11 +506,23 @@ APPARMOR
   # Add UID/GID mappings for current user if missing. Accept any pre-existing
   # range — usermod --add-sub{u,g}ids fails if the user already has an entry
   # and we have no reason to force our specific range over whatever is there.
-  if ! grep -q "^$USER:" /etc/subuid 2>/dev/null; then
+  # ND_INST_ETC is where the id files are read (the fixture tests).
+  local subids_added=0
+  if ! grep -q "^$USER:" "${ND_INST_ETC:-/etc}/subuid" 2>/dev/null; then
     sudo usermod --add-subuids 100000-165535 "$USER"
+    subids_added=1
   fi
-  if ! grep -q "^$USER:" /etc/subgid 2>/dev/null; then
+  if ! grep -q "^$USER:" "${ND_INST_ETC:-/etc}/subgid" 2>/dev/null; then
     sudo usermod --add-subgids 100000-165535 "$USER"
+    subids_added=1
+  fi
+  # Ranges added just now reach podman only through `podman system migrate`,
+  # and the image builds below need them. It stops the user's running
+  # containers (podman-system-migrate(1)), but a user who had no ranges runs
+  # no rootless nice-dns stack to interrupt. Otherwise it waits for the
+  # interruption window (nd_install_linux_interrupt_prereqs).
+  if [ "$subids_added" = 1 ]; then
+    podman system migrate
   fi
 
   # Enable cgroups v2 delegation for systemd services
