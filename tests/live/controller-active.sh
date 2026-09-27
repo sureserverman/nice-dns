@@ -106,6 +106,12 @@ ca_deploy() {
   fi
   cs_t "$a" install-controller --source-sha "$sha" --mode active >"$d/install.log" 2>&1 || fail "$a: install-controller: $(tail -n 5 "$d/install.log")"
   assert_match '^receipt	mode	active$' "$(cat "$d/install.log")" "$a: the controller is installed active (test-only activation)"
+  # Real timers from here on: tunables.tsv outlives a reinstall, so a cell
+  # that died on fast timers leaves them to the next one (live, mac, runs
+  # 20260927T082335Z then 102452Z: the recreate's short bootstrap outage then
+  # ran the outage bridge refresh within seconds, its pending set sent the
+  # in-image scenario's restart to the service restart, "adopting").
+  cs_t "$a" set-tunables --mode default >>"$d/ops.log" 2>&1 || fail "$a: set-tunables default"
   # CT-BRIDGES before the proxy is recreated: the refresh restarts nothing,
   # and the recreate then starts Tor on the freshly evaluated set (live run
   # 20260925T200235Z-e3b4de89: mint's Tor lost its thin set minutes after a
