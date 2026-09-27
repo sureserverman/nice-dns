@@ -40,6 +40,10 @@ FETCH_BRIDGES_BIN=/usr/local/sbin/nice-dns-fetch-bridges.sh
 # Apple's runtime maps the host owner onto the container's uid, so no
 # chown dance is needed here.
 TOR_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/tor-${VARIANT}"
+# Pi-hole's admin password: the installer keeps it in this directory
+# (lib/install.sh nd_install_pihole_credential), and Pi-hole mounts it
+# read-only at /run/secrets.
+PIHOLE_SECRET_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/secrets/pihole"
 # Fingerprint of the bridge triple baked into the running tor container.
 # Apple's runtime bakes -e env at `container run` and reuses it on `container
 # start`, so the only way to apply new bridges is to recreate — but recreating
@@ -462,8 +466,16 @@ ensure_container() {
 start_or_create_stack() {
   remove_wrong_tor_variant
 
+  # Keep these arguments identical to nd_install_macos_run_stack in
+  # lib/install.sh (integration/deployment-security checks they agree).
   ensure_container pi-hole \
     -c 1 -m 256M \
+    -v "${PIHOLE_SECRET_DIR}:/run/secrets:ro" \
+    -e WEBPASSWORD_FILE=pihole_webpassword \
+    --cap-drop ALL \
+    --cap-add CAP_CHOWN --cap-add CAP_DAC_OVERRIDE --cap-add CAP_FOWNER --cap-add CAP_KILL \
+    --cap-add CAP_NET_BIND_SERVICE --cap-add CAP_SETFCAP --cap-add CAP_SETGID --cap-add CAP_SETPCAP \
+    --cap-add CAP_SETUID \
     -e TZ=Europe/London \
     -e DNS1=172.31.240.251#5335 \
     -e FTLCONF_dns_upstreams=172.31.240.251#5335 \

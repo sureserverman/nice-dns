@@ -487,7 +487,9 @@
 
   [ntp.ipv4]
     # Should FTL act as network time protocol (NTP) server (IPv4)?
-    active = true
+    # nice-dns: off. No client uses Pi-hole for time, so the :123 listener
+    # was exposure with no caller (Sub-plan 4 Task 2.1, ARCH-06).
+    active = false ### CHANGED, default = true
 
     # IPv4 address to listen on for NTP requests
     #
@@ -497,7 +499,7 @@
 
   [ntp.ipv6]
     # Should FTL act as network time protocol (NTP) server (IPv6)?
-    active = true
+    active = false ### CHANGED, default = true
 
     # IPv6 address to listen on for NTP requests
     #
@@ -507,7 +509,10 @@
 
   [ntp.sync]
     # Should FTL try to synchronize the system time with an upstream NTP server?
-    active = true
+    # nice-dns: off. The container has no CAP_SYS_TIME, so the client never
+    # ran ("NTP client not available"), and its queries would leave outside
+    # Tor.
+    active = false ### CHANGED, default = true
 
     # NTP upstream server to sync with, e.g., "pool.ntp.org". Note that the NTP server
     # should be located as close as possible to you in order to minimize the time offset
@@ -815,10 +820,12 @@
     #     <valid Pi-hole password hash>
     # SECURITY NOTE: pwhash MUST stay empty in the committed config so the
     # admin password is set per-deployment, not shared across every clone.
-    # After install, set the password with:
-    #     docker exec -it pi-hole pihole -a -p '<your-password>'
-    # The previous committed hash was leaked in git history before commit
-    # <fix-commit>; rotate any password derived from it.
+    # The installers generate one password per deployment, keep it across
+    # reinstalls in ~/.local/state/nice-dns/secrets/pihole/pihole_webpassword
+    # (mode 0600), and hand it to both images through WEBPASSWORD_FILE
+    # (Sub-plan 4 Task 2.1). To choose your own, write it to that file and
+    # run the installer again. A hash committed here in the past leaked in
+    # git history; rotate any password derived from it.
     pwhash = ""
 
     # Pi-hole 2FA TOTP secret. When set to something different than "", 2FA authentication

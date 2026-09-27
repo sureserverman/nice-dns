@@ -32,4 +32,6 @@ RUN chmod 400 /etc/pihole/dns-servers.conf /etc/pihole/dnsmasq.conf \
     && find / -type f -iname '*apk*' -xdev -delete \
     && find / -type d -iname '*apk*' -print0 -xdev | xargs -0 rm -r --
 
-ENTRYPOINT ["tini", "--", "start.sh"]
+# nd-secret-guard.sh refuses an unusable WEBPASSWORD_FILE, then execs start.sh.
+COPY --chmod=755 nd-secret-guard.sh /usr/local/bin/nd-secret-guard.sh
+ENTRYPOINT ["tini", "--", "nd-secret-guard.sh"]

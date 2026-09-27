@@ -305,6 +305,78 @@ nd_install_config_dir() {
   mkdir -p "$d" && chmod 700 "$d"
 }
 
+# ─────────────────────────── Pi-hole admin credential (Task 2.1) ─────────────
+#
+# Sub-plan 4 Task 2.1 (ARCH-06). One admin password per deployment, in
+# ~/.local/state/nice-dns/secrets/pihole/pihole_webpassword (directory 0700,
+# file 0600). An install generates it once and every later install keeps it;
+# it is never printed, never a command argument, and a file that is not
+# plainly ours (a symlink, another owner, readable by others, empty, more
+# than one line) is refused before anything is interrupted rather than
+# replaced. Both images read it through WEBPASSWORD_FILE
+# (https://docs.pi-hole.net/docker/configuration/): Linux as the podman
+# secret nice-dns-pihole-webpassword, macOS by mounting the directory
+# read-only at /run/secrets (Apple's container cannot mount one file).
+
+ND_INST_PH_SECRET=nice-dns-pihole-webpassword
+
+# nd_install_pihole_secret_dir: the directory the macOS runs mount.
+nd_install_pihole_secret_dir() {
+  printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/secrets/pihole"
+}
+
+# nd_install_pihole_credential: provisions or keeps the password, hands it to
+# podman on Linux and records it (by path) in the manifest.
+nd_install_pihole_credential() {
+  local base d f how n
+  base="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns"
+  d="$(nd_install_pihole_secret_dir)" f="$(nd_install_pihole_secret_dir)/pihole_webpassword"
+  if [ -L "$base" ]; then _nd_inst_err "refusing $base: it is a symlink"; return 1; fi
+  ( umask 077 && mkdir -p "$base" ) || return 1
+  _nd_inst_owned_dir "$base/secrets" && _nd_inst_owned_dir "$d" || return 1
+  if [ -e "$f" ] || [ -L "$f" ]; then
+    if [ -L "$f" ] || [ ! -f "$f" ] || [ ! -O "$f" ]; then
+      _nd_inst_err "refusing $f: not a regular file owned by $(id -un 2>/dev/null || echo this user)"; return 1
+    fi
+    # The mode from `ls`, not stat: stat's flags differ between GNU and macOS.
+    # shellcheck disable=SC2012  # one known file name, mode column only
+    case "$(ls -ln "$f" 2>/dev/null | cut -c1-10)" in
+      -rw-------|-r--------) ;;
+      *) _nd_inst_err "refusing $f: others can read it (chmod 600 it, or delete it for a new password)"; return 1 ;;
+    esac
+    n="$(wc -l <"$f" | tr -d ' ')"
+    if [ ! -s "$f" ] || [ "$n" -gt 1 ] || [ -z "$(tr -d '[:space:]' <"$f")" ]; then
+      _nd_inst_err "refusing $f: it must hold the admin password on one line (delete it for a new password)"; return 1
+    fi
+    how=kept
+  else
+    ( umask 077 && od -An -N24 -tx1 /dev/urandom | tr -d ' \n' >"$f.tmp" ) || return 1
+    if [ "$(wc -c <"$f.tmp" | tr -d ' ')" != 48 ]; then rm -f "$f.tmp"; _nd_inst_err "could not generate the Pi-hole admin password"; return 1; fi
+    printf '\n' >>"$f.tmp" && chmod 600 "$f.tmp" && mv -f "$f.tmp" "$f" || return 1
+    how=created
+  fi
+  if [ "$ND_INST_PLATFORM" = linux ]; then
+    # By path: the password is never an argument. --replace updates it for
+    # new containers only; the running stack keeps its copy.
+    podman secret create --replace "$ND_INST_PH_SECRET" "$f" >/dev/null || { _nd_inst_err "podman could not store the Pi-hole admin password as a secret"; return 1; }
+  fi
+  _nd_inst_manifest_row "$ND_INST_MANIFEST" credential pihole-admin "$f" "$how" || return 1
+  if [ "$how" = created ]; then
+    echo "  • Pi-hole admin password: generated, stored in $f (not shown; read it with: cat '$f')"
+  else
+    echo "  • Pi-hole admin password: kept from the previous install ($f)"
+  fi
+}
+
+# _nd_inst_pihole_credential_remove: the uninstall's half.
+_nd_inst_pihole_credential_remove() {
+  local d
+  d="$(nd_install_pihole_secret_dir)"
+  if [ "$ND_INST_PLATFORM" = linux ]; then podman secret rm "$ND_INST_PH_SECRET" >/dev/null 2>&1 || true; fi
+  if [ -L "$d" ]; then rm -f "$d"; else rm -rf "${d:?}"; fi
+  rmdir "$(dirname "$d")" 2>/dev/null || true
+}
+
 # nd_install_finish: marks the generation activated, names it current and
 # prunes generations older than the previous one. Only after a fully
 # successful install.
@@ -469,7 +541,8 @@ _nd_inst_owned_paths() {
   if [ "$ND_INST_PLATFORM" = linux ]; then
     q="${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd"
     u="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-    for f in nice-dns.network nice-dns.pod unbound.container pi-hole.container tor-haproxy.container tor-socat.container; do
+    for f in nice-dns.network nice-dns.pod unbound.container pi-hole.container tor-haproxy.container tor-socat.container \
+             pi-hole.container.d/50-nice-dns-caps.conf; do
       printf 'f\t%s\t644\tuser\n' "$q/$f"
     done
     for f in nice-dns-fetch-bridges.service nice-dns-health.service nice-dns-health.timer \
@@ -1245,6 +1318,7 @@ nd_install_linux_stop_stack() {
     systemctl --user disable --now "${svc}.service" 2>/dev/null || true
   done
   rm -f "$HOME/.config/containers/systemd/"{pi-hole,unbound,tor-haproxy,tor-socat}.container \
+        "$HOME/.config/containers/systemd/pi-hole.container.d/50-nice-dns-caps.conf" \
         "$HOME/.config/containers/systemd/nice-dns.pod" \
         "$HOME/.config/containers/systemd/nice-dns.network" \
         "$HOME/.config/systemd/user/nice-dns-warmup.service" \
@@ -1373,7 +1447,7 @@ nd_install_linux_activate() {
   nd_install_linux_activate_images
   # Quadlets, the bridge selection, the pod start and the controller install
   # (whose own self-check must pass before it replaces anything).
-  ( cd "$ND_INST_TREE" && ./deb/persistent-podman.sh "$ND_INST_VARIANT" )
+  ( cd "$ND_INST_TREE" && ./deb/persistent-podman.sh "$ND_INST_VARIANT" "$ND_INST_PIHOLE" )
   nd_install_wait_ready
   nd_install_controller_self_check
   nd_install_linux_pin
@@ -1419,6 +1493,7 @@ nd_install_linux_uninstall() {
     fi
   fi
   sudo systemctl daemon-reload
+  _nd_inst_pihole_credential_remove
   sd="$(nd_install_state_dir)" && rm -f "${sd:?}/current"
   _nd_inst_uninstall_verdict "$dns_ok"
 }
@@ -1870,6 +1945,7 @@ nd_install_macos_uninstall() {
   ep="$(_nd_inst_controller_entry)"
   if [ -n "$ep" ] && [ -f "$ep" ]; then bash "$ep" uninstall || true; fi
   _nd_inst_dns_helper restore || dns_ok=0
+  _nd_inst_pihole_credential_remove
   sd="$(nd_install_state_dir)" && rm -f "${sd:?}/current"
   _nd_inst_uninstall_verdict "$dns_ok"
 }
@@ -1952,8 +2028,21 @@ nd_install_macos_run_stack() {
   # -- Create network and start containers in IP-allocation order --
   "$CONTAINER_BIN" network create --subnet 172.31.240.248/29 dnsnet >/dev/null
 
+  # Pi-hole: keep these arguments identical to start_or_create_stack in
+  # mac/start-container.sh, which recreates it (integration/deployment-security
+  # checks they agree). The secret directory is mounted read-only; the
+  # capability set is the one both images were proven to need (Task 2.1,
+  # pi-hole-standard.conf says why each is there).
+  local PIHOLE_SECRET_DIR
+  PIHOLE_SECRET_DIR="$(nd_install_pihole_secret_dir)"
   "$CONTAINER_BIN" run -d --name pi-hole --network dnsnet \
     -c 1 -m 256M \
+    -v "${PIHOLE_SECRET_DIR}:/run/secrets:ro" \
+    -e WEBPASSWORD_FILE=pihole_webpassword \
+    --cap-drop ALL \
+    --cap-add CAP_CHOWN --cap-add CAP_DAC_OVERRIDE --cap-add CAP_FOWNER --cap-add CAP_KILL \
+    --cap-add CAP_NET_BIND_SERVICE --cap-add CAP_SETFCAP --cap-add CAP_SETGID --cap-add CAP_SETPCAP \
+    --cap-add CAP_SETUID \
     -e TZ=Europe/London \
     -e DNS1=172.31.240.251#5335 \
     -e FTLCONF_dns_upstreams=172.31.240.251#5335 \

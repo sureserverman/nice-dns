@@ -102,6 +102,8 @@ nd_install_macos_host_prereqs
 # After the prerequisites (the macOS runtime is started there), before any pull.
 nd_install_save_previous
 nd_install_config_dir
+# The Pi-hole admin password: kept, or generated once, before any interruption.
+nd_install_pihole_credential
 nd_install_macos_stage_tree
 nd_install_macos_prepare_images
 nd_install_macos_bridges

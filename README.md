@@ -59,19 +59,30 @@ Pi-hole admin UI:
 | Linux | <http://localhost:8880/admin> |
 | macOS | <http://172.31.240.250/admin> |
 
+The admin password is generated once per install and kept across reinstalls.
+It is never printed. Read it with:
+
+```bash
+cat ~/.local/state/nice-dns/secrets/pihole/pihole_webpassword
+```
+
+To choose your own, write it to that file (one line, mode `600`) and run the
+installer again. The uninstall deletes it.
+
 ## How it works
 
 ```mermaid
 flowchart LR
-    A[Your device] -- port 53 --> B[Pi-hole<br>ad blocking]
+    A[This computer] -- port 53 --> B[Pi-hole<br>ad blocking]
     B --> C[Unbound<br>recursive resolver]
     C -- DNS-over-TLS --> D[Tor proxy<br>socat / haproxy]
     D -- .onion --> E[Cloudflare<br>hidden resolver]
 ```
 
 Linux runs the stack as a rootless Podman pod managed by user-mode systemd
-quadlets. The pod publishes DNS on host port `53` and the Pi-hole UI on host
-port `8880`; inside the pod, the services share a network namespace and talk
+quadlets. The pod publishes DNS on `127.0.0.1:53` and the Pi-hole UI on
+`127.0.0.1:8880`, so only this computer can use them, not other devices on
+its network. Inside the pod, the services share a network namespace and talk
 over localhost:
 
 | Service | Pod-local endpoint | Role |

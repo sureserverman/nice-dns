@@ -35,10 +35,14 @@ ph_image() {
   local h bh base
   case "$1" in
     standard)
-      h="$(ph_hash "$NICE_DNS_ROOT" pihole)"
+      # On the reviewed base digest, as the installers build it (Sub-plan 4
+      # Task 1.3); pihole/Containerfile's default is a floating tag.
+      base="$(awk -F '\t' '$1 == "image" && $2 == "pihole-base" { print $3 "@" $5; exit }' "$NICE_DNS_ROOT/release/images.lock")"
+      [ -n "$base" ] || fail "no pihole-base in release/images.lock"
+      h="$( { ph_hash "$NICE_DNS_ROOT" pihole; printf '%s\n' "$base"; } | ph_sha)"
       PH_IMG="localhost/nd-test-pihole:$(printf '%s' "$h" | cut -c1-16)"
       if ! podman image exists "$PH_IMG" 2>/dev/null; then
-        podman build -t "$PH_IMG" "$NICE_DNS_ROOT/pihole" >"$CASE_DIR/build-pihole.log" 2>&1 \
+        podman build --build-arg "BASE_IMAGE=$base" -t "$PH_IMG" "$NICE_DNS_ROOT/pihole" >"$CASE_DIR/build-pihole.log" 2>&1 \
           || fail "standard Pi-hole build failed: $(tail -n 15 "$CASE_DIR/build-pihole.log")"
       fi ;;
     hardened)

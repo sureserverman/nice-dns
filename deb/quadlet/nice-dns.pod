@@ -10,8 +10,12 @@ PodName=nice-dns
 # at startup. The host resolver is pinned to 127.0.0.1 (the pod itself), so
 # without this the pod would deadlock its own bootstrap.
 Network=nice-dns.network
-PublishPort=53:53/tcp
-PublishPort=53:53/udp
+# Host loopback only, like the admin UI: the host's resolver is 127.0.0.1,
+# and publishing :53 on every interface made the host an open resolver for
+# its LAN (or the internet). macOS is host-only too (Sub-plan 4 Task 2.1,
+# ARCH-06).
+PublishPort=127.0.0.1:53:53/tcp
+PublishPort=127.0.0.1:53:53/udp
 PublishPort=127.0.0.1:8880:80
 # ExitPolicy is not a recognized [Pod] key in Podman quadlet (5.4.x rejects it
 # with "unsupported key 'ExitPolicy' in group 'Pod'", which silently drops the

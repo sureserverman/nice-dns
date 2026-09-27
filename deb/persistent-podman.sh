@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 #
 # Install Podman quadlet files for nice-dns and start the containers.
-# Usage: ./deb/persistent-podman.sh [haproxy|socat]   (default: haproxy)
+# Usage: ./deb/persistent-podman.sh [haproxy|socat] [standard|hardened]
+#        (defaults: haproxy standard; the second names the Pi-hole image, which
+#        selects its capability drop-in)
 
 set -euo pipefail
 
 VARIANT="${1:-haproxy}"
+PIHOLE="${2:-standard}"
 
 # Ensure we are not running as root. The script relies on rootless Podman and
 # user-mode systemd. Running it via sudo will cause `systemctl --user` failures.
@@ -16,6 +19,10 @@ fi
 
 if [[ "$VARIANT" != "haproxy" && "$VARIANT" != "socat" ]]; then
   echo "ERROR: Unknown variant '$VARIANT'. Use 'haproxy' or 'socat'." >&2
+  exit 1
+fi
+if [[ "$PIHOLE" != "standard" && "$PIHOLE" != "hardened" ]]; then
+  echo "ERROR: Unknown Pi-hole image '$PIHOLE'. Use 'standard' or 'hardened'." >&2
   exit 1
 fi
 
@@ -29,7 +36,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo
 echo "▸ Running as user: $(whoami)"
-echo "▸ Variant: $VARIANT"
+echo "▸ Variant: $VARIANT (Pi-hole: $PIHOLE)"
 echo "▸ Ensuring Podman v4+ is installed..."
 if ! command -v podman &>/dev/null; then
   echo "Error: podman is not installed. Install podman v4.x or newer and re-run." >&2
@@ -85,6 +92,9 @@ cp "$SCRIPT_DIR/quadlet/nice-dns.network" "$QUADLET_DIR/"
 cp "$SCRIPT_DIR/quadlet/nice-dns.pod" "$QUADLET_DIR/"
 cp "$SCRIPT_DIR/quadlet/unbound.container" "$QUADLET_DIR/"
 cp "$SCRIPT_DIR/quadlet/pi-hole.container" "$QUADLET_DIR/"
+# The Pi-hole image's capability set (quadlet drop-in; pi-hole-*.conf say why).
+mkdir -p "$QUADLET_DIR/pi-hole.container.d"
+cp "$SCRIPT_DIR/quadlet/pi-hole-${PIHOLE}.conf" "$QUADLET_DIR/pi-hole.container.d/50-nice-dns-caps.conf"
 cp "$SCRIPT_DIR/quadlet/tor-${VARIANT}.container" "$QUADLET_DIR/"
 
 # unbound.container ships with __VARIANT__ as a placeholder so its After=
