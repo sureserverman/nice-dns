@@ -330,3 +330,13 @@ require	plan:controller	OP-LIVE-EVIDENCE-PRIVATE	live	controller-shadow	t_5_evid
 require	plan:controller	OP-LIVE-ACK-READINESS	live	controller-active	t_1_cells	tests/live/controller-active.sh
 count	plan:controller	17
 owner	plan:controller	controller
+require	stage:installers-transaction	OP-NO-HOST-PUBLIC	integration	installers-interaction	t_no_step_points_the_host_at_public_dns	tests/integration/installers-interaction.sh
+require	stage:installers-transaction	OP-BOOTSTRAP	integration	installers-interaction	t_bootstrap_use_is_declared	tests/integration/installers-interaction.sh
+require	stage:installers-transaction	OP-OWNED-RESTORE	integration	installers-interaction	t_lifecycle_restores_exactly_what_it_owns	tests/integration/installers-interaction.sh
+count	stage:installers-transaction	3
+require	stage:installers	OP-NO-HOST-PUBLIC	integration	installers-interaction	t_no_step_points_the_host_at_public_dns	tests/integration/installers-interaction.sh
+require	stage:installers	OP-BOOTSTRAP	integration	installers-interaction	t_bootstrap_use_is_declared	tests/integration/installers-interaction.sh
+require	stage:installers	OP-OWNED-RESTORE	integration	installers-interaction	t_lifecycle_restores_exactly_what_it_owns	tests/integration/installers-interaction.sh
+require	stage:installers	OP-FAILURES-EMPTY	unit	harness-contracts	t_zero_case_group_rejected	tests/unit/harness-contracts.sh
+require	stage:installers	OP-FAILURES-CELL	unit	harness-contracts	t_matrix_each_single_cell_deletion_fails	tests/unit/harness-contracts.sh
+count	stage:installers	5

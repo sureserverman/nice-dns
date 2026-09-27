@@ -34,3 +34,4 @@ live	controller-receipt	tests/live/controller-receipt.sh	live
 integration	install-prepare	tests/integration/install-prepare.sh	local
 integration	dns-transaction	tests/integration/dns-transaction.sh	local
 integration	release-inputs	tests/integration/release-inputs.sh	local
+integration	installers-interaction	tests/integration/installers-interaction.sh	local

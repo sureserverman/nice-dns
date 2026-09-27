@@ -106,7 +106,7 @@ $(cat -n "$FAKE_LOG")"
           assert_match '^container build .*-t pi-hole:' "$(cat "$FAKE_LOG")" "$ep: pi-hole is built"
           assert_eq 1 "$(( $(ip_first "$FAKE_LOG" '^container build ') > $(ip_last "$FAKE_LOG" '^container image pull ') ))" "$ep: pulls happen in preparation, builds after"
         fi
-        assert_eq "" "$(sed -n "1,${first}p" "$FAKE_LOG" | grep -E '^podman system migrate|^brew upgrade( --formula)? container')" "$ep: podman system migrate / brew upgrade container stay out of preparation"
+        assert_eq "" "$(sed -n "1,${first}p" "$FAKE_LOG" | grep -E '^podman system migrate|^(HOMEBREW_NO_AUTO_UPDATE=1 )?brew upgrade( --formula)? container')" "$ep: podman system migrate / brew upgrade container stay out of preparation"
       ) || exit 1
     done
   done

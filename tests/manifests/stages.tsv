@@ -31,3 +31,9 @@ controller	unit	state-policy
 controller	integration	recovery-actions
 controller	integration	controller-interaction
 controller	unit	receipt-verifier
+installers-transaction	integration	installers-interaction
+installers	unit	harness-contracts
+installers	integration	install-prepare
+installers	integration	dns-transaction
+installers	integration	release-inputs
+installers	integration	installers-interaction

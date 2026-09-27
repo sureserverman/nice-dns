@@ -71,8 +71,8 @@ OP-SIGNED	SEC-DNSSEC-SIGNED	integration	resolver-state	t_signed_answer_validates
 OP-UNSIGNED-FX	SEC-DNSSEC-UNSIGNED	unit	fixtures	t_unsigned_delegation_is_insecure	baseline
 OP-UNSIGNED	SEC-DNSSEC-UNSIGNED	integration	resolver-state	t_unsigned_answer_is_insecure_not_bogus	transport
 OP-NO-DIRECT	PRIV-NO-DIRECT	-	-	-	qualification
-OP-NO-HOST-PUBLIC	PRIV-NO-HOST-PUBLIC	-	-	-	installers
-OP-BOOTSTRAP	PRIV-BOOTSTRAP-DECLARED	-	-	-	installers
+OP-NO-HOST-PUBLIC	PRIV-NO-HOST-PUBLIC	integration	installers-interaction	t_no_step_points_the_host_at_public_dns	installers
+OP-BOOTSTRAP	PRIV-BOOTSTRAP-DECLARED	integration	installers-interaction	t_bootstrap_use_is_declared	installers
 OP-NO-HISTORY-NAMES	PRIV-NO-QUERY-HISTORY	unit	measurement	t_collect_refuses_names_outside_workloads	baseline
 OP-NO-HISTORY-WORKLOADS	PRIV-NO-QUERY-HISTORY	unit	measurement	t_default_workloads_are_controlled_names	baseline
 OP-NO-SECRETS-FX	PRIV-NO-SECRETS	unit	fixtures	t_fixture_state_stays_in_artifacts	baseline
@@ -88,7 +88,7 @@ OP-CONTROL-BASE-SELFTEST	SEC-CONTROL-LOCAL	integration	resolver-state	t_base_ima
 OP-CONTROL-NO-NETWORK	SEC-CONTROL-LOCAL	integration	resolver-state	t_network_control_interface_refused	transport
 OP-ACK-HAPROXY-PRIVATE	REC-ACK-READINESS	integration	transport-haproxy	t_restart_control_is_private_to_the_image_user	transport
 OP-ACK-SOCAT-PRIVATE	REC-ACK-READINESS	integration	transport-socat	t_restart_control_is_private_to_the_image_user	transport
-OP-OWNED-RESTORE	SEC-OWNED-RESTORE	-	-	-	installers
+OP-OWNED-RESTORE	SEC-OWNED-RESTORE	integration	installers-interaction	t_lifecycle_restores_exactly_what_it_owns	installers
 OP-ACK-READINESS	REC-ACK-READINESS	integration	recovery-actions	t_tick_active_records_request_acknowledgement_then_readiness	controller
 OP-ACK-HAPROXY-IMAGE	REC-ACK-READINESS	integration	transport-haproxy	t_restart_request_acknowledged_with_new_generation	transport
 OP-ACK-HAPROXY-REJECT	REC-ACK-READINESS	integration	transport-haproxy	t_invalid_restart_request_rejected	transport

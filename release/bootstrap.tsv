@@ -1,0 +1,33 @@
+schema	nice-dns-bootstrap/1
+# Declared bootstrap network use of an install (Sub-plan 4; PRIV-BOOTSTRAP-DECLARED,
+# WF-DNS-003). Parsed as data by the installer tests; never sourced. An install
+# makes no other network call, and none of these ever becomes a client DNS path:
+# host DNS is never rewritten for them.
+#
+# Rows (tab-separated): exception <id> <platform> <call> <phase> <resolver> <purpose>
+#   platform  linux | macos | all
+#   call      an ERE matching the call as the installer makes it
+#   phase     preparation: before anything is interrupted (host DNS still the
+#             owner's or the running stack's pin)
+#             interruption: after the stack stopped; host DNS then stays pinned
+#             to the stopped stack, so the call must need no host resolver
+#   resolver  host: the host's resolver as it is in that phase
+#             own: the tool's own bootstrap resolver
+#             builder: the build containers' own --dns 1.1.1.1, never the host
+#             none: no network (a local cache)
+exception	signatures	all	^cosign verify 	preparation	host	signature checks of the locked images (Sigstore, Docker Hub)
+exception	packages	linux	^sudo (apt-get (update|install)|add-apt-repository) 	preparation	host	Debian/Ubuntu packages and the podman PPA
+exception	source	all	^git clone 	preparation	host	the requested branch, when the installer runs without a checkout
+exception	gate	macos	^curl -fsSL https://raw\.githubusercontent\.com/sureserverman/nice-dns/[^ ]+/mac/check-runtime\.sh 	preparation	host	the SHA-256-pinned compatibility gate, without a checkout
+exception	images	linux	^podman pull [^ ]+@sha256:[0-9a-f]{64}$	preparation	host	the locked images, by digest (release/images.lock)
+exception	images	macos	^container image pull [^ ]+@sha256:[0-9a-f]{64}$	preparation	host	the locked images, by digest (release/images.lock)
+exception	sibling-base	macos	^container image pull alpine:3\.21\.3$	preparation	host	the hardened sibling's own FROM, pinned by its Dockerfile
+exception	builds	linux	^podman build .*--dns 1\.1\.1\.1 	preparation	builder	build steps (apk upgrade, pihole -g gravity lists, post-install); the sibling's FROM is pulled here too
+exception	builds	macos	^container build .*--dns 1\.1\.1\.1 	interruption	builder	build steps; Apple's builder wedges a running dnsnet, so builds wait for the stack to stop
+exception	homebrew	macos	^(brew (update|install --formula [a-z]+|fetch --formula container)|sudo softwareupdate --install-rosetta --agree-to-license)$	preparation	host	Homebrew packages (git, container) and Rosetta
+exception	runtime-upgrade	macos	^HOMEBREW_NO_AUTO_UPDATE=1 brew upgrade --formula container$	interruption	none	the container upgrade from the bottle fetched in preparation
+exception	runtime	macos	^container system start	preparation	host	the runtime; its first start downloads the default kernel
+exception	bridges	macos	^curl .*(bridges\.torproject\.org|moat)	preparation	host	obfs4 bridges (scripts/fetch-bridges.sh), only when bridges.env is missing
+exception	runtime	macos	^container system start	interruption	none	the runtime again after an upgrade; its kernel is already installed
+exception	bridges	linux	^persistent-podman\.sh 	interruption	own	bridge selection (nice-dns-fetch-bridges.service, only with fewer than 3 bridges): bridge-eval resolves Moat and rdsys with its own bootstrap resolver, not the host's
+exception	builder	macos	^container builder start$	interruption	none	the builder VM; its image is cached since the first install (a runtime upgrade that changes it would need the network: live proof pending)

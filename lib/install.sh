@@ -1460,6 +1460,10 @@ nd_install_macos_host_prereqs() {
       brew install --formula "$pkg"
     elif brew outdated --formula --quiet 2>/dev/null | grep -qx "$pkg"; then
       if [ "$pkg" = container ]; then
+        # The upgrade stops the runtime, so it is applied in the interruption,
+        # where host DNS stays pinned to the stopped stack: download it now
+        # (Task 1.2/1.3 bootstrap inventory, release/bootstrap.tsv).
+        brew fetch --formula container
         ND_INST_CONTAINER_UPGRADE=1
       else
         brew upgrade --formula "$pkg"
@@ -1493,7 +1497,9 @@ nd_install_macos_upgrade_runtime() {
     # about to rewrite. `container system start` below re-registers it.
     container system stop >/dev/null 2>&1 || true
   fi
-  brew upgrade --formula container
+  # From the bottle fetched in preparation; no update: host DNS is pinned to
+  # the stopped stack here (fails closed), so nothing may need the network.
+  HOMEBREW_NO_AUTO_UPDATE=1 brew upgrade --formula container
   { yes 2>/dev/null || true; } | "$CONTAINER_BIN" system start >/dev/null
 }
 
