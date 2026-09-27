@@ -32,48 +32,37 @@ EnvironmentFile=%h/.config/nice-dns/bridges.env
 #
 # The user's stated goal is "resolve via any backend ASAP," which
 # wants the unit active as soon as the container's processes exist.
-# Dependent services (unbound, pi-hole) still wait via Requires=, but
+# Dependent services (unbound, pi-hole) still wait via After=, but
 # they wait for the *container* to be up, not for end-to-end DNS to
-# work. Their own HealthCmds catch the cases where the chain is still
-# settling, and the latency-aware probe (Stage 7) keeps primary in
+# work (Wants= plus After=, so the controller's restart of this unit does
+# not restart them). The latency-aware probe (Stage 7) keeps primary in
 # the right state. Cold-start may show a brief SERVFAIL window
 # (seconds) before backup or primary starts answering — but that's
 # strictly better than "service refuses to start."
-# Port-level check: is haproxy listening on 853? An earlier design tried
-# `dig +tls @127.0.0.1 ... | grep IPv4` (end-to-end DoT through the Tor
-# chain) but that conflated two failures:
-#   - "tor-haproxy itself is broken" → should restart
-#   - "Tor exit network is congested today" → should NOT restart (a
-#     container restart wipes Tor's bootstrap progress and makes things
-#     worse; observed cycle: container restart every ~3.5 min, each new
-#     Tor bootstrap takes 60-90s, chain never stabilizes).
-# The `chain-resolves` check in nice-dns-health (Stage 5) is the right
-# place to detect "chain not actually resolving" — it has its own grace
-# window and graceful restart path. The container HealthCmd should only
-# answer the narrow question "is the process alive and bound?"
-HealthCmd=nc -z 127.0.0.1 853
-HealthInterval=30s
-# `nc -z` returns in <100ms whether port is open or closed. 5s is plenty.
-HealthTimeout=5s
-HealthRetries=5
-# 60s covers warm-Tor bootstrap (cached consensus, ~30s) plus the first
-# backend health probe (which goes to backup, ~5s, since primary starts
-# init-state down). Note: container healthy is independent of primary
-# being UP — the haproxy HealthCmd just verifies that *any* backend
-# (primary/backup/fallback) answers a dig, so backup serving during
-# the primary-promotion window counts as healthy. Primary's own
-# promotion to UP takes ≥ 90s on warm Tor (rise 3 × inter 30s) which
-# is intentional ("stable before preferred").
+# Health reports; it never restarts (HealthOnFailure=none). The check is the
+# image's verifying route probe: a DNS-over-TLS query through Tor to the
+# legacy :853 route, certificate and name checked, its whole run bounded
+# (NICE_DNS_PROBE_TIMEOUT, 10 s).
 #
-# 300s, not 60s: a cold obfs4 bootstrap + first onion rendezvous can exceed
-# 60s even on pre-selected reachable bridges. With HealthOnFailure=restart a
-# 60s window kills the container MID-bootstrap (nc -z 853 fails because haproxy
-# hasn't bound 853 yet) → it never finishes → permanent SERVFAIL restart loop.
-# 300s lets the cold start complete. Trade-off: a genuinely-dead proxy now
-# takes up to 300s to be auto-restarted (acceptable; the chain-resolves check
-# in nice-dns-health is the real liveness signal).
+# History. An end-to-end check that restarted on failure looped: a container
+# restart wipes Tor's bootstrap progress, so on a congested exit the chain
+# never stabilised (a restart every ~3.5 min, each bootstrap 60-90 s). Its
+# replacement, a restarting loopback `nc -z 127.0.0.1 853`, never saw a chain
+# fault: in Sub-plan 1's live Tor freeze it stayed green while Podman
+# restarted Unbound and Pi-hole instead. Since Sub-plan 3 the nice-dns-health
+# controller is the one actor that restarts Tor or this service, with its
+# grace, cooldown and restart ladder (lib/policy.sh); a second owner here
+# would race it. A process that exits is still restarted by Restart= below.
+# An image without the probe (published before Sub-plan 2) reports
+# unhealthy and nothing acts on it.
+HealthCmd=nice-dns-route-probe 853 tor.cloudflare-dns.com
+HealthInterval=60s
+HealthTimeout=15s
+HealthRetries=3
+# A cold obfs4 bootstrap plus the first onion rendezvous can take minutes;
+# failures inside this window do not count, so the state reads "starting".
 HealthStartPeriod=300s
-HealthOnFailure=restart
+HealthOnFailure=none
 
 [Service]
 Restart=on-failure

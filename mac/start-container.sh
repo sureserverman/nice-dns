@@ -55,6 +55,7 @@ BRIDGE_SENTINEL="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/bootstrap-failed
 # and pinned dnsnet, so the rebuild could neither delete the network nor get
 # the addresses the configs hardcode. Keep the path in sync with bridge-eval.sh.
 STACK_LOCK="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/stack.lock"
+RESTART_REQUEST="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/restart-requested"
 # Every BRIDGEn in bridges.env, as ready-made `container run -e` arguments.
 BRIDGE_ARGS=()
 BRIDGE_COUNT=0
@@ -140,6 +141,64 @@ wait_for_tor_bootstrap() {
 dns_healthy() {
   dig @"$PIHOLE_IP" +time=3 +tries=1 +short "$HEALTH_PROBE" 2>/dev/null \
     | grep -Eq '^[0-9.]+$'
+}
+
+# bridges_rotate_needed: 0 when the raw Moat fetch must write bridges.env:
+# only when no usable set exists (the bootstrap exception, as the Linux boot
+# unit). After a failed bootstrap a usable set is kept: re-selecting it is
+# the controller's evaluated refresh (nd_bridges_refresh), which never
+# overwrites a newer set and keeps .prev. The sentinel is cleared either way.
+bridges_rotate_needed() {
+  if ! load_bridges; then
+    log "bridges.env missing or incomplete; fetching a set"
+    rm -f "$BRIDGE_SENTINEL"
+    return 0
+  fi
+  if [ -f "$BRIDGE_SENTINEL" ]; then
+    log "previous run failed to bootstrap; keeping the usable set (the controller's evaluated refresh re-selects it)"
+    rm -f "$BRIDGE_SENTINEL"
+    return 1
+  fi
+  log "reusing existing bridge set (bootstrapped cleanly last run)"
+  return 1
+}
+
+# route_verified: the proxy image's verifying probe (the one its HEALTHCHECK
+# and the controller use) answers on the legacy listener through Tor. Pi-hole
+# answering is not enough: it answers from cache in front of a dead upstream
+# (live, 2026-09-26: Tor frozen, "stack already healthy"). An image without
+# the probe (published before nice-dns Sub-plan 2) is not asked.
+route_verified() {
+  local out
+  out="$(container exec "$TOR_CONTAINER" /usr/local/bin/nice-dns-route-probe 853 tor.cloudflare-dns.com </dev/null 2>&1)" && return 0
+  case "$out" in
+    *'failed to find target executable'*)
+      log "no verifying probe in $TOR_CONTAINER (image before nice-dns Sub-plan 2): the route is not verified, Pi-hole's answer is trusted"
+      return 0 ;;
+  esac
+  return 1
+}
+
+# fast_path_ok: 0 when the running stack may be kept as it is. A restart the
+# controller requested (nice-dns-health's service fallback leaves
+# RESTART_REQUEST) always rebuilds: the request is consumed and
+# FORCE_REBUILD makes keep_running_stack refuse too.
+FORCE_REBUILD=0
+fast_path_ok() {
+  if [ -e "$RESTART_REQUEST" ]; then
+    log "restart requested by the controller ($(head -c 64 "$RESTART_REQUEST" 2>/dev/null | tr -d '\n')); rebuilding"
+    rm -f "$RESTART_REQUEST"
+    FORCE_REBUILD=1
+    return 1
+  fi
+  stack_addressed_correctly && dns_healthy && route_verified
+}
+
+# keep_running_stack: 0 when step 5 may leave the stack alone: every container
+# on its address and no controller restart pending. A restart has to rebuild
+# the whole stack (recreating one container scrambles the addresses).
+keep_running_stack() {
+  [ "${FORCE_REBUILD:-0}" = 0 ] && stack_addressed_correctly
 }
 
 # Match the ID column exactly. `grep -w NAME` over the whole line also matched
@@ -521,16 +580,7 @@ acquire_stack_lock || exit 1
 # refetch only when it's missing/incomplete or the previous run failed to
 # bootstrap (BRIDGE_SENTINEL, set at the bottom of this script).
 mkdir -p "$(dirname "$BRIDGE_SENTINEL")"
-rotate_bridges=0
-if ! load_bridges; then
-  rotate_bridges=1
-  log "bridges.env missing or incomplete; fetching a set"
-elif [[ -f "$BRIDGE_SENTINEL" ]]; then
-  rotate_bridges=1
-  log "previous run failed to bootstrap; rotating bridges"
-fi
-
-if (( rotate_bridges )); then
+if bridges_rotate_needed; then
   if [[ -x "$FETCH_BRIDGES_BIN" ]]; then
     "$FETCH_BRIDGES_BIN" --force >>"$LOG" 2>&1 \
       || log "bridge refetch failed — keeping previous bridges.env"
@@ -538,9 +588,6 @@ if (( rotate_bridges )); then
   else
     log "warning: $FETCH_BRIDGES_BIN not installed; cannot rotate bridges"
   fi
-  rm -f "$BRIDGE_SENTINEL"
-else
-  log "reusing existing bridge set (bootstrapped cleanly last run)"
 fi
 
 # 1) apiserver + default kernel must be up. `container system start` is
@@ -571,7 +618,7 @@ log "container system ready"
 # ever recreating it. dns_healthy alone cannot distinguish a working chain
 # from a warm cache in front of a missing one. Require every container to be
 # running on the address the configs are wired for as well.
-if stack_addressed_correctly && dns_healthy; then
+if fast_path_ok; then
   run_root_helper post || log "post-start helper failed"
   log "stack already healthy (variant=$VARIANT) — reusing existing state"
   exit 0
@@ -623,7 +670,7 @@ fi
 # completely alone. Otherwise tear down the network and recreate in order,
 # which is the only operation that restores them. There is no middle path —
 # recreating a single container is what scrambles the assignment.
-if stack_addressed_correctly; then
+if keep_running_stack; then
   log "stack running on expected addresses; leaving it alone"
 else
   log_addresses

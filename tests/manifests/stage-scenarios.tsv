@@ -279,3 +279,54 @@ require	plan:transport	OP-CHAIN-ROUTE-SOCAT-HARDENED	integration	transport-trans
 require	plan:transport	OP-CHAIN-BOGUS-SOCAT-HARDENED	integration	transport-transitions	t_cell_linux_socat_hardened	tests/integration/transport-matrix.sh
 require	plan:transport	OP-CHAIN-WRONGNAME-SOCAT-HARDENED	integration	transport-transitions	t_cell_linux_socat_hardened	tests/integration/transport-matrix.sh
 require	plan:transport	OP-TRANSPORT-RECEIPT	integration	transport-transitions	t_zz_transport_receipt	tests/integration/transport-matrix.sh
+require	stage:controller-core	OP-CACHE-NOT-UPSTREAM	unit	observations	t_local_cache_healthy_while_every_route_unhealthy_stays_separate	tests/unit/observations.sh
+require	stage:controller-core	OP-OBSERVE-ROUTE-TLS-NAME	unit	observations	t_probe_uses_each_route_port_and_tls_name	tests/unit/observations.sh
+require	stage:controller-core	OP-OBSERVE-EVERY-ROUTE	unit	observations	t_one_record_per_route_in_table	tests/unit/observations.sh
+require	stage:controller-core	OP-OBSERVE-DEADLINE-KEPT	unit	observations	t_deadline_kills_hung_command_tree_within_budget	tests/unit/observations.sh
+require	stage:controller-core	OP-OBSERVE-CONTROLLED-NAMES	unit	observations	t_observations_query_only_controlled_names	tests/unit/observations.sh
+require	stage:controller-core	OP-POLICY-IDENTITY-ONLY	unit	state-policy	t_policy_never_selects_the_compat_route	tests/unit/state-policy.sh
+require	stage:controller-core	OP-POLICY-UNKNOWN-NOT-HEALTH	unit	state-policy	t_policy_unknown_observations_are_never_health	tests/unit/state-policy.sh
+require	stage:controller-core	OP-ACK-READINESS	integration	recovery-actions	t_tick_active_records_request_acknowledgement_then_readiness	tests/integration/recovery-actions.sh
+require	stage:controller-core	OP-ACK-IMAGE-GENERATION	integration	recovery-actions	t_image_restart_request_is_acknowledged_with_new_generation	tests/integration/recovery-actions.sh
+require	stage:controller-core	OP-ACK-REQUEST-NOT-ACK	integration	recovery-actions	t_request_write_is_never_an_acknowledgement	tests/integration/recovery-actions.sh
+require	stage:controller-core	OP-CHAIN-CACHE-NOT-UPSTREAM	integration	controller-interaction	t_cached_answer_never_hides_an_upstream_outage	tests/integration/controller-interaction.sh
+require	stage:controller-core	OP-CHAIN-ACK-READY	integration	controller-interaction	t_observed_outage_restart_is_acknowledged_then_ready	tests/integration/controller-interaction.sh
+require	stage:controller-core	OP-CHAIN-UNKNOWN-NO-ACTION	integration	controller-interaction	t_unanswerable_probes_never_act	tests/integration/controller-interaction.sh
+require	stage:controller-core	OP-READY-CORROBORATED	integration	recovery-actions	t_readiness_is_per_request_and_corroborated_by_unbound	tests/integration/recovery-actions.sh
+count	stage:controller-core	14
+require	stage:controller	OP-FAILURES-EMPTY	unit	harness-contracts	t_zero_case_group_rejected	tests/unit/harness-contracts.sh
+require	stage:controller	OP-FAILURES-CELL	unit	harness-contracts	t_matrix_each_single_cell_deletion_fails	tests/unit/harness-contracts.sh
+require	stage:controller	OP-CACHE-NOT-UPSTREAM	unit	observations	t_local_cache_healthy_while_every_route_unhealthy_stays_separate	tests/unit/observations.sh
+require	stage:controller	OP-OBSERVE-ROUTE-TLS-NAME	unit	observations	t_probe_uses_each_route_port_and_tls_name	tests/unit/observations.sh
+require	stage:controller	OP-OBSERVE-EVERY-ROUTE	unit	observations	t_one_record_per_route_in_table	tests/unit/observations.sh
+require	stage:controller	OP-OBSERVE-DEADLINE-KEPT	unit	observations	t_deadline_kills_hung_command_tree_within_budget	tests/unit/observations.sh
+require	stage:controller	OP-OBSERVE-CONTROLLED-NAMES	unit	observations	t_observations_query_only_controlled_names	tests/unit/observations.sh
+require	stage:controller	OP-POLICY-IDENTITY-ONLY	unit	state-policy	t_policy_never_selects_the_compat_route	tests/unit/state-policy.sh
+require	stage:controller	OP-POLICY-UNKNOWN-NOT-HEALTH	unit	state-policy	t_policy_unknown_observations_are_never_health	tests/unit/state-policy.sh
+require	stage:controller	OP-ACK-READINESS	integration	recovery-actions	t_tick_active_records_request_acknowledgement_then_readiness	tests/integration/recovery-actions.sh
+require	stage:controller	OP-ACK-IMAGE-GENERATION	integration	recovery-actions	t_image_restart_request_is_acknowledged_with_new_generation	tests/integration/recovery-actions.sh
+require	stage:controller	OP-ACK-REQUEST-NOT-ACK	integration	recovery-actions	t_request_write_is_never_an_acknowledgement	tests/integration/recovery-actions.sh
+require	stage:controller	OP-CHAIN-CACHE-NOT-UPSTREAM	integration	controller-interaction	t_cached_answer_never_hides_an_upstream_outage	tests/integration/controller-interaction.sh
+require	stage:controller	OP-CHAIN-ACK-READY	integration	controller-interaction	t_observed_outage_restart_is_acknowledged_then_ready	tests/integration/controller-interaction.sh
+require	stage:controller	OP-CHAIN-UNKNOWN-NO-ACTION	integration	controller-interaction	t_unanswerable_probes_never_act	tests/integration/controller-interaction.sh
+require	stage:controller	OP-READY-CORROBORATED	integration	recovery-actions	t_readiness_is_per_request_and_corroborated_by_unbound	tests/integration/recovery-actions.sh
+count	stage:controller	16
+require	plan:controller	OP-CACHE-NOT-UPSTREAM	unit	observations	t_local_cache_healthy_while_every_route_unhealthy_stays_separate	tests/unit/observations.sh
+require	plan:controller	OP-OBSERVE-ROUTE-TLS-NAME	unit	observations	t_probe_uses_each_route_port_and_tls_name	tests/unit/observations.sh
+require	plan:controller	OP-OBSERVE-EVERY-ROUTE	unit	observations	t_one_record_per_route_in_table	tests/unit/observations.sh
+require	plan:controller	OP-OBSERVE-DEADLINE-KEPT	unit	observations	t_deadline_kills_hung_command_tree_within_budget	tests/unit/observations.sh
+require	plan:controller	OP-OBSERVE-CONTROLLED-NAMES	unit	observations	t_observations_query_only_controlled_names	tests/unit/observations.sh
+require	plan:controller	OP-POLICY-IDENTITY-ONLY	unit	state-policy	t_policy_never_selects_the_compat_route	tests/unit/state-policy.sh
+require	plan:controller	OP-POLICY-UNKNOWN-NOT-HEALTH	unit	state-policy	t_policy_unknown_observations_are_never_health	tests/unit/state-policy.sh
+require	plan:controller	OP-ACK-READINESS	integration	recovery-actions	t_tick_active_records_request_acknowledgement_then_readiness	tests/integration/recovery-actions.sh
+require	plan:controller	OP-ACK-IMAGE-GENERATION	integration	recovery-actions	t_image_restart_request_is_acknowledged_with_new_generation	tests/integration/recovery-actions.sh
+require	plan:controller	OP-ACK-REQUEST-NOT-ACK	integration	recovery-actions	t_request_write_is_never_an_acknowledgement	tests/integration/recovery-actions.sh
+require	plan:controller	OP-CHAIN-CACHE-NOT-UPSTREAM	integration	controller-interaction	t_cached_answer_never_hides_an_upstream_outage	tests/integration/controller-interaction.sh
+require	plan:controller	OP-CHAIN-ACK-READY	integration	controller-interaction	t_observed_outage_restart_is_acknowledged_then_ready	tests/integration/controller-interaction.sh
+require	plan:controller	OP-CHAIN-UNKNOWN-NO-ACTION	integration	controller-interaction	t_unanswerable_probes_never_act	tests/integration/controller-interaction.sh
+require	plan:controller	OP-READY-CORROBORATED	integration	recovery-actions	t_readiness_is_per_request_and_corroborated_by_unbound	tests/integration/recovery-actions.sh
+require	plan:controller	OP-LIVE-CACHE-NOT-UPSTREAM	live	controller-shadow	t_4_whole_outage	tests/live/controller-shadow.sh
+require	plan:controller	OP-LIVE-EVIDENCE-PRIVATE	live	controller-shadow	t_5_evidence_is_private	tests/live/controller-shadow.sh
+require	plan:controller	OP-LIVE-ACK-READINESS	live	controller-active	t_1_cells	tests/live/controller-active.sh
+count	plan:controller	17
+owner	plan:controller	controller

@@ -454,6 +454,15 @@ nd_composite() {
   shift 3
   nd_load_groups || return $?
   nd_parse_opts "$@" || return $?
+  # A stage or plan is a gate scope: it runs every variant. Narrowing belongs
+  # to a single group run (fix-scope), where the command line shows it.
+  for i in PLATFORMS PROXIES PIHOLE MATRIX VARIANTS ENTRYPOINTS; do
+    eval "k=\${NICE_DNS_OPT_$i:-all}"
+    if [ "$k" != all ]; then
+      nd_err "$what '$name' refused: --$(printf '%s' "$i" | tr 'A-Z_' 'a-z-') $k narrows a gate scope; a $what runs every variant (all), and a narrowed run is only for a single group"
+      return "$ND_USAGE"
+    fi
+  done
   [ -f "$ND_MANIFESTS/$mf" ] || { nd_err "$what list not found: $ND_MANIFESTS/$mf"; return "$ND_USAGE"; }
   while IFS="$ND_TAB" read -r s k g extra || [ -n "${s:-}" ]; do
     ln=$((ln + 1))

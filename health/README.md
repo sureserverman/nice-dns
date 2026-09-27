@@ -21,6 +21,14 @@ keeps working even if the repo is moved or deleted:
   (used when `~/.local/bin` is owned by root, e.g. on Ubuntu hosts where
   apt-installed `xdg-utils` claimed it)
 
+It also copies the libraries the checks come from (`lib/health.sh`,
+`lib/platform/{linux,macos}.sh`, `routes/providers.tsv`) to
+`${XDG_DATA_HOME:-~/.local/share}/nice-dns-health/` (Linux) or
+`~/Library/Application Support/nice-dns-health/` (macOS). Run from a
+checkout, the script reads them from `../lib` and `../routes`. Either way it
+refuses to load a library through a symlink, or from a file or directory
+that is writable by group or others or owned by another user.
+
 ## Manage the schedule
 
 ```sh
@@ -28,6 +36,7 @@ nice-dns-health start      # (re)start the timer / load LaunchAgent
 nice-dns-health stop       # pause the timer / unload LaunchAgent
 nice-dns-health status     # schedule + last 5 health.log entries
 nice-dns-health run        # run a check now
+nice-dns-health observe    # print the observations as TSV (read-only)
 nice-dns-health logs       # cat the rolling log
 nice-dns-health failures              # list recent failure dumps
 nice-dns-health failures --last       # print the most recent dump
@@ -45,20 +54,35 @@ pruned to the most recent 10.
 
 ## What it checks
 
-| # | Check | Pass condition |
-|---|---|---|
-| 1 | `/etc/resolv.conf` | line `nameserver 127.0.0.1` is present |
-| 2 | container runtime (`podman` on Linux, Apple `container` on macOS) | binary on PATH |
-| 3 | expected containers | `pi-hole`, `unbound`, and one of `tor-haproxy` / `tor-socat` are running |
-| 4 | `dig @127.0.0.1 pi.hole` | exactly one A record (FTL alive on :53) |
-| 5 | `dig @127.0.0.1 cloudflare.com` | a real, non-zero A record (chain works end-to-end) |
-| 6 | `dig @127.0.0.1 doubleclick.net` | `0.0.0.0` (gravity blocklist active) |
+The checks are the observations of `lib/health.sh`. Each is `healthy`,
+`unhealthy` or `indeterminate` (it could not be observed: a deadline, dig's
+own timeout, a missing tool). `observe` prints them as
+`obs<TAB>name<TAB>verdict<TAB>duration_ms<TAB>reason` after a
+`schema<TAB>nice-dns-observations/1` line. Pi-hole's endpoint is
+`127.0.0.1:53` on Linux and `172.31.240.250:53` (dnsnet) on macOS.
+
+| Observation | Healthy when |
+|---|---|
+| `runtime` | the runtime CLI (`podman`; Apple `container`, also at `/opt/homebrew/bin/container`) answers and `pi-hole`, `unbound` and one of `tor-haproxy` / `tor-socat` run |
+| `dns-owner` | Linux: `/etc/resolv.conf` names only `nameserver 127.0.0.1`. macOS: every enabled network service (`networksetup`) and `scutil --dns` resolver #1 use `172.31.240.250` |
+| `local-service` | `pi.hole` has an A record (FTL alive) |
+| `filtering` | every A record of `doubleclick.net` (after CNAMEs) is `0.0.0.0` |
+| `local-cache` | Pi-hole answers `cloudflare.com` (NOERROR or NXDOMAIN). This can be a cached answer: it is not upstream health |
+| `route:<id>` | one per route in `routes/providers.tsv`: the proxy image's `nice-dns-route-probe` gets an authenticated answer on the route's port and TLS name (NXDOMAIN counts) |
+
+`run` passes only when every observation is healthy. It logs `FAIL [...]`
+with the unhealthy names, or `INDETERMINATE [...]` when nothing is known
+to be broken but something could not be observed. `chain-resolves` fails
+when no route answered and at least one failed. When a later run still sees
+it after the 300 s grace (`NICE_DNS_RESTART_GRACE_SECS`), that run triggers
+the Tor restart described in the script.
 
 ## What a failure dump contains
 
-- Per-check verdict (`OK` / `FAIL <reason>`)
+- Per-check verdict (`OK` / `FAIL` / `???` for indeterminate, with reason)
+  and the raw observation records
 - `/etc/resolv.conf` snapshot
-- `<runtime> ps -a`
+- `podman ps -a` (Linux) or `container ls -a` (macOS)
 - For each expected container: `inspect` state (status / health /
   restart count / pid) and the last 50 log lines
 - `dig` output for the chain test and the blocked-domain test

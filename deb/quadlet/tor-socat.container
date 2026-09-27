@@ -19,19 +19,14 @@ EnvironmentFile=%h/.config/nice-dns/bridges.env
 # real DoT resolution success makes the whole stack fail to start
 # whenever Tor is degraded for >TimeoutStartSec, which is the
 # opposite of the project goal of "resolve via any backend ASAP."
-# See tor-haproxy.container — same port-level check, same rationale.
-HealthCmd=nc -z 127.0.0.1 853
-HealthInterval=30s
-# `nc -z` returns in <100ms. 5s is plenty.
-HealthTimeout=5s
-HealthRetries=5
-# 300s, not 60s: a cold obfs4 bootstrap + first onion rendezvous can exceed
-# 60s even on pre-selected reachable bridges. With HealthOnFailure=restart a
-# 60s window kills the container mid-bootstrap → permanent SERVFAIL restart
-# loop. 300s lets the cold start complete (a dead proxy then takes up to 300s
-# to auto-restart — acceptable).
+# Health reports; it never restarts. The image's verifying route probe; see
+# tor-haproxy.container for the rationale and history.
+HealthCmd=nice-dns-route-probe 853 tor.cloudflare-dns.com
+HealthInterval=60s
+HealthTimeout=15s
+HealthRetries=3
 HealthStartPeriod=300s
-HealthOnFailure=restart
+HealthOnFailure=none
 
 [Service]
 Restart=on-failure

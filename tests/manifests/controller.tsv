@@ -10,3 +10,6 @@ scenario	CT-PROBES	per-cell	platform probes observe local, route and DNS-owner s
 scenario	CT-RECOVERY-ACK	per-cell	each recovery records request, acknowledgement and later readiness
 scenario	CT-CACHE-VS-UPSTREAM	per-cell	cached answers never certify upstream health
 scenario	CT-BRIDGES	per-cell	bridge refresh keeps the working set and applies without disruption
+scenario	CT-PRIMARY-ONLY	per-cell	the preferred route failing while others work never restarts Tor or repairs
+scenario	CT-RUNTIME-WEDGE	per-cell	the controller recovers a wedged or missing runtime on its own
+scenario	CT-WAKE	global	after a sleep and wake the schedule runs a pass a minute with no recovery from the time jump

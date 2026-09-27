@@ -10,6 +10,9 @@
 #                                               one observed linux and macos cell
 #   --require-platforms all    every platform has an observed cell
 #   --require-proxies all      every proxy has an observed cell
+#   --require-platform-proxies all
+#                              every platform has an observed standard cell
+#                              of every proxy
 #   --require-entrypoints all  all four installer entrypoints recorded as pass
 #   --require-dep NAME         a verified link to receipt NAME (repeatable)
 #
@@ -21,13 +24,19 @@
 #            at that SHA, so documented support cannot silently drop)
 #   requires NAME PATH SHA256                        (linked receipt, verified
 #            recursively)
-#   cell     PLATFORM PROXY PIHOLE TARGET IMAGE_GEN observed|blocked
+#   cell     PLATFORM PROXY PIHOLE TARGET IMAGE_GEN observed|blocked|failed
+#            (a failed cell is recorded, never dropped, and never verifies)
 #   scenario ID CELL|- pass|fail|blocked ARTIFACT SHA256 IMAGE_GEN|-
 #   aggregate PATH SHA256 SAMPLES                     (must equal stats.sh
 #            recomputed over SAMPLES)
 #   entrypoint NAME pass|fail
 #   product  nice-dns|pi-hole-hardened SHA40        (the installed product;
 #            optional, at most one per repository)
+#   limit    WHAT CELL|- scope=sub-plan-N REASON     (something the run did
+#            not prove, and the sub-plan that owns it; CELL an observed cell)
+#   reuse    CELL RUN_ID SHA40                       (an observed cell carried
+#            from an earlier run, which passed all of it at nice-dns SHA40;
+#            DEC-009. At most once per cell, never this receipt's own run)
 # Scenario ids, scopes and required links come from tests/manifests/NAME.tsv;
 # anything undeclared fails. Content, not only structure, is checked:
 #   - manifest `minimum SCENARIO N`: its artifact is a nice-dns-sample/1 file
@@ -144,16 +153,17 @@ walk_requires() {
 
 cmd_check() {
   local f="$1" d name n cells=0 scen=0
-  local req_matrix=none req_platforms='' req_proxies='' req_entry='' req_deps=''
+  local req_matrix=none req_platforms='' req_proxies='' req_entry='' req_deps='' req_pp=''
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
-      --require-matrix|--require-platforms|--require-proxies|--require-entrypoints|--require-dep)
+      --require-matrix|--require-platforms|--require-proxies|--require-platform-proxies|--require-entrypoints|--require-dep)
         [ $# -ge 2 ] || die "option $1 needs a value"
         case "$1" in
           --require-matrix) case "$2" in all|representative|none) req_matrix="$2" ;; *) die "--require-matrix all|representative|none" ;; esac ;;
           --require-platforms) [ "$2" = all ] || die "--require-platforms all"; req_platforms=all ;;
           --require-proxies) [ "$2" = all ] || die "--require-proxies all"; req_proxies=all ;;
+          --require-platform-proxies) [ "$2" = all ] || die "--require-platform-proxies all"; req_pp=all ;;
           --require-entrypoints) [ "$2" = all ] || die "--require-entrypoints all"; req_entry=all ;;
           --require-dep) in_list "$2" "$RECEIPTS" || die "--require-dep: unknown receipt '$2'"; req_deps="$req_deps $2" ;;
         esac
@@ -171,7 +181,8 @@ cmd_check() {
   # Row shapes and types.
   while IFS= read -r n; do err "$f: $n"; done < <(awk -F '\t' '
     BEGIN { w["receipt"] = 2; w["run_id"] = 2; w["created_utc"] = 2; w["source"] = 4; w["arch"] = 4
-            w["requires"] = 4; w["cell"] = 7; w["scenario"] = 7; w["aggregate"] = 4; w["entrypoint"] = 3; w["product"] = 3 }
+            w["requires"] = 4; w["cell"] = 7; w["scenario"] = 7; w["aggregate"] = 4; w["entrypoint"] = 3; w["product"] = 3
+            w["limit"] = 5; w["reuse"] = 4 }
     /^#/ || /^$/ { next }
     !($1 in w) { printf "line %d: unknown row type %s\n", NR, $1; next }
     NF != w[$1] { printf "line %d: %s row has %d fields, expected %d\n", NR, $1, NF, w[$1] }
@@ -194,12 +205,14 @@ cmd_check() {
   check_aggregates "$f" "$d"
   check_contents "$f" "$d" "$name"
   check_entrypoints "$f" "$req_entry"
-  check_requirements "$f" "$req_matrix" "$req_platforms" "$req_proxies"
+  check_requirements "$f" "$req_matrix" "$req_platforms" "$req_proxies" "$req_pp"
+  check_limits "$f"
+  check_reuse "$f"
   finish "$f" "$cells" "$scen" "$name"
 }
 
 finish() {
-  printf 'receipt=%s cells=%s scenarios=%s errors=%s file=%s\n' "${4:-?}" "$2" "$3" "$ERRS" "$1"
+  printf 'receipt=%s cells=%s scenarios=%s errors=%s limits=%s reused=%s file=%s\n' "${4:-?}" "$2" "$3" "$ERRS" "${LIMITS:-0}" "${REUSED:-0}" "$1"
   [ "$ERRS" -eq 0 ] || exit 1
   exit 0
 }
@@ -259,7 +272,12 @@ check_cells() {
     seen="$seen$key|"
     [ -n "$t" ] && [ "$t" != - ] || err "$f: cell $key has no target identity"
     case "$g" in *=*) ;; *) err "$f: cell $key has no image generation" ;; esac
-    case "$s" in observed) n=$((n + 1)) ;; blocked) ;; *) err "$f: cell $key status '$s'" ;; esac
+    case "$s" in
+      observed) n=$((n + 1)) ;;
+      blocked) ;;
+      failed) err "$f: cell $key failed (a failed cell is never green)" ;;
+      *) err "$f: cell $key status '$s'" ;;
+    esac
   done < <(awk -F '\t' '$1 == "cell"' "$f")
   CELLS="$n"
 }
@@ -383,8 +401,41 @@ check_entrypoints() {
   done
 }
 
+check_limits() {
+  # Sets LIMITS to the number of limit rows.
+  local f="$1" w c sc r n=0
+  while IFS="$TAB" read -r _ w c sc r; do
+    n=$((n + 1))
+    printf '%s' "$w" | grep -Eq '^[a-z][a-z0-9-]*$' || err "$f: limit '$w' is not a lower-case name"
+    printf '%s' "$sc" | grep -Eq '^scope=sub-plan-[0-9]+$' || err "$f: limit $w scope '$sc' is not scope=sub-plan-N"
+    [ -n "$r" ] || err "$f: limit $w ($c) gives no reason"
+    if [ "$c" != - ]; then
+      awk -F '\t' -v k="$c" '$1 == "cell" && $2 "/" $3 "/" $4 == k && $7 == "observed" { f = 1 } END { exit !f }' "$f" \
+        || err "$f: limit $w names $c, which is not an observed cell"
+    fi
+  done < <(awk -F '\t' '$1 == "limit"' "$f")
+  LIMITS="$n"
+}
+
+check_reuse() {
+  # Sets REUSED to the number of reuse rows.
+  local f="$1" c run sha n=0 seen='|' own
+  own="$(awk -F '\t' '$1 == "run_id" { print $2; exit }' "$f")"
+  while IFS="$TAB" read -r _ c run sha; do
+    n=$((n + 1))
+    awk -F '\t' -v k="$c" '$1 == "cell" && $2 "/" $3 "/" $4 == k && $7 == "observed" { f = 1 } END { exit !f }' "$f" \
+      || err "$f: reuse names $c, which is not an observed cell"
+    case "$seen" in *"|$c|"*) err "$f: cell $c reused twice" ;; esac
+    seen="$seen$c|"
+    printf '%s' "$run" | grep -Eq '^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$' || err "$f: reuse of $c names run '$run', not a run id"
+    [ "$run" != "$own" ] || err "$f: reuse of $c names this receipt's own run"
+    printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$' || err "$f: reuse of $c commit '$sha' is not a full commit id"
+  done < <(awk -F '\t' '$1 == "reuse"' "$f")
+  REUSED="$n"
+}
+
 check_requirements() {
-  local f="$1" m="$2" plats="$3" proxies="$4" p x h st v
+  local f="$1" m="$2" plats="$3" proxies="$4" pp="${5:-}" p x h st v
   if [ "$m" = all ]; then
     while IFS="$TAB" read -r p x h; do
       case "$p" in ''|'#'*) continue ;; esac
@@ -407,6 +458,12 @@ check_requirements() {
       awk -F '\t' -v v="$v" '$1 == "cell" && $3 == v && $7 == "observed" { f = 1 } END { exit !f }' "$f" \
         || err "$f: no observed $v cell"
     done
+  fi
+  if [ "$pp" = all ]; then
+    for p in linux macos; do for x in haproxy socat; do
+      awk -F '\t' -v p="$p" -v x="$x" '$1 == "cell" && $2 == p && $3 == x && $4 == "standard" && $7 == "observed" { f = 1 } END { exit !f }' "$f" \
+        || err "$f: no observed $p/$x/standard cell"
+    done; done
   fi
 }
 

@@ -99,6 +99,26 @@ t_route_backends_hold_only_their_provider() {
   assert_eq "$(th_provider_set 18533)" "$(th_backend_addrs route_quad9_exit)" "quad9-exit backend servers"
 }
 
+t_status_summary_reports_every_backend_each_interval() {
+  # BL-003 (Sub-plan 3 Task 2.3): one "backends ..." line per interval with
+  # the legacy servers, its sessions and every route backend's sessions, each
+  # field one word. NICE_DNS_SUMMARY_SECS=2 stands in for the 60 s default;
+  # the live controller-shadow group measures the real cadence.
+  local lines re
+  tp_setup tor-haproxy
+  tp_holder
+  tp_socks_start
+  tp_run haproxy -e NICE_DNS_SUMMARY_SECS=2 --entrypoint /usr/sbin/haproxy "$TP_IMG" -f /etc/haproxy/haproxy.cfg -db
+  tp_wait_listen 853 20 || fail "haproxy never listened on 853: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
+  sleep 7
+  lines="$(podman logs "$TP_CTR" 2>&1 | grep '^backends ')"
+  re='^backends primary=[A-Za-z_]+[^ ]* backup=[A-Za-z_]+[^ ]* sessions=[0-9]+ routes=cloudflare-onion/[0-9]+,cloudflare-exit/[0-9]+,quad9-exit/[0-9]+$'
+  [ "$(printf '%s\n' "$lines" | grep -c .)" -ge 2 ] || fail "at least two summary lines in 7 s at a 2 s interval; got: $lines"
+  assert_eq "" "$(printf '%s\n' "$lines" | grep -vE "$re")" "every summary line has the stable one-word-per-field shape (got: $lines)"
+  assert_match '^[1-9][0-9]*$' "$(grep -c 'NICE_DNS_SUMMARY_SECS' "$TP_SRC/status-summary.lua")" "the interval override is the image's own"
+  assert_match 'return 60$' "$(grep -E '^[[:space:]]*return 60$' "$TP_SRC/status-summary.lua")" "the default interval is 60 s"
+}
+
 t_each_route_reaches_only_its_provider() {
   local p i got
   tp_setup tor-haproxy

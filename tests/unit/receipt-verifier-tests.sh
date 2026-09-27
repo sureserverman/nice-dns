@@ -50,6 +50,10 @@ rv_artifact() {
     baseline:BL-TARGETS) printf 'coverage\t8 cells\n' ;;
     *) printf 'observed %s %s\n' "$sc" "$key" ;;
   esac >"$out"
+  # Every anchored literal content rule (^text$) of the manifest, so a rule
+  # added to a manifest is satisfied here without a hand-kept copy.
+  awk -F '\t' -v s="$sc" '$1 == "content" && $2 == s && $3 ~ /^\^[^][\\.*+?(){}|^$]*\$$/ {
+    print substr($3, 2, length($3) - 2) }' "$RV_MAN/$name.tsv" >>"$out"
 }
 
 rv_build() {
@@ -404,4 +408,107 @@ t_content_rules_keep_their_tabs() {
   assert_rc 1 "$RV_RC" "substring matches are not field matches"
   assert_match 'BL-RESTORED \(linux/haproxy/standard\).*no line matching' "$RV_OUT" "a stopped container is not restored evidence"
   assert_match 'BL-CONFIG \(linux/haproxy/standard\).*no line matching' "$RV_OUT" "^image<TAB> keeps its tab"
+}
+
+t_platform_proxies_requirement() {
+  # Sub-plan 3 close-out M3: --require-proxies all is satisfied by any
+  # platform having each proxy; the controller's representative gate needs
+  # each proxy on each platform (standard Pi-hole), so it asks for
+  # --require-platform-proxies all.
+  rv_build controller "$CASE_DIR/c"
+  rv "$CASE_DIR/c/receipt.tsv" --require-platform-proxies all
+  assert_rc 0 "$RV_RC" "every platform x proxy standard cell observed: $RV_OUT"
+  rv_edit "$CASE_DIR/c/receipt.tsv" '$1 == "cell" && $2 == "macos" && $3 == "socat" { next } $1 == "scenario" && $3 ~ /^macos\/socat\// { next } { print }'
+  rv "$CASE_DIR/c/receipt.tsv" --require-proxies all
+  assert_rc 0 "$RV_RC" "linux/socat still satisfies the cross-platform --require-proxies: $RV_OUT"
+  rv "$CASE_DIR/c/receipt.tsv" --require-platform-proxies all
+  assert_nonzero "$RV_RC" "macOS without socat fails the per-platform requirement"
+  assert_match 'macos/socat/standard' "$RV_OUT" "names the missing platform x proxy cell"
+}
+
+t_failed_cell_is_named_never_green() {
+  # M3: the controller receipt records a cell that did not pass every
+  # scenario as failed instead of dropping it; a failed cell never verifies.
+  rv_build controller "$CASE_DIR/c"
+  rv_edit "$CASE_DIR/c/receipt.tsv" '$1 == "cell" && $2 == "macos" && $3 == "socat" && $4 == "standard" { $7 = "failed" } $1 == "scenario" && $3 == "macos/socat/standard" { next } { print }'
+  rv "$CASE_DIR/c/receipt.tsv"
+  assert_nonzero "$RV_RC" "a failed cell never verifies"
+  assert_match 'cell macos/socat/standard failed' "$RV_OUT" "says the cell failed"
+}
+
+t_limit_rows_are_checked_and_counted() {
+  # M4: what a run did not prove is recorded as a limit with the sub-plan
+  # that owns it, never implied by a passing scenario.
+  rv_build controller "$CASE_DIR/c"
+  printf 'limit\troute-apply\t-\tscope=sub-plan-4\tno deployment mounts the route directory; switch-route was not applied live\n' >>"$CASE_DIR/c/receipt.tsv"
+  printf 'limit\tready-corroboration\tmacos/haproxy/standard\tscope=sub-plan-4\tthe Unbound image has no probe-route\n' >>"$CASE_DIR/c/receipt.tsv"
+  rv "$CASE_DIR/c/receipt.tsv"
+  assert_rc 0 "$RV_RC" "declared limits verify: $RV_OUT"
+  assert_match 'limits=2' "$RV_OUT" "the summary counts the limits"
+  cp "$CASE_DIR/c/receipt.tsv" "$CASE_DIR/orig.tsv"
+  printf 'limit\troute-apply\t-\tsub-plan-4\tno scope key\n' >>"$CASE_DIR/c/receipt.tsv"
+  rv "$CASE_DIR/c/receipt.tsv"
+  assert_nonzero "$RV_RC" "a limit without scope=sub-plan-N fails"
+  cp "$CASE_DIR/orig.tsv" "$CASE_DIR/c/receipt.tsv"
+  printf 'limit\tready-corroboration\tlinux/haproxy/nosuch\tscope=sub-plan-4\ttext\n' >>"$CASE_DIR/c/receipt.tsv"
+  rv "$CASE_DIR/c/receipt.tsv"
+  assert_nonzero "$RV_RC" "a limit naming a cell that is not observed fails"
+  cp "$CASE_DIR/orig.tsv" "$CASE_DIR/c/receipt.tsv"
+  printf 'limit\troute-apply\t-\tscope=sub-plan-4\t\n' >>"$CASE_DIR/c/receipt.tsv"
+  rv "$CASE_DIR/c/receipt.tsv"
+  assert_nonzero "$RV_RC" "a limit without a reason fails"
+}
+
+t_reuse_rows_are_checked_and_counted() {
+  # DEC-009 (user decision 2026-09-27): a gate may carry a cell that passed
+  # in an earlier run instead of repeating it. The receipt names each such
+  # cell, the run it came from and that run's nice-dns commit.
+  local sha
+  sha="$(git -C "$RV_SIB/nice-dns" rev-parse HEAD)"
+  rv_build controller "$CASE_DIR/c"
+  printf 'reuse\tlinux/haproxy/standard\t20260926T190619Z-bcd92da5\t%s\n' "$sha" >>"$CASE_DIR/c/receipt.tsv"
+  rv "$CASE_DIR/c/receipt.tsv"
+  assert_rc 0 "$RV_RC" "a reused observed cell verifies: $RV_OUT"
+  assert_match 'reused=1' "$RV_OUT" "the summary counts reused cells"
+  cp "$CASE_DIR/c/receipt.tsv" "$CASE_DIR/orig.tsv"
+  printf 'reuse\tlinux/haproxy/standard\t20260926T210648Z-e72d9762\t%s\n' "$sha" >>"$CASE_DIR/c/receipt.tsv"
+  rv "$CASE_DIR/c/receipt.tsv"
+  assert_nonzero "$RV_RC" "a cell reused twice fails"
+  cp "$CASE_DIR/orig.tsv" "$CASE_DIR/c/receipt.tsv"
+  printf 'reuse\tlinux/haproxy/nosuch\t20260926T190619Z-bcd92da5\t%s\n' "$sha" >>"$CASE_DIR/c/receipt.tsv"
+  rv "$CASE_DIR/c/receipt.tsv"
+  assert_nonzero "$RV_RC" "reusing a cell that is not observed fails"
+  cp "$CASE_DIR/orig.tsv" "$CASE_DIR/c/receipt.tsv"
+  printf 'reuse\tmacos/haproxy/standard\trun-test-controller\t%s\n' "$sha" >>"$CASE_DIR/c/receipt.tsv"
+  rv "$CASE_DIR/c/receipt.tsv"
+  assert_nonzero "$RV_RC" "a reuse must name another, well-formed run"
+  cp "$CASE_DIR/orig.tsv" "$CASE_DIR/c/receipt.tsv"
+  printf 'reuse\tmacos/haproxy/standard\t20260926T190619Z-bcd92da5\tabc\n' >>"$CASE_DIR/c/receipt.tsv"
+  rv "$CASE_DIR/c/receipt.tsv"
+  assert_nonzero "$RV_RC" "a reuse names the full commit it ran"
+}
+
+t_reused_cell_is_found_only_when_it_passed_everything() {
+  # cs_reuse_cell (tests/live/controller-lib.sh) picks an earlier run's cell
+  # only when that cell passed all six scenarios; a partly passed or failed
+  # cell is never carried, and a cell of this run is never replaced.
+  local r1="$CASE_DIR/runs/20260101T000000Z-aaaaaaaa" r2="$CASE_DIR/runs/20260102T000000Z-bbbbbbbb" c k out
+  for r in "$r1" "$r2"; do mkdir -p "$r/controller-active"; done
+  mkdir -p "$r1/controller-active/linux-haproxy-standard" "$r2/controller-active/linux-haproxy-standard" "$r2/controller-active/macos-socat-standard"
+  printf 'cell\tlinux/haproxy/standard\nnice_dns\t%s\n' "$(printf 'a%.0s' $(seq 40))" >"$r1/controller-active/linux-haproxy-standard/cell.tsv"
+  cp "$r1/controller-active/linux-haproxy-standard/cell.tsv" "$r2/controller-active/linux-haproxy-standard/cell.tsv"
+  printf 'cell\tmacos/haproxy/standard\n' >"$r2/controller-active/macos-socat-standard/cell.tsv"
+  for k in CT-PROBES CT-PRIMARY-ONLY CT-RECOVERY-ACK CT-CACHE-VS-UPSTREAM CT-RUNTIME-WEDGE CT-BRIDGES; do
+    printf '%s\tpass\tx.txt\n' "$k" >>"$r1/controller-active/linux-haproxy-standard/observations.tsv"
+  done
+  head -n 4 "$r1/controller-active/linux-haproxy-standard/observations.tsv" >"$r2/controller-active/linux-haproxy-standard/observations.tsv"
+  cp "$r1/controller-active/linux-haproxy-standard/observations.tsv" "$r2/controller-active/macos-socat-standard/observations.tsv"
+  ( . "$NICE_DNS_ROOT/tests/live/controller-lib.sh"
+    NICE_DNS_CELL_REUSE_RUNS="$r2 $r1"
+    assert_eq "$r1/controller-active/linux-haproxy-standard" "$(cs_reuse_cell linux/haproxy/standard)" "the run whose cell passed all six is used, not a later partial one"
+    assert_eq "" "$(cs_reuse_cell macos/socat/standard)" "a cell whose recorded key differs from its directory is refused"
+    assert_eq "" "$(cs_reuse_cell linux/socat/standard)" "a cell no run passed is not reused"
+    NICE_DNS_CELL_REUSE_RUNS="relative/run"
+    out="$(cs_reuse_cell linux/haproxy/standard 2>&1)"; assert_nonzero "$?" "a reuse run must be an absolute directory: $out"
+  ) || exit 1
 }

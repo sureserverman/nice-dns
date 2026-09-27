@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # nice-dns-health — periodic health-check for the nice-dns DNS chain.
 #
-# Single self-contained script: subcommands manage a 30-min systemd-user
-# timer (Linux) or LaunchAgent (macOS) that re-invokes this same script
-# with `run` to perform the checks. On any failure, a detailed diagnostic
-# dump is written next to the rolling log so the culprit can be tracked
-# down without re-running the failure scenario.
+# Subcommands manage a minutely systemd-user timer (Linux) or LaunchAgent
+# (macOS) that re-invokes the installed copy with `tick`: one controller pass
+# (observe, decide, act) under the state lock. The checks are the observations of lib/health.sh and the platform
+# adapters in lib/platform/ (read from ../lib next to this script in a
+# checkout; `install` copies them to an owned directory the installed copy
+# reads). On any failure, a detailed diagnostic dump is written next to the
+# rolling log so the culprit can be tracked down without re-running the
+# failure scenario.
 #
 # Quick start:
 #   ./health/nice-dns-health install      # set up + start the schedule
 #   nice-dns-health status                 # see schedule + last 5 results
 #   nice-dns-health run                    # run a check now
+#   nice-dns-health observe                # print the observations (read-only)
 #   nice-dns-health failures               # list recent failure dumps
 #   nice-dns-health stop                   # pause without uninstalling
 #   nice-dns-health start                  # resume
@@ -74,11 +78,24 @@ SYSTEMD_TIMER="$SCRIPT_NAME.timer"
 LAUNCHD_LABEL="org.nice-dns.health"
 LAUNCHD_DIR="$HOME/Library/LaunchAgents"
 LAUNCHD_PLIST="$LAUNCHD_DIR/$LAUNCHD_LABEL.plist"
+# The daily bridge refresh (Sub-plan 3 Task 2.2).
+SYSTEMD_BR_SVC="$SCRIPT_NAME-bridges.service"
+SYSTEMD_BR_TIMER="$SCRIPT_NAME-bridges.timer"
+LAUNCHD_BR_LABEL="org.nice-dns.health-bridges"
+LAUNCHD_BR_PLIST="$LAUNCHD_DIR/$LAUNCHD_BR_LABEL.plist"
 
-# Containers we expect to find. Tor variant is detected at check time
-# (haproxy or socat), so the array holds the constant names plus a
-# placeholder we replace.
-EXPECTED_FIXED=(pi-hole unbound)
+# Libraries (lib/health.sh, lib/platform/*.sh, routes/providers.tsv). A
+# checkout reads them from ../ next to this script; install_self rewrites the
+# layout line below to "installed" in the copy it installs, which then reads
+# the owned copy under HEALTH_LIB_ROOT_INSTALLED.
+ND_HEALTH_LAYOUT=checkout
+HEALTH_BUNDLE=
+if [ "$IS_LINUX" -eq 1 ]; then
+  HEALTH_LIB_ROOT_INSTALLED="${XDG_DATA_HOME:-$HOME/.local/share}/$SCRIPT_NAME"
+else
+  HEALTH_LIB_ROOT_INSTALLED="$HOME/Library/Application Support/$SCRIPT_NAME"
+fi
+HEALTH_LIB_FILES="lib/health.sh lib/state.sh lib/policy.sh lib/recovery.sh lib/platform/linux.sh lib/platform/macos.sh routes/providers.tsv"
 
 # ─────────────────────────────── Small helpers ──────────────────────────────────
 
@@ -113,10 +130,20 @@ detect_runtime() {
 
 detect_tor_variant() {
   # Returns "haproxy" or "socat" depending on which tor- container is up,
-  # or empty if neither.
-  local rt="$1" name
+  # or empty if neither. The platform adapter lists containers (Apple
+  # `container` has no `ps`); without the libraries, each OS's own listing.
+  local rt="$1" name names="" t
+  [ -n "$rt" ] || { echo ""; return; }
+  if declare -F nd_platform_runtime_list >/dev/null && t="$(mktemp -d "${TMPDIR:-/tmp}/$SCRIPT_NAME.XXXXXX")"; then
+    nd_platform_runtime_list "${ND_HEALTH_CMD_DEADLINE:-10}" "$t/running" && names="$(cat "$t/running")"
+    rm -rf "$t"
+  elif [ "$IS_LINUX" -eq 1 ]; then
+    names="$("$rt" ps --format '{{.Names}}' 2>/dev/null)"
+  else
+    names="$("$rt" ls 2>/dev/null | awk 'NR > 1 { print $1 }')"
+  fi
   for name in tor-haproxy tor-socat; do
-    if "$rt" ps --format '{{.Names}}' 2>/dev/null | grep -qxF "$name"; then
+    if printf '%s\n' "$names" | grep -qxF "$name"; then
       echo "${name#tor-}"
       return
     fi
@@ -124,99 +151,130 @@ detect_tor_variant() {
   echo ""
 }
 
-dig_first_a() {
-  # Cross-platform dig with hard-coded short timeouts so a hung Tor circuit
-  # can't stall the whole health check past the systemd/launchd budget.
-  dig @127.0.0.1 +short +time=5 +tries=2 "$1" 2>/dev/null | head -1
+# health_path_safe <path> <f|d>: a regular file or directory (not a
+# symlink) owned by this user or root and not writable by group or others.
+# Sets HEALTH_LIB_ERROR when not.
+health_path_safe() {
+  local p="$1" uid
+  uid="$(id -u)"
+  if [ -L "$p" ]; then HEALTH_LIB_ERROR="$p is a symlink"; return 1; fi
+  if { [ "$2" = d ] && [ ! -d "$p" ]; } || { [ "$2" = f ] && [ ! -f "$p" ]; }; then
+    HEALTH_LIB_ERROR="$p is missing"; return 1
+  fi
+  if [ -z "$(find "$p" -maxdepth 0 \( -user "$uid" -o -user 0 \) 2>/dev/null)" ]; then
+    HEALTH_LIB_ERROR="$p is not owned by uid $uid or root"; return 1
+  fi
+  if [ -n "$(find "$p" -maxdepth 0 \( -perm -0020 -o -perm -0002 \) 2>/dev/null)" ]; then
+    HEALTH_LIB_ERROR="$p is writable by group or others"; return 1
+  fi
+  return 0
+}
+
+# health_lib_root: where this copy reads its libraries: an installed copy
+# reads its own versioned bundle (HEALTH_BUNDLE, written at install).
+health_lib_root() {
+  if [ "$ND_HEALTH_LAYOUT" = installed ]; then
+    printf '%s\n' "$HEALTH_LIB_ROOT_INSTALLED/bundles/$HEALTH_BUNDLE"
+  else
+    (cd "$(dirname "$0")/.." 2>/dev/null && pwd) || printf '%s\n' "$(dirname "$0")/.."
+  fi
+}
+
+# load_health_libs: source lib/health.sh (it sources this platform's
+# adapter) after checking every directory and file on the way is safe to
+# source. Commands that do not observe never call it.
+load_health_libs() {
+  local root plat d f
+  [ -n "${HEALTH_LIBS_LOADED:-}" ] && return 0
+  HEALTH_LIB_ERROR=""
+  root="$(health_lib_root)"
+  if [ "$IS_LINUX" -eq 1 ]; then plat=linux; else plat=macos; fi
+  for d in "$root" "$root/lib" "$root/lib/platform" "$root/routes"; do
+    health_path_safe "$d" d || return 1
+  done
+  for f in lib/health.sh lib/state.sh lib/policy.sh lib/recovery.sh "lib/platform/$plat.sh" routes/providers.tsv; do
+    health_path_safe "$root/$f" f || return 1
+  done
+  ND_PLATFORM="$plat" ND_ROUTES_FILE="$root/routes/providers.tsv"
+  export ND_PLATFORM ND_ROUTES_FILE
+  # shellcheck source=lib/health.sh
+  . "$root/lib/health.sh" || { HEALTH_LIB_ERROR="$root/lib/health.sh failed to load"; return 1; }
+  # recovery.sh sources state.sh and policy.sh from the same directory.
+  # shellcheck source=lib/recovery.sh
+  . "$root/lib/recovery.sh" || { HEALTH_LIB_ERROR="$root/lib/recovery.sh failed to load"; return 1; }
+  HEALTH_LIBS_LOADED=1
 }
 
 # ─────────────────────────────── The check ─────────────────────────────────────
 
-# Fills two globals: FAILED_CHECKS (array of names), CHECK_DETAIL
-# (multiline string, what each check actually returned).
+# Fills FAILED_CHECKS (unhealthy observation names), INDETERMINATE_CHECKS
+# (observations that could not be made) and CHECK_DETAIL (multiline string,
+# what each observation returned) from lib/health.sh; HEALTH_OBS keeps the
+# raw records. chain-resolves is derived: no provider route answered an
+# authenticated probe and at least one failed. The local-cache observation
+# (an answer through Pi-hole, possibly cached) never counts as upstream.
 run_checks() {
   FAILED_CHECKS=()
+  INDETERMINATE_CHECKS=()
   CHECK_DETAIL=""
-  local rt tor_variant ip
+  HEALTH_OBS=""
+  local kind name verdict ms reason routes=0 route_ok=0 rbad=0
 
-  rt="$(detect_runtime)"
-  if [ -z "$rt" ]; then
-    FAILED_CHECKS+=("runtime-missing")
-    CHECK_DETAIL+="runtime-missing: no podman / container CLI on PATH"$'\n'
+  if ! load_health_libs; then
+    FAILED_CHECKS+=("health-libs")
+    CHECK_DETAIL+="FAIL health-libs: $HEALTH_LIB_ERROR"$'\n'
     return
   fi
-
-  # 1. /etc/resolv.conf points at 127.0.0.1.
-  if grep -qxF 'nameserver 127.0.0.1' /etc/resolv.conf 2>/dev/null; then
-    CHECK_DETAIL+="OK   resolv.conf: nameserver 127.0.0.1 present"$'\n'
-  else
-    FAILED_CHECKS+=("resolv.conf")
-    CHECK_DETAIL+="FAIL resolv.conf: 'nameserver 127.0.0.1' not the active line"$'\n'
-    CHECK_DETAIL+="     current contents:"$'\n'
-    CHECK_DETAIL+="$(sed 's/^/       /' /etc/resolv.conf 2>/dev/null || echo '       (unreadable)')"$'\n'
+  HEALTH_OBS="$(nd_health_observe)"
+  if ! printf '%s\n' "$HEALTH_OBS" | nd_health_validate 2>/dev/null; then
+    FAILED_CHECKS+=("health-observations")
+    CHECK_DETAIL+="FAIL health-observations: the observation output is not valid"$'\n'
+    return
   fi
-
-  # 2. Expected containers up. Tor variant is whichever was installed.
-  tor_variant="$(detect_tor_variant "$rt")"
-  local expected=("${EXPECTED_FIXED[@]}")
-  if [ -n "$tor_variant" ]; then
-    expected+=("tor-$tor_variant")
-  else
-    FAILED_CHECKS+=("tor-variant")
-    CHECK_DETAIL+="FAIL tor-variant: neither tor-haproxy nor tor-socat is running"$'\n'
-  fi
-  local missing=()
-  for n in "${expected[@]}"; do
-    if ! "$rt" ps --format '{{.Names}}' 2>/dev/null | grep -qxF "$n"; then
-      missing+=("$n")
-    fi
-  done
-  if [ ${#missing[@]} -eq 0 ]; then
-    CHECK_DETAIL+="OK   containers: ${expected[*]} all running"$'\n'
-  else
-    FAILED_CHECKS+=("containers")
-    CHECK_DETAIL+="FAIL containers: not running -> ${missing[*]}"$'\n'
-  fi
-
-  # 3. Self-resolve `pi.hole` — proves pihole-FTL is alive on :53. The
-  # answer can be 0.0.0.0 (no eth0 IP, e.g. slirp4netns) or a real IP;
-  # either is fine, what matters is that we get exactly one A record.
-  ip="$(dig_first_a pi.hole)"
-  if [ -n "$ip" ] && expr "$ip" : '[0-9.][0-9.]*$' >/dev/null; then
-    CHECK_DETAIL+="OK   pi.hole resolves -> $ip"$'\n'
-  else
-    FAILED_CHECKS+=("ftl-alive")
-    CHECK_DETAIL+="FAIL ftl-alive: dig @127.0.0.1 pi.hole returned: '$ip'"$'\n'
-  fi
-
-  # 4. Real-world domain resolves through the chain.
-  ip="$(dig_first_a cloudflare.com)"
-  if [ -n "$ip" ] \
-      && expr "$ip" : '[0-9.][0-9.]*$' >/dev/null \
-      && [ "$ip" != "0.0.0.0" ]; then
-    CHECK_DETAIL+="OK   cloudflare.com resolves -> $ip"$'\n'
-  else
+  while IFS=$'\t' read -r kind name verdict ms reason; do
+    [ "$kind" = obs ] || continue
+    case "$name" in route:*) routes=$((routes + 1)) ;; esac
+    case "$verdict" in
+      healthy)
+        CHECK_DETAIL+="OK   $name: $reason (${ms} ms)"$'\n'
+        case "$name" in route:*) route_ok=$((route_ok + 1)) ;; esac ;;
+      unhealthy)
+        FAILED_CHECKS+=("$name")
+        CHECK_DETAIL+="FAIL $name: $reason (${ms} ms)"$'\n'
+        case "$name" in route:*) rbad=$((rbad + 1)) ;; esac ;;
+      *)
+        INDETERMINATE_CHECKS+=("$name")
+        CHECK_DETAIL+="???  $name: $reason (${ms} ms)"$'\n' ;;
+    esac
+  done <<EOF
+$HEALTH_OBS
+EOF
+  if [ "$routes" -gt 0 ] && [ "$route_ok" -eq 0 ] && [ "$rbad" -gt 0 ]; then
     FAILED_CHECKS+=("chain-resolves")
-    CHECK_DETAIL+="FAIL chain-resolves: dig @127.0.0.1 cloudflare.com -> '$ip' (expected real A record)"$'\n'
-  fi
-
-  # 5. Blocklist is active.
-  ip="$(dig_first_a doubleclick.net)"
-  if [ "$ip" = "0.0.0.0" ]; then
-    CHECK_DETAIL+="OK   doubleclick.net sinkholed -> 0.0.0.0"$'\n'
-  else
-    FAILED_CHECKS+=("gravity-blocks")
-    CHECK_DETAIL+="FAIL gravity-blocks: dig @127.0.0.1 doubleclick.net -> '$ip' (expected 0.0.0.0)"$'\n'
+    CHECK_DETAIL+="FAIL chain-resolves: no provider route answered ($rbad of $routes unhealthy); a local-cache answer is not upstream health"$'\n'
   fi
 }
 
+# redact_bridges: diagnostics never carry bridge material (PRIV-NO-SECRETS):
+# certificates, fingerprints and bridge addresses are replaced.
+redact_bridges() {
+  sed -E -e 's#cert=[A-Za-z0-9+/=]+#cert=<redacted>#g' \
+    -e 's/[0-9A-Fa-f]{40}/<fingerprint>/g' \
+    -e 's/(obfs4|[Bb]ridge[^ ]*( [^ ]+)? at) [0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]+/\1 <address>/g'
+}
+
 # Detailed dump invoked when run_checks reports any failure. Writes one
-# self-contained .log next to the rolling log; older dumps beyond
-# FAILURE_KEEP are pruned.
+# self-contained .log next to the rolling log (every line through
+# redact_bridges); older dumps beyond FAILURE_KEEP are pruned.
 write_failure_dump() {
-  local now="$1" tor_variant rt
+  local now="$1" tor_variant rt dns_addr
   rt="$(detect_runtime)"
   tor_variant="$(detect_tor_variant "${rt:-}")"
+  # Pi-hole's client endpoint: the pod loopback on Linux, its dnsnet
+  # address on macOS (the platform adapter's, when the libraries loaded).
+  if declare -F nd_platform_dns_addr >/dev/null; then dns_addr="$(nd_platform_dns_addr)"
+  elif [ "$IS_LINUX" -eq 1 ]; then dns_addr=127.0.0.1
+  else dns_addr=172.31.240.250; fi
   local f
   f="$LOG_DIR/failure-$(date '+%Y%m%d-%H%M%S').log"
   {
@@ -224,35 +282,52 @@ write_failure_dump() {
     echo "Platform:       $PLATFORM"
     echo "Runtime:        ${rt:-(missing)}"
     echo "Tor variant:    ${tor_variant:-(none detected)}"
-    echo "Failed checks:  ${FAILED_CHECKS[*]}"
+    echo "Failed checks:  ${FAILED_CHECKS[*]:-}"
+    echo "Indeterminate:  ${INDETERMINATE_CHECKS[*]:-}"
     echo
     echo "=== Per-check detail ==="
     printf '%s' "$CHECK_DETAIL"
+    echo
+    echo "=== Observations (lib/health.sh) ==="
+    printf '%s\n' "$HEALTH_OBS" | sed 's/^/  /'
     echo
     echo "=== /etc/resolv.conf ==="
     cat /etc/resolv.conf 2>&1 | sed 's/^/  /'
     echo
     if [ -n "${rt:-}" ]; then
-      echo "=== $rt ps -a ==="
-      "$rt" ps -a 2>&1 | sed 's/^/  /'
+      if [ "$IS_LINUX" -eq 1 ]; then
+        echo "=== $rt ps -a ==="
+        "$rt" ps -a 2>&1 | sed 's/^/  /'
+      else
+        echo "=== $rt ls -a ==="
+        "$rt" ls -a 2>&1 | sed 's/^/  /'
+      fi
       echo
       local containers=(pi-hole unbound)
       [ -n "$tor_variant" ] && containers+=("tor-$tor_variant")
       for c in "${containers[@]}"; do
-        echo "=== $rt inspect $c (state) ==="
-        "$rt" inspect "$c" --format \
-          '  status={{.State.Status}} health={{if .State.Healthcheck}}{{.State.Healthcheck.Status}}{{else}}none{{end}} restarts={{.RestartCount}} pid={{.State.Pid}}' 2>&1 \
-          | sed 's/^/  /'
-        echo "=== $rt logs --tail 50 $c ==="
-        "$rt" logs --tail 50 "$c" 2>&1 | sed 's/^/  /'
+        if [ "$IS_LINUX" -eq 1 ]; then
+          echo "=== $rt inspect $c (state) ==="
+          "$rt" inspect "$c" --format \
+            '  status={{.State.Status}} health={{if .State.Healthcheck}}{{.State.Healthcheck.Status}}{{else}}none{{end}} restarts={{.RestartCount}} pid={{.State.Pid}}' 2>&1 \
+            | sed 's/^/  /'
+          echo "=== $rt logs --tail 50 $c ==="
+          "$rt" logs --tail 50 "$c" 2>&1 | sed 's/^/  /'
+        else
+          # Apple container: the state is in the ls table above; its inspect
+          # JSON carries the proxy's BRIDGE environment, so it is not dumped.
+          # Its logs take -n (there is no --tail).
+          echo "=== $rt logs -n 50 $c ==="
+          "$rt" logs -n 50 "$c" 2>&1 | sed 's/^/  /'
+        fi
         echo
       done
     fi
-    echo "=== dig +trace @127.0.0.1 cloudflare.com (timeout 8s) ==="
-    dig @127.0.0.1 +time=4 +tries=2 cloudflare.com 2>&1 | sed 's/^/  /' | head -40
+    echo "=== dig @$dns_addr cloudflare.com (timeout 8s) ==="
+    dig "@$dns_addr" +time=4 +tries=2 cloudflare.com 2>&1 | sed 's/^/  /' | head -40
     echo
-    echo "=== dig @127.0.0.1 doubleclick.net ==="
-    dig @127.0.0.1 +time=4 +tries=1 doubleclick.net 2>&1 | sed 's/^/  /' | head -20
+    echo "=== dig @$dns_addr doubleclick.net ==="
+    dig "@$dns_addr" +time=4 +tries=1 doubleclick.net 2>&1 | sed 's/^/  /' | head -20
     echo
     if [ "$IS_LINUX" -eq 1 ]; then
       echo "=== systemctl --user state ==="
@@ -286,7 +361,7 @@ write_failure_dump() {
         echo
       done < <(networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | grep -v '^\*')
     fi
-  } > "$f" 2>&1
+  } 2>&1 | redact_bridges > "$f"
 
   # Prune older dumps beyond FAILURE_KEEP.
   # shellcheck disable=SC2012
@@ -314,201 +389,273 @@ rotate_roll_log_if_needed() {
 cmd_run() {
   mkdir -p "$LOG_DIR"
   rotate_roll_log_if_needed
+  # As in tick: the slow bridge re-evaluation comes before the observations.
+  if load_health_libs && nd_state_init 2>/dev/null; then refresh_bridges_on_outage "$(ts)"; fi
   run_checks
   local now; now="$(ts)"
-  if [ ${#FAILED_CHECKS[@]} -eq 0 ]; then
+  if [ ${#FAILED_CHECKS[@]} -eq 0 ] && [ ${#INDETERMINATE_CHECKS[@]} -eq 0 ]; then
     log_to_file "$now OK  all checks passed"
-    maybe_clear_full_outage
+    run_controller_pass "$now"
     return 0
   fi
   local dump
   dump="$(write_failure_dump "$now")"
-  log_to_file "$now FAIL [${FAILED_CHECKS[*]}] -> $dump"
-  maybe_trigger_chain_restart "$now"
+  if [ ${#FAILED_CHECKS[@]} -eq 0 ]; then
+    # Nothing is known to be broken, and nothing is known to work: keep any
+    # outage window as it is and take no action.
+    log_to_file "$now INDETERMINATE [${INDETERMINATE_CHECKS[*]}] -> $dump"
+    run_controller_pass "$now"
+    return 1
+  fi
+  log_to_file "$now FAIL [${FAILED_CHECKS[*]}]${INDETERMINATE_CHECKS[*]:+ indeterminate=(${INDETERMINATE_CHECKS[*]})} -> $dump"
+  run_controller_pass "$now"
   return 1
 }
 
-# ───────────── Full-chain outage detection + graceful tor restart ─────────────
+# ───────────── Recovery: one controller pass per run ─────────────
 #
-# When chain-resolves has been failing for more than RESTART_GRACE_SECS,
-# we try to recover. The recovery path is the same on Linux and macOS:
+# Since Sub-plan 3's Stage 1 gate, `run` keeps no outage timer of its own.
+# After logging, it hands its observations to the same controller pass as
+# `tick` (lib/recovery.sh nd_recovery_tick active), so one policy
+# (lib/policy.sh) with one state, one lock, one cooldown and one restart cap
+# decides every action, whichever command a scheduler calls:
+#   * a full outage restarts Tor after the startup allowance plus a 5-minute
+#     grace, observed in the same pass, outside a 5-minute cooldown, at most
+#     twice per outage (then it escalates); a usable route prevents it;
+#   * the restart is request_recovery (the proxy image's acknowledged
+#     restart) and, when that is not acknowledged, one service restart
+#     (nd_recovery_restart_tor);
+#   * readiness is recorded on a later pass.
+# Before the pass, and outside the lock (an evaluation is slow), the bridges
+# are re-evaluated once an observed outage has outlasted the grace
+# (refresh_bridges_on_outage); a changed set is adopted by the service
+# restart.
+# NICE_DNS_RESTART_GRACE_SECS still sets the grace (ND_POLICY_GRACE_S).
 #
-#   1. fetch-bridges --force            (host-side, refresh obfs4 list)
-#   2. <runtime> exec tor-haproxy \     (in-container, graceful restart)
-#        touch /tmp/tor-restart-flag
-#
-# The container's start.sh watches that flag, kills the tor child, and
-# respawns it. haproxy + the latency-aware probe keep running across
-# the restart — when the new tor finishes bootstrap, haproxy's rise/fall
-# loop notices and routes client traffic back to primary on its own.
-# Strictly better than a full container restart: no haproxy bounce, no
-# admin-socket churn, no probe-primary reset.
-#
-# Fallback: if the in-container exec fails (container missing, runtime
-# unavailable), drop to the per-platform service-level restart so the
-# recovery still happens somehow.
-#
-# Critical invariant: this fires ONLY when `chain-resolves` fails —
-# i.e., `dig @127.0.0.1 cloudflare.com` returns no real A record.
-# That requires ALL haproxy backends to be simultaneously broken:
-# primary (.onion), backup (1.1.1.1 via Tor exit), and fallback (9.9.9.9
-# via Tor exit) all failing means Tor itself isn't routing. A primary-
-# only outage does NOT trigger this — backup keeps the chain resolving
-# and the check passes.
-
-FULL_OUTAGE_FILE="$LOG_DIR/full-outage-since"
-# Override via env for testing: NICE_DNS_RESTART_GRACE_SECS=10 nice-dns-health run
-RESTART_GRACE_SECS="${NICE_DNS_RESTART_GRACE_SECS:-300}"
-
-maybe_clear_full_outage() {
-  [ -f "$FULL_OUTAGE_FILE" ] && rm -f "$FULL_OUTAGE_FILE"
+# The scheduled pass has no environment of its own, so the policy timers can
+# also come from $HEALTH_LIB_ROOT_INSTALLED/tunables.tsv (data, never
+# sourced): lines "ND_POLICY_STARTUP_S|ND_POLICY_GRACE_S|ND_POLICY_COOLDOWN_S|
+# ND_POLICY_LADDER_S <TAB> 1..86400", in a regular file that health_path_safe accepts (owned by
+# this user or root, not group- or world-writable). Anything else refuses the whole file (the defaults stay)
+# and says so on stderr. The environment wins over the file. The live gate
+# sets 30 s here in its extra configurations (Sub-plan 3 Task 2.3).
+load_tunables() {
+  local f="$HEALTH_LIB_ROOT_INSTALLED/tunables.tsv" bad k v
+  [ -e "$f" ] || [ -L "$f" ] || return 0
+  if ! health_path_safe "$f" f; then echo "$SCRIPT_NAME: tunables refused: $HEALTH_LIB_ERROR; ignored" >&2; return 0; fi
+  bad="$(awk -F '\t' 'NF == 0 || /^#/ { next }
+    NF != 2 || $1 !~ /^ND_POLICY_(STARTUP|GRACE|COOLDOWN|LADDER)_S$/ || $2 !~ /^[1-9][0-9]{0,4}$/ || $2 > 86400 { print NR; exit }' "$f")"
+  if [ -n "$bad" ]; then echo "$SCRIPT_NAME: tunables $f line $bad is not an allowed timer; ignored" >&2; return 0; fi
+  while IFS="$(printf '\t')" read -r k v; do
+    case "$k" in
+      ND_POLICY_STARTUP_S) [ -n "${ND_POLICY_STARTUP_S:-}" ] || ND_POLICY_STARTUP_S="$v" ;;
+      ND_POLICY_GRACE_S) [ -n "${ND_POLICY_GRACE_S:-}${NICE_DNS_RESTART_GRACE_SECS:-}" ] || ND_POLICY_GRACE_S="$v" ;;
+      ND_POLICY_COOLDOWN_S) [ -n "${ND_POLICY_COOLDOWN_S:-}" ] || ND_POLICY_COOLDOWN_S="$v" ;;
+      ND_POLICY_LADDER_S) [ -n "${ND_POLICY_LADDER_S:-}" ] || ND_POLICY_LADDER_S="$v" ;;
+    esac
+  done <"$f"
+  export ND_POLICY_STARTUP_S ND_POLICY_COOLDOWN_S ND_POLICY_LADDER_S 2>/dev/null
+  return 0
 }
+load_tunables
 
-# Detect which tor variant container is installed. Prefer running, fall
-# back to the installed quadlet (Linux) — on macOS, only the running
-# state matters because the LaunchAgent doesn't carry a per-variant file.
-detect_installed_tor_variant() {
-  local rt tv
-  rt="$(detect_runtime)"
-  tv="$(detect_tor_variant "${rt:-}")"
-  if [ -z "$tv" ]; then
-    local q="${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd"
-    for v in haproxy socat; do
-      if [ -f "$q/tor-$v.container" ]; then tv="$v"; break; fi
-    done
-  fi
-  echo "$tv"
-}
+ND_POLICY_GRACE_S="${ND_POLICY_GRACE_S:-${NICE_DNS_RESTART_GRACE_SECS:-300}}"
+export ND_POLICY_GRACE_S
 
-# Graceful path: ask the running tor-haproxy container to recycle its
-# tor child by touching the restart-flag file. Returns 0 on successful
-# trigger, non-zero on failure to reach the container.
-trigger_graceful_tor_restart() {
-  local rt cname
-  rt="$(detect_runtime)"
-  if [ -z "$rt" ]; then return 1; fi
-  cname="tor-$(detect_tor_variant "$rt")"
-  case "$cname" in tor-) return 1 ;; esac
-  "$rt" exec "$cname" touch /tmp/tor-restart-flag >/dev/null 2>&1
-}
-
-# Platform fallback if the graceful path is unreachable (container down,
-# runtime broken). On Linux this is systemctl --user; on macOS we
-# kickstart the LaunchAgent which re-runs mac/start-container.sh and
-# its own rebuild path.
-trigger_service_restart_fallback() {
-  local tor_variant
-  tor_variant="$(detect_installed_tor_variant)"
-  if [ "$IS_LINUX" -eq 1 ]; then
-    if [ -n "$tor_variant" ]; then
-      systemctl --user restart "tor-$tor_variant.service" >>"$ROLL_LOG" 2>&1
-      return $?
-    fi
-    return 1
-  fi
-  # macOS path: kick the LaunchAgent. -k stops first; the agent's plist
-  # has RunAtLoad so it re-runs start-container.sh on the next load.
-  local uid
-  uid="$(id -u)"
-  launchctl kickstart -k "gui/$uid/org.nice-dns.start-container" >>"$ROLL_LOG" 2>&1
-}
-
-maybe_trigger_chain_restart() {
-  local now_human="$1"
-
-  # Only react to the "no real DNS answer" failure mode — other failures
-  # (gravity-blocks, ftl-alive, runtime-missing) want different action.
-  case " ${FAILED_CHECKS[*]} " in
-    *" chain-resolves "*) : ;;
-    *) maybe_clear_full_outage; return 0 ;;
-  esac
-
-  local now since age
+# refresh_bridges_on_outage <now_human>: once an observed full outage has
+# outlasted the grace, re-evaluate the bridges (lib/recovery.sh
+# nd_bridges_refresh: the image's bridge-eval, applied only under its rules),
+# at most once per ND_BRIDGE_OUTAGE_REFRESH_S (3600), before the pass and
+# outside the state lock. A changed set is then adopted by the pass's service
+# restart. Nothing here writes bridges.env directly: until Task 2.2 this
+# called the raw Moat fetcher, which replaced an evaluated set with an
+# unranked pool.
+refresh_bridges_on_outage() {
+  local since now last f t c v out
+  since="$(nd_state_load 2>/dev/null | awk -F '\t' '$1 == "outage_since" { print $2 }')"
+  case "$since" in ''|-|*[!0-9]*) return 0 ;; esac
   now="$(date +%s)"
-  if [ ! -f "$FULL_OUTAGE_FILE" ]; then
-    echo "$now" > "$FULL_OUTAGE_FILE"
-    log_to_file "$now_human full-outage detected, starting grace window"
+  [ $((now - since)) -ge "$ND_POLICY_GRACE_S" ] || return 0
+  f="$(nd_platform_state_dir)/bridges.last"
+  last="$(cat "$f" 2>/dev/null)"; case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  [ $((now - last)) -ge "${ND_BRIDGE_OUTAGE_REFRESH_S:-3600}" ] || return 0
+  (umask 077 && printf '%s\n' "$now" >"$f")
+  t="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-br.XXXXXX")" || return 0
+  c="$(nd_platform_proxy_container "${ND_RECOVERY_CMD_DEADLINE:-15}" "$t" 2>/dev/null)"; v="${c#tor-}"
+  rm -rf "${t:?}"
+  case "$v" in haproxy|socat) ;; *) return 0 ;; esac
+  out="$(nd_bridges_refresh "$v" 2>&1)"
+  log_to_file "$1 BRIDGES outage refresh $(printf '%s\n' "$out" | awk -F '\t' '$1 == "result" { print "result=" $2 }')"
+}
+
+run_controller_pass() {
+  local now_human="$1" o out
+  # No libraries or no valid observations: nothing to decide on.
+  if [ -z "${HEALTH_LIBS_LOADED:-}" ] || [ -z "$HEALTH_OBS" ] || ! printf '%s\n' "$HEALTH_OBS" | nd_health_validate 2>/dev/null; then
+    log_to_file "$now_human controller skipped: no valid observations"
     return 0
   fi
-  since="$(cat "$FULL_OUTAGE_FILE" 2>/dev/null)"
-  case "$since" in ''|*[!0-9]*) since="$now" ;; esac
-  age=$((now - since))
-
-  if [ "$age" -lt "$RESTART_GRACE_SECS" ]; then
-    log_to_file "$now_human full-outage ${age}s < grace ${RESTART_GRACE_SECS}s, holding"
-    return 0
-  fi
-
-  log_to_file "$now_human full-outage ${age}s >= grace ${RESTART_GRACE_SECS}s, refetching bridges + recycling tor"
-
-  # Refetch bridges via the user-installed helper. Best-effort: if Moat
-  # is down too, the previous bridges.env stays. Bridges fetched here
-  # take effect on the NEXT full container/service restart — the
-  # graceful in-container path below reuses the bridges already in the
-  # tor process's environment.
-  if [ -x "$HOME/.local/bin/nice-dns-fetch-bridges" ]; then
-    "$HOME/.local/bin/nice-dns-fetch-bridges" --force >>"$ROLL_LOG" 2>&1 || \
-      log_to_file "$now_human fetch-bridges --force failed (continuing)"
-  fi
-
-  # Graceful in-container restart first.
-  if trigger_graceful_tor_restart; then
-    log_to_file "$now_human triggered graceful in-container tor restart"
-  else
-    log_to_file "$now_human graceful path unreachable, falling back to service restart"
-    if trigger_service_restart_fallback; then
-      log_to_file "$now_human service-level restart issued"
-    else
-      log_to_file "$now_human service-level restart FAILED — nothing more to try"
-    fi
-  fi
-
-  # Clear the outage marker so we don't restart again on the very next
-  # tick if the chain hasn't recovered yet — give it at least one full
-  # grace window after the restart.
-  rm -f "$FULL_OUTAGE_FILE"
+  o="$(mktemp "${TMPDIR:-/tmp}/nice-dns-obs.XXXXXX")" || return 0
+  printf '%s\n' "$HEALTH_OBS" >"$o"
+  out="$(nd_recovery_tick active "$o" 2>&1)"
+  rm -f "$o"
+  log_to_file "$now_human controller $(printf '%s\n' "$out" | awk -F '\t' 'NF == 2 { printf "%s%s=%s", s, $1, $2; s = " " }')"
 }
 
 # ─────────────────────────────── install / uninstall ───────────────────────────
+#
+# Sub-plan 3 Task 2.1 (ARCH-01, ARCH-07). `install` builds a versioned bundle
+# (the libraries, the route table and this CLI) under
+# $HEALTH_LIB_ROOT_INSTALLED/bundles/<content id>/, keeps the previous bundle
+# for rollback and prunes older ones. The installed entrypoint
+# ($INSTALLED_BIN) names its bundle, so it never reads the checkout. Before
+# anything scheduled is replaced, the interpreter must run and the new
+# entrypoint's `self-check` must load its libraries; otherwise the working
+# install stays as it was. Then the schedules are written:
+#   Linux  nice-dns-health.service runs `<bash> <entrypoint> tick`, bounded by
+#          TimeoutStartSec (inside the state lock's lease); the timer is
+#          OnCalendar=minutely, AccuracySec=5s, Persistent=true: calendar
+#          timers catch up after suspend, monotonic ones pause (systemd.timer).
+#   macOS  the org.nice-dns.health agent runs `/bin/bash <entrypoint> tick`
+#          with an empty StartCalendarInterval (every minute; launchd starts
+#          it on wake, whereas StartInterval misses intervals asleep) and
+#          RunAtLoad.
+# The same unit and label replace the old 30-minute `run` schedule, so there
+# is never a second mutating schedule. install.tsv records what the install
+# owns; `uninstall` removes exactly that (plus the logs and the controller's
+# state), never a neighbour's file. Every removal names its variables with
+# ${VAR:?}, so an unset path aborts instead of widening the removal.
+
+INSTALL_RECEIPT="$HEALTH_LIB_ROOT_INSTALLED/install.tsv"
+# Kept within the state lock's 600 s lease (lib/state.sh).
+TICK_TIMEOUT_SECS=540
+
+health_sha() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi
+}
+
+# health_interpreter: the Bash the schedules run, checked by running it.
+health_interpreter() {
+  local b="${ND_HEALTH_INTERPRETER:-}"
+  if [ -z "$b" ]; then
+    if [ "$IS_LINUX" -eq 1 ]; then b="$(command -v bash 2>/dev/null)"; else b=/bin/bash; fi
+  fi
+  case "$b" in /*) ;; *) echo "$SCRIPT_NAME: interpreter '$b' is not an absolute path" >&2; return 1 ;; esac
+  if [ ! -x "$b" ] || ! "$b" -c 'exit 0' 2>/dev/null; then
+    echo "$SCRIPT_NAME: cannot install: the interpreter $b is missing or does not run" >&2; return 1
+  fi
+  printf '%s\n' "$b"
+}
+
+# receipt_get <key>: the values of a receipt key (data, never sourced).
+receipt_get() {
+  [ -f "$INSTALL_RECEIPT" ] && [ ! -L "$INSTALL_RECEIPT" ] || return 1
+  awk -F '\t' -v k="$1" 'NR == 1 && $0 != "schema\tnice-dns-health-install/1" { exit 1 } $1 == k { print $2 }' "$INSTALL_RECEIPT"
+}
+
+# build_bundle: stage the bundle from this checkout; print its id.
+build_bundle() {
+  local src dst f id stage
+  src="$(health_lib_root)"
+  for f in $HEALTH_LIB_FILES health/nice-dns-health; do
+    if [ ! -f "$src/$f" ] || [ -L "$src/$f" ]; then
+      echo "$SCRIPT_NAME: cannot install: $src/$f is missing or a symlink" >&2; return 1
+    fi
+  done
+  id="$(for f in $HEALTH_LIB_FILES health/nice-dns-health; do printf '%s\n' "$f"; health_sha <"$src/$f"; done | health_sha | cut -c1-16)"
+  case "$id" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;; *) echo "$SCRIPT_NAME: cannot compute the bundle id" >&2; return 1 ;; esac
+  dst="${HEALTH_LIB_ROOT_INSTALLED:?}/bundles"
+  if [ -L "$HEALTH_LIB_ROOT_INSTALLED" ] || [ -L "$dst" ]; then echo "$SCRIPT_NAME: refusing to install into a symlinked $dst" >&2; return 1; fi
+  (umask 022 && mkdir -p "$dst") || return 1
+  chmod 0755 "$HEALTH_LIB_ROOT_INSTALLED" "$dst"
+  if [ ! -d "$dst/$id" ]; then
+    stage="$dst/.new.$$"
+    rm -rf "${stage:?}"
+    (umask 022 && mkdir -p "$stage/lib/platform" "$stage/routes" "$stage/health") || return 1
+    for f in $HEALTH_LIB_FILES health/nice-dns-health; do
+      if ! { cp "$src/$f" "$stage/$f" && chmod 0644 "$stage/$f"; }; then rm -rf "${stage:?}"; return 1; fi
+    done
+    chmod 0755 "$stage" "$stage/lib" "$stage/lib/platform" "$stage/routes" "$stage/health"
+    mv "$stage" "$dst/$id" || { rm -rf "${stage:?}"; return 1; }
+  fi
+  printf '%s\n' "$id"
+}
+
+# stage_entrypoint <id>: the installed CLI naming bundle <id>, at $INSTALLED_BIN.new.
+stage_entrypoint() {
+  mkdir -p "$(dirname "$INSTALLED_BIN")" || return 1
+  sed -e 's/^ND_HEALTH_LAYOUT=checkout$/ND_HEALTH_LAYOUT=installed/' -e "s/^HEALTH_BUNDLE=\$/HEALTH_BUNDLE=$1/" \
+    "$(health_lib_root)/health/nice-dns-health" >"$INSTALLED_BIN.new" && chmod 755 "$INSTALLED_BIN.new"
+}
 
 write_systemd_units() {
-  mkdir -p "$SYSTEMD_UNIT_DIR"
-  cat > "$SYSTEMD_UNIT_DIR/$SYSTEMD_SVC" <<EOF
+  local interp="$1" mode="$2" d="$SYSTEMD_UNIT_DIR" arg=""
+  [ "$mode" = shadow ] && arg=" --shadow"
+  mkdir -p "$d" || return 1
+  cat >"$d/.$SYSTEMD_SVC.new" <<EOF || return 1
 [Unit]
-Description=nice-dns chain health check (one-shot)
+Description=nice-dns controller pass (observe, decide, act)
 After=default.target
 
 [Service]
 Type=oneshot
-ExecStart=$INSTALLED_BIN run
-# Don't tie SuccessExitStatus to anything — a non-zero exit (= a failed
-# health check) is a normal outcome we already log. Keeping ExitType
-# default means systemd records the failure in the timer's history,
-# which is helpful for \`systemctl --user list-timers\`.
+ExecStart=$interp $INSTALLED_BIN tick$arg
+# One pass is bounded well inside the controller lock's 600 s lease.
+TimeoutStartSec=$TICK_TIMEOUT_SECS
 EOF
-  cat > "$SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER" <<EOF
+  cat >"$d/.$SYSTEMD_TIMER.new" <<EOF || return 1
 [Unit]
-Description=nice-dns chain health check (every 30 min)
+Description=nice-dns controller pass every minute
 
 [Timer]
-# OnBootSec gives the stack ~2 min to come up after a reboot before the
-# first check fires; OnUnitActiveSec spaces subsequent runs 30 min apart.
-OnBootSec=2min
-OnUnitActiveSec=30min
-# Run a missed check at most ~30s late (e.g. after suspend/resume) so we
-# don't get a stampede of catch-up runs.
-AccuracySec=30s
+# Calendar timers catch up once after suspend; monotonic ones
+# (OnUnitActiveSec) pause while suspended (systemd.timer(5)).
+OnCalendar=minutely
+AccuracySec=5s
 Persistent=true
 Unit=$SYSTEMD_SVC
 
 [Install]
 WantedBy=default.target
 EOF
+  if [ "$mode" = shadow ]; then
+    mv -f "$d/.$SYSTEMD_SVC.new" "$d/$SYSTEMD_SVC" && mv -f "$d/.$SYSTEMD_TIMER.new" "$d/$SYSTEMD_TIMER"
+    return
+  fi
+  cat >"$d/.$SYSTEMD_BR_SVC.new" <<EOF || return 1
+[Unit]
+Description=nice-dns daily bridge refresh (evaluate, then adopt at the next proxy start)
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=$interp $INSTALLED_BIN bridges-refresh
+# The evaluation takes about 150 s; it holds no controller lock.
+TimeoutStartSec=420
+EOF
+  cat >"$d/.$SYSTEMD_BR_TIMER.new" <<EOF || return 1
+[Unit]
+Description=nice-dns daily bridge refresh
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+Unit=$SYSTEMD_BR_SVC
+
+[Install]
+WantedBy=default.target
+EOF
+  mv -f "$d/.$SYSTEMD_SVC.new" "$d/$SYSTEMD_SVC" && mv -f "$d/.$SYSTEMD_TIMER.new" "$d/$SYSTEMD_TIMER" \
+    && mv -f "$d/.$SYSTEMD_BR_SVC.new" "$d/$SYSTEMD_BR_SVC" && mv -f "$d/.$SYSTEMD_BR_TIMER.new" "$d/$SYSTEMD_BR_TIMER"
 }
 
 write_launchd_plist() {
-  mkdir -p "$LAUNCHD_DIR" "$LOG_DIR"
-  cat > "$LAUNCHD_PLIST" <<EOF
+  local interp="$1" mode="$2" arg=""
+  [ "$mode" = shadow ] && arg="
+      <string>--shadow</string>"
+  mkdir -p "$LAUNCHD_DIR" "$LOG_DIR" || return 1
+  cat >"$LAUNCHD_PLIST.new" <<EOF || return 1
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -517,17 +664,17 @@ write_launchd_plist() {
     <string>$LAUNCHD_LABEL</string>
     <key>ProgramArguments</key>
     <array>
+      <string>$interp</string>
       <string>$INSTALLED_BIN</string>
-      <string>run</string>
+      <string>tick</string>$arg
     </array>
-    <key>StartInterval</key>
-    <integer>1800</integer>
+    <!-- Every minute. An empty calendar interval is all wildcards, and
+         launchd starts a calendar job on wake; StartInterval would miss
+         the intervals that pass asleep (launchd.plist(5)). -->
+    <key>StartCalendarInterval</key>
+    <dict/>
     <key>RunAtLoad</key>
     <true/>
-    <!-- launchd's stdout/stderr capture is per-job; the script writes
-         its own logs to ~/Library/Logs/nice-dns-health/, but anything
-         that escapes (e.g. a syntax error before the rolling-log code
-         runs) still lands here so it's not lost. -->
     <key>StandardOutPath</key>
     <string>$LOG_DIR/launchd.out.log</string>
     <key>StandardErrorPath</key>
@@ -540,77 +687,167 @@ write_launchd_plist() {
   </dict>
 </plist>
 EOF
-}
-
-# Copy this script to ~/.local/bin so the timer/LaunchAgent points at a
-# stable path even if the nice-dns checkout moves or is deleted.
-install_self() {
-  local self
-  self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-  mkdir -p "$(dirname "$INSTALLED_BIN")"
-  if [ "$self" != "$INSTALLED_BIN" ]; then
-    cp "$self" "$INSTALLED_BIN"
-  fi
-  chmod 755 "$INSTALLED_BIN"
+  chmod 644 "$LAUNCHD_PLIST.new" && mv -f "$LAUNCHD_PLIST.new" "$LAUNCHD_PLIST" || return 1
+  [ "$mode" = shadow ] && return 0
+  cat >"$LAUNCHD_BR_PLIST.new" <<EOF || return 1
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>$LAUNCHD_BR_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>$interp</string>
+      <string>$INSTALLED_BIN</string>
+      <string>bridges-refresh</string>
+    </array>
+    <!-- Daily at 04:17; a run missed asleep starts on wake. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+      <key>Hour</key>
+      <integer>4</integer>
+      <key>Minute</key>
+      <integer>17</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>$LOG_DIR/bridges.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>$LOG_DIR/bridges.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+  </dict>
+</plist>
+EOF
+  chmod 644 "$LAUNCHD_BR_PLIST.new" && mv -f "$LAUNCHD_BR_PLIST.new" "$LAUNCHD_BR_PLIST"
 }
 
 cmd_install() {
-  install_self
+  local interp id prev units old f mode=active
+  case "${1:-}" in
+    --shadow) mode=shadow ;;
+    '') ;;
+    *) echo "$SCRIPT_NAME: install takes only --shadow" >&2; return 2 ;;
+  esac
+  [ "$ND_HEALTH_LAYOUT" = checkout ] || { echo "$SCRIPT_NAME: run install from a nice-dns checkout (health/nice-dns-health install)" >&2; return 1; }
+  interp="$(health_interpreter)" || return 1
+  id="$(build_bundle)" || { echo "$SCRIPT_NAME: install failed: the bundle could not be built" >&2; return 1; }
+  if ! stage_entrypoint "$id"; then
+    rm -f "${INSTALLED_BIN:?}.new"; echo "$SCRIPT_NAME: install failed: the entrypoint could not be written" >&2; return 1
+  fi
+  # The replacement must be ready before anything scheduled changes.
+  if ! "$interp" "$INSTALLED_BIN.new" self-check >/dev/null 2>"$INSTALLED_BIN.new.err"; then
+    echo "$SCRIPT_NAME: install failed: the new bundle $id does not load: $(head -n 1 "$INSTALLED_BIN.new.err")" >&2
+    rm -f "${INSTALLED_BIN:?}.new" "${INSTALLED_BIN:?}.new.err"
+    [ "$(receipt_get bundle 2>/dev/null)" = "$id" ] || rm -rf "${HEALTH_LIB_ROOT_INSTALLED:?}/bundles/${id:?}"
+    echo "$SCRIPT_NAME: the installed controller and its schedule are unchanged" >&2
+    return 1
+  fi
+  rm -f "${INSTALLED_BIN:?}.new.err"
+  mv -f "$INSTALLED_BIN.new" "$INSTALLED_BIN" || return 1
+  old="$(receipt_get bundle 2>/dev/null)"
+  prev="${old:--}"; [ "$prev" = "$id" ] && prev="$(receipt_get previous 2>/dev/null)"; prev="${prev:--}"
   if [ "$IS_LINUX" -eq 1 ]; then
-    write_systemd_units
+    write_systemd_units "$interp" "$mode" || { echo "$SCRIPT_NAME: install failed writing the systemd units" >&2; return 1; }
+    units="$SYSTEMD_UNIT_DIR/$SYSTEMD_SVC $SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER"
+    if [ "$mode" = shadow ]; then
+      # Observation only: an earlier active install's bridge refresh goes.
+      if [ -e "$SYSTEMD_UNIT_DIR/$SYSTEMD_BR_TIMER" ]; then
+        systemctl --user disable --now "$SYSTEMD_BR_TIMER" 2>/dev/null || true
+        uninstall_owned "$SYSTEMD_UNIT_DIR/$SYSTEMD_BR_TIMER"; uninstall_owned "$SYSTEMD_UNIT_DIR/$SYSTEMD_BR_SVC"
+      fi
+    else
+      units="$units $SYSTEMD_UNIT_DIR/$SYSTEMD_BR_SVC $SYSTEMD_UNIT_DIR/$SYSTEMD_BR_TIMER"
+    fi
     systemctl --user daemon-reload
     systemctl --user enable --now "$SYSTEMD_TIMER"
-    echo "Installed."
-    echo "  Script:  $INSTALLED_BIN"
-    echo "  Timer:   $SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER"
-    echo "  Logs:    $LOG_DIR/"
-    if [ "$INSTALLED_BIN" != "$INSTALLED_BIN_PRIMARY" ]; then
-      echo
-      echo "Note: $(dirname "$INSTALLED_BIN_PRIMARY") was not user-writable, so the"
-      echo "      script lives at the path above. To call it as plain"
-      echo "      '$SCRIPT_NAME' from your shell, either:"
-      echo "        sudo chown -R \$USER:\$USER $(dirname "$INSTALLED_BIN_PRIMARY")"
-      echo "        cp $INSTALLED_BIN $INSTALLED_BIN_PRIMARY"
-      echo "      or add an alias / PATH entry pointing at $INSTALLED_BIN."
-    fi
-    echo
-    systemctl --user list-timers --no-pager | head -2
-    systemctl --user list-timers --no-pager | grep -F "$SYSTEMD_TIMER" || true
+    [ "$mode" = shadow ] || systemctl --user enable --now "$SYSTEMD_BR_TIMER"
   else
-    write_launchd_plist
+    write_launchd_plist "$interp" "$mode" || { echo "$SCRIPT_NAME: install failed writing the LaunchAgent" >&2; return 1; }
+    units="$LAUNCHD_PLIST"
     # Reload to pick up edits even if the agent was already loaded.
     launchctl unload "$LAUNCHD_PLIST" 2>/dev/null || true
     launchctl load -w "$LAUNCHD_PLIST"
-    echo "Installed."
-    echo "  Script:       $INSTALLED_BIN"
-    echo "  LaunchAgent:  $LAUNCHD_PLIST"
-    echo "  Logs:         $LOG_DIR/"
-    if [ "$INSTALLED_BIN" != "$INSTALLED_BIN_PRIMARY" ]; then
-      echo
-      echo "Note: $(dirname "$INSTALLED_BIN_PRIMARY") was not user-writable, so the"
-      echo "      script lives at the path above. Add an alias or symlink to"
-      echo "      run it as plain '$SCRIPT_NAME' from your shell."
+    if [ "$mode" = shadow ]; then
+      if [ -e "$LAUNCHD_BR_PLIST" ]; then
+        launchctl unload "$LAUNCHD_BR_PLIST" 2>/dev/null || true
+        uninstall_owned "$LAUNCHD_BR_PLIST"
+      fi
+    else
+      units="$units $LAUNCHD_BR_PLIST"
+      launchctl unload "$LAUNCHD_BR_PLIST" 2>/dev/null || true
+      launchctl load -w "$LAUNCHD_BR_PLIST"
     fi
+  fi
+  { printf 'schema\tnice-dns-health-install/1\nbundle\t%s\nprevious\t%s\nentrypoint\t%s\ninterpreter\t%s\nmode\t%s\n' "$id" "$prev" "$INSTALLED_BIN" "$interp" "$mode"
+    for f in $units; do printf 'schedule\t%s\n' "$f"; done; } >"$INSTALL_RECEIPT.new" && mv -f "$INSTALL_RECEIPT.new" "$INSTALL_RECEIPT"
+  # Keep the current and the previous bundle; remove the rest.
+  for f in "${HEALTH_LIB_ROOT_INSTALLED:?}/bundles"/*; do
+    [ -d "$f" ] || continue
+    case "$(basename "$f")" in "$id"|"$prev") ;; *) rm -rf "${f:?}" ;; esac
+  done
+  echo "Installed."
+  echo "  Entrypoint: $INSTALLED_BIN"
+  echo "  Bundle:     $HEALTH_LIB_ROOT_INSTALLED/bundles/$id (previous: $prev)"
+  if [ "$mode" = shadow ]; then
+    echo "  Schedule:   $units (every minute: $SCRIPT_NAME tick --shadow; records, never acts)"
+  else
+    echo "  Schedule:   $units (every minute: $SCRIPT_NAME tick)"
+  fi
+  echo "  Logs:       $LOG_DIR/"
+  if [ "$INSTALLED_BIN" != "$INSTALLED_BIN_PRIMARY" ]; then
     echo
-    launchctl list | grep -F "$LAUNCHD_LABEL" || true
+    echo "Note: $(dirname "$INSTALLED_BIN_PRIMARY") was not user-writable, so the"
+    echo "      entrypoint lives at the path above. Add an alias or PATH entry to"
+    echo "      run it as plain '$SCRIPT_NAME'."
   fi
 }
 
+# self-check: the libraries this copy would run load (no stack contact).
+cmd_self_check() {
+  local f
+  if ! load_health_libs; then echo "$SCRIPT_NAME: $HEALTH_LIB_ERROR" >&2; return 1; fi
+  for f in nd_health_observe nd_policy_decide nd_state_lock nd_recovery_tick; do
+    declare -F "$f" >/dev/null || { echo "$SCRIPT_NAME: $f is missing from the libraries" >&2; return 1; }
+  done
+  echo "ok $(health_lib_root)"
+}
+
+# uninstall_owned <path>: remove <path> only when it is one of the fixed
+# paths this command installs.
+uninstall_owned() {
+  case "$1" in
+    "${SYSTEMD_UNIT_DIR:?}/${SYSTEMD_SVC:?}"|"${SYSTEMD_UNIT_DIR:?}/${SYSTEMD_TIMER:?}"|"${LAUNCHD_PLIST:?}"|"${INSTALLED_BIN_PRIMARY:?}"|"${INSTALLED_BIN_FALLBACK:?}"|\
+    "${SYSTEMD_UNIT_DIR:?}/${SYSTEMD_BR_SVC:?}"|"${SYSTEMD_UNIT_DIR:?}/${SYSTEMD_BR_TIMER:?}"|"${LAUNCHD_BR_PLIST:?}")
+      rm -f "${1:?}" ;;
+  esac
+}
+
 cmd_uninstall() {
+  local f own
   if [ "$IS_LINUX" -eq 1 ]; then
-    systemctl --user disable --now "$SYSTEMD_TIMER" 2>/dev/null || true
-    systemctl --user stop "$SYSTEMD_SVC" 2>/dev/null || true
-    rm -f "$SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER" "$SYSTEMD_UNIT_DIR/$SYSTEMD_SVC"
-    systemctl --user daemon-reload 2>/dev/null || true
+    systemctl --user disable --now "$SYSTEMD_TIMER" "$SYSTEMD_BR_TIMER" 2>/dev/null || true
+    systemctl --user stop "$SYSTEMD_SVC" "$SYSTEMD_BR_SVC" 2>/dev/null || true
   else
     launchctl unload "$LAUNCHD_PLIST" 2>/dev/null || true
-    rm -f "$LAUNCHD_PLIST"
+    launchctl unload "$LAUNCHD_BR_PLIST" 2>/dev/null || true
   fi
-  # Remove both possible script locations — survives the case where the
-  # user moved it from the fallback dir to PATH after install, or vice
-  # versa.
-  rm -f "$INSTALLED_BIN_PRIMARY" "$INSTALLED_BIN_FALLBACK"
-  rm -rf "$LOG_DIR"
+  if own="$(receipt_get schedule 2>/dev/null)" && [ -n "$own" ]; then
+    # Exactly what the install recorded, nothing else in those directories.
+    for f in $own "$(receipt_get entrypoint)"; do uninstall_owned "$f"; done
+  else
+    # An install from before the receipt: its fixed paths.
+    for f in "$SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER" "$SYSTEMD_UNIT_DIR/$SYSTEMD_SVC" "$LAUNCHD_PLIST" "$INSTALLED_BIN_PRIMARY" "$INSTALLED_BIN_FALLBACK" \
+             "$SYSTEMD_UNIT_DIR/$SYSTEMD_BR_TIMER" "$SYSTEMD_UNIT_DIR/$SYSTEMD_BR_SVC" "$LAUNCHD_BR_PLIST"; do
+      uninstall_owned "$f"
+    done
+  fi
+  if [ "$IS_LINUX" -eq 1 ]; then systemctl --user daemon-reload 2>/dev/null || true; fi
+  if load_health_libs 2>/dev/null; then f="$(nd_platform_state_dir)" && rm -rf "${f:?}"; fi
+  rm -rf "${HEALTH_LIB_ROOT_INSTALLED:?}" "${LOG_DIR:?}"
   echo "Uninstalled."
 }
 
@@ -637,6 +874,10 @@ cmd_stop() {
 }
 
 cmd_status() {
+  local mode
+  # A receipt from before modes existed is an active install.
+  if mode="$(receipt_get mode 2>/dev/null)"; then echo "Mode: ${mode:-active}"; else echo "Mode: not installed"; fi
+  echo
   if [ "$IS_LINUX" -eq 1 ]; then
     echo "=== Timer ==="
     systemctl --user list-timers --all --no-pager 2>&1 | grep -E "NEXT|$SYSTEMD_TIMER" || true
@@ -689,20 +930,99 @@ cmd_failures() {
   echo "(re-run with: $SCRIPT_NAME failures --last  to print the most recent dump)"
 }
 
+# Read-only observation (ARCH-03 shadow mode): print the validated records
+# of lib/health.sh; nothing is logged, restarted or written.
+cmd_observe() {
+  local out
+  if ! load_health_libs; then
+    echo "$SCRIPT_NAME: not loading the health libraries: $HEALTH_LIB_ERROR" >&2
+    return 2
+  fi
+  out="$(nd_health_observe)"
+  if ! printf '%s\n' "$out" | nd_health_validate; then
+    echo "$SCRIPT_NAME: the observation output is not valid" >&2
+    return 3
+  fi
+  printf '%s\n' "$out"
+}
+
+# tick [--shadow]: one controller pass (lib/recovery.sh nd_recovery_tick):
+# observe, decide under the state lock, act (or, with --shadow, only record
+# what it would do, in a separate shadow state), commit. The schedules still
+# call `run`; Sub-plan 3 Task 2.1 moves them to `tick`.
+cmd_tick() {
+  local mode=active o out rc
+  case "${1:-}" in
+    --shadow) mode=shadow ;;
+    '') ;;
+    *) echo "$SCRIPT_NAME: tick takes only --shadow" >&2; return 2 ;;
+  esac
+  if ! load_health_libs; then
+    echo "$SCRIPT_NAME: not loading the health libraries: $HEALTH_LIB_ERROR" >&2
+    return 2
+  fi
+  mkdir -p "$LOG_DIR"
+  rotate_roll_log_if_needed
+  # The outage re-evaluation of the bridges takes minutes: it runs first, so
+  # the pass decides on observations taken after it.
+  if [ "$mode" = active ] && nd_state_init 2>/dev/null; then refresh_bridges_on_outage "$(ts)"; fi
+  o="$(mktemp "${TMPDIR:-/tmp}/nice-dns-obs.XXXXXX")" || return 2
+  nd_health_observe >"$o"
+  if ! nd_health_validate <"$o"; then
+    rm -f "$o"; echo "$SCRIPT_NAME: the observation output is not valid" >&2; return 3
+  fi
+  out="$(nd_recovery_tick "$mode" "$o")"; rc=$?
+  rm -f "$o"
+  log_to_file "$(ts) TICK $mode $(printf '%s\n' "$out" | awk -F '\t' '{ printf "%s%s=%s", s, $1, $2; s = " " }')"
+  printf '%s\n' "$out"
+  return "$rc"
+}
+
+# bridges-refresh: evaluate the bridge pool with the proxy image's
+# bridge-eval and adopt a changed set at the proxy's next start
+# (lib/recovery.sh nd_bridges_refresh; the daily schedule calls it).
+cmd_bridges_refresh() {
+  local out rc v t c
+  if ! load_health_libs; then echo "$SCRIPT_NAME: not loading the health libraries: $HEALTH_LIB_ERROR" >&2; return 2; fi
+  mkdir -p "$LOG_DIR"
+  nd_state_init || return 2
+  t="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-br.XXXXXX")" || return 2
+  c="$(nd_platform_proxy_container "${ND_RECOVERY_CMD_DEADLINE:-15}" "$t" 2>/dev/null)"; v="${c#tor-}"
+  rm -rf "${t:?}"
+  case "$v" in haproxy|socat) ;; *) log_to_file "$(ts) BRIDGES no proxy variant found; nothing refreshed"; echo "$SCRIPT_NAME: no proxy variant found" >&2; return 2 ;; esac
+  out="$(nd_bridges_refresh "$v" 2>&1)"; rc=$?
+  log_to_file "$(ts) BRIDGES $(printf '%s\n' "$out" | awk -F '\t' '$1 == "result" { print "result=" $2 }')"
+  printf '%s\n' "$out"
+  return "$rc"
+}
+
 # ─────────────────────────────── usage / dispatch ──────────────────────────────
 
 usage() {
   cat <<EOF
 Usage: $SCRIPT_NAME <command>
 
-  install     Set up the schedule (every 30 min) and start it.
-              Linux: systemd --user timer.
-              macOS: launchd LaunchAgent (StartInterval=1800).
-  uninstall   Tear down the schedule and remove the script + logs.
+  install [--shadow]
+              Install the versioned bundle and run \`tick\` every minute.
+              --shadow runs \`tick --shadow\` instead (observation only: it
+              records what it would do) and schedules no bridge refresh;
+              a later plain install activates the same schedule in place.
+              Linux: systemd --user timer (OnCalendar=minutely).
+              macOS: launchd LaunchAgent (StartCalendarInterval, every minute).
+  self-check  Check that this copy's libraries load (no stack contact).
+  bridges-refresh
+              Evaluate the bridge pool (the proxy image's bridge-eval) and
+              adopt a changed set at the proxy's next start (daily schedule).
+  uninstall   Remove the schedule, bundle, entrypoint, logs and controller state
+              that install recorded, and nothing else.
   start       (Re)start the timer / LaunchAgent.
   stop        Pause the timer / unload the LaunchAgent.
   status      Show schedule state + last 5 log entries.
   run         Run a health check now (also called by the timer).
+  observe     Print the observations as TSV (read-only: no log, no action).
+  tick        One controller pass: observe, decide (lib/policy.sh) and act
+              with acknowledged recovery (lib/recovery.sh). --shadow records
+              the decision in a separate shadow state and never acts.
   logs        Print the rolling log (one line per run).
   failures    List failure dumps. Add --last to print the most recent.
 
@@ -710,12 +1030,19 @@ Logs:
   Linux: \$XDG_STATE_HOME/$SCRIPT_NAME or ~/.local/state/$SCRIPT_NAME/
   macOS: ~/Library/Logs/$SCRIPT_NAME/
 
-What it checks:
-  1. /etc/resolv.conf still names 127.0.0.1
-  2. pi-hole, unbound, and tor-{haproxy|socat} containers are running
-  3. dig @127.0.0.1 pi.hole returns an A record (FTL alive)
-  4. dig @127.0.0.1 cloudflare.com returns a real A record (chain works)
-  5. dig @127.0.0.1 doubleclick.net returns 0.0.0.0 (gravity blocks)
+What it checks (lib/health.sh; Pi-hole is 127.0.0.1 on Linux and
+172.31.240.250 on macOS):
+  runtime        the runtime CLI answers; pi-hole, unbound and
+                 tor-{haproxy|socat} are running
+  dns-owner      the host resolves through nice-dns (Linux: resolv.conf
+                 names only 127.0.0.1; macOS: every enabled network service
+                 and scutil's resolver #1 use 172.31.240.250)
+  local-service  pi.hole has an A record (FTL alive)
+  filtering      doubleclick.net is sinkholed to 0.0.0.0
+  local-cache    Pi-hole answers cloudflare.com (may be cached; not upstream)
+  route:<id>     each route in routes/providers.tsv answers an authenticated
+                 probe; chain-resolves fails when none does
+Results are healthy, unhealthy or indeterminate (could not be observed).
 EOF
 }
 
@@ -729,6 +1056,10 @@ main() {
     stop)       cmd_stop "$@" ;;
     status)     cmd_status "$@" ;;
     run)        cmd_run "$@" ;;
+    observe)    cmd_observe "$@" ;;
+    tick)       cmd_tick "$@" ;;
+    self-check) cmd_self_check "$@" ;;
+    bridges-refresh) cmd_bridges_refresh "$@" ;;
     logs)       cmd_logs "$@" ;;
     failures)   cmd_failures "$@" ;;
     -h|--help|help|"") usage ;;

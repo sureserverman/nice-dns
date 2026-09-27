@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # nice-dns source inventory (sub-plan 01, Task 1.1).
 #
-# Usage: bash tests/inventory.sh <baseline|transport> [--out DIR]
+# Usage: bash tests/inventory.sh <baseline|transport|controller> [--out DIR]
 #   (the label names the sub-plan taking the inventory; both record the same)
 #
 # Records, for nice-dns and its four sibling repositories (tor-haproxy,
@@ -36,7 +36,7 @@ GIT_OPTIONAL_LOCKS=0
 export GIT_OPTIONAL_LOCKS
 
 inv_err() { printf 'inventory.sh: %s\n' "$*" >&2; }
-inv_usage() { inv_err "usage: inventory.sh <baseline|transport> [--out DIR]"; }
+inv_usage() { inv_err "usage: inventory.sh <baseline|transport|controller> [--out DIR]"; }
 
 inv_inside_checkout() {
   case "$1/" in "$INV_ROOT"/*|"$INV_ROOT_LOGICAL"/*) return 0 ;; esac
@@ -147,7 +147,7 @@ main() {
   local mode="${1:-}" out="" phys base rc=0 r
   [ $# -gt 0 ] && shift
   case "$mode" in
-    baseline|transport) ;;
+    baseline|transport|controller) ;;
     -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; return 0 ;;
     *) inv_usage; return 2 ;;
   esac
