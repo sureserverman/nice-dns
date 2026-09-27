@@ -365,3 +365,190 @@ t_owned_file_lists_agree() {
   # shellcheck disable=SC2016  # literal $ in patterns
   assert_ne "" "$(sed -n '/^OWNED_FILES=(/,/^)/p' "$NICE_DNS_ROOT/deb/custom-dns-deb" | grep -c '\$R/')" "the list is read"
 }
+
+# ─────────────────────────── Stage 1 gate, round 1 ─────────────────────────
+
+# A restore that cannot finish changes nothing it has not finished: Linux
+# puts resolv.conf back first (while NetworkManager is still held off it) or
+# stops with the host still coherently pinned; macOS attempts every service.
+# The record stays for a retry either way.
+t_restore_is_all_or_nothing() {
+  (
+    local rec
+    dt_world install-deb file
+    dt_helper linux snapshot; dt_helper linux pin
+    mkdir -p "$FAKE_ROOT/etc/NetworkManager/conf.d"; printf '[main]\ndns=none\n' >"$FAKE_ROOT/etc/NetworkManager/conf.d/90-nice-dns.conf"
+    rec="$(dt_receipt linux)"
+    rm -f "$(dirname "$rec")/resolv.conf.orig"
+    dt_helper linux restore
+    assert_nonzero "$DT_RC" "linux: a restore without the recorded copy fails: $DT_OUT"
+    assert_eq 'nameserver 127.0.0.1' "$(cat "$FAKE_ROOT/etc/resolv.conf")" "linux: resolv.conf stays pinned, never missing"
+    assert_file "$FAKE_ROOT/etc/NetworkManager/conf.d/90-nice-dns.conf" "linux: the NetworkManager hold stays with it"
+    assert_file "$rec" "linux: the record stays"
+    assert_no_path "$FAKE_ROOT/etc/resolv.conf.nice-dns-new" "linux: no half-written file is left"
+  ) || exit 1
+  (
+    dt_world install-deb resolved
+    dt_helper linux snapshot; dt_helper linux pin
+    chmod 555 "$FAKE_ROOT/etc"
+    dt_helper linux restore
+    chmod 755 "$FAKE_ROOT/etc"
+    assert_nonzero "$DT_RC" "linux: an unwritable /etc fails the restore: $DT_OUT"
+    assert_eq 'nameserver 127.0.0.1' "$(cat "$FAKE_ROOT/etc/resolv.conf")" "linux: resolv.conf stays pinned, never missing"
+    assert_file "$(dt_receipt linux)" "linux: the record stays"
+    dt_helper linux restore
+    assert_rc 0 "$DT_RC" "linux: the retry restores: $DT_OUT"
+    assert_eq ../run/systemd/resolve/stub-resolv.conf "$(readlink "$FAKE_ROOT/etc/resolv.conf")" "linux: the symlink is back"
+  ) || exit 1
+  (
+    dt_world install-mac fresh
+    dt_helper macos snapshot; dt_helper macos post
+    printf '^networksetup -setdnsservers Ethernet\n' >"$FAKE/fail"
+    dt_helper macos restore
+    rm -f "$FAKE/fail"
+    assert_nonzero "$DT_RC" "macos: a failing service fails the restore: $DT_OUT"
+    assert_eq 192.168.1.1 "$(cat "$FAKE_ROOT/.netsvc/dns/Wi-Fi")" "macos: the other services are still restored"
+    assert_eq "$DT_PIN_MAC" "$(cat "$FAKE_ROOT/.netsvc/dns/Ethernet")" "macos: the failed one still carries the pin"
+    assert_file "$(dt_receipt macos)" "macos: the record stays"
+    dt_helper macos restore
+    assert_rc 0 "$DT_RC" "macos: the retry restores: $DT_OUT"
+    assert_eq '9.9.9.9 149.112.112.112' "$(tr '\n' ' ' <"$FAKE_ROOT/.netsvc/dns/Ethernet" | sed 's/ $//')" "macos: and the failed service is back"
+  ) || exit 1
+}
+
+# An install or uninstall whose DNS restore failed says so and fails; it never
+# reports host DNS as given back. The uninstall still removes the rest.
+t_incomplete_dns_restore_is_reported() {
+  local ep
+  ip_select
+  for ep in $IP_EPS; do
+    (
+      local plat
+      plat="$(ip_platform "$ep")"
+      # Linux: a plain resolv.conf, whose recorded copy the restore needs.
+      if [ "$plat" = linux ]; then dt_world "$ep" file; else dt_world "$ep" fresh; fi
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: $IP_OUT"
+      if [ "$plat" = linux ]; then rm -f "$(dirname "$(dt_receipt linux)")/resolv.conf.orig"
+      else printf '^networksetup -setdnsservers Ethernet\n' >"$FAKE/fail"; fi
+      ip_install "$ep" uninstall
+      assert_nonzero "$IP_RC" "$ep: the uninstall fails: $IP_OUT"
+      assert_match 'NOT given back' "$IP_OUT" "$ep: and says host DNS was not given back"
+      assert_not_match 'nice-dns uninstalled' "$IP_OUT" "$ep: it does not claim success"
+      assert_no_path "$IP_HOME/.local/bin/nice-dns-health" "$ep: the rest of the uninstall still ran"
+      assert_file "$(dt_receipt "$plat")" "$ep: the record stays for the retry"
+    ) || exit 1
+    (
+      local plat h
+      plat="$(ip_platform "$ep")"
+      dt_world "$ep" "$(dt_fresh_state "$ep")"
+      # A first install that fails after its pin (the pin check), whose
+      # DNS restore then fails too (the helper call itself fails).
+      if [ "$plat" = linux ]; then h=custom-dns-deb; else h='start-container-root\.sh'; fi
+      printf '^sudo bash [^ ]*/%s status$\n^sudo bash [^ ]*/%s restore$\n' "$h" "$h" >"$FAKE/fail"
+      ip_install "$ep"
+      rm -f "$FAKE/fail"
+      assert_nonzero "$IP_RC" "$ep: $IP_OUT"
+      assert_match 'host DNS was NOT given back' "$IP_OUT" "$ep: the rollback says DNS was not given back"
+      assert_not_match 'host DNS is as it was' "$IP_OUT" "$ep: and does not claim it"
+      assert_match "$(printf 'status\trolled-back-dns-not-restored')" "$(cat "$IP_STATE"/generations/*/prepare.tsv)" "$ep: the manifest records it"
+    ) || exit 1
+  done
+}
+
+# The record is taken inside the rollback window: an interrupt right after it
+# is rolled back (the unused record discarded), never a false "another owner".
+t_record_is_taken_inside_the_rollback_window() {
+  local f
+  for f in nd_install_linux_activate nd_install_macos_activate; do
+    assert_eq 1 "$(sed -n "/^$f() {/,/^}/p" "$NICE_DNS_ROOT/lib/install.sh" | awk '/_nd_inst_begin_interruption/ && !b { b = NR } /_nd_inst_dns_helper snapshot/ && !s { s = NR } END { print (b && s && b < s) ? 1 : 0 }')" "$f: the rollback is armed before the record is taken"
+  done
+}
+
+# NetworkManager's dns=dnsmasq is overridden by the owned drop-in, never by
+# editing NetworkManager.conf; a failed install and an uninstall remove it.
+t_dnsmasq_is_overridden_by_an_owned_drop_in() {
+  local ep
+  ip_select
+  assert_ne "" "$IP_EPS" "an entrypoint is selected (the case applies to some of them only)"
+  for ep in $IP_EPS; do
+    [ "$(ip_platform "$ep")" = linux ] || continue
+    (
+      local conf
+      dt_world "$ep" resolved
+      mkdir -p "$FAKE_ROOT/etc/NetworkManager"
+      printf '[main]\nplugins=ifupdown,keyfile\ndns=dnsmasq\n' >"$FAKE_ROOT/etc/NetworkManager/NetworkManager.conf"
+      conf="$(cat "$FAKE_ROOT/etc/NetworkManager/NetworkManager.conf")"
+      : >"$FAKE/never_ready"
+      ip_install "$ep"
+      assert_nonzero "$IP_RC" "$ep: the failed first install: $IP_OUT"
+      assert_eq 1 "$(( $(ip_first "$FAKE_LOG" '^sudo tee [^ ]*/etc/NetworkManager/conf\.d/90-nice-dns\.conf$') < $(ip_first "$FAKE_LOG" '^persistent-podman\.sh ') ))" "$ep: dnsmasq is held off by the drop-in before the stack starts:
+$(cat -n "$FAKE_LOG")"
+      assert_eq "" "$(grep -E '^sudo sed .*NetworkManager\.conf' "$FAKE_LOG")" "$ep: no edit of NetworkManager.conf is attempted"
+      assert_eq "$conf" "$(cat "$FAKE_ROOT/etc/NetworkManager/NetworkManager.conf")" "$ep: NetworkManager.conf is never edited"
+      assert_no_path "$FAKE_ROOT/etc/NetworkManager/conf.d/90-nice-dns.conf" "$ep: the rollback removes the drop-in"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: install: $IP_OUT"
+      assert_eq '[main]
+dns=none' "$(cat "$FAKE_ROOT/etc/NetworkManager/conf.d/90-nice-dns.conf")" "$ep: the owned drop-in overrides dnsmasq"
+      assert_eq "$conf" "$(cat "$FAKE_ROOT/etc/NetworkManager/NetworkManager.conf")" "$ep: NetworkManager.conf untouched"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep: uninstall: $IP_OUT"
+      assert_no_path "$FAKE_ROOT/etc/NetworkManager/conf.d/90-nice-dns.conf" "$ep: uninstall removes it"
+      assert_eq "$conf" "$(cat "$FAKE_ROOT/etc/NetworkManager/NetworkManager.conf")" "$ep: and NetworkManager.conf is as it was"
+    ) || exit 1
+  done
+}
+
+# macOS: the previous deployment's images are kept after the runtime starts;
+# a deployment whose images cannot be found is refused before any change.
+t_previous_images_are_kept_with_the_runtime_up() {
+  local ep
+  ip_select
+  assert_ne "" "$IP_EPS" "an entrypoint is selected (the case applies to some of them only)"
+  for ep in $IP_EPS; do
+    [ "$(ip_platform "$ep")" = macos ] || continue
+    (
+      local dep0
+      dt_world "$ep" fresh
+      dt_installed "$ep"
+      dep0="$(dt_deploy_state)"
+      : >"$FAKE/rt_down"             # the runtime is stopped when the reinstall starts
+      : >"$FAKE/never_ready"
+      ip_install "$ep" socat
+      assert_nonzero "$IP_RC" "$ep: $IP_OUT"
+      assert_eq "$dep0" "$(dt_deploy_state)" "$ep: the previous images come back after the rollback"
+    ) || exit 1
+    (
+      dt_world "$ep" fresh
+      dt_installed "$ep"
+      awk '$1 !~ /^(unbound|pi-hole):latest$/' "$FAKE/images" >"$FAKE/images.t" && mv "$FAKE/images.t" "$FAKE/images"
+      ip_install "$ep"
+      assert_nonzero "$IP_RC" "$ep: a deployment without its images is refused: $IP_OUT"
+      assert_match 'could not be rolled back to' "$IP_OUT" "$ep: and says why"
+      ip_assert_untouched "$ep"
+    ) || exit 1
+  done
+}
+
+# The sudo keepalive refreshes the credential without prompting and stops
+# with the install.
+t_sudo_keepalive_refreshes_and_stops() {
+  local w="$CASE_DIR/ka" out n1 n2
+  mkdir -p "$w/bin"
+  printf '#!/bin/sh\nprintf "sudo %%s\\n" "$*" >>"%s/log"\n' "$w" >"$w/bin/sudo"; chmod 755 "$w/bin/sudo"
+  : >"$w/log"
+  out="$(PATH="$w/bin:$PATH" ND_INST_SUDO_KEEPALIVE=0.1 bash -c '
+    . "$1/lib/install.sh"
+    _nd_inst_sudo_keepalive
+    sleep 0.45
+    _nd_inst_sudo_keepalive_stop
+    sleep 0.3
+    echo stopped' _ "$NICE_DNS_ROOT" 2>&1)"
+  assert_match stopped "$out" "the loop ran and stopped: $out"
+  n1="$(grep -c '^sudo -n -v$' "$w/log")"
+  assert_eq 1 "$(( n1 >= 2 ))" "it refreshed with sudo -n -v (never prompting): $n1 times"
+  sleep 0.3; n2="$(grep -c '^sudo -n -v$' "$w/log")"
+  assert_eq "$n1" "$n2" "no refresh after it stopped"
+  assert_eq 0 "$(ND_INST_SUDO_KEEPALIVE=0 bash -c '. "$1/lib/install.sh"; _nd_inst_sudo_keepalive; echo "${ND_INST_KEEPALIVE_PID:-0}"' _ "$NICE_DNS_ROOT")" "0 disables it"
+}

@@ -6,9 +6,9 @@
 # quadlet install, custom-dns-deb.service). The ONLY differences are:
 #
 #   1. Before building pihole/, build localhost/pi-hole-hardened-base (under
-#      the install's generation tag) from the sibling ../pi-hole-hardened repo
-#      (or pull sureserver/pi-hole-hardened:latest from Docker Hub if no
-#      sibling).
+#      the install's generation tag) from the sibling ../pi-hole-hardened repo.
+#      The hardened base is not published (release/images.lock), so without
+#      that sibling checkout the install refuses before changing anything.
 #
 #   2. Build pihole-hardened/Containerfile (FROM the hardened base) instead
 #      of pihole/Containerfile (FROM pihole/pihole:latest).
@@ -76,8 +76,9 @@ nd_install_check_owned
 # platform, the proxy's interfaces and, with cosign, the signatures.
 nd_install_read_lock
 nd_install_verify_signatures
-nd_install_save_previous
 nd_install_linux_host_prereqs
+# After the prerequisites (the macOS runtime is started there), before any pull.
+nd_install_save_previous
 nd_install_config_dir
 nd_install_linux_prepare_images
 

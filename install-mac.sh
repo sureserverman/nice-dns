@@ -98,8 +98,9 @@ nd_install_check_owned
 # platform, the proxy's interfaces and, with cosign, the signatures.
 nd_install_read_lock
 nd_install_verify_signatures
-nd_install_save_previous
 nd_install_macos_host_prereqs
+# After the prerequisites (the macOS runtime is started there), before any pull.
+nd_install_save_previous
 nd_install_config_dir
 nd_install_macos_stage_tree
 nd_install_macos_prepare_images

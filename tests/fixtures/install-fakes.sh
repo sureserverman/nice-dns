@@ -113,7 +113,11 @@ case "$me" in
       if [ "$run" = 1 ] && [ "$safe" = 1 ]; then ND_DNS_TEST_ROOT="$FAKE_ROOT"; export ND_DNS_TEST_ROOT; exec "$@"; fi
     fi
     # Otherwise never runs anything; a helper's status reads pinned. tee's
-    # input is kept for inspection.
+    # input and an install's source are kept for inspection.
+    if [ "$1" = install ]; then
+      n=$#; src="$(eval "printf '%s' \"\${$((n - 1))}\"")"; for a in "$@"; do p="$a"; done
+      [ -f "$src" ] && cp "$src" "$FAKE/sudo-install$(printf '%s' "$p" | tr '/' '_')"
+    fi
     case "$*" in *custom-dns-deb\ status|*start-container-root.sh\ status) echo pinned ;; esac
     if [ "$1" = tee ]; then
       for a in "$@"; do p="$a"; done
@@ -130,6 +134,7 @@ case "$me" in
       exit 0 ;;
     esac
     case "$1" in
+      ps) cat "$FAKE/podman_ps" 2>/dev/null ;;
       --version) echo "podman version 5.8.1" ;;
       info) echo "1.14.0" ;;
       build) shift; do_build "$@" ;;
@@ -145,6 +150,10 @@ case "$me" in
     esac
     exit 0 ;;
   container)
+    # A stopped runtime ($FAKE/rt_down) answers no image call until it starts.
+    if [ -f "$FAKE/rt_down" ]; then
+      case "$1 $2" in "system start") rm -f "$FAKE/rt_down" ;; "image "*) echo "Error: the container system is not running" >&2; exit 1 ;; esac
+    fi
     case "$1 $*" in exec*probe-route*)
       [ -f "$FAKE/probe_fail" ] && exit 1
       [ -n "${FAKE_ROOT:-}" ] && [ ! -f "$FAKE/dns_up" ] && exit 1
@@ -396,7 +405,7 @@ ip_run() {
   IP_OUT="$(cd "$cwd" && env -i HOME="$IP_HOME" USER=tester LOGNAME=tester PATH="$IP_BIN" \
     TMPDIR="$IP_W/tmp" XDG_STATE_HOME="$IP_HOME/.local/state" XDG_CONFIG_HOME="$IP_HOME/.config" \
     XDG_RUNTIME_DIR="$IP_W/run" FAKE="$FAKE" FAKE_LOG="$FAKE_LOG" FAKE_UNAME="$IP_UNAME" FAKE_ARCH="$IP_ARCH" \
-    ND_INST_ETC="$IP_W/etc" ND_INST_REQUIRE_SIGNATURES="${ND_INST_REQUIRE_SIGNATURES:-}" FAKE_ROOT="${FAKE_ROOT:-}" ND_INST_ROOT="${FAKE_ROOT:-}" bash "$@" 2>&1 </dev/null)"
+    ND_INST_ETC="$IP_W/etc" ND_INST_SUDO_KEEPALIVE=0 ND_INST_REQUIRE_SIGNATURES="${ND_INST_REQUIRE_SIGNATURES:-}" FAKE_ROOT="${FAKE_ROOT:-}" ND_INST_ROOT="${FAKE_ROOT:-}" bash "$@" 2>&1 </dev/null)"
   IP_RC=$?
 }
 ip_install() { ip_run "$IP_TREE/$1.sh" "${@:2}"; }

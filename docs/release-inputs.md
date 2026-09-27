@@ -18,10 +18,13 @@ requires. It is data, parsed by `lib/install.sh` and
 1. The lock parses: schema line, known row kinds, `sha256:` digests.
 2. This host's platform is in the lock's `supported` set, and every image the
    install uses has a build for it.
-3. The chosen proxy provides every interface this tree `requires`: fixed route
-   listeners, the route probe and the acknowledged control restart. An older
-   image missing one is refused, so a controller never runs against a proxy it
-   cannot drive.
+3. The lock says the chosen proxy provides every interface this tree
+   `requires`: fixed route listeners, the route probe and the acknowledged
+   control restart. This compares the lock's own reviewed rows; it catches a
+   lock pinned to an image that was never qualified for this tree. What the
+   pulled image actually does is proven later, before the resolver is pinned:
+   the readiness wait needs Unbound to resolve over a route (the route
+   listeners and probe), and the controller's self-check must pass.
 4. With cosign installed, each signed image's signature is checked on its
    locked digest against the lock's signer and issuer. Without cosign the
    install says the signatures were not verified and records that; set
@@ -31,8 +34,10 @@ requires. It is data, parsed by `lib/install.sh` and
 
 Each generation's manifest records the lock's sha256, every locked reference,
 each signature result, the gravity sources (`pihole/adlists-default.txt`,
-`pihole/custom-allowlist.txt`) and, for the hardened flavour, the sibling
-`pi-hole-hardened` commit. The hardened base is not published, so a hardened
+`pihole/custom-allowlist.txt`; the lists they name are downloaded at build
+time, so their contents are not pinned) and, for the hardened flavour, the
+sibling `pi-hole-hardened` commit and the local id of the base its Dockerfile
+names. The hardened base is not published, so a hardened
 install needs that sibling checkout next to nice-dns.
 
 The previous generation's images stay on the host (lib/install.sh prunes only

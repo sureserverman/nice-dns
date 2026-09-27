@@ -37,3 +37,4 @@ installers	integration	install-prepare
 installers	integration	dns-transaction
 installers	integration	release-inputs
 installers	integration	installers-interaction
+installers	integration	installers-persistence

@@ -78,6 +78,7 @@ t_installers_use_the_locked_digests() {
       assert_match "$(printf 'lock\tsha256:')[0-9a-f]{64}" "$(cat "$m")" "$ep: and the lock it came from"
       assert_match "$(printf 'blocklist\tadlists\tsha256:')[0-9a-f]{64}" "$(cat "$m")" "$ep: the blocklist sources are recorded"
       [ "$(ip_flavor "$ep")" = hardened ] && assert_match "$(printf 'source\thardened-base\t')" "$(cat "$m")" "$ep: the sibling's commit is recorded"
+      [ "$(ip_flavor "$ep")" = hardened ] && assert_match "$(printf 'image\tsibling-base\talpine:3\.21\.3\t')[0-9a-f]+" "$(cat "$m")" "$ep: and the local id of the base it names"
       true
     ) || exit 1
   done

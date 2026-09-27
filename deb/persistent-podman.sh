@@ -206,7 +206,8 @@ echo
 #
 # Drop-in is idempotent and skipped on hosts that don't ship the unit.
 echo "3c) Installing NetworkManager-wait-online connectivity-gate drop-in..."
-NM_WAIT_DROPIN_DIR="/etc/systemd/system/NetworkManager-wait-online.service.d"
+# ND_INST_ROOT prefixes the path for the installer tests (lib/install.sh); empty on a host.
+NM_WAIT_DROPIN_DIR="${ND_INST_ROOT:-}/etc/systemd/system/NetworkManager-wait-online.service.d"
 NM_WAIT_DROPIN="$NM_WAIT_DROPIN_DIR/10-wait-for-connectivity.conf"
 if ! systemctl cat NetworkManager-wait-online.service >/dev/null 2>&1; then
   echo "   • NetworkManager-wait-online.service not present; skipping."

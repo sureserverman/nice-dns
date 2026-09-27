@@ -289,6 +289,17 @@ t_new_subids_are_migrated_before_the_builds() {
 $(cat -n "$FAKE_LOG")"
     ) || exit 1
     (
+      # Another rootless workload of this user is running: the migrate that
+      # new ranges need stops it, so the install names it and records it.
+      ip_env "$ep"
+      : >"$IP_W/etc/subuid"; : >"$IP_W/etc/subgid"
+      printf 'syncthing\nhome-assistant\n' >"$FAKE/podman_ps"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: $IP_OUT"
+      assert_match "stops this user's running containers now: syncthing home-assistant" "$IP_OUT" "$ep: the stopped containers are named"
+      assert_match "$(printf 'migrate-stopped\tsyncthing home-assistant')" "$(cat "$(ip_manifest "$(ip_gen_current)")")" "$ep: and recorded"
+    ) || exit 1
+    (
       ip_env "$ep"
       ip_install "$ep"
       assert_rc 0 "$IP_RC" "$ep: $IP_OUT"
@@ -339,6 +350,9 @@ t_reinstall_keeps_the_previous_generation() {
       for r in $(ip_refs "$m2"); do ip_has_image "$r" || fail "$ep: $r (previous) was pruned"; done
       for r in $(ip_refs "$m3"); do ip_has_image "$r" || fail "$ep: $r (current) is missing"; done
       for r in $(ip_refs "$(ip_manifest "$g1")"); do
+        # A reference the kept generations also record (the hardened sibling's
+        # upstream base) is shared, not the old generation's own.
+        if printf '%s\n' "$(ip_refs "$m2")" "$(ip_refs "$m3")" | grep -qxF -- "$r"; then continue; fi
         if ip_has_image "$r"; then fail "$ep: $r is older than the previous generation and was kept"; fi
       done
       assert_ne 0 "$(grep -cE '^(podman image rm|container image (rm|delete))' "$FAKE_LOG")" "$ep: the oldest generation was pruned"

@@ -31,3 +31,4 @@ exception	bridges	macos	^curl .*(bridges\.torproject\.org|moat)	preparation	host
 exception	runtime	macos	^container system start	interruption	none	the runtime again after an upgrade; its kernel is already installed
 exception	bridges	linux	^persistent-podman\.sh 	interruption	own	bridge selection (nice-dns-fetch-bridges.service, only with fewer than 3 bridges): bridge-eval resolves Moat and rdsys with its own bootstrap resolver, not the host's
 exception	builder	macos	^container builder start$	interruption	none	the builder VM; its image is cached since the first install (a runtime upgrade that changes it would need the network: live proof pending)
+exception	sibling-base	linux	^podman pull alpine:3\.21\.3$	preparation	host	the hardened sibling's own FROM, pinned by its Dockerfile

@@ -115,7 +115,9 @@ cmd_snapshot() {
   mkdir -p "$RECEIPT_DIR"
   chmod 700 "$R/var/db/nice-dns" "$RECEIPT_DIR"
   # An install from before records (its agent's helper is installed): the
-  # servers before nice-dns are unknown. A service carrying the pin is
+  # servers before nice-dns are unknown. (A service an operator had set to
+  # 172.31.240.250 by hand before any nice-dns install would be taken for the
+  # pin; nothing else uses that dnsnet address.) A service carrying the pin is
   # recorded as Empty (DHCP), which is what earlier uninstalls set; one that
   # does not carry it keeps its current servers.
   if [[ -e $R/usr/local/sbin/start-container.sh ]] && any_pinned; then origin=legacy; fi
@@ -158,7 +160,7 @@ cmd_check() {
 }
 
 cmd_restore() {
-  local svc cur rec have=1
+  local svc cur rec have=1 failed=0
   if ! receipt_ok; then
     have=0
     echo "no record of the DNS state before nice-dns; setting the pinned services to Empty (DHCP)" >&2
@@ -173,9 +175,17 @@ cmd_restore() {
       continue
     fi
     if (( have )); then rec="$(recorded_dns "$svc")"; else rec=Empty; fi
+    # One failure does not stop the others; it keeps the record for a retry.
     # shellcheck disable=SC2086 # a recorded list is one word per server
-    networksetup -setdnsservers "$svc" $rec
+    if ! networksetup -setdnsservers "$svc" $rec; then
+      echo "could not restore the DNS servers of '$svc' (still the nice-dns pin)" >&2
+      failed=1
+    fi
   done < <(services)
+  if (( failed )); then
+    echo "the restore did not complete; the record is kept: run it again" >&2
+    return 1
+  fi
   rm -f "${RECEIPT_DIR:?}/receipt.tsv"
   rmdir "$RECEIPT_DIR" 2>/dev/null || true
   echo "restored the DNS servers recorded before nice-dns"

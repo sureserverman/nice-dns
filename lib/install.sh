@@ -18,7 +18,11 @@
 #                 runs networksetup, reloads or restarts NetworkManager,
 #                 stops/removes/restarts a container, pod, network, image or
 #                 stack unit, unloads a launchd agent or runs `podman system
-#                 migrate`. A failure here exits non-zero and leaves the
+#                 migrate` — with one exception: on a host where the user had
+#                 no subordinate id ranges, the ranges just added need a
+#                 migrate before the builds; no rootless nice-dns stack can run
+#                 there, and any other running container it stops is named
+#                 and recorded. A failure here exits non-zero and leaves the
 #                 running deployment as it was.
 #   interruption  nd_install_<platform>_teardown and everything after it, which
 #                 the entrypoint runs only once preparation succeeded. The
@@ -309,6 +313,7 @@ nd_install_finish() {
   _nd_inst_write_file "$d/activated" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
   _nd_inst_write_file "$ND_INST_STATE/current" "$ND_INST_GEN" || return 1
   _nd_inst_prune
+  _nd_inst_sudo_keepalive_stop
   echo "▸ Generation $ND_INST_GEN is active (previous: $ND_INST_PREV)."
 }
 
@@ -397,6 +402,7 @@ _nd_inst_dns_helper() {
 nd_install_check_owned() {
   local rc=0
   _nd_inst_dns_helper check || rc=$?
+  [ "$rc" = 0 ] && _nd_inst_sudo_keepalive
   case "$rc" in
     0) return 0 ;;
     3) _nd_inst_err "another owner changed the host DNS after nice-dns pinned it; nothing was changed."
@@ -404,6 +410,27 @@ nd_install_check_owned() {
        exit 3 ;;
     *) _nd_inst_err "the DNS ownership check failed (exit $rc); nothing was changed."; exit 1 ;;
   esac
+}
+
+# _nd_inst_sudo_keepalive: refreshes the sudo credential (never prompts) every
+# ND_INST_SUDO_KEEPALIVE seconds (default 50; 0 disables) while this install
+# runs, so a rollback many minutes after the first prompt (bridge selection,
+# Tor bootstrap) can still use sudo. The loop ends with the install.
+_nd_inst_sudo_keepalive() {
+  local every="${ND_INST_SUDO_KEEPALIVE:-50}" parent=$$
+  [ "$every" != 0 ] || return 0
+  [ -z "${ND_INST_KEEPALIVE_PID:-}" ] || return 0
+  ( while sleep "$every"; do
+      kill -0 "$parent" 2>/dev/null || exit 0
+      sudo -n -v 2>/dev/null || exit 0
+    done ) >/dev/null 2>&1 &
+  ND_INST_KEEPALIVE_PID=$!
+}
+
+_nd_inst_sudo_keepalive_stop() {
+  [ -n "${ND_INST_KEEPALIVE_PID:-}" ] || return 0
+  kill "$ND_INST_KEEPALIVE_PID" 2>/dev/null || true
+  ND_INST_KEEPALIVE_PID=""
 }
 
 _nd_inst_dns_addr() { if [ "$ND_INST_PLATFORM" = linux ]; then echo 127.0.0.1; else echo 172.31.240.250; fi; }
@@ -500,6 +527,10 @@ nd_install_save_previous() {
   done <<EOF
 $rows
 EOF
+  if [ "$ND_INST_HAD_DEPLOY" = 1 ] && ! awk -F '\t' '$1 == "saved" && $2 ~ /(^|\/)(unbound|pi-hole):latest$/ && $3 != "absent" { f = 1 } END { exit !f }' "$ND_INST_MANIFEST"; then
+    _nd_inst_err "a deployment is installed, but its images were not found (is the container runtime running?); refusing: it could not be rolled back to"
+    return 1
+  fi
   : >"$ND_INST_RB/files.tsv" && chmod 600 "$ND_INST_RB/files.tsv" || return 1
   while IFS="$ND_INST_TAB" read -r kind p mode who; do
     [ -n "$kind" ] || continue
@@ -545,7 +576,10 @@ _nd_inst_restore_files() {
       if [ "$s" = absent ]; then
         sudo rm -f "$p"
       else
-        [ "$p" = "$ND_INST_ROOT/etc/sudoers.d/start-container" ] && ! sudo visudo -cf "$ND_INST_RB/$s" >/dev/null && continue
+        if [ "$p" = "$ND_INST_ROOT/etc/sudoers.d/start-container" ] && ! sudo visudo -cf "$ND_INST_RB/$s" >/dev/null; then
+          echo "! The saved $p does not pass visudo; not restoring it. The start-container agent cannot run its root helper until the next install." >&2
+          continue
+        fi
         sudo mkdir -p "$(dirname "$p")" && sudo install -m "$mode" "$ND_INST_RB/$s" "$p"
       fi
     elif [ "$s" = absent ]; then
@@ -695,13 +729,14 @@ _nd_inst_exit_trap() {
     echo "✗ The install failed after the stack was interrupted (exit $rc); rolling back." >&2
     _nd_inst_rollback
   fi
+  _nd_inst_sudo_keepalive_stop
   [ -z "${ND_INST_CLEANUP:-}" ] || rm -rf "${ND_INST_CLEANUP:?}"
   [ -z "${ND_INST_WORK:-}" ] || rm -rf "${ND_INST_WORK:?}"
   exit "$rc"
 }
 
 _nd_inst_rollback() {
-  local back=1
+  local back=1 dns_ok=1
   # A second Ctrl-C must not cut the recovery short.
   trap '' INT TERM HUP
   _nd_inst_manifest_row "$ND_INST_MANIFEST" status rolling-back
@@ -709,10 +744,13 @@ _nd_inst_rollback() {
   if [ "$ND_INST_HAD_DEPLOY" = 0 ]; then
     # A first install: give back the DNS state recorded before it, or drop
     # the unused record when nothing was pinned.
-    if [ "$ND_INST_PINNED" = 1 ]; then _nd_inst_dns_helper restore; else _nd_inst_dns_helper discard; fi
+    if [ "$ND_INST_PINNED" = 1 ]; then _nd_inst_dns_helper restore || dns_ok=0; else _nd_inst_dns_helper discard || dns_ok=0; fi
   fi
   _nd_inst_restore_files
   _nd_inst_restore_tags
+  if [ "$ND_INST_PLATFORM" = linux ] && systemctl is-active --quiet NetworkManager 2>/dev/null; then
+    sudo systemctl reload NetworkManager 2>/dev/null || true
+  fi
   if [ "$ND_INST_HAD_DEPLOY" = 1 ]; then
     if [ "$ND_INST_PLATFORM" = linux ]; then
       systemctl --user daemon-reload
@@ -728,14 +766,21 @@ _nd_inst_rollback() {
     # The previous stack must answer again; the rollback does not claim it.
     ND_INST_PROBE_OPTIONAL=1 nd_install_wait_ready >&2 || back=0
   fi
-  _nd_inst_manifest_row "$ND_INST_MANIFEST" status "$( [ "$back" = 1 ] && echo rolled-back || echo rolled-back-not-answering)"
+  if [ "$dns_ok" = 0 ]; then
+    _nd_inst_manifest_row "$ND_INST_MANIFEST" status rolled-back-dns-not-restored
+  else
+    _nd_inst_manifest_row "$ND_INST_MANIFEST" status "$( [ "$back" = 1 ] && echo rolled-back || echo rolled-back-not-answering)"
+  fi
   if [ "$ND_INST_HAD_DEPLOY" = 1 ] && [ "$back" = 1 ]; then
     echo "Rolled back to the previous deployment ($ND_INST_PREV), which answers again; host DNS stays pinned to it." >&2
   elif [ "$ND_INST_HAD_DEPLOY" = 1 ]; then
     echo "Rolled back to the previous deployment ($ND_INST_PREV), but it does not answer: host DNS stays pinned to it, so the host has no DNS (it fails closed, never public)." >&2
     echo "Check the stack (podman ps / container list) and its logs, or run the uninstall to restore the DNS recorded before nice-dns." >&2
-  else
+  elif [ "$dns_ok" = 1 ]; then
     echo "Rolled back: nothing is installed and host DNS is as it was before the install." >&2
+  else
+    echo "Rolled back the stack, but host DNS was NOT given back (see the helper's message above): it may still point at nice-dns, which is not running." >&2
+    echo "Fix the cause, then run '$ND_INST_ENTRY uninstall' to retry the restore; the record of the state before nice-dns is kept." >&2
   fi
 }
 
@@ -1073,6 +1118,12 @@ APPARMOR
   # no rootless nice-dns stack to interrupt. Otherwise it waits for the
   # interruption window (nd_install_linux_interrupt_prereqs).
   if [ "$subids_added" = 1 ]; then
+    local others
+    others="$(podman ps --format '{{.Names}}' 2>/dev/null | tr '\n' ' ' | sed 's/ $//')" || others=""
+    if [ -n "$others" ]; then
+      echo "  ! New subordinate id ranges: 'podman system migrate' stops this user's running containers now: $others" >&2
+      _nd_inst_manifest_row "$ND_INST_MANIFEST" migrate-stopped "$others"
+    fi
     podman system migrate
   fi
 
@@ -1162,10 +1213,17 @@ nd_install_linux_prepare_images() {
 # Build (or pull-and-tag) the hardened Pi-hole base under its generation tag,
 # before the downstream pihole-hardened/Containerfile build.
 _nd_inst_linux_hardened_base() {
-  local base_img="localhost/pi-hole-hardened-base:$ND_INST_GEN" sibling_repo
+  local base_img="localhost/pi-hole-hardened-base:$ND_INST_GEN" sibling_repo sib_base
   echo "▸ Resolving hardened base image…"
   sibling_repo="$(_nd_inst_hardened_sibling)" || return 1
   echo "  • Sibling pi-hole-hardened repo found at $sibling_repo — building locally."
+  # Its FROM is the sibling's own pin (not in release/images.lock): pulled
+  # explicitly so its local id is recorded with the sibling commit.
+  sib_base="$(_nd_inst_containerfile_base "$sibling_repo/Dockerfile")"
+  [ -n "$sib_base" ] || { _nd_inst_err "cannot read the sibling's base image"; return 1; }
+  podman pull "$sib_base" || return 1
+  _nd_inst_record_image sibling-base "$sib_base" || return 1
+  _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled base "$sib_base" || return 1
   podman build "${ND_INST_LINUX_BUILD_FLAGS[@]}" -t "$base_img" "$sibling_repo" || return 1
   _nd_inst_record_image hardened-base "$base_img"
 }
@@ -1307,8 +1365,8 @@ nd_install_linux_pin() {
 # nd_install_linux_activate: records the owned DNS state, then interrupts,
 # activates and pins, rolling back on any failure (see the transaction notes).
 nd_install_linux_activate() {
-  _nd_inst_dns_helper snapshot
   _nd_inst_begin_interruption
+  _nd_inst_dns_helper snapshot
   nd_install_hold_controller
   nd_install_linux_stop_stack
   nd_install_linux_interrupt_prereqs
@@ -1329,7 +1387,7 @@ nd_install_linux_activate() {
 # are left in place — they're harmless and may be shared with other Podman
 # workloads.
 nd_install_linux_uninstall() {
-  local R="$ND_INST_ROOT" ref ep sd
+  local R="$ND_INST_ROOT" ref ep sd dns_ok=1
   ND_INST_TREE="$ND_INST_SRC"
   nd_install_linux_stop_stack
   systemctl --user disable --now nice-dns-fetch-bridges.service 2>/dev/null || true
@@ -1349,8 +1407,10 @@ nd_install_linux_uninstall() {
     podman image rm -f "$ref" 2>/dev/null || true
   done
   # The DNS state before nice-dns: resolv.conf, systemd-resolved, the ipv6
-  # sysctls and the NetworkManager/systemd files the pin installed.
-  _nd_inst_dns_helper restore
+  # sysctls and the NetworkManager/systemd files the pin installed. A failed
+  # restore keeps its record; the rest of the uninstall still runs, and the
+  # uninstall then fails so the operator retries it.
+  _nd_inst_dns_helper restore || dns_ok=0
   sudo rm -f "$R/usr/bin/custom-dns-deb"
   if sudo test -f "$R/etc/default/grub.d/99-nice-dns-ipv6.cfg"; then
     sudo rm -f "$R/etc/default/grub.d/99-nice-dns-ipv6.cfg"
@@ -1360,15 +1420,30 @@ nd_install_linux_uninstall() {
   fi
   sudo systemctl daemon-reload
   sd="$(nd_install_state_dir)" && rm -f "${sd:?}/current"
+  _nd_inst_uninstall_verdict "$dns_ok"
+}
+
+# _nd_inst_uninstall_verdict <dns_ok>: fails the uninstall when host DNS was
+# not given back.
+_nd_inst_uninstall_verdict() {
+  [ "$1" = 1 ] && return 0
+  _nd_inst_err "the stack is removed, but host DNS was NOT given back (see the helper's message above); it may still point at nice-dns, which is gone."
+  _nd_inst_err "Fix the cause and run the uninstall again: the record of the state before nice-dns is kept."
+  return 1
 }
 
 # nd_install_linux_interrupt_prereqs: host changes that interrupt the running
 # stack or host DNS, so they run only after the teardown.
 nd_install_linux_interrupt_prereqs() {
-  # Disable dns=dnsmasq in NetworkManager if present (conflicts with pi-hole)
-  local NM_CONFIG="/etc/NetworkManager/NetworkManager.conf"
+  # NetworkManager's dns=dnsmasq runs a dnsmasq on port 53, which conflicts
+  # with pi-hole. NetworkManager.conf is not nice-dns's to edit (Sub-plan 4:
+  # only owned state changes): the owned 90-nice-dns.conf drop-in (dns=none,
+  # which the pin installs anyway) overrides it, and a rollback or uninstall
+  # removes it again.
+  local R="$ND_INST_ROOT" NM_CONFIG="$ND_INST_ROOT/etc/NetworkManager/NetworkManager.conf"
   if [ -f "$NM_CONFIG" ] && grep -Eq '^[[:space:]]*dns[[:space:]]*=[[:space:]]*dnsmasq' "$NM_CONFIG"; then
-    sudo sed -i -E 's|^[[:space:]]*dns[[:space:]]*=[[:space:]]*dnsmasq|#&|' "$NM_CONFIG"
+    sudo mkdir -p "$R/etc/NetworkManager/conf.d"
+    printf '[main]\ndns=none\n' | sudo tee "$R/etc/NetworkManager/conf.d/90-nice-dns.conf" >/dev/null
     sudo systemctl restart NetworkManager
   fi
 
@@ -1580,7 +1655,7 @@ _nd_inst_macos_pull_base() {
 
 # interruption window.
 nd_install_macos_prepare_images() {
-  local gen="$ND_INST_GEN" sibling_repo
+  local gen="$ND_INST_GEN" sibling_repo sib_base
   # The tor proxy is the one image we don't build — it's pulled from Docker Hub.
   # `container run` has no --pull flag and reuses any locally cached copy without
   # consulting the registry, so an install on a host that ever ran nice-dns would
@@ -1613,7 +1688,9 @@ nd_install_macos_prepare_images() {
   sibling_repo="$(_nd_inst_hardened_sibling)" || return 1
   echo "  • Sibling pi-hole-hardened repo found at $sibling_repo — building it after the stack stops."
   ND_INST_BASE_SIBLING="$sibling_repo"
-  _nd_inst_macos_pull_base "$(_nd_inst_containerfile_base "$sibling_repo/Dockerfile")" || return 1
+  sib_base="$(_nd_inst_containerfile_base "$sibling_repo/Dockerfile")"
+  _nd_inst_macos_pull_base "$sib_base" || return 1
+  _nd_inst_record_image sibling-base "$sib_base"
 }
 
 # nd_install_macos_bridges: bridges.env, and the proxy's BRIDGEn arguments in
@@ -1760,8 +1837,8 @@ _nd_inst_macos_stop_new() {
 # builds, activates and pins, rolling back on any failure (see the
 # transaction notes).
 nd_install_macos_activate() {
-  _nd_inst_dns_helper snapshot
   _nd_inst_begin_interruption
+  _nd_inst_dns_helper snapshot
   nd_install_hold_controller
   nd_install_macos_teardown reinstall
   nd_install_macos_upgrade_runtime
@@ -1787,13 +1864,14 @@ nd_install_macos_activate() {
 # and controller, and gives back every network service's DNS servers recorded
 # before nice-dns.
 nd_install_macos_uninstall() {
-  local ep sd
+  local ep sd dns_ok=1
   ND_INST_TREE="$ND_INST_SRC"
   nd_install_macos_teardown uninstall
   ep="$(_nd_inst_controller_entry)"
   if [ -n "$ep" ] && [ -f "$ep" ]; then bash "$ep" uninstall || true; fi
-  _nd_inst_dns_helper restore
+  _nd_inst_dns_helper restore || dns_ok=0
   sd="$(nd_install_state_dir)" && rm -f "${sd:?}/current"
+  _nd_inst_uninstall_verdict "$dns_ok"
 }
 
 # nd_install_macos_build_images: the local builds, in the interruption window.
