@@ -263,6 +263,7 @@ case "$me" in
       esac
     fi
     exit 0 ;;
+  cosign) [ -f "$FAKE/cosign_fail" ] && exit 1; exit 0 ;;
   dpkg) exit 1 ;;
   sysctl)
     if [ -n "${FAKE_ROOT:-}" ]; then
@@ -292,7 +293,7 @@ STUB
 ip_tree() {
   local d="$1" f
   mkdir -p "$d"
-  for f in install-deb.sh install-deb-hardened.sh install-mac.sh install-mac-hardened.sh lib deb mac scripts unbound pihole pihole-hardened health routes; do
+  for f in install-deb.sh install-deb-hardened.sh install-mac.sh install-mac-hardened.sh lib deb mac scripts unbound pihole pihole-hardened health routes release; do
     cp -R "$NICE_DNS_ROOT/$f" "$d/"
   done
   # shellcheck disable=SC2016  # expanded by the stubs
@@ -362,6 +363,11 @@ ip_env() {
   : >"$FAKE_LOG"
   ip_tree "$IP_TREE"
   ip_tree "$FAKE/upstream"
+  if [ "${1%-hardened}" != "$1" ] && [ "${IP_NO_SIBLING:-0}" != 1 ]; then
+    mkdir -p "$IP_W/src/pi-hole-hardened"
+    printf 'FROM alpine:3.21.3\n' >"$IP_W/src/pi-hole-hardened/Dockerfile"
+    : >"$IP_W/src/pi-hole-hardened/post-install.sh"
+  fi
   ip_write_stubs "$IP_BIN" "$plat"
   printf '0123456789abcdef0123456789abcdef01234567\n' >"$FAKE/git_head"
   : >"$FAKE/nm_active"
@@ -387,7 +393,7 @@ ip_run() {
   IP_OUT="$(cd "$cwd" && env -i HOME="$IP_HOME" USER=tester LOGNAME=tester PATH="$IP_BIN" \
     TMPDIR="$IP_W/tmp" XDG_STATE_HOME="$IP_HOME/.local/state" XDG_CONFIG_HOME="$IP_HOME/.config" \
     XDG_RUNTIME_DIR="$IP_W/run" FAKE="$FAKE" FAKE_LOG="$FAKE_LOG" FAKE_UNAME="$IP_UNAME" FAKE_ARCH="$IP_ARCH" \
-    ND_INST_ETC="$IP_W/etc" FAKE_ROOT="${FAKE_ROOT:-}" ND_INST_ROOT="${FAKE_ROOT:-}" bash "$@" 2>&1 </dev/null)"
+    ND_INST_ETC="$IP_W/etc" ND_INST_REQUIRE_SIGNATURES="${ND_INST_REQUIRE_SIGNATURES:-}" FAKE_ROOT="${FAKE_ROOT:-}" ND_INST_ROOT="${FAKE_ROOT:-}" bash "$@" 2>&1 </dev/null)"
   IP_RC=$?
 }
 ip_install() { ip_run "$IP_TREE/$1.sh" "${@:2}"; }

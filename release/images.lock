@@ -1,0 +1,48 @@
+schema	nice-dns-images-lock/1
+# Reviewed, immutable image inputs of this nice-dns tree (Sub-plan 4 Task 1.3;
+# ARCH-05). Parsed as data by lib/install.sh and scripts/update-images-lock.sh;
+# never sourced. Refresh with scripts/update-images-lock.sh and review the diff
+# (docs/release-inputs.md): a digest changes only in a reviewed commit.
+#
+# Rows (tab-separated):
+#   supported <platforms>        the CPU/platform set nice-dns supports; every
+#                                image below must provide all of it
+#   issuer    <url>              the OIDC issuer of every signed image
+#   image <role> <repository> <tag> <digest> <platforms> <source> <version> <signer>
+#     digest    the multi-platform index digest the installers pull
+#     source    repository@commit the release was built from, or upstream
+#     signer    the certificate identity prefix cosign must see, or none
+#               (not signed by a publisher nice-dns can name)
+#   unpublished <role> <repository> <why>
+#                                an input with no published image; it is built
+#                                from a sibling checkout, whose commit the
+#                                install records
+#   provides <role> <interface>  what the pinned image offers (qualified by
+#                                the transport and controller receipts)
+#   requires <component> <interface>
+#                                what this tree's controller, quadlets and
+#                                routes need from <component> (proxy = the
+#                                chosen proxy role); an install refuses a lock
+#                                whose image lacks one, before any interruption
+#
+# Qualified 2026-09-27: tor-haproxy v2.14 and tor-socat v2.10 are the Sub-plan 2
+# route images with the Sub-plan 3 fixes (controller receipt
+# 20260927T143740Z-92951336 used their candidates); hardened-unbound v1.4.0 is
+# the Sub-plan 2 base. Signatures verified with cosign v3.1.3 against the
+# signer identities below on 2026-09-27.
+supported	linux/amd64,linux/arm64,linux/arm/v7,linux/riscv64
+issuer	https://token.actions.githubusercontent.com
+image	proxy-haproxy	docker.io/sureserver/tor-haproxy	v2.14	sha256:973e5082e2cca66ce52e3d0d7ce1a46bf4507ae47932abcda7c5b161c1844e09	linux/amd64,linux/arm64,linux/arm/v7,linux/riscv64	github.com/sureserverman/tor-haproxy@13025d7f586c81f0e7b94969b991cd13df084532	v2.14	https://github.com/sureserverman/tor-haproxy/.github/workflows/main.yml@refs/tags/v
+image	proxy-socat	docker.io/sureserver/tor-socat	v2.10	sha256:8521678184deaac6bbf8aeaaaab61358ad6c3b4b53180cc426a622b051c1ec32	linux/amd64,linux/arm64,linux/arm/v7,linux/riscv64	github.com/sureserverman/tor-socat@3ce59abf7210bbe44411be9a657e77c2d3a5825a	v2.10	https://github.com/sureserverman/tor-socat/.github/workflows/main.yml@refs/tags/v
+image	unbound-base	docker.io/sureserver/hardened-unbound	v1.4.0	sha256:132e0ffde4a25c8bf9df32affe23304949229cff945ffefd513233eb89dffea4	linux/amd64,linux/arm64,linux/arm/v7,linux/riscv64	github.com/sureserverman/hardened-unbound@9aaf5c6db8d42f9baba15938dd65ec06a868c7b1	v1.4.0	https://github.com/sureserverman/hardened-unbound/.github/workflows/main.yml@refs/tags/v
+image	pihole-base	docker.io/pihole/pihole	latest	sha256:5b9c8cf51de7d6d3f2240dbe72baf5f06e1fd39cb4d77a99fab4fa13e23bd1be	linux/386,linux/amd64,linux/arm64,linux/arm/v6,linux/arm/v7,linux/riscv64	upstream	2026-09-27	none
+unpublished	hardened-base	docker.io/sureserver/pi-hole-hardened	not on Docker Hub (401, 2026-09-27); built from a sibling pi-hole-hardened checkout
+provides	proxy-haproxy	route-listeners/1
+provides	proxy-haproxy	route-probe/1
+provides	proxy-haproxy	control-restart/1
+provides	proxy-socat	route-listeners/1
+provides	proxy-socat	route-probe/1
+provides	proxy-socat	control-restart/1
+requires	proxy	route-listeners/1
+requires	proxy	route-probe/1
+requires	proxy	control-restart/1

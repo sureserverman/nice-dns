@@ -739,6 +739,164 @@ _nd_inst_rollback() {
   fi
 }
 
+# ─────────────────────────── release inputs (Task 1.3) ───────────────────────
+#
+# Sub-plan 4 Task 1.3 (ARCH-05, ARCH-08). Every image an install pulls or
+# builds on is pinned in release/images.lock (reviewed; refreshed with
+# scripts/update-images-lock.sh, docs/release-inputs.md): the proxy and the
+# two build bases by multi-platform index digest, with their platforms,
+# source commit and signer. Before anything is interrupted, an install checks
+# the lock's shape, that this host's platform is supported, that the chosen
+# proxy provides every interface this tree requires, and each signed image's
+# signature when cosign is installed (ND_INST_REQUIRE_SIGNATURES=1 makes a
+# missing cosign fatal). An unsigned upstream input is recorded as unsigned;
+# no check is invented for it.
+
+ND_INST_LOCK_SCHEMA='nice-dns-images-lock/1'
+
+# _nd_inst_lock_image <role> <column>: one field of the lock's image row.
+_nd_inst_lock_image() {
+  awk -F '\t' -v r="$1" -v c="$2" '$1 == "image" && $2 == r { print $c; exit }' "$ND_INST_LOCK"
+}
+
+# _nd_inst_host_platform: this host as an OCI platform (containers are Linux;
+# a Mac runs linux/arm64 guests).
+_nd_inst_host_platform() {
+  case "$(uname -m)" in
+    x86_64|amd64) echo linux/amd64 ;;
+    aarch64|arm64) echo linux/arm64 ;;
+    armv7l|armv7*) echo linux/arm/v7 ;;
+    riscv64) echo linux/riscv64 ;;
+    *) echo "linux/$(uname -m)" ;;
+  esac
+}
+
+# _nd_inst_lock_roles: the image roles this install uses.
+_nd_inst_lock_roles() {
+  printf 'proxy-%s\nunbound-base\n' "$ND_INST_VARIANT"
+  [ "$ND_INST_PIHOLE" = standard ] && printf 'pihole-base\n'
+  return 0
+}
+
+# nd_install_read_lock: validates the lock and this install's choices from it.
+# Sets ND_INST_LOCK and ND_INST_PINNED_<role> (repository@digest); records the
+# lock and the locked references in the manifest. Refuses (returns 1) on any
+# problem; nothing has been interrupted yet.
+nd_install_read_lock() {
+  local lock="$ND_INST_TREE/release/images.lock" bad role plat sup ifc sha
+  ND_INST_LOCK="$lock"
+  if [ -L "$lock" ] || [ ! -f "$lock" ]; then _nd_inst_err "no release/images.lock in the source tree"; return 1; fi
+  [ "$(head -n 1 "$lock")" = "schema$ND_INST_TAB$ND_INST_LOCK_SCHEMA" ] \
+    || { _nd_inst_err "$lock is not a $ND_INST_LOCK_SCHEMA lock"; return 1; }
+  bad="$(awk -F '\t' '
+    NR == 1 || /^#/ || NF == 0 { next }
+    $1 == "supported" && NF == 2 && $2 ~ /^[a-z0-9]+\/[a-z0-9]+(\/v[0-9]+)?(,[a-z0-9]+\/[a-z0-9]+(\/v[0-9]+)?)*$/ { next }
+    $1 == "issuer" && NF == 2 && $2 ~ /^https:\/\/[^[:space:]]+$/ { next }
+    $1 == "image" && NF == 9 && $2 ~ /^[a-z0-9-]+$/ && $3 ~ /^docker\.io\/[a-z0-9._\/-]+$/ && $4 ~ /^[A-Za-z0-9._-]+$/ \
+      && $5 ~ /^sha256:[0-9a-f]{64}$/ && $6 ~ /^[a-z0-9]+\/[a-z0-9]+(\/v[0-9]+)?(,[a-z0-9]+\/[a-z0-9]+(\/v[0-9]+)?)*$/ \
+      && $7 != "" && $8 != "" && ($9 == "none" || $9 ~ /^https:\/\/[^[:space:]]+$/) { next }
+    $1 == "unpublished" && NF == 4 { next }
+    ($1 == "provides" || $1 == "requires") && NF == 3 && $2 ~ /^[a-z0-9-]+$/ && $3 ~ /^[a-z0-9-]+\/[0-9]+$/ { next }
+    { print NR ": " $0; exit }' "$lock")"
+  [ -z "$bad" ] || { _nd_inst_err "malformed row in $lock, line $bad"; return 1; }
+
+  plat="$(_nd_inst_host_platform)"
+  sup="$(awk -F '\t' '$1 == "supported" { print $2; exit }' "$lock")"
+  case ",$sup," in *",$plat,"*) ;; *)
+    _nd_inst_err "this host is $plat; nice-dns supports $sup (release/images.lock)"; return 1 ;;
+  esac
+  for role in $(_nd_inst_lock_roles); do
+    [ -n "$(_nd_inst_lock_image "$role" 5)" ] || { _nd_inst_err "release/images.lock has no image for $role"; return 1; }
+    case ",$(_nd_inst_lock_image "$role" 6)," in *",$plat,"*) ;; *)
+      _nd_inst_err "the locked $role image has no $plat build"; return 1 ;;
+    esac
+  done
+  # The interfaces this tree's controller, quadlets and routes need from the
+  # proxy image must be provided by the one this install runs.
+  # (Interface names are validated tokens, one per row.)
+  while IFS= read -r ifc; do
+    [ -n "$ifc" ] || continue
+    awk -F '\t' -v r="proxy-$ND_INST_VARIANT" -v i="$ifc" '$1 == "provides" && $2 == r && $3 == i { f = 1 } END { exit !f }' "$lock" \
+      || { _nd_inst_err "the locked tor-$ND_INST_VARIANT image does not provide $ifc, which this nice-dns needs; refusing before any change"; return 1; }
+  done <<EOF
+$(awk -F '\t' '$1 == "requires" && $2 == "proxy" { print $3 }' "$lock")
+EOF
+
+  ND_INST_PINNED_PROXY="$(_nd_inst_lock_image "proxy-$ND_INST_VARIANT" 3)@$(_nd_inst_lock_image "proxy-$ND_INST_VARIANT" 5)"
+  ND_INST_PINNED_UNBOUND="$(_nd_inst_lock_image unbound-base 3)@$(_nd_inst_lock_image unbound-base 5)"
+  ND_INST_PINNED_PIHOLE="$(_nd_inst_lock_image pihole-base 3)@$(_nd_inst_lock_image pihole-base 5)"
+  sha="$(health_sha_file "$lock")" || return 1
+  _nd_inst_manifest_row "$ND_INST_MANIFEST" lock "sha256:$sha" || return 1
+  _nd_inst_manifest_row "$ND_INST_MANIFEST" platform-host "$plat" || return 1
+  for role in $(_nd_inst_lock_roles); do
+    _nd_inst_manifest_row "$ND_INST_MANIFEST" locked "$role" \
+      "$(_nd_inst_lock_image "$role" 3)@$(_nd_inst_lock_image "$role" 5)" \
+      "$(_nd_inst_lock_image "$role" 7)" "$(_nd_inst_lock_image "$role" 8)" || return 1
+  done
+}
+
+# health_sha_file <file>: its sha256, hex (sha256sum on Linux, shasum on macOS).
+health_sha_file() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+# nd_install_verify_signatures: each signed image this install uses, checked
+# on its locked digest against the lock's signer and issuer.
+nd_install_verify_signatures() {
+  local role signer issuer ref unverified=0
+  issuer="$(awk -F '\t' '$1 == "issuer" { print $2; exit }' "$ND_INST_LOCK")"
+  for role in $(_nd_inst_lock_roles); do
+    signer="$(_nd_inst_lock_image "$role" 9)"
+    ref="$(_nd_inst_lock_image "$role" 3)@$(_nd_inst_lock_image "$role" 5)"
+    if [ "$signer" = none ]; then
+      _nd_inst_manifest_row "$ND_INST_MANIFEST" signature "$role" unsigned || return 1
+      continue
+    fi
+    if command -v cosign >/dev/null 2>&1; then
+      if ! cosign verify --certificate-identity-regexp "^$(printf '%s' "$signer" | sed 's/\./\\./g')" \
+            --certificate-oidc-issuer "$issuer" "$ref" >/dev/null 2>&1; then
+        _nd_inst_err "the signature of $ref does not verify for $signer; refusing before any change"
+        return 1
+      fi
+      _nd_inst_manifest_row "$ND_INST_MANIFEST" signature "$role" verified "$signer" || return 1
+    elif [ "${ND_INST_REQUIRE_SIGNATURES:-}" = 1 ]; then
+      _nd_inst_err "ND_INST_REQUIRE_SIGNATURES=1 but cosign is not installed; refusing before any change"
+      return 1
+    else
+      _nd_inst_manifest_row "$ND_INST_MANIFEST" signature "$role" unverified-no-cosign || return 1
+      unverified=1
+    fi
+  done
+  if [ "$unverified" = 1 ]; then
+    echo "  ! Image signatures were not verified (cosign is not installed); the images are pinned by digest from the reviewed release/images.lock."
+  fi
+}
+
+# _nd_inst_record_blocklist: the gravity sources the Pi-hole build bakes in.
+_nd_inst_record_blocklist() {
+  local sha
+  sha="$(health_sha_file "$ND_INST_TREE/pihole/adlists-default.txt")" || return 1
+  _nd_inst_manifest_row "$ND_INST_MANIFEST" blocklist adlists "sha256:$sha" || return 1
+  sha="$(health_sha_file "$ND_INST_TREE/pihole/custom-allowlist.txt")" || return 1
+  _nd_inst_manifest_row "$ND_INST_MANIFEST" blocklist allowlist "sha256:$sha"
+}
+
+# _nd_inst_hardened_sibling: the sibling pi-hole-hardened checkout the hardened
+# base is built from (it is not published; see the lock), with its commit
+# recorded. Refuses when there is none.
+_nd_inst_hardened_sibling() {
+  local sib c
+  sib="$(cd "$ND_INST_SRC/.." && pwd)/pi-hole-hardened"
+  if [[ ! -f "$sib/Dockerfile" || ! -f "$sib/post-install.sh" ]]; then
+    _nd_inst_err "the hardened base is not published (release/images.lock); clone https://github.com/sureserverman/pi-hole-hardened next to nice-dns/ ($sib) and run again"
+    return 1
+  fi
+  c="$(git -C "$sib" rev-parse HEAD 2>/dev/null)" || c=""
+  case "$c" in ''|*[!0-9a-f]*) c=unknown ;; esac
+  _nd_inst_manifest_row "$ND_INST_MANIFEST" source hardened-base "$sib@$c" || return 1
+  printf '%s\n' "$sib"
+}
+
 # ─────────────────────────── Linux ───────────────────────────────────────────
 
 # nd_install_linux_host_prereqs: packages, Podman/crun versions, registries,
@@ -939,19 +1097,17 @@ EOF
 # base) under generation tags and pulls the proxy, all while the running stack
 # keeps serving from its own images.
 nd_install_linux_prepare_images() {
-  local gen="$ND_INST_GEN" proxy="docker.io/sureserver/tor-${ND_INST_VARIANT}:latest"
+  local gen="$ND_INST_GEN"
   cd "$ND_INST_TREE" || return 1
   # --dns 1.1.1.1 ensures the pi-hole image build's `pihole -g` precheck
   # always succeeds, even on hosts whose default resolver is partial.
   #
-  # --pull=newer re-fetches the FROM base when the registry has a newer one.
-  # Both Containerfiles build on a floating :latest tag (sureserver/hardened-
-  # unbound, pihole/pihole) and podman build defaults to --pull=missing, which
-  # reuses a cached base forever — so a reinstall could keep producing images
-  # built on a months-old base. "newer" rather than "always" so an unchanged
-  # base costs a digest check instead of a full re-download. (A base that
-  # exists only locally, such as the hardened base, still builds: with
-  # --pull=newer podman suppresses pull errors when a local image exists.)
+  # The bases are the locked digests (release/images.lock), pulled here and
+  # passed as BASE_IMAGE, so a build never floats to whatever :latest is today
+  # (Task 1.3). --pull=newer stays for any other FROM a recipe names (the
+  # hardened sibling's own base); a base that exists only locally, such as the
+  # hardened base, still builds: with --pull=newer podman suppresses pull
+  # errors when a local image exists.
   #
   # --no-cache because --pull only governs the FROM base, not the RUN layers.
   # Our RUN steps fetch from the network — pihole/Containerfile runs `pihole -g`
@@ -973,8 +1129,15 @@ nd_install_linux_prepare_images() {
   # The standard and hardened entrypoints build with the same flags.
   if [ "$ND_INST_PIHOLE" = hardened ]; then
     _nd_inst_linux_hardened_base || return 1
+  else
+    podman pull "$ND_INST_PINNED_PIHOLE" || return 1
+    _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled base "$ND_INST_PINNED_PIHOLE" || return 1
   fi
-  podman build "${ND_INST_LINUX_BUILD_FLAGS[@]}" -t "localhost/unbound:$gen" unbound/ || return 1
+  podman pull "$ND_INST_PINNED_UNBOUND" || return 1
+  _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled base "$ND_INST_PINNED_UNBOUND" || return 1
+  _nd_inst_record_blocklist || return 1
+  podman build "${ND_INST_LINUX_BUILD_FLAGS[@]}" --build-arg "BASE_IMAGE=$ND_INST_PINNED_UNBOUND" \
+    -t "localhost/unbound:$gen" unbound/ || return 1
   _nd_inst_record_image unbound "localhost/unbound:$gen" || return 1
   if [ "$ND_INST_PIHOLE" = hardened ]; then
     # Hardened-base Pi-hole: pihole-hardened/Containerfile `FROM`s the hardened
@@ -983,41 +1146,27 @@ nd_install_linux_prepare_images() {
     podman build "${ND_INST_LINUX_BUILD_FLAGS[@]}" --build-arg "BASE_IMAGE=localhost/pi-hole-hardened-base:$gen" \
       -t "localhost/pi-hole:$gen" -f pihole-hardened/Containerfile . || return 1
   else
-    podman build "${ND_INST_LINUX_BUILD_FLAGS[@]}" -t "localhost/pi-hole:$gen" pihole/ || return 1
+    podman build "${ND_INST_LINUX_BUILD_FLAGS[@]}" --build-arg "BASE_IMAGE=$ND_INST_PINNED_PIHOLE" \
+      -t "localhost/pi-hole:$gen" pihole/ || return 1
   fi
   _nd_inst_record_image pi-hole "localhost/pi-hole:$gen" || return 1
-  # The proxy is pulled, not built. Its generation tag keeps the image this
-  # generation ran for rollback after a later pull moves :latest.
-  podman pull "$proxy" || return 1
-  podman tag "$proxy" "localhost/tor-${ND_INST_VARIANT}:$gen" || return 1
+  # The proxy is pulled by its locked digest, not built. Its generation tag
+  # keeps the image this generation ran for rollback; :latest (the name the
+  # quadlet runs) moves to it only at activation.
+  podman pull "$ND_INST_PINNED_PROXY" || return 1
+  podman tag "$ND_INST_PINNED_PROXY" "localhost/tor-${ND_INST_VARIANT}:$gen" || return 1
   _nd_inst_record_image proxy "localhost/tor-${ND_INST_VARIANT}:$gen" || return 1
-  _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled proxy "$proxy"
+  _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled proxy "$ND_INST_PINNED_PROXY"
 }
 
 # Build (or pull-and-tag) the hardened Pi-hole base under its generation tag,
 # before the downstream pihole-hardened/Containerfile build.
 _nd_inst_linux_hardened_base() {
-  local base_img="localhost/pi-hole-hardened-base:$ND_INST_GEN"
-  local sibling_repo remote="docker.io/sureserver/pi-hole-hardened:latest"
-  sibling_repo="$(cd "$ND_INST_SRC/.." && pwd)/pi-hole-hardened"
-
+  local base_img="localhost/pi-hole-hardened-base:$ND_INST_GEN" sibling_repo
   echo "▸ Resolving hardened base image…"
-  if [[ -f "$sibling_repo/Dockerfile" && -f "$sibling_repo/post-install.sh" ]]; then
-    echo "  • Sibling pi-hole-hardened repo found at $sibling_repo — building locally."
-    podman build "${ND_INST_LINUX_BUILD_FLAGS[@]}" -t "$base_img" "$sibling_repo" || return 1
-  else
-    echo "  • No sibling pi-hole-hardened/ checkout — pulling $remote."
-    if podman pull "$remote"; then
-      podman tag "$remote" "$base_img" || return 1
-      _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled hardened-base "$remote" || return 1
-    else
-      echo "ERROR: could not build or pull the hardened base." >&2
-      echo "  Either:" >&2
-      echo "   - clone https://github.com/sureserverman/pi-hole-hardened next to nice-dns/, OR" >&2
-      echo "   - wait for sureserver/pi-hole-hardened:latest to publish on Docker Hub." >&2
-      return 1
-    fi
-  fi
+  sibling_repo="$(_nd_inst_hardened_sibling)" || return 1
+  echo "  • Sibling pi-hole-hardened repo found at $sibling_repo — building locally."
+  podman build "${ND_INST_LINUX_BUILD_FLAGS[@]}" -t "$base_img" "$sibling_repo" || return 1
   _nd_inst_record_image hardened-base "$base_img"
 }
 
@@ -1274,6 +1423,7 @@ nd_install_linux_activate_images() {
   for name in unbound pi-hole; do
     podman tag "localhost/$name:$gen" "localhost/$name:latest" || return 1
   done
+  podman tag "localhost/tor-${ND_INST_VARIANT}:$gen" "docker.io/sureserver/tor-${ND_INST_VARIANT}:latest" || return 1
   if [ "$ND_INST_PIHOLE" = hardened ]; then
     podman tag "localhost/pi-hole-hardened-base:$gen" localhost/pi-hole-hardened-base:latest || return 1
   fi
@@ -1410,61 +1560,54 @@ _nd_inst_containerfile_base() {
     }' "$1"
 }
 
-# _nd_inst_macos_pull_base <ref>: a build base, pulled in preparation.
+# _nd_inst_macos_pull_base <ref> [<local name>]: a build base, pulled in
+# preparation (and given a plain local name for the builder).
 _nd_inst_macos_pull_base() {
   [ -n "$1" ] || { _nd_inst_err "cannot read a build base"; return 1; }
   "$CONTAINER_BIN" image pull "$1" || return 1
+  if [ -n "${2:-}" ]; then
+    "$CONTAINER_BIN" image tag "$1" "$2" || return 1
+    _nd_inst_record_image base "$2" || return 1
+  fi
   _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled base "$1"
 }
 
 # interruption window.
 nd_install_macos_prepare_images() {
-  local gen="$ND_INST_GEN" proxy="docker.io/sureserver/tor-${ND_INST_VARIANT}:latest"
-  local sibling_repo remote="docker.io/sureserver/pi-hole-hardened:latest"
+  local gen="$ND_INST_GEN" sibling_repo
   # The tor proxy is the one image we don't build — it's pulled from Docker Hub.
   # `container run` has no --pull flag and reuses any locally cached copy without
   # consulting the registry, so an install on a host that ever ran nice-dns would
   # silently keep an old image indefinitely. Observed in practice: a host running
   # a four-month-old tor-haproxy (ConfluxEnabled 0, NumPrimaryGuards 2, timeout
   # server 60s) long after those were fixed upstream, which showed up as multi-
-  # second cold DNS latency with nothing wrong in this repo. Pull explicitly so
-  # every install starts from the current published image; this mirrors what
-  # install-deb.sh already does with `podman pull`.
-  "$CONTAINER_BIN" image pull "$proxy" || return 1
-  "$CONTAINER_BIN" image tag "$proxy" "tor-${ND_INST_VARIANT}:$gen" || return 1
+  # second cold DNS latency with nothing wrong in this repo. Pull explicitly, by
+  # the reviewed digest in release/images.lock (Task 1.3); :latest moves to it
+  # only at activation.
+  "$CONTAINER_BIN" image pull "$ND_INST_PINNED_PROXY" || return 1
+  "$CONTAINER_BIN" image tag "$ND_INST_PINNED_PROXY" "tor-${ND_INST_VARIANT}:$gen" || return 1
   _nd_inst_record_image proxy "tor-${ND_INST_VARIANT}:$gen" || return 1
-  _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled proxy "$proxy" || return 1
+  _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled proxy "$ND_INST_PINNED_PROXY" || return 1
 
-  # The bases of the local builds, pulled now while host DNS still answers;
-  # the builds run later without --pull (see nd_install_macos_build_images).
-  _nd_inst_macos_pull_base "$(_nd_inst_containerfile_base "$ND_INST_TREE/unbound/Containerfile")" || return 1
+  # The bases of the local builds, by their locked digests, pulled now while
+  # host DNS still answers; the builds run later without --pull (see
+  # nd_install_macos_build_images). Apple's builder resolves a local base only
+  # by a plain name (fc5e6ec), so each gets one for this generation.
+  _nd_inst_macos_pull_base "$ND_INST_PINNED_UNBOUND" "unbound-base:$gen" || return 1
   if [ "$ND_INST_PIHOLE" = standard ]; then
-    _nd_inst_macos_pull_base "$(_nd_inst_containerfile_base "$ND_INST_TREE/pihole/Containerfile")" || return 1
+    _nd_inst_macos_pull_base "$ND_INST_PINNED_PIHOLE" "pihole-base:$gen" || return 1
   fi
+  _nd_inst_record_blocklist || return 1
 
   [ "$ND_INST_PIHOLE" = hardened ] || return 0
   # The sibling pi-hole-hardened checkout sits next to the tree this install
-  # was started from (never next to the private copy).
-  sibling_repo="$(cd "$ND_INST_SRC/.." && pwd)/pi-hole-hardened"
+  # was started from (never next to the private copy). The hardened base is
+  # not published, so there is no fallback.
   echo "▸ Resolving hardened base image…"
-  if [[ -f "$sibling_repo/Dockerfile" && -f "$sibling_repo/post-install.sh" ]]; then
-    echo "  • Sibling pi-hole-hardened repo found at $sibling_repo — building it after the stack stops."
-    ND_INST_BASE_SIBLING="$sibling_repo"
-    _nd_inst_macos_pull_base "$(_nd_inst_containerfile_base "$sibling_repo/Dockerfile")" || return 1
-    return 0
-  fi
-  echo "  • No sibling pi-hole-hardened/ checkout — pulling $remote."
-  if "$CONTAINER_BIN" image pull "$remote"; then
-    "$CONTAINER_BIN" image tag "$remote" "pi-hole-hardened-base:$gen" || return 1
-    _nd_inst_record_image hardened-base "pi-hole-hardened-base:$gen" || return 1
-    _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled hardened-base "$remote" || return 1
-    return 0
-  fi
-  echo "ERROR: could not build or pull the hardened base." >&2
-  echo "  Either:" >&2
-  echo "   - clone https://github.com/sureserverman/pi-hole-hardened next to nice-dns/, OR" >&2
-  echo "   - wait for sureserver/pi-hole-hardened:latest to publish on Docker Hub." >&2
-  return 1
+  sibling_repo="$(_nd_inst_hardened_sibling)" || return 1
+  echo "  • Sibling pi-hole-hardened repo found at $sibling_repo — building it after the stack stops."
+  ND_INST_BASE_SIBLING="$sibling_repo"
+  _nd_inst_macos_pull_base "$(_nd_inst_containerfile_base "$sibling_repo/Dockerfile")" || return 1
 }
 
 # nd_install_macos_bridges: bridges.env, and the proxy's BRIDGEn arguments in
@@ -1688,7 +1831,8 @@ nd_install_macos_build_images() {
     "$CONTAINER_BIN" build "${ND_INST_MACOS_BUILD_FLAGS[@]}" -t "pi-hole-hardened-base:$gen" "$ND_INST_BASE_SIBLING" || return 1
     _nd_inst_record_image hardened-base "pi-hole-hardened-base:$gen" || return 1
   fi
-  "$CONTAINER_BIN" build "${ND_INST_MACOS_BUILD_FLAGS[@]}" -t "unbound:$gen" unbound/ || return 1
+  "$CONTAINER_BIN" build "${ND_INST_MACOS_BUILD_FLAGS[@]}" --build-arg "BASE_IMAGE=unbound-base:$gen" \
+    -t "unbound:$gen" unbound/ || return 1
   _nd_inst_record_image unbound "unbound:$gen" || return 1
   if [ "$ND_INST_PIHOLE" = hardened ]; then
     # Apple's builder resolves a local base only by its plain name, hence the
@@ -1697,7 +1841,8 @@ nd_install_macos_build_images() {
     "$CONTAINER_BIN" build "${ND_INST_MACOS_BUILD_FLAGS[@]}" --build-arg "BASE_IMAGE=pi-hole-hardened-base:$gen" \
       -t "pi-hole:$gen" -f pihole-hardened/Containerfile . || return 1
   else
-    "$CONTAINER_BIN" build "${ND_INST_MACOS_BUILD_FLAGS[@]}" -t "pi-hole:$gen" pihole/ || return 1
+    "$CONTAINER_BIN" build "${ND_INST_MACOS_BUILD_FLAGS[@]}" --build-arg "BASE_IMAGE=pihole-base:$gen" \
+      -t "pi-hole:$gen" pihole/ || return 1
   fi
   _nd_inst_record_image pi-hole "pi-hole:$gen" || return 1
 
@@ -1712,6 +1857,7 @@ nd_install_macos_activate_images() {
   for name in unbound pi-hole; do
     "$CONTAINER_BIN" image tag "$name:$gen" "$name:latest" || return 1
   done
+  "$CONTAINER_BIN" image tag "tor-${ND_INST_VARIANT}:$gen" "docker.io/sureserver/tor-${ND_INST_VARIANT}:latest" || return 1
   if [ "$ND_INST_PIHOLE" = hardened ]; then
     "$CONTAINER_BIN" image tag "pi-hole-hardened-base:$gen" pi-hole-hardened-base:latest || return 1
   fi

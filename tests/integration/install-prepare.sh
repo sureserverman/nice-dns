@@ -50,7 +50,7 @@ t_argument_surface_is_unchanged() {
       m="$(ip_manifest "$(ip_gen_current)")"
       assert_eq haproxy "$(ip_row "$m" variant)" "$ep: defaults to haproxy"
       assert_eq main "$(ip_row "$m" branch)" "$ep: defaults to main"
-      assert_match '^(podman pull|container image pull) docker\.io/sureserver/tor-haproxy:latest$' "$(cat "$FAKE_LOG")" "$ep: pulls the haproxy proxy"
+      assert_match '^(podman pull|container image pull) docker\.io/sureserver/tor-haproxy@sha256:[0-9a-f]{64}$' "$(cat "$FAKE_LOG")" "$ep: pulls the haproxy proxy"
       : >"$FAKE_LOG"
       printf 'fedcba9876543210fedcba9876543210fedcba98\n' >"$FAKE/git_head"
       ip_install "$ep" socat dev
@@ -58,8 +58,8 @@ t_argument_surface_is_unchanged() {
       m="$(ip_manifest "$(ip_gen_current)")"
       assert_eq socat "$(ip_row "$m" variant)" "$ep: socat is recorded"
       assert_eq dev "$(ip_row "$m" branch)" "$ep: the branch is recorded"
-      assert_match '^(podman pull|container image pull) docker\.io/sureserver/tor-socat:latest$' "$(cat "$FAKE_LOG")" "$ep: pulls the socat proxy"
-      assert_not_match 'tor-haproxy:latest$' "$(grep -E "$IP_BUILD_PULL" "$FAKE_LOG")" "$ep: and not the other one"
+      assert_match '^(podman pull|container image pull) docker\.io/sureserver/tor-socat@sha256:[0-9a-f]{64}$' "$(cat "$FAKE_LOG")" "$ep: pulls the socat proxy"
+      assert_not_match 'tor-haproxy@' "$(grep -E "$IP_BUILD_PULL" "$FAKE_LOG")" "$ep: and not the other one"
     ) || exit 1
   done
 }
@@ -69,7 +69,10 @@ t_builds_and_pulls_precede_the_interruption() {
   ip_select
   for ep in $IP_EPS; do
     for sib in no yes; do
+      # Hardened needs its sibling (the base is unpublished): the fixture
+      # provides it; standard has none.
       [ "$sib" = yes ] && [ "$(ip_flavor "$ep")" = standard ] && continue
+      [ "$sib" = no ] && [ "$(ip_flavor "$ep")" = hardened ] && continue
       (
         local first last_bp stop n
         ip_env "$ep"
@@ -113,10 +116,10 @@ $(cat -n "$FAKE_LOG")"
 ip_injections() {
   if [ "$(ip_platform "$1")" = linux ]; then
     printf '%s\n' 'podman build .*unbound' 'podman build .*pi-hole' 'podman pull docker\.io/sureserver/tor-' 'git clone' 'sudo apt-get install'
-    [ "$(ip_flavor "$1")" = hardened ] && printf '%s\n' 'podman pull docker\.io/sureserver/pi-hole-hardened'
+    [ "$(ip_flavor "$1")" = hardened ] && printf '%s\n' 'podman build .*pi-hole-hardened-base:'
   else
     printf '%s\n' 'container image pull docker\.io/sureserver/tor-' 'git clone' 'bridges' 'brew install'
-    [ "$(ip_flavor "$1")" = hardened ] && printf '%s\n' 'container image pull docker\.io/sureserver/pi-hole-hardened'
+    [ "$(ip_flavor "$1")" = hardened ] && printf '%s\n' 'container image pull alpine:3\.21\.3'
   fi
   return 0
 }
@@ -268,6 +271,7 @@ $(grep -E '^(podman|container) build ' "$FAKE_LOG")"
 t_new_subids_are_migrated_before_the_builds() {
   local ep
   ip_select
+  assert_ne "" "$IP_EPS" "an entrypoint is selected (the case applies to some of them only)"
   for ep in $IP_EPS; do
     [ "$(ip_platform "$ep")" = linux ] || continue
     (
@@ -406,8 +410,16 @@ $(cat "$FAKE/build-cwd")"
       : >"$FAKE_LOG"; : >"$FAKE/build-cwd"
       printf '9999999999998888888888887777777777776666\n' >"$FAKE/git_head"
       ip_run "$IP_W/solo/$ep.sh" haproxy dev
-      assert_rc 0 "$IP_RC" "$ep solo: $IP_OUT"
       assert_match '^git clone (-q )?-b dev https://github\.com/sureserverman/nice-dns\.git ' "$(cat "$FAKE_LOG")" "$ep: clones the branch"
+      if [ "$(ip_flavor "$ep")" = hardened ]; then
+        # The hardened base is unpublished and no sibling checkout sits next
+        # to a temporary clone: refused in preparation (Task 1.3).
+        assert_nonzero "$IP_RC" "$ep solo: $IP_OUT"
+        assert_match 'pi-hole-hardened' "$IP_OUT" "$ep solo: says what is missing"
+        ip_assert_untouched "$ep solo"
+        exit 0
+      fi
+      assert_rc 0 "$IP_RC" "$ep solo: $IP_OUT"
       assert_eq clone "$(ip_row "$(ip_manifest "$(ip_gen_current)")" source_origin)" "$ep: source_origin clone"
       assert_eq 1 "$(( $(ip_first "$FAKE_LOG" '^git clone') < $(ip_first "$FAKE_LOG" "$IP_BUILD_PULL") ))" "$ep: the source is staged before any image work"
     ) || exit 1
@@ -496,6 +508,7 @@ t_bash32_runs_the_mac_entrypoints() {
     fail "image $img is not available locally; the Bash 3.2 proof cannot run (pull it: podman pull $img)"
   fi
   ip_select
+  assert_ne "" "$IP_EPS" "an entrypoint is selected (the case applies to some of them only)"
   for ep in $IP_EPS; do
     [ "$(ip_platform "$ep")" = macos ] || continue
     n=$((n + 1))
@@ -519,7 +532,7 @@ INNER
       assert_match '^rc=0$' "$out" "$ep under bash 3.2: $out"
       assert_match '^manifest: variant	socat$' "$out" "$ep under bash 3.2: the manifest records the install"
       assert_match '^log: container run -d --name tor-socat --network dnsnet -c 1 -m 512M -e BRIDGE1=obfs4 .* -e BRIDGE5=obfs4 .* docker\.io/sureserver/tor-socat:latest$' "$out" "$ep under bash 3.2: every bridge reaches the proxy"
-      assert_match '^log: container build --no-cache --dns 1\.1\.1\.1 -t unbound:' "$out" "$ep under bash 3.2: images are built"
+      assert_match '^log: container build --no-cache --dns 1\.1\.1\.1 --build-arg BASE_IMAGE=unbound-base:[^ ]+ -t unbound:' "$out" "$ep under bash 3.2: images are built"
     ) || exit 1
   done
   [ "$n" -gt 0 ] || assert_eq 0 0 "no macOS entrypoint selected"
