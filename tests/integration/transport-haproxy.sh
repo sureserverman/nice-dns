@@ -171,7 +171,7 @@ t_route_frontends_are_bounded() {
   tp_setup tor-haproxy
   th_haproxy
   th_admin "show stat"
-  for fe in route_cloudflare_onion route_cloudflare_exit route_quad9_exit dns_dot; do
+  for fe in fe_route_cloudflare_onion fe_route_cloudflare_exit fe_route_quad9_exit dns_dot; do
     slim="$(printf '%s\n' "$TP_OUT" | awk -F, -v f="$fe" '$1 == f && $2 == "FRONTEND" { print $7 }')"
     assert_match '^[1-9][0-9]*$' "$slim" "frontend $fe reports a connection limit (slim=$slim)"
     # haproxy always reports some limit (its global default when none is
