@@ -276,7 +276,11 @@ t_hung_runtime_is_bounded_and_cleaned() {
       el=$(( $(date +%s) - start ))
       assert_not_match '^result	acknowledged$' "$out" "$plat: no acknowledgement from a hung runtime"
       assert_match '^result	(unreachable|not-acknowledged|unsupported)$' "$out" "$plat: reported as not done"
-      [ "$el" -le 12 ] || fail "$plat: the hung runtime held the request for ${el}s"
+      # At most two runtime calls (the container lookup, then the first
+      # exec), each bounded by the 2 s deadline plus its 1 s kill grace. Was
+      # 12 s, which hid the macOS lookup's own 10 s deadline (12.05 s every
+      # time, so whole-second rounding failed it now and then).
+      [ "$el" -le 8 ] || fail "$plat: the hung runtime held the request for ${el}s"
       sleep 1
       # shellcheck disable=SC2009  # pgrep is not in the stub PATH
       assert_eq 0 "$(ps -eo args 2>/dev/null | grep -c '^sleep 971$')" "$plat: no hung child is left behind"

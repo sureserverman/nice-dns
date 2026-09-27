@@ -51,8 +51,9 @@ nd_platform_runtime_list() {
   return 0
 }
 
-# nd_platform_installed_variant: the installed Tor proxy variant when none is
-# running (its quadlet), else nothing.
+# nd_platform_installed_variant [deadline]: the installed Tor proxy variant
+# when none is running (its quadlet), else nothing. Reads files only, so the
+# deadline the macOS adapter honours is not needed here.
 nd_platform_installed_variant() {
   local v
   for v in haproxy socat; do
@@ -112,7 +113,7 @@ nd_platform_proxy_container() {
       grep -qx "tor-$v" "$2/running" && { printf 'tor-%s\n' "$v"; return 0; }
     done
   fi
-  v="$(nd_platform_installed_variant)" || return 1
+  v="$(nd_platform_installed_variant "$1")" || return 1
   printf 'tor-%s\n' "$v"
 }
 

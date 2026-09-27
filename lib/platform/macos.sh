@@ -95,7 +95,8 @@ nd_platform_runtime_list() {
 
 nd_platform_installed_variant() {
   local t="${_ND_H_TMP:-${TMPDIR:-/tmp}}/installed-variant" v
-  _nd_mac_table "${ND_HEALTH_CMD_DEADLINE:-10}" "$t" -a || return 1
+  # [deadline]: the caller's command deadline (recovery passes its own).
+  _nd_mac_table "${1:-${ND_HEALTH_CMD_DEADLINE:-10}}" "$t" -a || return 1
   for v in haproxy socat; do
     if awk -F '\t' -v n="tor-$v" '$1 == n { f = 1 } END { exit !f }' "$t"; then printf '%s\n' "$v"; return 0; fi
   done
@@ -182,7 +183,7 @@ nd_platform_proxy_container() {
       grep -qx "tor-$v" "$2/running" && { printf 'tor-%s\n' "$v"; return 0; }
     done
   fi
-  v="$(nd_platform_installed_variant)" || return 1
+  v="$(nd_platform_installed_variant "$1")" || return 1
   printf 'tor-%s\n' "$v"
 }
 
