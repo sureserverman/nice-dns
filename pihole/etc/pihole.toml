@@ -941,7 +941,9 @@
   #
   # Possible values are:
   #     <any Pi-hole gravity database>
-  gravity = "/etc/pihole/gravity.db"
+  # nice-dns: on the lists volume, so the operator's lists survive a new
+  # container (Sub-plan 4 Task 2.2; pihole/nd-start.sh).
+  gravity = "/var/lib/nice-dns-pihole/gravity.db" ### CHANGED, default = "/etc/pihole/gravity.db"
 
   # A temporary directory where Pi-hole can store files during gravity updates. This
   # directory must be writable by the user running gravity (typically pihole).

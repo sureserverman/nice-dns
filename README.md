@@ -69,6 +69,14 @@ cat ~/.local/state/nice-dns/secrets/pihole/pihole_webpassword
 To choose your own, write it to that file (one line, mode `600`) and run the
 installer again. The uninstall deletes it.
 
+What you change in the admin UI's lists survives restarts, reinstalls,
+upgrades and a switch between the standard and hardened installers: allowed
+and denied domains, regex rules, groups, clients and blocklists you added
+(with the domains they last downloaded). Pi-hole's other settings come from
+nice-dns's own configuration on every install. Tor's state and Unbound's
+root trust anchor are kept the same way, so a restart does not bootstrap Tor
+from nothing. The uninstall removes all of it.
+
 ## How it works
 
 ```mermaid

@@ -12,6 +12,11 @@ After=unbound.service
 ContainerName=pi-hole
 Image=localhost/pi-hole:latest
 Pod=nice-dns.pod
+# The operator's lists (gravity.db: allow/deny rules, groups, clients, added
+# blocklists) survive a new container and a new image; pihole/nd-start.sh
+# carries them into each image's seed (Sub-plan 4 Task 2.2). Uninstall
+# removes the volume.
+Volume=nice-dns-pihole-lists:/var/lib/nice-dns-pihole
 # Capabilities and NoNewPrivileges are per image, in the drop-in
 # pi-hole.container.d/50-nice-dns-caps.conf that persistent-podman.sh installs
 # from pi-hole-{standard,hardened}.conf. The standard image's entrypoint

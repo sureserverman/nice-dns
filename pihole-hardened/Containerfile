@@ -44,16 +44,27 @@ RUN install -m 600 -o pihole -g pihole /tmp/pihole-base-versions /etc/pihole/ver
 # unreachable from inside the container).
 COPY --chown=pihole:pihole pihole/adlists-default.txt /tmp/adlists.txt
 COPY --chown=pihole:pihole pihole/custom-allowlist.txt /tmp/allowlist.txt
+# gravity.db lives on the lists volume, /var/lib/nice-dns-pihole
+# (pihole.toml files.gravity; Sub-plan 4 Task 2.2), kept as this image's seed
+# too, with its id, for nd-start.sh. chown still exists until post-install.sh.
 RUN set -e; \
+    mkdir -p /var/lib/nice-dns-pihole /usr/share/nice-dns/pihole; \
+    chown pihole:pihole /var/lib/nice-dns-pihole; chmod 700 /var/lib/nice-dns-pihole; \
     grep -vE '^[[:space:]]*(#|$)' /tmp/adlists.txt > /etc/pihole/adlists.list; \
     chown pihole:pihole /etc/pihole/adlists.list; \
     pihole -g; \
     grep -vE '^[[:space:]]*(#|$)' /tmp/allowlist.txt | while IFS= read -r d; do \
-      pihole-FTL sqlite3 -ni /etc/pihole/gravity.db \
+      pihole-FTL sqlite3 -ni /var/lib/nice-dns-pihole/gravity.db \
         "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) \
          VALUES (0, '$d', 1, 'Seeded at image build time (allowlist)');"; \
     done; \
-    rm /tmp/adlists.txt /tmp/allowlist.txt
+    rm /tmp/adlists.txt /tmp/allowlist.txt; \
+    cp /var/lib/nice-dns-pihole/gravity.db /usr/share/nice-dns/pihole/gravity.seed.db; \
+    sha256sum /usr/share/nice-dns/pihole/gravity.seed.db | cut -c1-64 >/usr/share/nice-dns/pihole/seed-id; \
+    cp /usr/share/nice-dns/pihole/seed-id /var/lib/nice-dns-pihole/seed-id; \
+    chown -R pihole:pihole /var/lib/nice-dns-pihole
+COPY --chmod=644 pihole/merge-lists.sql /usr/share/nice-dns/pihole/merge-lists.sql
+COPY --chmod=755 pihole/nd-start.sh /usr/local/bin/nd-start.sh
 
 # Lock down the FTL-managed config files copied in above. The hardened base's
 # post-install.sh below re-applies blanket 600/700 permissions, so this is
@@ -69,4 +80,7 @@ RUN /pihole/post-install.sh
 
 USER pihole
 
-# Inherits ENTRYPOINT ["tini", "--"] and CMD ["/bin/start.sh"] from the base.
+# nd-start.sh (the admin secret and the operator's lists) runs first, then the
+# base's own /bin/start.sh.
+ENTRYPOINT ["tini", "--", "/usr/local/bin/nd-start.sh"]
+CMD ["/bin/start.sh"]

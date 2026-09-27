@@ -377,6 +377,60 @@ _nd_inst_pihole_credential_remove() {
   rmdir "$(dirname "$d")" 2>/dev/null || true
 }
 
+# ─────────────────────────── instance state (Task 2.2) ───────────────────────
+#
+# Sub-plan 4 Task 2.2 (ARCH-06, design "Installers and persistence"). The state
+# each deployment keeps across repair, reinstall and upgrade, and that only
+# uninstall removes:
+#   Tor state      Linux: volume nice-dns-tor-<proxy> (/app/data)
+#                  macOS: ~/.local/state/nice-dns/tor-<proxy> (/app/data)
+#   root anchor    volume nice-dns-unbound-anchor (/var/lib/unbound)
+#   Pi-hole lists  volume nice-dns-pihole-lists (/var/lib/nice-dns-pihole)
+# plus the admin password above. Podman seeds a new named volume from the
+# image's directory, owner included; Apple's container creates a fresh
+# root-owned ext4 volume, so macOS creates them here and hands each to its
+# image's user.
+
+ND_INST_STATE_VOLUMES="nice-dns-unbound-anchor nice-dns-pihole-lists"
+
+# nd_install_macos_state_volumes: in the interruption window (nothing runs on
+# dnsnet; the builds used the default network just before), after the images
+# are activated.
+nd_install_macos_state_volumes() {
+  _nd_inst_macos_volume nice-dns-unbound-anchor "unbound:$ND_INST_GEN" unbound &&
+  _nd_inst_macos_volume nice-dns-pihole-lists "pi-hole:$ND_INST_GEN" pihole &&
+  mkdir -p "${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/tor-${ND_INST_VARIANT}"
+}
+
+# _nd_inst_macos_volume <volume> <image> <user>: the volume exists and its
+# root belongs to <user> of <image>, mode 0700. The images keep busybox but
+# not a chown applet.
+_nd_inst_macos_volume() {
+  "$CONTAINER_BIN" volume create "$1" >/dev/null 2>&1 || "$CONTAINER_BIN" volume inspect "$1" >/dev/null 2>&1 \
+    || { _nd_inst_err "cannot create the volume $1"; return 1; }
+  "$CONTAINER_BIN" run --rm --user 0 -v "$1:/mnt" --entrypoint /bin/busybox "$2" \
+    sh -c "busybox chown $3:$3 /mnt && busybox chmod 700 /mnt" >/dev/null \
+    || { _nd_inst_err "cannot hand the volume $1 to $3"; return 1; }
+}
+
+# _nd_inst_state_remove: the uninstall's half, once the containers are gone.
+_nd_inst_state_remove() {
+  local v d
+  if [ "$ND_INST_PLATFORM" = linux ]; then
+    for v in $ND_INST_STATE_VOLUMES nice-dns-tor-haproxy nice-dns-tor-socat; do
+      podman volume rm -f "$v" >/dev/null 2>&1 || true
+    done
+  else
+    for v in $ND_INST_STATE_VOLUMES; do
+      "${CONTAINER_BIN:-container}" volume rm "$v" >/dev/null 2>&1 || true
+    done
+    for v in haproxy socat; do
+      d="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/tor-$v"
+      if [ -L "$d" ]; then rm -f "$d"; else rm -rf "${d:?}"; fi
+    done
+  fi
+}
+
 # nd_install_finish: marks the generation activated, names it current and
 # prunes generations older than the previous one. Only after a fully
 # successful install.
@@ -1464,6 +1518,7 @@ nd_install_linux_uninstall() {
   local R="$ND_INST_ROOT" ref ep sd dns_ok=1
   ND_INST_TREE="$ND_INST_SRC"
   nd_install_linux_stop_stack
+  _nd_inst_state_remove
   systemctl --user disable --now nice-dns-fetch-bridges.service 2>/dev/null || true
   rm -f "$HOME/.config/systemd/user/nice-dns-fetch-bridges.service" "$HOME/.local/bin/nice-dns-fetch-bridges"
   ep="$(_nd_inst_controller_entry)"
@@ -1919,6 +1974,7 @@ nd_install_macos_activate() {
   nd_install_macos_upgrade_runtime
   nd_install_macos_build_images
   nd_install_macos_activate_images
+  nd_install_macos_state_volumes
   nd_install_macos_run_stack
   nd_install_wait_ready
   # persist.sh installs the controller, runs the installed copy's self-check
@@ -1942,6 +1998,7 @@ nd_install_macos_uninstall() {
   local ep sd dns_ok=1
   ND_INST_TREE="$ND_INST_SRC"
   nd_install_macos_teardown uninstall
+  _nd_inst_state_remove
   ep="$(_nd_inst_controller_entry)"
   if [ -n "$ep" ] && [ -f "$ep" ]; then bash "$ep" uninstall || true; fi
   _nd_inst_dns_helper restore || dns_ok=0
@@ -2033,11 +2090,13 @@ nd_install_macos_run_stack() {
   # checks they agree). The secret directory is mounted read-only; the
   # capability set is the one both images were proven to need (Task 2.1,
   # pi-hole-standard.conf says why each is there).
-  local PIHOLE_SECRET_DIR
+  local PIHOLE_SECRET_DIR TOR_STATE_DIR
   PIHOLE_SECRET_DIR="$(nd_install_pihole_secret_dir)"
+  TOR_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/tor-${ND_INST_VARIANT}"
   "$CONTAINER_BIN" run -d --name pi-hole --network dnsnet \
     -c 1 -m 256M \
     -v "${PIHOLE_SECRET_DIR}:/run/secrets:ro" \
+    -v nice-dns-pihole-lists:/var/lib/nice-dns-pihole \
     -e WEBPASSWORD_FILE=pihole_webpassword \
     --cap-drop ALL \
     --cap-add CAP_CHOWN --cap-add CAP_DAC_OVERRIDE --cap-add CAP_FOWNER --cap-add CAP_KILL \
@@ -2051,10 +2110,12 @@ nd_install_macos_run_stack() {
 
   "$CONTAINER_BIN" run -d --name unbound --network dnsnet \
     -c 1 -m 256M \
+    -v nice-dns-unbound-anchor:/var/lib/unbound \
     unbound:latest >/dev/null
 
   "$CONTAINER_BIN" run -d --name "tor-${ND_INST_VARIANT}" --network dnsnet \
     -c 1 -m 512M \
+    -v "${TOR_STATE_DIR}:/app/data" \
     "${ND_INST_BRIDGE_ARGS[@]}" \
     "docker.io/sureserver/tor-${ND_INST_VARIANT}:latest" >/dev/null
 }

@@ -163,3 +163,4 @@ OP-ADMIN-AUTH-UNINSTALL	SEC-ADMIN-AUTH	integration	deployment-security	t_uninsta
 OP-ADMIN-AUTH-MAC-AGREE	SEC-ADMIN-AUTH	integration	deployment-security	t_macos_launch_paths_agree	installers
 OP-LISTENERS	SEC-LISTENERS	integration	deployment-security	t_images_enforce_the_deployment_password	installers
 OP-LEAST-PRIV	SEC-LEAST-PRIV	integration	deployment-security	t_images_enforce_the_deployment_password	installers
+OP-OWNED-RESTORE-LIFECYCLE	SEC-OWNED-RESTORE	integration	lifecycle-transitions	t_every_transition_keeps_the_instance_state	installers

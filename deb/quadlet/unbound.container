@@ -15,6 +15,10 @@ After=tor-__VARIANT__.service
 ContainerName=unbound
 Image=localhost/unbound:latest
 Pod=nice-dns.pod
+# The persistent root trust anchor (RFC 5011 state; ARCH-06). Podman seeds
+# the named volume from the image's /var/lib/unbound (unbound, 0700), which
+# nice-dns-unbound-start requires. Uninstall removes it.
+Volume=nice-dns-unbound-anchor:/var/lib/unbound
 NoNewPrivileges=true
 # Health reports; it never restarts (see tor-haproxy.container: the
 # nice-dns-health controller is the one restart owner). Healthy means Unbound

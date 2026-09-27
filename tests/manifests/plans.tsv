@@ -21,3 +21,4 @@ controller	live	controller-active
 controller	live	controller-wake
 controller	live	controller-receipt
 installers	integration	deployment-security
+installers	integration	lifecycle-transitions

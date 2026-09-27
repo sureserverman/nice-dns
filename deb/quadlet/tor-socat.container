@@ -9,6 +9,11 @@ After=nice-dns-fetch-bridges.service
 ContainerName=tor-socat
 Image=docker.io/sureserver/tor-socat:latest
 Pod=nice-dns.pod
+# Tor's state (DataDirectory /app/data/tor: guards, consensus, descriptors)
+# survives a new container, so a restart does not bootstrap from nothing
+# (Sub-plan 4 Task 2.2, ARCH-06). Podman seeds the named volume from the
+# image's /app/data, owned by the image's user. Uninstall removes it.
+Volume=nice-dns-tor-socat:/app/data
 # NoNewPrivileges=true is INTENTIONALLY OMITTED here. Same reason as
 # tor-haproxy.container: the image runs as USER app (uid 1000) and grants
 # socat CAP_NET_BIND_SERVICE via file-cap to bind port 853. no-new-privs

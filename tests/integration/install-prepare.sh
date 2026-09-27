@@ -545,7 +545,7 @@ INNER
       out="$(podman run --rm --network none --pull=never -v "$IP_W:/world:ro" "$img" bash /world/inner.sh 2>&1)"
       assert_match '^rc=0$' "$out" "$ep under bash 3.2: $out"
       assert_match '^manifest: variant	socat$' "$out" "$ep under bash 3.2: the manifest records the install"
-      assert_match '^log: container run -d --name tor-socat --network dnsnet -c 1 -m 512M -e BRIDGE1=obfs4 .* -e BRIDGE5=obfs4 .* docker\.io/sureserver/tor-socat:latest$' "$out" "$ep under bash 3.2: every bridge reaches the proxy"
+      assert_match '^log: container run -d --name tor-socat --network dnsnet -c 1 -m 512M -v [^ ]*/\.local/state/nice-dns/tor-socat:/app/data -e BRIDGE1=obfs4 .* -e BRIDGE5=obfs4 .* docker\.io/sureserver/tor-socat:latest$' "$out" "$ep under bash 3.2: every bridge reaches the proxy, which keeps its Tor state"
       assert_match '^log: container build --no-cache --dns 1\.1\.1\.1 --build-arg BASE_IMAGE=unbound-base:[^ ]+ -t unbound:' "$out" "$ep under bash 3.2: images are built"
     ) || exit 1
   done

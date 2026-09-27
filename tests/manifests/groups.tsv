@@ -37,3 +37,4 @@ integration	release-inputs	tests/integration/release-inputs.sh	local
 integration	installers-interaction	tests/integration/installers-interaction.sh	local
 integration	installers-persistence	tests/integration/installers-persistence.sh	local
 integration	deployment-security	tests/integration/deployment-security.sh	local
+integration	lifecycle-transitions	tests/integration/lifecycle-transitions.sh	local

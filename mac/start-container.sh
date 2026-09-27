@@ -471,6 +471,7 @@ start_or_create_stack() {
   ensure_container pi-hole \
     -c 1 -m 256M \
     -v "${PIHOLE_SECRET_DIR}:/run/secrets:ro" \
+    -v nice-dns-pihole-lists:/var/lib/nice-dns-pihole \
     -e WEBPASSWORD_FILE=pihole_webpassword \
     --cap-drop ALL \
     --cap-add CAP_CHOWN --cap-add CAP_DAC_OVERRIDE --cap-add CAP_FOWNER --cap-add CAP_KILL \
@@ -482,8 +483,10 @@ start_or_create_stack() {
     -e DISABLE_GITHUB_UPDATES=true \
     pi-hole:latest || return 1
 
+  # The anchor volume (created by the installer; nd_install_macos_state_volumes).
   ensure_container unbound \
     -c 1 -m 256M \
+    -v nice-dns-unbound-anchor:/var/lib/unbound \
     unbound:latest || return 1
 
   # Recreate the tor container only when the bridge set actually changed.
