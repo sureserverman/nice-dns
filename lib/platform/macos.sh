@@ -226,6 +226,10 @@ nd_platform_restart_proxy() {
   set -- "$?"; rm -f "$d/restart-requested"; return "$1"
 }
 
+# nd_platform_runtime_repairs: the runtime faults nd_platform_repair_runtime
+# can repair here; the policy escalates any other (ND_POLICY_RUNTIME_REPAIRS).
+nd_platform_runtime_repairs() { printf 'runtime-down containers-missing\n'; }
+
 # nd_platform_repair_runtime <fault> <deadline> <tmp>: 0 issued; 3 no repair.
 # A runtime that does not answer: `container system start` (what the
 # LaunchAgent itself does first). Missing containers: start the LaunchAgent

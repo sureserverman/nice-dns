@@ -38,7 +38,10 @@
 #     selected).
 #   * runtime cli-missing escalates. runtime-down or containers-missing is
 #     repaired (repair-runtime) after the startup allowance and outside the
-#     cooldown; an indeterminate runtime is no evidence of a fault.
+#     cooldown, when the platform can repair it (ND_POLICY_RUNTIME_REPAIRS,
+#     default both; the tick sets it from nd_platform_runtime_repairs);
+#     otherwise it escalates. An indeterminate runtime is no evidence of a
+#     fault.
 #   * Route selection, when an identity route is healthy: the current route
 #     stays while its fail streak is under ND_POLICY_DEMOTE (2) and its
 #     unknown streak under ND_POLICY_STALE (5): a route without evidence is
@@ -74,6 +77,7 @@ nd_policy_decide() {
   local startup="${ND_POLICY_STARTUP_S:-120}" grace="${ND_POLICY_GRACE_S:-300}" cool="${ND_POLICY_COOLDOWN_S:-300}"
   local promote="${ND_POLICY_PROMOTE:-5}" demote="${ND_POLICY_DEMOTE:-2}" maxr="${ND_POLICY_MAX_RESTARTS:-2}"
   local stale="${ND_POLICY_STALE:-5}" ladder="${ND_POLICY_LADDER_S:-660}"
+  local repairs=" ${ND_POLICY_RUNTIME_REPAIRS:-runtime-down containers-missing} "
   local routes="${ND_ROUTES_FILE:-$ND_POLICY_LIB_DIR/../routes/providers.tsv}"
   local tab=$'\t' cr=$'\r' a b c d e rest i j n=0 v
   local -a rid=() rok=() rfail=() runk=() robs=()
@@ -199,6 +203,8 @@ nd_policy_decide() {
 
     if [ "$rt_fault" = cli-missing ]; then
       action=escalate reason="runtime CLI is missing: $rt_reason"
+    elif [ -n "$rt_fault" ] && [ "${repairs#* "$rt_fault" }" = "$repairs" ]; then
+      action=escalate reason="runtime fault ($rt_fault) has no repair on this platform: $rt_reason"
     elif [ -n "$rt_fault" ]; then
       if [ "$in_startup" = 1 ]; then reason="runtime fault ($rt_fault) inside the startup allowance"
       elif [ "$in_cool" = 1 ]; then reason="runtime fault ($rt_fault) inside the recovery cooldown"

@@ -750,7 +750,7 @@ nd_recovery_tick() {
   if ! nd_state_load >"$t/state"; then rm -rf "$t"; nd_state_unlock "$tok"; return 2; fi
   gen="$(_nd_rec_field generation "$t/state")"
   _nd_rec_readiness "$obs" "$now"
-  if ! nd_policy_decide "$obs" "$t/state" "$now" "$boot" >"$t/out"; then rm -rf "$t"; nd_state_unlock "$tok"; return 2; fi
+  if ! ND_POLICY_RUNTIME_REPAIRS="$(nd_platform_runtime_repairs)" nd_policy_decide "$obs" "$t/state" "$now" "$boot" >"$t/out"; then rm -rf "$t"; nd_state_unlock "$tok"; return 2; fi
   awk '$0 == "schema\tnice-dns-controller-state/1" { s = 1 } !s' "$t/out" >"$t/decision"
   awk '$0 == "schema\tnice-dns-controller-state/1" { s = 1 } s' "$t/out" >"$t/next"
   id="nd-$now-$((gen + 1))"

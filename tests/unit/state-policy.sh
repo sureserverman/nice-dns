@@ -17,7 +17,7 @@ SP_T0=1760000000
 sp_env() {
   export ND_STATE_DIR="$CASE_DIR/state" ND_BOOT_ID="boot-a" ND_PLATFORM=linux
   export ND_ROUTES_FILE="$NICE_DNS_ROOT/routes/providers.tsv"
-  unset ND_STATE_LEASE_S ND_POLICY_STARTUP_S ND_POLICY_GRACE_S ND_POLICY_COOLDOWN_S ND_POLICY_LADDER_S \
+  unset ND_STATE_LEASE_S ND_POLICY_STARTUP_S ND_POLICY_GRACE_S ND_POLICY_COOLDOWN_S ND_POLICY_LADDER_S ND_POLICY_RUNTIME_REPAIRS \
     ND_POLICY_PROMOTE ND_POLICY_DEMOTE ND_POLICY_MAX_RESTARTS
 }
 
@@ -595,4 +595,26 @@ INNER
   assert_match '^commit=0$' "$out" "commit under bash 3.2"
   assert_match '^generation=1$' "$out" "generation under bash 3.2"
   assert_match '^last_action=restart-component$' "$out" "state round trip under bash 3.2"
+}
+
+t_policy_escalates_a_runtime_fault_the_platform_cannot_repair() {
+  # Pre-merge review, Important: rootless Podman has no runtime-down repair
+  # (lib/platform/linux.sh), so on Linux the controller re-issued an
+  # "unsupported" repair every cooldown for ever and never escalated.
+  # ND_POLICY_RUNTIME_REPAIRS (set by the tick from the platform adapter)
+  # names the faults this platform can repair; any other escalates at once.
+  sp_libs
+  printf 'schema\tnice-dns-controller-state/1\nboot_id\tboot-a\nupdated\t%s\nstarted\t%s\nroute\tcloudflare-exit\noutage_since\t-\noutage_restarts\t0\nlast_action\t-\nlast_action_at\t-\nrecovery_at\t-\n' \
+    "$SP_T0" $((SP_T0 - 3600)) >"$CASE_DIR/cur"
+  sp_obs "$CASE_DIR/o" down indeterminate indeterminate indeterminate indeterminate
+  ND_POLICY_RUNTIME_REPAIRS=containers-missing sp_decide "$CASE_DIR/o" "$CASE_DIR/cur" $((SP_T0 + 60))
+  assert_eq escalate "$SP_ACTION" "runtime-down with no repair on this platform escalates"
+  assert_match 'no repair' "$SP_REASON" "and says there is no repair here"
+  sp_obs "$CASE_DIR/o" missing indeterminate indeterminate indeterminate indeterminate
+  ND_POLICY_RUNTIME_REPAIRS=containers-missing sp_decide "$CASE_DIR/o" "$CASE_DIR/cur" $((SP_T0 + 60))
+  assert_eq repair-runtime "$SP_ACTION" "a fault the platform can repair is still repaired"
+  ( . "$NICE_DNS_ROOT/lib/platform/linux.sh"
+    assert_eq containers-missing "$(nd_platform_runtime_repairs)" "linux: only missing containers are repairable" ) || exit 1
+  ( . "$NICE_DNS_ROOT/lib/platform/macos.sh"
+    assert_eq "runtime-down containers-missing" "$(nd_platform_runtime_repairs)" "macos: both faults are repairable" ) || exit 1
 }

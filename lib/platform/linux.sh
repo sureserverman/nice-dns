@@ -136,11 +136,16 @@ nd_platform_restart_proxy() {
   nd_bounded "$2" "$3/svc" "$3/svc.err" systemctl --user restart "$1.service"
 }
 
+# nd_platform_runtime_repairs: the runtime faults nd_platform_repair_runtime
+# can repair here; the policy escalates any other (ND_POLICY_RUNTIME_REPAIRS).
+nd_platform_runtime_repairs() { printf 'containers-missing\n'; }
+
 # nd_platform_repair_runtime <fault> <deadline> <tmp>: 0 issued; 3 no repair
 # exists for this fault here. Rootless podman has no daemon to restart, so a
-# runtime that does not answer is escalated, not repaired. Missing containers
-# are started through pi-hole.service, whose Wants= pulls unbound and the
-# proxy; running units are left alone.
+# runtime that does not answer is escalated, not repaired (it is not in
+# nd_platform_runtime_repairs). Missing containers are started through
+# pi-hole.service, whose Wants= pulls unbound and the proxy; running units are
+# left alone.
 nd_platform_repair_runtime() {
   case "$1" in
     containers-missing) nd_bounded "$2" "$3/rep" "$3/rep.err" systemctl --user start pi-hole.service ;;
