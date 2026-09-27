@@ -120,3 +120,25 @@ cs_sleeps() { cs_field "$1" power sleeps; }
 
 # ca_up <report>: an answering route and Pi-hole's own name (the chain works).
 ca_up() { cs_route_up "$1" && [ "$(cs_obs "$1" local-service)" = healthy ]; }
+
+# cs_reuse_cell <platform/proxy/pihole>: DEC-009 (user decision 2026-09-27).
+# NICE_DNS_CELL_REUSE_RUNS names earlier run directories (absolute, space
+# separated, searched in the order given). Prints the first such run's cell
+# directory whose cell.tsv names this cell and whose observations.tsv holds
+# all six controller scenarios as passed; prints nothing when none does.
+# Exit 2 when a named run is not an absolute directory.
+cs_reuse_cell() {
+  local k="$1" r d n
+  for r in ${NICE_DNS_CELL_REUSE_RUNS:-}; do
+    case "$r" in /*) ;; *) printf 'cs_reuse_cell: %s is not an absolute run directory\n' "$r" >&2; return 2 ;; esac
+    [ -d "$r" ] || { printf 'cs_reuse_cell: no run directory %s\n' "$r" >&2; return 2; }
+    d="$r/controller-active/$(printf '%s' "$k" | tr / -)"
+    [ -f "$d/cell.tsv" ] && [ -f "$d/observations.tsv" ] || continue
+    [ "$(awk -F '\t' '$1 == "cell" { print $2; exit }' "$d/cell.tsv")" = "$k" ] || continue
+    n="$(awk -F '\t' '$2 == "pass" && $1 ~ /^CT-(PROBES|PRIMARY-ONLY|RECOVERY-ACK|CACHE-VS-UPSTREAM|RUNTIME-WEDGE|BRIDGES)$/ { s[$1] = 1 } END { print length(s) }' "$d/observations.tsv")"
+    [ "$n" = 6 ] || continue
+    printf '%s\n' "$d"
+    return 0
+  done
+  return 0
+}

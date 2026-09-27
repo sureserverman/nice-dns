@@ -458,3 +458,57 @@ t_limit_rows_are_checked_and_counted() {
   rv "$CASE_DIR/c/receipt.tsv"
   assert_nonzero "$RV_RC" "a limit without a reason fails"
 }
+
+t_reuse_rows_are_checked_and_counted() {
+  # DEC-009 (user decision 2026-09-27): a gate may carry a cell that passed
+  # in an earlier run instead of repeating it. The receipt names each such
+  # cell, the run it came from and that run's nice-dns commit.
+  local sha
+  sha="$(git -C "$RV_SIB/nice-dns" rev-parse HEAD)"
+  rv_build controller "$CASE_DIR/c"
+  printf 'reuse\tlinux/haproxy/standard\t20260926T190619Z-bcd92da5\t%s\n' "$sha" >>"$CASE_DIR/c/receipt.tsv"
+  rv "$CASE_DIR/c/receipt.tsv"
+  assert_rc 0 "$RV_RC" "a reused observed cell verifies: $RV_OUT"
+  assert_match 'reused=1' "$RV_OUT" "the summary counts reused cells"
+  cp "$CASE_DIR/c/receipt.tsv" "$CASE_DIR/orig.tsv"
+  printf 'reuse\tlinux/haproxy/standard\t20260926T210648Z-e72d9762\t%s\n' "$sha" >>"$CASE_DIR/c/receipt.tsv"
+  rv "$CASE_DIR/c/receipt.tsv"
+  assert_nonzero "$RV_RC" "a cell reused twice fails"
+  cp "$CASE_DIR/orig.tsv" "$CASE_DIR/c/receipt.tsv"
+  printf 'reuse\tlinux/haproxy/nosuch\t20260926T190619Z-bcd92da5\t%s\n' "$sha" >>"$CASE_DIR/c/receipt.tsv"
+  rv "$CASE_DIR/c/receipt.tsv"
+  assert_nonzero "$RV_RC" "reusing a cell that is not observed fails"
+  cp "$CASE_DIR/orig.tsv" "$CASE_DIR/c/receipt.tsv"
+  printf 'reuse\tmacos/haproxy/standard\trun-test-controller\t%s\n' "$sha" >>"$CASE_DIR/c/receipt.tsv"
+  rv "$CASE_DIR/c/receipt.tsv"
+  assert_nonzero "$RV_RC" "a reuse must name another, well-formed run"
+  cp "$CASE_DIR/orig.tsv" "$CASE_DIR/c/receipt.tsv"
+  printf 'reuse\tmacos/haproxy/standard\t20260926T190619Z-bcd92da5\tabc\n' >>"$CASE_DIR/c/receipt.tsv"
+  rv "$CASE_DIR/c/receipt.tsv"
+  assert_nonzero "$RV_RC" "a reuse names the full commit it ran"
+}
+
+t_reused_cell_is_found_only_when_it_passed_everything() {
+  # cs_reuse_cell (tests/live/controller-lib.sh) picks an earlier run's cell
+  # only when that cell passed all six scenarios; a partly passed or failed
+  # cell is never carried, and a cell of this run is never replaced.
+  local r1="$CASE_DIR/runs/20260101T000000Z-aaaaaaaa" r2="$CASE_DIR/runs/20260102T000000Z-bbbbbbbb" c k out
+  for r in "$r1" "$r2"; do mkdir -p "$r/controller-active"; done
+  mkdir -p "$r1/controller-active/linux-haproxy-standard" "$r2/controller-active/linux-haproxy-standard" "$r2/controller-active/macos-socat-standard"
+  printf 'cell\tlinux/haproxy/standard\nnice_dns\t%s\n' "$(printf 'a%.0s' $(seq 40))" >"$r1/controller-active/linux-haproxy-standard/cell.tsv"
+  cp "$r1/controller-active/linux-haproxy-standard/cell.tsv" "$r2/controller-active/linux-haproxy-standard/cell.tsv"
+  printf 'cell\tmacos/haproxy/standard\n' >"$r2/controller-active/macos-socat-standard/cell.tsv"
+  for k in CT-PROBES CT-PRIMARY-ONLY CT-RECOVERY-ACK CT-CACHE-VS-UPSTREAM CT-RUNTIME-WEDGE CT-BRIDGES; do
+    printf '%s\tpass\tx.txt\n' "$k" >>"$r1/controller-active/linux-haproxy-standard/observations.tsv"
+  done
+  head -n 4 "$r1/controller-active/linux-haproxy-standard/observations.tsv" >"$r2/controller-active/linux-haproxy-standard/observations.tsv"
+  cp "$r1/controller-active/linux-haproxy-standard/observations.tsv" "$r2/controller-active/macos-socat-standard/observations.tsv"
+  ( . "$NICE_DNS_ROOT/tests/live/controller-lib.sh"
+    NICE_DNS_CELL_REUSE_RUNS="$r2 $r1"
+    assert_eq "$r1/controller-active/linux-haproxy-standard" "$(cs_reuse_cell linux/haproxy/standard)" "the run whose cell passed all six is used, not a later partial one"
+    assert_eq "" "$(cs_reuse_cell macos/socat/standard)" "a cell whose recorded key differs from its directory is refused"
+    assert_eq "" "$(cs_reuse_cell linux/socat/standard)" "a cell no run passed is not reused"
+    NICE_DNS_CELL_REUSE_RUNS="relative/run"
+    out="$(cs_reuse_cell linux/haproxy/standard 2>&1)"; assert_nonzero "$?" "a reuse run must be an absolute directory: $out"
+  ) || exit 1
+}

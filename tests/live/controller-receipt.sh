@@ -43,7 +43,17 @@ t_1_receipt() {
   } >"$r"
   cp "$CA_ROOT_DIR/wake.txt" "$out/CT-WAKE.txt"
   printf 'scenario\tCT-WAKE\t-\tpass\tCT-WAKE.txt\t%s\t-\n' "$(sha256sum "$out/CT-WAKE.txt" | cut -d' ' -f1)" >>"$r"
-  for d in "$CA_ROOT_DIR"/*-*-*/; do
+  # This run's cells, then the cells carried from earlier runs (DEC-009:
+  # controller-active skipped them and listed them in reused.tsv).
+  : >"$CASE_DIR/cell-dirs.tsv"
+  for d in "$CA_ROOT_DIR"/*-*-*/; do printf '%s\t-\n' "${d%/}" >>"$CASE_DIR/cell-dirs.tsv"; done
+  if [ -f "$CA_ROOT_DIR/reused.tsv" ]; then
+    while IFS="$(printf '\t')" read -r cell d; do
+      [ -d "$d" ] || fail "reused cell $cell: no directory $d"
+      printf '%s\t%s\n' "$d" "$(basename "$(dirname "$(dirname "$d")")")" >>"$CASE_DIR/cell-dirs.tsv"
+    done <"$CA_ROOT_DIR/reused.tsv"
+  fi
+  while IFS="$(printf '\t')" read -r d from; do
     [ -f "$d/cell.tsv" ] || continue
     cell="$(awk -F '\t' '$1 == "cell" { print $2 }' "$d/cell.tsv")"
     key="$(printf '%s' "$cell" | tr / -)"
@@ -60,6 +70,7 @@ t_1_receipt() {
     n=$((n + 1))
     printf 'cell\t%s\t%s\t%s\t%s\t%s\tobserved\n' "${cell%%/*}" "$(printf '%s' "$cell" | cut -d/ -f2)" "${cell##*/}" \
       "$(awk -F '\t' '$1 == "target" { print $2 }' "$d/cell.tsv")" "$gen" >>"$r"
+    [ "$from" = - ] || printf 'reuse\t%s\t%s\t%s\n' "$cell" "$from" "$(awk -F '\t' '$1 == "nice_dns" { print $2; exit }' "$d/cell.tsv")" >>"$r"
     while IFS="$(printf '\t')" read -r id st f; do
       cp "$d/$f" "$out/cells/$key/$f"
       printf 'scenario\t%s\t%s\t%s\tcells/%s/%s\t%s\t%s\n' "$id" "$cell" "$st" "$key" "$f" "$(sha256sum "$out/cells/$key/$f" | cut -d' ' -f1)" "$gen" >>"$r"
@@ -71,10 +82,10 @@ t_1_receipt() {
     elif ! grep -q '	ready	' "$d/recovery-ack.txt" 2>/dev/null; then
       printf 'limit\tready-corroboration\t%s\tscope=sub-plan-4\tthe recovery evidence holds no ready row\n' "$cell" >>"$r"
     fi
-  done
+  done <"$CASE_DIR/cell-dirs.tsv"
   # A route switch is proven live only by an acknowledged route:* journal row;
   # before Sub-plan 4 mounts /etc/unbound/route every switch is unmanaged.
-  if ! cat "$CA_ROOT_DIR"/*-*-*/*.txt 2>/dev/null | awk -F '\t' '$3 ~ /^route:/ && $4 == "acknowledged" { f = 1 } END { exit !f }'; then
+  if ! cut -f1 "$CASE_DIR/cell-dirs.tsv" | while IFS= read -r d; do cat "$d"/*.txt 2>/dev/null; done | awk -F '\t' '$3 ~ /^route:/ && $4 == "acknowledged" { f = 1 } END { exit !f }'; then
     printf 'limit\troute-apply\t-\tscope=sub-plan-4\tno switch-route was applied live: no deployment mounts /etc/unbound/route, so the result is unmanaged; route application rests on the transport receipt\n' >>"$r"
   fi
   assert_match '^[1-9]' "$n" "at least one fully passed cell"

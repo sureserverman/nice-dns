@@ -290,6 +290,19 @@ ca_cell() {
   ca_wedge "$a"
 }
 
+# ca_reused <proxy/pihole>: DEC-009. The cell passed all six scenarios in a
+# run named by NICE_DNS_CELL_REUSE_RUNS, so it is not repeated: it is listed
+# in reused.tsv for live/controller-receipt, which carries its evidence and a
+# reuse row. A cell this run executes is never replaced by an earlier one.
+ca_reused() {
+  local src
+  src="$(cs_reuse_cell "$CA_PLAT/$1" 2>&1)" || fail "NICE_DNS_CELL_REUSE_RUNS: $src"
+  [ -n "$src" ] || return 1
+  printf '%s/%s\t%s\n' "$CA_PLAT" "$1" "$src" >>"$CA_ROOT_DIR/reused.tsv"
+  printf '== cell %s/%s reused from %s\n' "$CA_PLAT" "$1" "$src"
+  return 0
+}
+
 # ca_platform <platform> <alias>: every cell of the platform, the target's
 # original cell last, each in its own subshell (a failed cell does not stop
 # the others; the case fails).
@@ -311,9 +324,12 @@ ca_platform() {
     # plan): re-run just these cells, e.g. "socat/standard"; the original
     # cell is then reinstalled last only if it is listed too.
     for c in $cells; do
+      ca_reused "$c" && continue
       case " ${NICE_DNS_ACTIVE_CELLS:-$c} " in *" $c "*) ( ca_cell "$a" "${c%/*}" "${c#*/}" 1 fast ) || bad="$bad $c" ;; esac
     done
-    case " ${NICE_DNS_ACTIVE_CELLS:-$x0/$h0} " in *" $x0/$h0 "*) ( ca_cell "$a" "$x0" "$h0" 1 production ) || bad="$bad $x0/$h0" ;; esac
+    if ! ca_reused "$x0/$h0"; then
+      case " ${NICE_DNS_ACTIVE_CELLS:-$x0/$h0} " in *" $x0/$h0 "*) ( ca_cell "$a" "$x0" "$h0" 1 production ) || bad="$bad $x0/$h0" ;; esac
+    fi
   else
     ( ca_cell "$a" "$x0" "$h0" 0 ) || bad="$bad $x0/$h0"
   fi

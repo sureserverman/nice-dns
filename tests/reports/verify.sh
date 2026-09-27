@@ -34,6 +34,9 @@
 #            optional, at most one per repository)
 #   limit    WHAT CELL|- scope=sub-plan-N REASON     (something the run did
 #            not prove, and the sub-plan that owns it; CELL an observed cell)
+#   reuse    CELL RUN_ID SHA40                       (an observed cell carried
+#            from an earlier run, which passed all of it at nice-dns SHA40;
+#            DEC-009. At most once per cell, never this receipt's own run)
 # Scenario ids, scopes and required links come from tests/manifests/NAME.tsv;
 # anything undeclared fails. Content, not only structure, is checked:
 #   - manifest `minimum SCENARIO N`: its artifact is a nice-dns-sample/1 file
@@ -179,7 +182,7 @@ cmd_check() {
   while IFS= read -r n; do err "$f: $n"; done < <(awk -F '\t' '
     BEGIN { w["receipt"] = 2; w["run_id"] = 2; w["created_utc"] = 2; w["source"] = 4; w["arch"] = 4
             w["requires"] = 4; w["cell"] = 7; w["scenario"] = 7; w["aggregate"] = 4; w["entrypoint"] = 3; w["product"] = 3
-            w["limit"] = 5 }
+            w["limit"] = 5; w["reuse"] = 4 }
     /^#/ || /^$/ { next }
     !($1 in w) { printf "line %d: unknown row type %s\n", NR, $1; next }
     NF != w[$1] { printf "line %d: %s row has %d fields, expected %d\n", NR, $1, NF, w[$1] }
@@ -204,11 +207,12 @@ cmd_check() {
   check_entrypoints "$f" "$req_entry"
   check_requirements "$f" "$req_matrix" "$req_platforms" "$req_proxies" "$req_pp"
   check_limits "$f"
+  check_reuse "$f"
   finish "$f" "$cells" "$scen" "$name"
 }
 
 finish() {
-  printf 'receipt=%s cells=%s scenarios=%s errors=%s limits=%s file=%s\n' "${4:-?}" "$2" "$3" "$ERRS" "${LIMITS:-0}" "$1"
+  printf 'receipt=%s cells=%s scenarios=%s errors=%s limits=%s reused=%s file=%s\n' "${4:-?}" "$2" "$3" "$ERRS" "${LIMITS:-0}" "${REUSED:-0}" "$1"
   [ "$ERRS" -eq 0 ] || exit 1
   exit 0
 }
@@ -411,6 +415,23 @@ check_limits() {
     fi
   done < <(awk -F '\t' '$1 == "limit"' "$f")
   LIMITS="$n"
+}
+
+check_reuse() {
+  # Sets REUSED to the number of reuse rows.
+  local f="$1" c run sha n=0 seen='|' own
+  own="$(awk -F '\t' '$1 == "run_id" { print $2; exit }' "$f")"
+  while IFS="$TAB" read -r _ c run sha; do
+    n=$((n + 1))
+    awk -F '\t' -v k="$c" '$1 == "cell" && $2 "/" $3 "/" $4 == k && $7 == "observed" { f = 1 } END { exit !f }' "$f" \
+      || err "$f: reuse names $c, which is not an observed cell"
+    case "$seen" in *"|$c|"*) err "$f: cell $c reused twice" ;; esac
+    seen="$seen$c|"
+    printf '%s' "$run" | grep -Eq '^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$' || err "$f: reuse of $c names run '$run', not a run id"
+    [ "$run" != "$own" ] || err "$f: reuse of $c names this receipt's own run"
+    printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$' || err "$f: reuse of $c commit '$sha' is not a full commit id"
+  done < <(awk -F '\t' '$1 == "reuse"' "$f")
+  REUSED="$n"
 }
 
 check_requirements() {
