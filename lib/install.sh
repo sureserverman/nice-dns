@@ -1094,8 +1094,10 @@ nd_install_macos_build_images() {
   _nd_inst_record_image unbound "unbound:$gen" || return 1
   if [ "$ND_INST_PIHOLE" = hardened ]; then
     # Apple's builder resolves a local base only by its plain name, hence the
-    # build arg (see pihole-hardened/Containerfile).
-    "$CONTAINER_BIN" build "${ND_INST_MACOS_BUILD_FLAGS[@]}" --build-arg "BASE_IMAGE=pi-hole-hardened-base:$gen" \
+    # build arg (see pihole-hardened/Containerfile). No --pull here: the base
+    # exists only locally, and under --pull the builder fetches FROM from a
+    # registry (fc5e6ec). It was just built with --pull, or freshly pulled.
+    "$CONTAINER_BIN" build --no-cache --dns 1.1.1.1 --build-arg "BASE_IMAGE=pi-hole-hardened-base:$gen" \
       -t "pi-hole:$gen" -f pihole-hardened/Containerfile . || return 1
   else
     "$CONTAINER_BIN" build "${ND_INST_MACOS_BUILD_FLAGS[@]}" -t "pi-hole:$gen" pihole/ || return 1

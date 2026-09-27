@@ -494,7 +494,15 @@ t_standard_and_hardened_share_build_flags() {
           out = out (out == "" ? "" : " ") $i
         }
         print out }' | sort -u)"
-      assert_eq "$want" "$flags" "$ep: every build (unbound, pi-hole and any base) uses exactly [$want]:
+      # On macOS the hardened pi-hole builds FROM a local-only base, which
+      # Apple's builder would try to fetch under --pull (cf. fc5e6ec); that
+      # base was itself just built or pulled fresh, so only --pull goes.
+      if [ "$plat" = macos ] && [ "$(ip_flavor "$ep")" = hardened ]; then
+        assert_match '^container build --no-cache --dns 1\.1\.1\.1 --build-arg BASE_IMAGE=pi-hole-hardened-base:[^ ]+ -t pi-hole:' \
+          "$(grep -E '^container build .*BASE_IMAGE=' "$FAKE_LOG")" "$ep: the pi-hole build on the local base has no --pull"
+        flags="$(printf '%s\n' "$flags" | grep -vx -- '--no-cache --dns 1.1.1.1')"
+      fi
+      assert_eq "$want" "$flags" "$ep: every other build (unbound, pi-hole and any base) uses exactly [$want]:
 $(grep -E '^(podman|container) build ' "$FAKE_LOG")"
       assert_eq "$([ "$(ip_flavor "$ep")" = hardened ] && echo 3 || echo 2)" "$(grep -cE '^(podman|container) build ' "$FAKE_LOG")" "$ep: the expected number of builds"
     ) || exit 1
