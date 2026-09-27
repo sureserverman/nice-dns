@@ -80,7 +80,7 @@ fi
 ND_INST_PLATFORM=macos
 
 if [[ "$ACTION" == "uninstall" ]]; then
-  nd_install_macos_teardown uninstall
+  nd_install_macos_uninstall
   echo "nice-dns uninstalled."
   exit 0
 fi
@@ -92,50 +92,20 @@ VARIANT="$ACTION"
 # the prepare manifest. Nothing here interrupts the running stack or touches
 # host DNS; a failure exits and leaves it as it was.
 nd_install_begin macos install-mac.sh standard "$VARIANT" "$BRANCH"
+# Refuses (exit 3) before any change when another owner took over host DNS.
+nd_install_check_owned
+nd_install_save_previous
 nd_install_macos_host_prereqs
 nd_install_config_dir
 nd_install_macos_stage_tree
 nd_install_macos_prepare_images
 nd_install_macos_bridges
 
-# -- Interruption window: replace the running stack --
-nd_install_macos_teardown reinstall
-nd_install_macos_upgrade_runtime
-# The local builds run here, once the stack is stopped (the macOS exception;
-# see nd_install_macos_build_images).
-nd_install_macos_build_images
-nd_install_macos_activate_images
-nd_install_macos_run_stack
-
-# -- Wait for the chain (Tor bootstrap) before flipping system DNS --
-# 60 * 5s = 300s. First-boot obfs4 bridge bootstrap on a censoring network
-# can take ~4 minutes before the haproxy primary (Cloudflare onion via Tor)
-# marks UP and queries start resolving — 150s was tight enough to fail.
-echo "Waiting for the DNS chain to come up (Tor bootstrap takes 1-4 min)..."
-healthy=0
-for _ in $(seq 1 60); do
-  if dig @172.31.240.250 +time=3 +tries=1 +short cloudflare.com 2>/dev/null \
-      | grep -Eq '^[0-9.]+$'; then
-    echo "Chain is resolving."
-    healthy=1
-    break
-  fi
-  sleep 5
-done
-
-if (( healthy == 0 )); then
-  echo "nice-dns did not come up cleanly; refusing to pin system DNS." >&2
-  exit 1
-fi
-
-# Note: pi-hole's gravity DB is built at IMAGE BUILD time (see pihole/Containerfile),
-# so no post-start seed step is needed.
-
-# -- Point the system at pi-hole and install the LaunchAgent --
-# start-container-root.sh post also re-bootstraps Mullvad if present;
-# harmless at install time when Mullvad wasn't torn down.
-sudo "$ND_INST_TREE/mac/start-container-root.sh" post
-"$ND_INST_TREE/mac/persist.sh" "$VARIANT"
+# The interruption: record the owned DNS state, then stop, build and cut over;
+# every service is pinned only once the new stack answers and the controller
+# passed its self-check, and any failure rolls back (lib/install.sh,
+# transaction notes).
+nd_install_macos_activate
 nd_install_finish
 
 echo "All done. DNS is set to 172.31.240.250 (pi-hole). Web UI: http://172.31.240.250"

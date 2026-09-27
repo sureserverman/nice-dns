@@ -42,7 +42,10 @@ ND_INST_SCHEMA='nice-dns-install-prepare/1'
 # One build policy per platform, shared by the standard and hardened
 # entrypoints (the flags are explained where the builds run).
 ND_INST_LINUX_BUILD_FLAGS=(--pull=newer --no-cache --dns 1.1.1.1)
-ND_INST_MACOS_BUILD_FLAGS=(--pull --no-cache --dns 1.1.1.1)
+# macOS builds run in the interruption window, while host DNS stays pinned to
+# the stopped stack, so their bases are pulled in preparation and the builds
+# take no --pull (see nd_install_macos_prepare_images).
+ND_INST_MACOS_BUILD_FLAGS=(--no-cache --dns 1.1.1.1)
 ND_INST_GEN_RE='^[0-9]{8}T[0-9]{6}Z-([0-9a-f]{12}|nogit0000000)$'
 ND_INST_TAB="$(printf '\t')"
 ND_INST_NL='
@@ -337,7 +340,9 @@ EOF
   done
 }
 
-# _nd_inst_generation_refs: every image ref any recorded generation tagged.
+# _nd_inst_generation_refs: every image ref any recorded generation tagged or
+# pulled (uninstall removes them; a base a build pulled implicitly is not
+# recorded and stays).
 _nd_inst_generation_refs() {
   local sd d
   sd="$(nd_install_state_dir)" || return 0
@@ -345,7 +350,393 @@ _nd_inst_generation_refs() {
   for d in "$sd/generations"/*; do
     [ -d "$d" ] && [ ! -L "$d" ] || continue
     nd_install_manifest_images "$d/prepare.tsv" 2>/dev/null | awk -F '\t' '{ print $2 }'
+    _nd_inst_manifest_check "$d/prepare.tsv" 2>/dev/null \
+      && awk -F '\t' 'NR > 1 && $1 == "pulled" && NF >= 3 { print $3 }' "$d/prepare.tsv"
   done
+}
+
+# ─────────────────────────── transaction (Task 1.2) ──────────────────────────
+#
+# Sub-plan 4 Task 1.2 (ARCH-03 activate_install/rollback_install, ARCH-06,
+# WF-DNS-003). Host DNS belongs to its owner until nice-dns pins it, and only
+# the DNS helpers (deb/custom-dns-deb, mac/start-container-root.sh) ever
+# write it: the pin, or the state recorded before nice-dns. So:
+#   1. nd_install_check_owned: before any work, refuse when another owner
+#      changed the host DNS after nice-dns pinned it.
+#   2. nd_install_save_previous: before any pull, keep the deployment the
+#      install replaces: its :latest images under pre-<gen> tags, and a copy of
+#      its owned files (quadlets or agents, helpers, controller).
+#   3. preparation (Task 1.1).
+#   4. nd_install_<platform>_activate: record the owned DNS state (first
+#      install only), hold the controller, interrupt, bring the new stack up,
+#      wait until it answers, install the controller and check it, and only
+#      then pin the host resolver and verify the pin.
+# A failure at any point of step 4 (including an interrupt) rolls back: the
+# new stack goes, the saved files and image tags come back, the previous
+# stack and the controller restart, and a first install gives back the DNS
+# state it recorded. No step points the host at a public resolver: during the
+# outage the host keeps its pin, so it fails closed.
+
+# ND_INST_ROOT prefixes the root-owned paths for the fixture tests; empty on a
+# host. ND_INST_READY_TRIES bounds the readiness wait (5 s apart): Tor's first
+# bootstrap through obfs4 bridges takes 1-4 minutes, and more on a poor link.
+ND_INST_ROOT="${ND_INST_ROOT:-}"
+ND_INST_READY_TRIES="${ND_INST_READY_TRIES:-120}"
+ND_INST_PROBE_NAME=cloudflare.com
+
+# _nd_inst_dns_helper <verb>: the staged tree's DNS helper, under sudo.
+_nd_inst_dns_helper() {
+  case "$ND_INST_PLATFORM" in
+    linux) sudo bash "$ND_INST_TREE/deb/custom-dns-deb" "$1" ;;
+    macos) sudo bash "$ND_INST_TREE/mac/start-container-root.sh" "$1" ;;
+  esac
+}
+
+# nd_install_check_owned: exits 3 when another owner changed the host DNS
+# after nice-dns pinned it (nothing has been changed yet).
+nd_install_check_owned() {
+  local rc=0
+  _nd_inst_dns_helper check || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    3) _nd_inst_err "another owner changed the host DNS after nice-dns pinned it; nothing was changed."
+       _nd_inst_err "Run '$ND_INST_ENTRY uninstall' to restore the recorded state, then install again."
+       exit 3 ;;
+    *) _nd_inst_err "the DNS ownership check failed (exit $rc); nothing was changed."; exit 1 ;;
+  esac
+}
+
+_nd_inst_dns_addr() { if [ "$ND_INST_PLATFORM" = linux ]; then echo 127.0.0.1; else echo 172.31.240.250; fi; }
+
+# _nd_inst_latest_refs: the :latest references a deployment runs.
+_nd_inst_latest_refs() {
+  case "$ND_INST_PLATFORM" in
+    linux) printf '%s\n' localhost/unbound:latest localhost/pi-hole:latest localhost/pi-hole-hardened-base:latest \
+             docker.io/sureserver/tor-haproxy:latest docker.io/sureserver/tor-socat:latest ;;
+    macos) printf '%s\n' unbound:latest pi-hole:latest pi-hole-hardened-base:latest \
+             docker.io/sureserver/tor-haproxy:latest docker.io/sureserver/tor-socat:latest ;;
+  esac
+}
+
+# _nd_inst_saved_ref <ref>: where <ref> is kept for this generation's rollback.
+_nd_inst_saved_ref() {
+  local n="${1%:latest}"
+  n="${n##*/}"
+  case "$ND_INST_PLATFORM" in
+    linux) printf 'localhost/%s:pre-%s\n' "$n" "$ND_INST_GEN" ;;
+    macos) printf '%s:pre-%s\n' "$n" "$ND_INST_GEN" ;;
+  esac
+}
+
+_nd_inst_image_tag() {
+  case "$ND_INST_PLATFORM" in
+    linux) podman tag "$1" "$2" ;;
+    macos) "${CONTAINER_BIN:-container}" image tag "$1" "$2" ;;
+  esac
+}
+
+# _nd_inst_owned_paths: the files the deployment owns, one
+# "kind<TAB>path<TAB>mode<TAB>user|root" line each (kind f or d).
+_nd_inst_owned_paths() {
+  local R="$ND_INST_ROOT" q u c f
+  if [ "$ND_INST_PLATFORM" = linux ]; then
+    q="${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd"
+    u="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+    for f in nice-dns.network nice-dns.pod unbound.container pi-hole.container tor-haproxy.container tor-socat.container; do
+      printf 'f\t%s\t644\tuser\n' "$q/$f"
+    done
+    for f in nice-dns-fetch-bridges.service nice-dns-health.service nice-dns-health.timer \
+             nice-dns-health-bridges.service nice-dns-health-bridges.timer; do
+      printf 'f\t%s\t644\tuser\n' "$u/$f"
+    done
+    printf 'f\t%s\t644\tuser\n' "${XDG_CONFIG_HOME:-$HOME/.config}/containers/containers.conf.d/90-nice-dns-firewall.conf"
+    printf 'f\t%s\t755\tuser\n' "$HOME/.local/bin/nice-dns-fetch-bridges" "$HOME/.local/bin/nice-dns-health" \
+      "${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-health/bin/nice-dns-health"
+    printf 'd\t%s\t755\tuser\n' "${XDG_DATA_HOME:-$HOME/.local/share}/nice-dns-health"
+    printf 'f\t%s\t755\troot\n' "$R/usr/bin/custom-dns-deb" "$R/etc/NetworkManager/dispatcher.d/90-nice-dns-pin"
+    printf 'f\t%s\t644\troot\n' "$R/etc/systemd/system/custom-dns-deb.service" "$R/etc/NetworkManager/conf.d/90-nice-dns.conf" \
+      "$R/etc/sysctl.d/99-nice-dns-disable-ipv6.conf" \
+      "$R/etc/systemd/system/NetworkManager-wait-online.service.d/10-wait-for-connectivity.conf"
+  else
+    for f in start-container health health-bridges bridge-eval; do
+      printf 'f\t%s\t644\tuser\n' "$HOME/Library/LaunchAgents/org.nice-dns.$f.plist"
+    done
+    printf 'f\t%s\t755\tuser\n' "$HOME/.local/bin/nice-dns-health" "$HOME/Library/Logs/nice-dns-health/bin/nice-dns-health"
+    printf 'd\t%s\t755\tuser\n' "$HOME/Library/Application Support/nice-dns-health"
+    for f in start-container.sh start-container-root.sh nice-dns-fetch-bridges.sh nice-dns-bridge-eval.sh; do
+      printf 'f\t%s\t755\troot\n' "$R/usr/local/sbin/$f"
+    done
+    printf 'f\t%s\t440\troot\n' "$R/etc/sudoers.d/start-container"
+  fi
+}
+
+# nd_install_save_previous: keeps the deployment this install replaces, before
+# any pull can move a :latest tag. Sets ND_INST_HAD_DEPLOY and ND_INST_RB.
+nd_install_save_previous() {
+  local ref saved kind p mode who n=0 rows
+  ND_INST_RB="$ND_INST_STATE/generations/$ND_INST_GEN/rollback"
+  _nd_inst_owned_dir "$ND_INST_RB" || return 1
+  if [ "$ND_INST_PLATFORM" = linux ]; then
+    [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd/pi-hole.container" ] && ND_INST_HAD_DEPLOY=1 || ND_INST_HAD_DEPLOY=0
+  else
+    [ -f "$HOME/Library/LaunchAgents/org.nice-dns.start-container.plist" ] && ND_INST_HAD_DEPLOY=1 || ND_INST_HAD_DEPLOY=0
+  fi
+  _nd_inst_manifest_row "$ND_INST_MANIFEST" replaces "$( [ "$ND_INST_HAD_DEPLOY" = 1 ] && echo deployment || echo nothing)" || return 1
+  if [ "$ND_INST_PLATFORM" = macos ] && ! command -v "${CONTAINER_BIN:-container}" >/dev/null 2>&1; then
+    rows=""   # no runtime yet: nothing to keep
+  else
+    rows="$(_nd_inst_latest_refs)"
+  fi
+  while IFS= read -r ref; do
+    [ -n "$ref" ] || continue
+    if _nd_inst_image_exists "$ref"; then
+      saved="$(_nd_inst_saved_ref "$ref")"
+      _nd_inst_image_tag "$ref" "$saved" || return 1
+      _nd_inst_manifest_row "$ND_INST_MANIFEST" saved "$ref" "$saved" || return 1
+      _nd_inst_record_image saved "$saved" || return 1
+    else
+      _nd_inst_manifest_row "$ND_INST_MANIFEST" saved "$ref" absent || return 1
+    fi
+  done <<EOF
+$rows
+EOF
+  : >"$ND_INST_RB/files.tsv" && chmod 600 "$ND_INST_RB/files.tsv" || return 1
+  while IFS="$ND_INST_TAB" read -r kind p mode who; do
+    [ -n "$kind" ] || continue
+    n=$((n + 1))
+    if [ "$kind" = d ]; then
+      if [ -d "$p" ] && [ ! -L "$p" ]; then
+        cp -Rp "$p" "$ND_INST_RB/s$n" || return 1
+        printf 'd\t%s\ts%s\t%s\t%s\n' "$p" "$n" "$mode" "$who" >>"$ND_INST_RB/files.tsv"
+      else
+        printf 'd\t%s\tabsent\t%s\t%s\n' "$p" "$mode" "$who" >>"$ND_INST_RB/files.tsv"
+      fi
+    elif [ "$who" = root ]; then
+      if sudo test -f "$p"; then
+        # The redirect is ours on purpose: the copy lands in our 0700 state dir.
+        # shellcheck disable=SC2024
+        ( umask 077 && sudo cat "$p" >"$ND_INST_RB/s$n" ) || return 1
+        printf 'f\t%s\ts%s\t%s\t%s\n' "$p" "$n" "$mode" "$who" >>"$ND_INST_RB/files.tsv"
+      else
+        printf 'f\t%s\tabsent\t%s\t%s\n' "$p" "$mode" "$who" >>"$ND_INST_RB/files.tsv"
+      fi
+    elif [ -f "$p" ] && [ ! -L "$p" ]; then
+      cp -p "$p" "$ND_INST_RB/s$n" || return 1
+      printf 'f\t%s\ts%s\t%s\t%s\n' "$p" "$n" "$mode" "$who" >>"$ND_INST_RB/files.tsv"
+    else
+      printf 'f\t%s\tabsent\t%s\t%s\n' "$p" "$mode" "$who" >>"$ND_INST_RB/files.tsv"
+    fi
+  done <<EOF
+$(_nd_inst_owned_paths)
+EOF
+}
+
+# _nd_inst_restore_files: puts every saved owned file back, and removes the
+# ones that did not exist before.
+_nd_inst_restore_files() {
+  local kind p s mode who
+  [ -f "${ND_INST_RB:-}/files.tsv" ] || return 0
+  while IFS="$ND_INST_TAB" read -r kind p s mode who; do
+    [ -n "$kind" ] || continue
+    if [ "$kind" = d ]; then
+      rm -rf "${p:?}"
+      [ "$s" = absent ] || cp -Rp "$ND_INST_RB/$s" "$p"
+    elif [ "$who" = root ]; then
+      if [ "$s" = absent ]; then
+        sudo rm -f "$p"
+      else
+        [ "$p" = "$ND_INST_ROOT/etc/sudoers.d/start-container" ] && ! sudo visudo -cf "$ND_INST_RB/$s" >/dev/null && continue
+        sudo mkdir -p "$(dirname "$p")" && sudo install -m "$mode" "$ND_INST_RB/$s" "$p"
+      fi
+    elif [ "$s" = absent ]; then
+      rm -f "$p"
+    else
+      mkdir -p "$(dirname "$p")" && cp -p "$ND_INST_RB/$s" "$p" && chmod "$mode" "$p"
+    fi
+  done <"$ND_INST_RB/files.tsv"
+}
+
+# _nd_inst_restore_tags: :latest back on the images the replaced deployment ran;
+# a :latest this install added goes.
+_nd_inst_restore_tags() {
+  local ref saved
+  while IFS="$ND_INST_TAB" read -r ref saved; do
+    [ -n "$ref" ] || continue
+    if [ "$saved" = absent ]; then
+      _nd_inst_image_exists "$ref" && _nd_inst_image_rm "$ref"
+    else
+      _nd_inst_image_tag "$saved" "$ref"
+    fi
+  done <<EOF
+$(awk -F '\t' 'NR > 1 && $1 == "saved" { print $2 "\t" $3 }' "$ND_INST_MANIFEST")
+EOF
+}
+
+# nd_install_hold_controller: stops the controller's schedules for the
+# transaction, so its recovery never acts on a stack the install is replacing.
+nd_install_hold_controller() {
+  local u p
+  ND_INST_HELD=""
+  if [ "$ND_INST_PLATFORM" = linux ]; then
+    for u in nice-dns-health.timer nice-dns-health-bridges.timer; do
+      if systemctl --user is-active --quiet "$u" 2>/dev/null; then
+        systemctl --user stop "$u"
+        ND_INST_HELD="$ND_INST_HELD $u"
+      fi
+    done
+  else
+    for p in "$HOME/Library/LaunchAgents/org.nice-dns.health.plist" "$HOME/Library/LaunchAgents/org.nice-dns.health-bridges.plist"; do
+      if [ -f "$p" ]; then
+        launchctl unload "$p" 2>/dev/null || true
+        ND_INST_HELD="$ND_INST_HELD $p"
+      fi
+    done
+  fi
+}
+
+# _nd_inst_release_controller: restarts the schedules held (rollback only; a
+# successful install's controller install starts its own).
+_nd_inst_release_controller() {
+  local x
+  for x in $ND_INST_HELD; do
+    if [ "$ND_INST_PLATFORM" = linux ]; then
+      systemctl --user start "$x"
+    else
+      [ -f "$x" ] && launchctl load "$x"
+    fi
+  done
+}
+
+# nd_install_wait_ready: the new chain answers an ordinary query at the
+# address the host will be pinned to, within ND_INST_READY_TRIES x 5 s.
+nd_install_wait_ready() {
+  local i=0 addr
+  addr="$(_nd_inst_dns_addr)"
+  echo "Waiting for the DNS chain to come up at $addr (Tor bootstrap takes 1-4 min)..."
+  while [ "$i" -lt "$ND_INST_READY_TRIES" ]; do
+    if dig "@$addr" +time=3 +tries=1 +short "$ND_INST_PROBE_NAME" 2>/dev/null | grep -Eq '^[0-9.]+$' \
+        && _nd_inst_route_probe; then
+      echo "Chain is resolving, and Unbound resolves over its authenticated route."
+      return 0
+    fi
+    i=$((i + 1))
+    sleep 5
+  done
+  _nd_inst_err "the new stack did not answer at $addr within $((ND_INST_READY_TRIES * 5)) s; not pinning the host resolver"
+  return 1
+}
+
+# _nd_inst_route_probe: Unbound resolves over its own route in a fresh TLS
+# session (nice-dns-unbound-start probe-route), so a Pi-hole answer from
+# cache alone cannot pass the readiness wait (DEC-006). The image is built
+# from this tree, so the probe must exist.
+_nd_inst_route_probe() {
+  local rc=0
+  case "$ND_INST_PLATFORM" in
+    linux) podman exec --user unbound unbound /usr/local/bin/nice-dns-unbound-start probe-route . >/dev/null 2>&1 || rc=$? ;;
+    macos) "${CONTAINER_BIN:-container}" exec --user unbound unbound /usr/local/bin/nice-dns-unbound-start probe-route . >/dev/null 2>&1 || rc=$? ;;
+  esac
+  # A rolled-back generation may predate probe-route (exit 126/127): its Pi-hole
+  # answer is then all there is to go on.
+  if [ "${ND_INST_PROBE_OPTIONAL:-0}" = 1 ] && { [ "$rc" = 126 ] || [ "$rc" = 127 ]; }; then rc=0; fi
+  return "$rc"
+}
+
+# _nd_inst_controller_entry: the installed controller's entrypoint.
+_nd_inst_controller_entry() {
+  local rec
+  if [ "$ND_INST_PLATFORM" = linux ]; then
+    rec="${XDG_DATA_HOME:-$HOME/.local/share}/nice-dns-health/install.tsv"
+  else
+    rec="$HOME/Library/Application Support/nice-dns-health/install.tsv"
+  fi
+  if [ -f "$rec" ] && [ ! -L "$rec" ]; then
+    awk -F '\t' 'NR == 1 && $0 != "schema\tnice-dns-health-install/1" { exit } $1 == "entrypoint" { print $2; exit }' "$rec"
+  else
+    printf '%s\n' "$HOME/.local/bin/nice-dns-health"
+  fi
+}
+
+# nd_install_controller_self_check: the installed controller loads its bundle.
+nd_install_controller_self_check() {
+  local ep
+  ep="$(_nd_inst_controller_entry)"
+  if [ -z "$ep" ] || [ ! -f "$ep" ]; then _nd_inst_err "the controller is not installed; not pinning the host resolver"; return 1; fi
+  if ! bash "$ep" self-check >/dev/null; then _nd_inst_err "the installed controller fails its self-check; not pinning the host resolver"; return 1; fi
+  echo "  • The controller is installed and passes its self-check."
+}
+
+# nd_install_verify_pin: the host resolver is pinned and the stack answers.
+nd_install_verify_pin() {
+  [ "$(_nd_inst_dns_helper status)" = pinned ] || { _nd_inst_err "the host resolver is not pinned after the pin"; return 1; }
+  ND_INST_READY_TRIES=6 nd_install_wait_ready >/dev/null || return 1
+}
+
+# _nd_inst_begin_interruption: from here a failure rolls back.
+_nd_inst_begin_interruption() {
+  ND_INST_PHASE=interrupted ND_INST_PINNED=0
+  trap '_nd_inst_exit_trap' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM HUP
+}
+
+_nd_inst_end_interruption() {
+  ND_INST_PHASE="done"
+  trap - INT TERM HUP
+}
+
+# _nd_inst_exit_trap: the entrypoint's EXIT trap once the interruption began:
+# a failure rolls back; the staged copies are removed either way.
+_nd_inst_exit_trap() {
+  local rc=$?
+  trap - EXIT
+  set +e
+  if [ "$rc" -ne 0 ] && [ "${ND_INST_PHASE:-}" = interrupted ]; then
+    echo "✗ The install failed after the stack was interrupted (exit $rc); rolling back." >&2
+    _nd_inst_rollback
+  fi
+  [ -z "${ND_INST_CLEANUP:-}" ] || rm -rf "${ND_INST_CLEANUP:?}"
+  [ -z "${ND_INST_WORK:-}" ] || rm -rf "${ND_INST_WORK:?}"
+  exit "$rc"
+}
+
+_nd_inst_rollback() {
+  local back=1
+  # A second Ctrl-C must not cut the recovery short.
+  trap '' INT TERM HUP
+  _nd_inst_manifest_row "$ND_INST_MANIFEST" status rolling-back
+  if [ "$ND_INST_PLATFORM" = linux ]; then _nd_inst_linux_stop_new; else _nd_inst_macos_stop_new; fi
+  if [ "$ND_INST_HAD_DEPLOY" = 0 ]; then
+    # A first install: give back the DNS state recorded before it, or drop
+    # the unused record when nothing was pinned.
+    if [ "$ND_INST_PINNED" = 1 ]; then _nd_inst_dns_helper restore; else _nd_inst_dns_helper discard; fi
+  fi
+  _nd_inst_restore_files
+  _nd_inst_restore_tags
+  if [ "$ND_INST_HAD_DEPLOY" = 1 ]; then
+    if [ "$ND_INST_PLATFORM" = linux ]; then
+      systemctl --user daemon-reload
+      systemctl --user start nice-dns-pod.service
+    else
+      launchctl load "$HOME/Library/LaunchAgents/org.nice-dns.start-container.plist"
+    fi
+  elif [ "$ND_INST_PLATFORM" = linux ]; then
+    systemctl --user daemon-reload
+  fi
+  _nd_inst_release_controller
+  if [ "$ND_INST_HAD_DEPLOY" = 1 ]; then
+    # The previous stack must answer again; the rollback does not claim it.
+    ND_INST_PROBE_OPTIONAL=1 nd_install_wait_ready >&2 || back=0
+  fi
+  _nd_inst_manifest_row "$ND_INST_MANIFEST" status "$( [ "$back" = 1 ] && echo rolled-back || echo rolled-back-not-answering)"
+  if [ "$ND_INST_HAD_DEPLOY" = 1 ] && [ "$back" = 1 ]; then
+    echo "Rolled back to the previous deployment ($ND_INST_PREV), which answers again; host DNS stays pinned to it." >&2
+  elif [ "$ND_INST_HAD_DEPLOY" = 1 ]; then
+    echo "Rolled back to the previous deployment ($ND_INST_PREV), but it does not answer: host DNS stays pinned to it, so the host has no DNS (it fails closed, never public)." >&2
+    echo "Check the stack (podman ps / container list) and its logs, or run the uninstall to restore the DNS recorded before nice-dns." >&2
+  else
+    echo "Rolled back: nothing is installed and host DNS is as it was before the install." >&2
+  fi
 }
 
 # ─────────────────────────── Linux ───────────────────────────────────────────
@@ -372,8 +763,10 @@ nd_install_linux_host_prereqs() {
   # netavark is Podman 5.x's network backend and aardvark-dns is the in-network
   # resolver; both are pulled via Recommends on stock Ubuntu, but we use
   # --no-install-recommends, so name them explicitly. Without netavark, `podman
-  # network create dnsnet` fails with "netavark: not found".
-  sudo apt-get install -yq --no-install-recommends git podman netavark aardvark-dns catatonit
+  # network create dnsnet` fails with "netavark: not found". bind9-dnsutils
+  # is the host's dig: the install's readiness wait and the controller's
+  # observations query the stack with it.
+  sudo apt-get install -yq --no-install-recommends git podman netavark aardvark-dns catatonit bind9-dnsutils
 
   # Ensure user-level registries.conf knows about docker.io
   local CONFIG
@@ -628,32 +1021,14 @@ _nd_inst_linux_hardened_base() {
   _nd_inst_record_image hardened-base "$base_img"
 }
 
-# Reverse every piece of nice-dns state installed by the script (user-mode
-# quadlets, containers/network, the system-level custom-dns-deb unit, and a
-# stale resolv.conf pointer). System-wide tweaks (PPA pin, sysctl,
-# AppArmor, subuid/subgid, cgroup delegation) are left in place — they're
-# harmless and may be shared with other Podman workloads.
-#
-# nd_install_linux_teardown <reinstall|uninstall>: a reinstall keeps every
-# image (the previous generation is the rollback target, ARCH-08); uninstall
-# removes them as before, generation tags included.
-nd_install_linux_teardown() {
-  local mode="${1:-reinstall}" svc name ref
-  # Remove the resolv.conf pinners before swapping resolv.conf below. The
-  # NetworkManager dispatcher hook re-runs custom-dns-deb on any NM event and
-  # otherwise writes 127.0.0.1 back in the window before the removals further
-  # down (seen 14 s after the swap, with no stack left to answer), so every
-  # apt/git/pull in the install then fails to resolve.
-  sudo systemctl disable --now custom-dns-deb.service 2>/dev/null || true
-  sudo rm -f /etc/NetworkManager/dispatcher.d/90-nice-dns-pin /usr/bin/custom-dns-deb
-
-  # Swap /etc/resolv.conf to public resolvers so apt-get and git still work
-  # during install, and so the host keeps DNS after uninstall.
-  if grep -qxF 'nameserver 127.0.0.1' /etc/resolv.conf 2>/dev/null; then
-    printf 'nameserver 9.9.9.9\nnameserver 1.1.1.1\nnameserver 1.0.0.1\n' \
-      | sudo tee /etc/resolv.conf >/dev/null
-  fi
-
+# nd_install_linux_stop_stack: the interruption. It stops the stack and removes
+# its quadlets (a variant switch must not leave the other proxy's), but keeps
+# every image (the previous generation is the rollback target, ARCH-08) and
+# never touches host DNS: the resolver keeps its pin, so it fails closed until
+# the new stack answers. The files it removes were saved by
+# nd_install_save_previous.
+nd_install_linux_stop_stack() {
+  local svc name
   # Stop and disable user-mode quadlet services, then remove quadlet files.
   # nice-dns-warmup is here only to clean up after older installs that
   # shipped the (since-removed) cache pre-seed unit; current installs
@@ -671,39 +1046,171 @@ nd_install_linux_teardown() {
         "$HOME/.config/containers/containers.conf.d/90-nice-dns-firewall.conf"
   systemctl --user daemon-reload 2>/dev/null || true
 
-  # Containers, network (images only on uninstall)
+  # Containers, network (images stay)
   podman pod rm -f nice-dns 2>/dev/null || true
   for name in tor-socat tor-haproxy unbound pi-hole; do
     podman rm -f "$name" 2>/dev/null || true
   done
-  if [ "$mode" = uninstall ]; then
-    # The locally built images (localhost/unbound, localhost/pi-hole and the
-    # hardened base), their generation tags, and the pulled tor images: those
-    # are stored under their full docker.io/sureserver/... reference, which a
-    # bare name does not match, so they are named in full.
-    for ref in unbound pi-hole pi-hole-hardened-base \
-               localhost/unbound:latest localhost/pi-hole:latest localhost/pi-hole-hardened-base:latest \
-               docker.io/sureserver/tor-haproxy:latest docker.io/sureserver/tor-socat:latest \
-               docker.io/sureserver/pi-hole-hardened:latest \
-               $(ND_INST_PLATFORM=linux _nd_inst_generation_refs); do
-      podman image rm -f "$ref" 2>/dev/null || true
-    done
-  fi
   podman network rm dnsnet 2>/dev/null || true
+}
 
-  # System-level custom-dns-deb.service
-  sudo systemctl disable --now custom-dns-deb.service 2>/dev/null || true
-  sudo rm -f /etc/systemd/system/custom-dns-deb.service /usr/bin/custom-dns-deb
-  sudo rm -f /etc/NetworkManager/conf.d/90-nice-dns.conf \
-    /etc/NetworkManager/dispatcher.d/90-nice-dns-pin \
-    /etc/sysctl.d/99-nice-dns-disable-ipv6.conf \
-    /etc/default/grub.d/99-nice-dns-ipv6.cfg
-  sudo systemctl daemon-reload
-  sudo systemctl reload NetworkManager 2>/dev/null || true
-  sudo sysctl --system >/dev/null 2>&1 || true
-  if command -v update-grub >/dev/null 2>&1; then
-    sudo update-grub >/dev/null 2>&1 || true
+# _nd_inst_linux_stop_new: the rollback's first step, the new stack goes.
+_nd_inst_linux_stop_new() {
+  local svc name
+  for svc in pi-hole unbound tor-haproxy tor-socat nice-dns-pod; do
+    systemctl --user stop "${svc}.service" 2>/dev/null || true
+  done
+  podman pod rm -f nice-dns 2>/dev/null || true
+  for name in tor-socat tor-haproxy unbound pi-hole; do
+    podman rm -f "$name" 2>/dev/null || true
+  done
+}
+
+_nd_inst_linux_nm_lockdown() {
+  local R="$ND_INST_ROOT"
+  if ! command -v nmcli >/dev/null 2>&1; then
+    return 0
   fi
+  if ! systemctl is-active --quiet NetworkManager 2>/dev/null; then
+    return 0
+  fi
+
+  # Two pieces are sufficient to keep /etc/resolv.conf pinned at 127.0.0.1
+  # under NetworkManager:
+  #
+  #   1. dns=none — tell NM to stop managing /etc/resolv.conf entirely.
+  #      With this set, per-connection ipv4.dns / ipv4.ignore-auto-dns
+  #      have no observable effect; NM never writes resolv.conf, so
+  #      whatever custom-dns-deb wrote stays.
+  #
+  #   2. dispatcher hook — re-run custom-dns-deb on every NM state change,
+  #      so if anything *else* on the system (cloud-init, dhclient, a
+  #      package upgrade) ever rewrites resolv.conf, the next NM event
+  #      pins it back. Cheap defense-in-depth.
+  #
+  # An earlier version of this function also iterated every active
+  # connection to set ipv4.dns 127.0.0.1 and then re-upped them all. With
+  # dns=none in effect those modifications had no observable behaviour —
+  # and the re-up loop kicked libvirt bridges (virbr0 etc.) into a
+  # deactivate→detach-ports→reactivate cycle that orphaned VM tap
+  # interfaces (vnet0…). Removed. (The hardened installer kept that loop
+  # until Sub-plan 4 Task 1.2; it also changed connection profiles nice-dns
+  # does not own and never restored them.)
+  sudo mkdir -p "$R/etc/NetworkManager/conf.d" "$R/etc/NetworkManager/dispatcher.d"
+  sudo tee "$R/etc/NetworkManager/conf.d/90-nice-dns.conf" >/dev/null <<'EOF'
+[main]
+dns=none
+EOF
+  sudo tee "$R/etc/NetworkManager/dispatcher.d/90-nice-dns-pin" >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ -x /usr/bin/custom-dns-deb ]; then
+  /usr/bin/custom-dns-deb
+fi
+EOF
+  sudo chmod 755 "$R/etc/NetworkManager/dispatcher.d/90-nice-dns-pin"
+
+  sudo systemctl reload NetworkManager 2>/dev/null || sudo systemctl restart NetworkManager
+}
+
+_nd_inst_linux_ipv6_disable() {
+  local R="$ND_INST_ROOT"
+  sudo mkdir -p "$R/etc/sysctl.d"
+  sudo tee "$R/etc/sysctl.d/99-nice-dns-disable-ipv6.conf" >/dev/null <<'EOF'
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+EOF
+  sudo sysctl --system >/dev/null
+
+  # sysctl-only on purpose. The kernel cmdline flag ipv6.disable=1 (shipped by
+  # earlier versions as a grub.d drop-in) removes AF_INET6 entirely, so any
+  # software that creates an IPv6 socket fails with EAFNOSUPPORT (os error 97)
+  # — observed bricking Mullvad's userspace WireGuard (gotatun binds ::), which
+  # then fail-closes the whole machine at boot. The sysctl above gives the same
+  # posture (no v6 addresses, no v6 traffic) while keeping sockets creatable.
+  # Remove the legacy drop-in left by previous installs.
+  if sudo test -f "$R/etc/default/grub.d/99-nice-dns-ipv6.cfg"; then
+    sudo rm "$R/etc/default/grub.d/99-nice-dns-ipv6.cfg"
+    if command -v update-grub >/dev/null 2>&1; then
+      sudo update-grub
+    fi
+  fi
+}
+
+# nd_install_linux_pin: the resolver cutover, only after the new stack answers
+# and the controller passed its self-check. The pin itself is the helper's.
+nd_install_linux_pin() {
+  local R="$ND_INST_ROOT"
+  ND_INST_PINNED=1
+  sudo mkdir -p "$R/etc/systemd/system" "$R/usr/bin"
+  sudo install -m 644 "$ND_INST_TREE/deb/custom-dns-deb.service" "$R/etc/systemd/system/custom-dns-deb.service"
+  sudo install -m 755 "$ND_INST_TREE/deb/custom-dns-deb" "$R/usr/bin/custom-dns-deb"
+  sudo systemctl daemon-reload
+  # Enabled for every boot; this run pins explicitly below and checks it.
+  sudo systemctl enable custom-dns-deb.service
+  _nd_inst_linux_nm_lockdown
+  _nd_inst_linux_ipv6_disable
+  sudo "$R/usr/bin/custom-dns-deb" pin
+}
+
+# nd_install_linux_activate: records the owned DNS state, then interrupts,
+# activates and pins, rolling back on any failure (see the transaction notes).
+nd_install_linux_activate() {
+  _nd_inst_dns_helper snapshot
+  _nd_inst_begin_interruption
+  nd_install_hold_controller
+  nd_install_linux_stop_stack
+  nd_install_linux_interrupt_prereqs
+  nd_install_linux_activate_images
+  # Quadlets, the bridge selection, the pod start and the controller install
+  # (whose own self-check must pass before it replaces anything).
+  ( cd "$ND_INST_TREE" && ./deb/persistent-podman.sh "$ND_INST_VARIANT" )
+  nd_install_wait_ready
+  nd_install_controller_self_check
+  nd_install_linux_pin
+  nd_install_verify_pin
+  _nd_inst_end_interruption
+}
+
+# nd_install_linux_uninstall: removes the stack, its images and controller,
+# and gives back the DNS state recorded before nice-dns. System-wide tweaks
+# (PPA pin, sysctl port range, AppArmor, subuid/subgid, cgroup delegation)
+# are left in place — they're harmless and may be shared with other Podman
+# workloads.
+nd_install_linux_uninstall() {
+  local R="$ND_INST_ROOT" ref ep sd
+  ND_INST_TREE="$ND_INST_SRC"
+  nd_install_linux_stop_stack
+  systemctl --user disable --now nice-dns-fetch-bridges.service 2>/dev/null || true
+  rm -f "$HOME/.config/systemd/user/nice-dns-fetch-bridges.service" "$HOME/.local/bin/nice-dns-fetch-bridges"
+  ep="$(_nd_inst_controller_entry)"
+  if [ -n "$ep" ] && [ -f "$ep" ]; then bash "$ep" uninstall || true; fi
+  systemctl --user daemon-reload 2>/dev/null || true
+  # The locally built images (localhost/unbound, localhost/pi-hole and the
+  # hardened base), their generation tags, and the pulled tor images: those
+  # are stored under their full docker.io/sureserver/... reference, which a
+  # bare name does not match, so they are named in full.
+  for ref in unbound pi-hole pi-hole-hardened-base \
+             localhost/unbound:latest localhost/pi-hole:latest localhost/pi-hole-hardened-base:latest \
+             docker.io/sureserver/tor-haproxy:latest docker.io/sureserver/tor-socat:latest \
+             docker.io/sureserver/pi-hole-hardened:latest \
+             $(ND_INST_PLATFORM=linux _nd_inst_generation_refs); do
+    podman image rm -f "$ref" 2>/dev/null || true
+  done
+  # The DNS state before nice-dns: resolv.conf, systemd-resolved, the ipv6
+  # sysctls and the NetworkManager/systemd files the pin installed.
+  _nd_inst_dns_helper restore
+  sudo rm -f "$R/usr/bin/custom-dns-deb"
+  if sudo test -f "$R/etc/default/grub.d/99-nice-dns-ipv6.cfg"; then
+    sudo rm -f "$R/etc/default/grub.d/99-nice-dns-ipv6.cfg"
+    if command -v update-grub >/dev/null 2>&1; then
+      sudo update-grub >/dev/null 2>&1 || true
+    fi
+  fi
+  sudo systemctl daemon-reload
+  sd="$(nd_install_state_dir)" && rm -f "${sd:?}/current"
 }
 
 # nd_install_linux_interrupt_prereqs: host changes that interrupt the running
@@ -891,6 +1398,25 @@ nd_install_macos_rewrite_tree() {
 
 # nd_install_macos_prepare_images: the pulls (proxy, and the hardened base
 # when there is no sibling checkout to build it from). Builds wait for the
+# _nd_inst_containerfile_base <file>: the image its first FROM names (an
+# ARG-named base resolves to the ARG's default).
+_nd_inst_containerfile_base() {
+  awk '
+    /^ARG[ \t]+[A-Za-z_]+=/ { split($2, kv, "="); arg[kv[1]] = kv[2] }
+    /^FROM[ \t]/ {
+      b = $2
+      if (b ~ /^\$\{[A-Za-z_]+\}$/) { n = substr(b, 3, length(b) - 3); b = arg[n] }
+      print b; exit
+    }' "$1"
+}
+
+# _nd_inst_macos_pull_base <ref>: a build base, pulled in preparation.
+_nd_inst_macos_pull_base() {
+  [ -n "$1" ] || { _nd_inst_err "cannot read a build base"; return 1; }
+  "$CONTAINER_BIN" image pull "$1" || return 1
+  _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled base "$1"
+}
+
 # interruption window.
 nd_install_macos_prepare_images() {
   local gen="$ND_INST_GEN" proxy="docker.io/sureserver/tor-${ND_INST_VARIANT}:latest"
@@ -909,6 +1435,13 @@ nd_install_macos_prepare_images() {
   _nd_inst_record_image proxy "tor-${ND_INST_VARIANT}:$gen" || return 1
   _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled proxy "$proxy" || return 1
 
+  # The bases of the local builds, pulled now while host DNS still answers;
+  # the builds run later without --pull (see nd_install_macos_build_images).
+  _nd_inst_macos_pull_base "$(_nd_inst_containerfile_base "$ND_INST_TREE/unbound/Containerfile")" || return 1
+  if [ "$ND_INST_PIHOLE" = standard ]; then
+    _nd_inst_macos_pull_base "$(_nd_inst_containerfile_base "$ND_INST_TREE/pihole/Containerfile")" || return 1
+  fi
+
   [ "$ND_INST_PIHOLE" = hardened ] || return 0
   # The sibling pi-hole-hardened checkout sits next to the tree this install
   # was started from (never next to the private copy).
@@ -917,6 +1450,7 @@ nd_install_macos_prepare_images() {
   if [[ -f "$sibling_repo/Dockerfile" && -f "$sibling_repo/post-install.sh" ]]; then
     echo "  • Sibling pi-hole-hardened repo found at $sibling_repo — building it after the stack stops."
     ND_INST_BASE_SIBLING="$sibling_repo"
+    _nd_inst_macos_pull_base "$(_nd_inst_containerfile_base "$sibling_repo/Dockerfile")" || return 1
     return 0
   fi
   echo "  • No sibling pi-hole-hardened/ checkout — pulling $remote."
@@ -983,10 +1517,10 @@ nd_install_macos_teardown() {
     launchctl unload "$_p" 2>/dev/null || true
     rm -f "$_p"
   done
-  sudo rm -f /etc/sudoers.d/start-container \
-             /usr/local/sbin/start-container.sh \
-             /usr/local/sbin/start-container-root.sh \
-             /usr/local/sbin/nice-dns-bridge-eval.sh
+  sudo rm -f "$ND_INST_ROOT/etc/sudoers.d/start-container" \
+             "$ND_INST_ROOT/usr/local/sbin/start-container.sh" \
+             "$ND_INST_ROOT/usr/local/sbin/start-container-root.sh" \
+             "$ND_INST_ROOT/usr/local/sbin/nice-dns-bridge-eval.sh"
 
   # -- Podman-era purge (installs predating commit 7538f02) --------------
   # mac/mac-rules-persist.sh installed four root/user jobs that this script
@@ -1055,12 +1589,62 @@ nd_install_macos_teardown() {
     "$bin" network rm dnsnet >/dev/null 2>&1 || true
   fi
 
-  # Restore DNS to DHCP defaults on every active network service.
-  networksetup -listallnetworkservices 2>/dev/null | sed '1d' \
-    | { grep -v '^\*' || true; } \
-    | while read -r svc; do
-        sudo networksetup -setdnsservers "$svc" Empty 2>/dev/null || true
-      done
+  # Host DNS is not touched here: during a reinstall every service keeps its
+  # pin (it fails closed until the new stack answers), and uninstall gives
+  # back the recorded servers through the root helper (nd_install_macos_uninstall).
+}
+
+# _nd_inst_macos_stop_new: the rollback's first step, the new stack goes.
+_nd_inst_macos_stop_new() {
+  local p c bin="${CONTAINER_BIN:-container}"
+  for p in start-container health health-bridges; do
+    launchctl unload "$HOME/Library/LaunchAgents/org.nice-dns.$p.plist" 2>/dev/null || true
+  done
+  for c in pi-hole unbound tor-haproxy tor-socat; do
+    "$bin" stop "$c" >/dev/null 2>&1 || true
+    "$bin" rm "$c" >/dev/null 2>&1 || true
+  done
+  "$bin" network rm dnsnet >/dev/null 2>&1 || true
+}
+
+# nd_install_macos_activate: records the owned DNS state, then interrupts,
+# builds, activates and pins, rolling back on any failure (see the
+# transaction notes).
+nd_install_macos_activate() {
+  _nd_inst_dns_helper snapshot
+  _nd_inst_begin_interruption
+  nd_install_hold_controller
+  nd_install_macos_teardown reinstall
+  nd_install_macos_upgrade_runtime
+  nd_install_macos_build_images
+  nd_install_macos_activate_images
+  nd_install_macos_run_stack
+  nd_install_wait_ready
+  # persist.sh installs the controller, runs the installed copy's self-check
+  # and only then loads the start-container agent, whose first run pins every
+  # network service: that load is the cutover on macOS. The self-check and the
+  # pin below re-assert both (idempotent) before the pin is verified. From
+  # here a first install's rollback restores rather than discards (restore
+  # leaves a service already at its recorded servers alone).
+  ND_INST_PINNED=1
+  "$ND_INST_TREE/mac/persist.sh" "$ND_INST_VARIANT"
+  nd_install_controller_self_check
+  _nd_inst_dns_helper post
+  nd_install_verify_pin
+  _nd_inst_end_interruption
+}
+
+# nd_install_macos_uninstall: removes the stack, its agents, helpers, images
+# and controller, and gives back every network service's DNS servers recorded
+# before nice-dns.
+nd_install_macos_uninstall() {
+  local ep sd
+  ND_INST_TREE="$ND_INST_SRC"
+  nd_install_macos_teardown uninstall
+  ep="$(_nd_inst_controller_entry)"
+  if [ -n "$ep" ] && [ -f "$ep" ]; then bash "$ep" uninstall || true; fi
+  _nd_inst_dns_helper restore
+  sd="$(nd_install_state_dir)" && rm -f "${sd:?}/current"
 }
 
 # nd_install_macos_build_images: the local builds, in the interruption window.
@@ -1078,11 +1662,13 @@ nd_install_macos_build_images() {
   # is unreliable when the host network's DNS is censoring or partial; the
   # pi-hole image build does an upstream pihole -g which needs working DNS.
   #
-  # --pull re-fetches the FROM base on every install. Both Containerfiles build
-  # on a floating :latest tag (sureserver/hardened-unbound, pihole/pihole), and
-  # without this the builder silently reuses whatever base it cached the first
-  # time — so a reinstall months later can still produce an image built on a
-  # months-old base while reporting success.
+  # No --pull: these builds run while host DNS is pinned to the stopped stack
+  # (fail closed), so the builder could not reach a registry through it. The
+  # bases were pulled fresh in preparation (nd_install_macos_prepare_images):
+  # both Containerfiles build on a floating :latest tag (sureserver/hardened-
+  # unbound, pihole/pihole), and without that pull the builder silently reuses
+  # whatever base it cached the first time — so a reinstall months later can
+  # still produce an image built on a months-old base while reporting success.
   #
   # --no-cache is the other half, and --pull alone is not enough. The builder's
   # layer cache outlives the images themselves: deleting an image and rebuilding
@@ -1106,10 +1692,9 @@ nd_install_macos_build_images() {
   _nd_inst_record_image unbound "unbound:$gen" || return 1
   if [ "$ND_INST_PIHOLE" = hardened ]; then
     # Apple's builder resolves a local base only by its plain name, hence the
-    # build arg (see pihole-hardened/Containerfile). No --pull here: the base
-    # exists only locally, and under --pull the builder fetches FROM from a
-    # registry (fc5e6ec). It was just built with --pull, or freshly pulled.
-    "$CONTAINER_BIN" build --no-cache --dns 1.1.1.1 --build-arg "BASE_IMAGE=pi-hole-hardened-base:$gen" \
+    # build arg (see pihole-hardened/Containerfile). With --pull the builder
+    # would fetch this local-only base from a registry (fc5e6ec).
+    "$CONTAINER_BIN" build "${ND_INST_MACOS_BUILD_FLAGS[@]}" --build-arg "BASE_IMAGE=pi-hole-hardened-base:$gen" \
       -t "pi-hole:$gen" -f pihole-hardened/Containerfile . || return 1
   else
     "$CONTAINER_BIN" build "${ND_INST_MACOS_BUILD_FLAGS[@]}" -t "pi-hole:$gen" pihole/ || return 1

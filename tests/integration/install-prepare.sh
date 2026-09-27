@@ -17,254 +17,7 @@
 # install-deb-hardened, install-mac, install-mac-hardened) picks the
 # entrypoints.
 
-IP_TOOLS="awk basename bash cat chmod cp cut date dirname env find grep head id ln ls mkdir mktemp mv od readlink rm sed seq sh sha256sum sort stat tail tee touch tr uniq wc xargs yes"
-IP_ALL="install-deb install-deb-hardened install-mac install-mac-hardened"
-
-# The interruption predicate (requirement 4): a call that interrupts the
-# running stack or touches host DNS. Preparation makes none of these.
-IP_DISRUPTIVE='^sudo tee /etc/resolv\.conf( |$)
-^sudo (/usr/bin/)?custom-dns-deb( |$)
-^(sudo )?networksetup -setdnsservers( |$)
-^sudo systemctl (reload|restart) NetworkManager( |$)
-^sudo sed .*NetworkManager\.conf
-^sudo tee /etc/NetworkManager/
-^sudo systemctl (disable --now|stop|restart|enable --now) custom-dns-deb
-^podman (stop|kill|restart|rm|rmi|pod (rm|stop|kill|restart)|network (rm|prune|reload)|image (rm|prune)|system (migrate|reset|prune))( |$)
-^systemctl --user (stop|restart|try-restart|reload-or-restart|kill|disable --now)
-^container (stop|kill|rm|delete|network (rm|delete)|image (rm|delete|prune)|system stop)( |$)
-^(sudo )?launchctl (unload|bootout|remove|kickstart)( |$)
-^brew upgrade( --formula)? container
-^sudo .*start-container-root\.sh
-^persistent-podman\.sh
-^persist\.sh'
-# The subset that writes host DNS.
-IP_DNS_WRITE='^sudo tee /etc/resolv\.conf( |$)
-^sudo (/usr/bin/)?custom-dns-deb( |$)
-^(sudo )?networksetup -setdnsservers( |$)
-^sudo .*start-container-root\.sh post
-^sudo tee /etc/NetworkManager/'
-IP_BUILD_PULL='^(podman (build|pull)|container (build|image pull))( |$)'
-
-ip_entrypoints() {
-  local e="${NICE_DNS_OPT_ENTRYPOINTS:-all}" x out=""
-  [ "$e" = all ] && { printf '%s\n' "$IP_ALL"; return 0; }
-  for x in $(printf '%s' "$e" | tr ',' ' '); do
-    case " $IP_ALL " in *" $x "*) out="$out $x" ;; *) fail "unknown --entrypoints value '$x' (all, $(printf '%s' "$IP_ALL" | tr ' ' ','))" ;; esac
-  done
-  [ -n "$out" ] || fail "--entrypoints selected nothing"
-  printf '%s\n' "$out"
-}
-# ip_select: IP_EPS, the selected entrypoints; an invalid selection fails the
-# case (a failure inside $(...) alone would only end the substitution).
-ip_select() { IP_EPS="$(ip_entrypoints)" || exit 1; }
-ip_platform() { case "$1" in install-deb*) echo linux ;; *) echo macos ;; esac; }
-ip_flavor() { case "$1" in *-hardened) echo hardened ;; *) echo standard ;; esac; }
-
-# ip_write_stubs <bindir> <platform>: one POSIX sh fake behind every name.
-ip_write_stubs() {
-  local b="$1" plat="$2" s
-  mkdir -p "$b"
-  cat >"$b/fakecmd" <<'STUB'
-#!/bin/sh
-me="$(basename "$0")"
-l="$me"; for a in "$@"; do l="$l $a"; done; printf '%s\n' "$l" >>"$FAKE_LOG"
-# Switchable failure: a line of $FAKE/fail is an ERE matched against the call.
-if [ -s "$FAKE/fail" ] && printf '%s\n' "$l" | grep -Eq -f "$FAKE/fail"; then
-  echo "$me: injected failure" >&2; exit 1
-fi
-store="$FAKE/images"; touch "$store"
-img_has() { awk -v r="$1" '$1 == r { f = 1 } END { exit !f }' "$store"; }
-img_id() { awk -v r="$1" '$1 == r { print $2; exit }' "$store"; }
-img_add() { awk -v r="$1" '$1 != r' "$store" >"$store.t"; printf '%s %s\n' "$1" "$2" >>"$store.t"; mv "$store.t" "$store"; }
-img_del() { awk -v r="$1" '$1 != r' "$store" >"$store.t"; mv "$store.t" "$store"; }
-new_id() { n="$(cat "$FAKE/idseq" 2>/dev/null || echo 0)"; n=$((n + 1)); echo "$n" >"$FAKE/idseq"; printf '%064x\n' "$n"; }
-# build <args>: -t refs, --build-arg BASE_IMAGE=x must exist in the store.
-do_build() {
-  tags=""
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      -t|--tag) tags="$tags $2"; shift ;;
-      --build-arg) case "$2" in BASE_IMAGE=*) img_has "${2#BASE_IMAGE=}" || { echo "base ${2#BASE_IMAGE=} not found" >&2; exit 1; } ;; esac; shift ;;
-      -f|--file) shift ;;
-    esac
-    shift
-  done
-  printf '%s\n' "$PWD" >>"$FAKE/build-cwd"
-  id="$(new_id)"
-  for t in $tags; do img_add "$t" "$id"; done
-  return 0
-}
-case "$me" in
-  sudo)
-    # Never runs anything. tee's input is kept for inspection.
-    if [ "$1" = tee ]; then
-      for a in "$@"; do p="$a"; done
-      cat >"$FAKE/sudo-tee$(printf '%s' "$p" | tr '/' '_')"
-    fi
-    exit 0 ;;
-  podman)
-    case "$1" in
-      --version) echo "podman version 5.8.1" ;;
-      info) echo "1.14.0" ;;
-      build) shift; do_build "$@" ;;
-      pull) img_has "$2" || img_add "$2" "$(new_id)" ;;
-      tag) img_has "$2" || exit 125; img_add "$3" "$(img_id "$2")" ;;
-      image)
-        case "$2" in
-          exists) img_has "$3" || exit 1 ;;
-          inspect) for r in "$@"; do :; done; img_has "$r" || exit 125; img_id "$r" ;;
-          rm) shift 2; for r in "$@"; do case "$r" in -*) ;; *) img_del "$r" ;; esac; done ;;
-        esac ;;
-      rmi) shift; for r in "$@"; do case "$r" in -*) ;; *) img_del "$r" ;; esac; done ;;
-    esac
-    exit 0 ;;
-  container)
-    case "$1" in
-      build) shift; do_build "$@" ;;
-      image)
-        case "$2" in
-          pull) img_has "$3" || img_add "$3" "$(new_id)" ;;
-          tag) img_has "$3" || exit 1; img_add "$4" "$(img_id "$3")" ;;
-          inspect) img_has "$3" || { echo "Error: image not found" >&2; exit 1; }
-                   printf '[{"name":"%s","index":{"digest":"sha256:%s","mediaType":"x"}}]\n' "$3" "$(img_id "$3")" ;;
-          rm|delete) shift 2; for r in "$@"; do case "$r" in -*) ;; *) img_del "$r" ;; esac; done ;;
-        esac ;;
-    esac
-    exit 0 ;;
-  git)
-    case "$1" in
-      clone) for a in "$@"; do d="$a"; done; mkdir -p "$d" && cp -R "$FAKE/upstream/." "$d" ;;
-      -C)
-        case "$3 $4" in
-          "rev-parse HEAD") [ -f "$FAKE/git_head" ] || exit 128; cat "$FAKE/git_head" ;;
-          "status --porcelain") cat "$FAKE/git_status" 2>/dev/null ;;
-        esac ;;
-    esac
-    exit 0 ;;
-  brew)
-    case "$1 $2" in
-      "list --formula") grep -qx "$3" "$FAKE/brew_installed" 2>/dev/null || exit 1 ;;
-      "outdated --formula") cat "$FAKE/brew_outdated" 2>/dev/null ;;
-    esac
-    exit 0 ;;
-  curl)
-    o=""; u=""
-    while [ $# -gt 0 ]; do case "$1" in -o) o="$2"; shift ;; https://*) u="$1" ;; esac; shift; done
-    case "$u" in
-      */mac/check-runtime.sh) cp "$FAKE/upstream/mac/check-runtime.sh" "$o" ;;
-      *) exit 22 ;;
-    esac
-    exit 0 ;;
-  shasum) shift 2; sha256sum "$@"; exit 0 ;;
-  sw_vers) echo 26.0; exit 0 ;;
-  uname) case "${1:-}" in -m) echo "$FAKE_ARCH" ;; *) echo "$FAKE_UNAME" ;; esac; exit 0 ;;
-  crun) echo "crun version 1.19.1"; exit 0 ;;
-  dig) echo 104.16.132.229; exit 0 ;;
-  whoami) echo tester; exit 0 ;;
-  systemctl)
-    case "$*" in "is-active --quiet NetworkManager") [ -f "$FAKE/nm_active" ] || exit 3 ;; esac
-    exit 0 ;;
-  networksetup)
-    [ "$1" = -listallnetworkservices ] && printf 'An asterisk (*) denotes that a network service is disabled.\nWi-Fi\n'
-    exit 0 ;;
-  dpkg) exit 1 ;;
-esac
-exit 0
-STUB
-  chmod 755 "$b/fakecmd"
-  for s in sudo git curl shasum uname dig whoami systemctl sleep apt-get add-apt-repository dpkg dpkg-divert loginctl sysctl apparmor_parser usermod nmcli lsb_release update-grub; do
-    ln -s fakecmd "$b/$s"
-  done
-  if [ "$plat" = linux ]; then
-    for s in podman crun; do ln -s fakecmd "$b/$s"; done
-  else
-    for s in container brew softwareupdate sw_vers networksetup launchctl ifconfig; do ln -s fakecmd "$b/$s"; done
-  fi
-  for s in $IP_TOOLS; do [ -e "$b/$s" ] || ln -s "$(command -v "$s")" "$b/$s"; done
-}
-
-# ip_tree <dir>: a copy of the checkout with the persistence scripts stubbed.
-ip_tree() {
-  local d="$1" f
-  mkdir -p "$d"
-  for f in install-deb.sh install-deb-hardened.sh install-mac.sh install-mac-hardened.sh lib deb mac scripts unbound pihole pihole-hardened health routes; do
-    cp -R "$NICE_DNS_ROOT/$f" "$d/"
-  done
-  # shellcheck disable=SC2016  # expanded by the stubs
-  printf '#!/bin/sh\nl="persistent-podman.sh"; for a in "$@"; do l="$l $a"; done; printf "%%s\\n" "$l" >>"$FAKE_LOG"\n[ -f "$FAKE/persist_fail" ] && exit 1\nexit 0\n' >"$d/deb/persistent-podman.sh"
-  # shellcheck disable=SC2016
-  printf '#!/bin/sh\nl="persist.sh"; for a in "$@"; do l="$l $a"; done; printf "%%s\\n" "$l" >>"$FAKE_LOG"\n[ -f "$FAKE/persist_fail" ] && exit 1\nexit 0\n' >"$d/mac/persist.sh"
-  chmod 755 "$d/deb/persistent-podman.sh" "$d/mac/persist.sh"
-}
-
-ip_bridges() {
-  local f="$1" i
-  mkdir -p "$(dirname "$f")"
-  : >"$f"
-  for i in 1 2 3 4 5; do
-    printf 'BRIDGE%s=obfs4 192.0.2.%s:443 %040d cert=abc%s iat-mode=0\n' "$i" "$i" "$i" "$i" >>"$f"
-  done
-}
-
-# ip_env <entrypoint>: a fresh world. Sets IP_W (world), IP_TREE (checkout
-# copy), IP_HOME, IP_BIN, FAKE, FAKE_LOG, IP_STATE (the manifest dir).
-ip_env() {
-  local ep="$1" plat
-  plat="$(ip_platform "$ep")"
-  IP_W="$CASE_DIR/w-$ep"
-  rm -rf "$IP_W"
-  mkdir -p "$IP_W"
-  IP_TREE="$IP_W/src/nice-dns" IP_HOME="$IP_W/home" IP_BIN="$IP_W/bin"
-  FAKE="$IP_W/fake" FAKE_LOG="$IP_W/fake/calls.log"
-  mkdir -p "$FAKE" "$IP_HOME" "$IP_W/tmp"
-  : >"$FAKE_LOG"
-  ip_tree "$IP_TREE"
-  ip_tree "$FAKE/upstream"
-  ip_write_stubs "$IP_BIN" "$plat"
-  printf '0123456789abcdef0123456789abcdef01234567\n' >"$FAKE/git_head"
-  : >"$FAKE/nm_active"
-  printf 'git\ncontainer\n' >"$FAKE/brew_installed"
-  if [ "$plat" = linux ]; then
-    IP_STATE="$IP_HOME/.local/state/nice-dns-install"
-    IP_UNAME=Linux IP_ARCH=x86_64
-    # The subordinate id files the lib reads (ND_INST_ETC): by default the
-    # user already has ranges, as on any host that ran rootless podman.
-    mkdir -p "$IP_W/etc"
-    printf 'tester:100000:65536\n' >"$IP_W/etc/subuid"
-    printf 'tester:100000:65536\n' >"$IP_W/etc/subgid"
-  else
-    IP_STATE="$IP_HOME/Library/Application Support/nice-dns-install"
-    IP_UNAME=Darwin IP_ARCH=arm64
-    ip_bridges "$IP_HOME/.config/nice-dns/bridges.env"
-  fi
-}
-
-# ip_run <script> [args...]: run an entrypoint in the world; IP_RC, IP_OUT.
-ip_run() {
-  local cwd="${IP_CWD:-$IP_W}"
-  IP_OUT="$(cd "$cwd" && env -i HOME="$IP_HOME" USER=tester LOGNAME=tester PATH="$IP_BIN" \
-    TMPDIR="$IP_W/tmp" XDG_STATE_HOME="$IP_HOME/.local/state" XDG_CONFIG_HOME="$IP_HOME/.config" \
-    XDG_RUNTIME_DIR="$IP_W/run" FAKE="$FAKE" FAKE_LOG="$FAKE_LOG" FAKE_UNAME="$IP_UNAME" FAKE_ARCH="$IP_ARCH" \
-    ND_INST_ETC="$IP_W/etc" bash "$@" 2>&1 </dev/null)"
-  IP_RC=$?
-}
-ip_install() { ip_run "$IP_TREE/$1.sh" "${@:2}"; }
-
-ip_lines() { grep -nE -f <(printf '%s\n' "$2") "$1" 2>/dev/null || true; }
-ip_first() { ip_lines "$1" "$2" | head -n 1 | cut -d: -f1; }
-ip_last() { ip_lines "$1" "$2" | tail -n 1 | cut -d: -f1; }
-ip_gen_current() { cat "$IP_STATE/current" 2>/dev/null; }
-ip_row() { awk -F '\t' -v k="$2" '$1 == k { $1 = ""; sub(/^\t/, ""); print; exit }' OFS='\t' "$1"; }
-ip_manifest() { printf '%s/generations/%s/prepare.tsv\n' "$IP_STATE" "$1"; }
-ip_refs() { awk -F '\t' '$1 == "image" { print $3 }' "$1"; }
-ip_has_image() { awk -v r="$1" '$1 == r { f = 1 } END { exit !f }' "$FAKE/images"; }
-ip_mode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }
-
-ip_assert_untouched() {
-  local what="$1"
-  assert_eq "" "$(ip_lines "$FAKE_LOG" "$IP_DISRUPTIVE")" "$what: no disruptive call"
-  assert_eq "" "$(ip_lines "$FAKE_LOG" "$IP_DNS_WRITE")" "$what: no DNS write"
-}
+. "$NICE_DNS_ROOT/tests/fixtures/install-fakes.sh"
 
 # ───────────────────────────────── cases ─────────────────────────────────
 
@@ -320,7 +73,7 @@ t_builds_and_pulls_precede_the_interruption() {
       (
         local first last_bp stop n
         ip_env "$ep"
-        if [ "$sib" = yes ]; then mkdir -p "$IP_W/src/pi-hole-hardened"; : >"$IP_W/src/pi-hole-hardened/Dockerfile"; : >"$IP_W/src/pi-hole-hardened/post-install.sh"; fi
+        if [ "$sib" = yes ]; then mkdir -p "$IP_W/src/pi-hole-hardened"; printf 'FROM alpine:3.21.3\n' >"$IP_W/src/pi-hole-hardened/Dockerfile"; : >"$IP_W/src/pi-hole-hardened/post-install.sh"; fi
         ip_install "$ep"
         assert_rc 0 "$IP_RC" "$ep (sibling=$sib): $IP_OUT"
         first="$(ip_first "$FAKE_LOG" "$IP_DISRUPTIVE")"
@@ -485,10 +238,12 @@ t_standard_and_hardened_share_build_flags() {
     (
       plat="$(ip_platform "$ep")"
       ip_env "$ep"
-      mkdir -p "$IP_W/src/pi-hole-hardened"; : >"$IP_W/src/pi-hole-hardened/Dockerfile"; : >"$IP_W/src/pi-hole-hardened/post-install.sh"
+      mkdir -p "$IP_W/src/pi-hole-hardened"; printf 'FROM alpine:3.21.3\n' >"$IP_W/src/pi-hole-hardened/Dockerfile"; : >"$IP_W/src/pi-hole-hardened/post-install.sh"
       ip_install "$ep"
       assert_rc 0 "$IP_RC" "$ep: $IP_OUT"
-      if [ "$plat" = linux ]; then want='--pull=newer --no-cache --dns 1.1.1.1'; else want='--pull --no-cache --dns 1.1.1.1'; fi
+      # macOS builds take no --pull: they run while host DNS is pinned to the
+      # stopped stack, and their bases were pulled in preparation (Task 1.2).
+      if [ "$plat" = linux ]; then want='--pull=newer --no-cache --dns 1.1.1.1'; else want='--no-cache --dns 1.1.1.1'; fi
       # Each build's policy flags, with the recipe selectors (-t, -f,
       # --build-arg) and the context removed.
       flags="$(grep -E '^(podman|container) build ' "$FAKE_LOG" | awk '{
@@ -499,15 +254,7 @@ t_standard_and_hardened_share_build_flags() {
           out = out (out == "" ? "" : " ") $i
         }
         print out }' | sort -u)"
-      # On macOS the hardened pi-hole builds FROM a local-only base, which
-      # Apple's builder would try to fetch under --pull (cf. fc5e6ec); that
-      # base was itself just built or pulled fresh, so only --pull goes.
-      if [ "$plat" = macos ] && [ "$(ip_flavor "$ep")" = hardened ]; then
-        assert_match '^container build --no-cache --dns 1\.1\.1\.1 --build-arg BASE_IMAGE=pi-hole-hardened-base:[^ ]+ -t pi-hole:' \
-          "$(grep -E '^container build .*BASE_IMAGE=' "$FAKE_LOG")" "$ep: the pi-hole build on the local base has no --pull"
-        flags="$(printf '%s\n' "$flags" | grep -vx -- '--no-cache --dns 1.1.1.1')"
-      fi
-      assert_eq "$want" "$flags" "$ep: every other build (unbound, pi-hole and any base) uses exactly [$want]:
+      assert_eq "$want" "$flags" "$ep: every build (unbound, pi-hole and any base) uses exactly [$want]:
 $(grep -E '^(podman|container) build ' "$FAKE_LOG")"
       assert_eq "$([ "$(ip_flavor "$ep")" = hardened ] && echo 3 || echo 2)" "$(grep -cE '^(podman|container) build ' "$FAKE_LOG")" "$ep: the expected number of builds"
     ) || exit 1
@@ -615,11 +362,14 @@ t_uninstall_still_removes_the_stack() {
       assert_match '^nice-dns uninstalled\.$' "$IP_OUT" "$ep: the existing message"
       if [ "$(ip_platform "$ep")" = linux ]; then
         assert_match '^podman rm -f pi-hole$' "$(cat "$FAKE_LOG")" "$ep: containers removed"
-        assert_match '^sudo rm -f /etc/systemd/system/custom-dns-deb\.service /usr/bin/custom-dns-deb$' "$(cat "$FAKE_LOG")" "$ep: the resolver pin is removed as before"
+        # Since Task 1.2 the helper gives back the recorded DNS state.
+        assert_match '^sudo bash .*/deb/custom-dns-deb restore$' "$(cat "$FAKE_LOG")" "$ep: the recorded DNS state is restored"
+        assert_match '^sudo rm -f /usr/bin/custom-dns-deb$' "$(cat "$FAKE_LOG")" "$ep: the pin helper is removed"
       else
         assert_match '^container rm pi-hole$' "$(cat "$FAKE_LOG")" "$ep: containers removed"
         assert_match '^launchctl unload .*org\.nice-dns\.bridge-eval\.plist$' "$(cat "$FAKE_LOG")" "$ep: the shared agent list includes bridge-eval"
-        assert_match '^sudo networksetup -setdnsservers Wi-Fi Empty$' "$(cat "$FAKE_LOG")" "$ep: DNS behaviour of uninstall is unchanged"
+        assert_match '^sudo bash .*/mac/start-container-root\.sh restore$' "$(cat "$FAKE_LOG")" "$ep: the recorded DNS state is restored"
+        assert_not_match 'setdnsservers' "$(cat "$FAKE_LOG")" "$ep: the installer itself sets no DNS servers"
       fi
       assert_eq "" "$(grep -E 'unbound|pi-hole|tor-' "$FAKE/images")" "$ep: every nice-dns image, generation tags included, is removed:
 $(cat "$FAKE/images")"
@@ -769,7 +519,7 @@ INNER
       assert_match '^rc=0$' "$out" "$ep under bash 3.2: $out"
       assert_match '^manifest: variant	socat$' "$out" "$ep under bash 3.2: the manifest records the install"
       assert_match '^log: container run -d --name tor-socat --network dnsnet -c 1 -m 512M -e BRIDGE1=obfs4 .* -e BRIDGE5=obfs4 .* docker\.io/sureserver/tor-socat:latest$' "$out" "$ep under bash 3.2: every bridge reaches the proxy"
-      assert_match '^log: container build --pull --no-cache --dns 1\.1\.1\.1 -t unbound:' "$out" "$ep under bash 3.2: images are built"
+      assert_match '^log: container build --no-cache --dns 1\.1\.1\.1 -t unbound:' "$out" "$ep under bash 3.2: images are built"
     ) || exit 1
   done
   [ "$n" -gt 0 ] || assert_eq 0 0 "no macOS entrypoint selected"

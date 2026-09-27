@@ -1,40 +1,234 @@
 #!/usr/bin/env bash
+# nice-dns resolver helper (Linux, root). Sub-plan 4 Task 1.2 (ARCH-06,
+# WF-DNS-003): the only code that changes the host resolver.
+#
+#   custom-dns-deb [pin]   point /etc/resolv.conf at the stack (127.0.0.1).
+#                          The boot oneshot and the NetworkManager dispatcher
+#                          hook run it with no argument.
+#   custom-dns-deb check   exit 3 when another owner changed the resolver
+#                          after nice-dns pinned it; an install refuses then.
+#   custom-dns-deb snapshot
+#                          record the resolver state nice-dns will change
+#                          (first install only; a reinstall keeps the first
+#                          record, which is the state before nice-dns).
+#   custom-dns-deb restore undo the pin from that record (uninstall).
+#   custom-dns-deb status  print pinned or unpinned.
+#   custom-dns-deb discard drop an unused record: a first install that failed
+#                          before its pin (refused once the pin is in place).
+#
+# Only these are owned: /etc/resolv.conf, systemd-resolved's enabled and
+# active state, the ipv6 sysctl runtime values, and the nice-dns-named files
+# in OWNED_FILES. VPN and other network configuration are never touched.
+# The record lives in a root-only directory; it is data, never sourced.
+#
+# ND_DNS_TEST_ROOT prefixes every path for the fixture tests. It is honoured
+# only when not running as root, so a root run always acts on the real host.
 set -euo pipefail
 
-# must run as root
-if [[ $EUID -ne 0 ]]; then
-  echo "⚠️  This script must be run as root." >&2
-  exit 1
-fi
-
-### 1) Disable systemd-resolved so it stops managing /etc/resolv.conf
-if systemctl is-active --quiet systemd-resolved; then
-  systemctl stop systemd-resolved
-fi
-if systemctl is-enabled --quiet systemd-resolved; then
-  systemctl disable systemd-resolved
-fi
-
-### 2) Ensure /etc/resolv.conf is a plain file pointing at 127.0.0.1
-RESOLV=/etc/resolv.conf
-
-# if it's a symlink (eg. to stub-resolv.conf), or missing, replace it
-if [ -L "$RESOLV" ] || [ ! -f "$RESOLV" ]; then
-  rm -f "$RESOLV"
-  cat > "$RESOLV" <<EOF
-nameserver 127.0.0.1
-EOF
-else
-  # if it exists but isn't exactly our single-line, back it up & rewrite
-  if ! grep -Fxq 'nameserver 127.0.0.1' "$RESOLV" \
-     || grep -E '^\s*nameserver' "$RESOLV" | grep -v '127.0.0.1' >/dev/null; then
-    cp "$RESOLV" "$RESOLV".bak."$(date +%Y%m%d_%H%M%S)"
-    cat > "$RESOLV" <<EOF
-nameserver 127.0.0.1
-EOF
+R=""
+if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+  if [[ -n ${ND_DNS_TEST_ROOT:-} ]]; then
+    R="$ND_DNS_TEST_ROOT"
+  else
+    echo "custom-dns-deb: must be run as root." >&2
+    exit 1
   fi
 fi
 
-### 3) No iptables redirection needed, Pi-hole now binds directly to port 53
+RESOLV="$R/etc/resolv.conf"
+RECEIPT_DIR="$R/var/lib/nice-dns/dns-owned"
+RECEIPT="$RECEIPT_DIR/receipt.tsv"
+SCHEMA='nice-dns-dns-owned/1'
+PIN='nameserver 127.0.0.1'
+OWNED_FILES=(
+  "$R/etc/NetworkManager/conf.d/90-nice-dns.conf"
+  "$R/etc/NetworkManager/dispatcher.d/90-nice-dns-pin"
+  "$R/etc/systemd/system/NetworkManager-wait-online.service.d/10-wait-for-connectivity.conf"
+  "$R/etc/sysctl.d/99-nice-dns-disable-ipv6.conf"
+  "$R/etc/systemd/system/custom-dns-deb.service"
+)
+SYSCTL_KEYS="net.ipv6.conf.all.disable_ipv6 net.ipv6.conf.default.disable_ipv6 net.ipv6.conf.lo.disable_ipv6"
 
-echo "✅ System-wide DNS now points to 127.0.0.1:53"
+# pinned: resolv.conf is the regular file nice-dns writes (one nameserver, 127.0.0.1).
+pinned() {
+  [[ -f $RESOLV && ! -L $RESOLV ]] || return 1
+  [[ "$(grep -E '^[[:space:]]*nameserver' "$RESOLV" | awk '{ print $2 }' | sort -u)" == 127.0.0.1 ]]
+}
+
+receipt_get() { awk -F '\t' -v k="$1" 'NR == 1 && $0 != "schema\t'"$SCHEMA"'" { exit 1 } $1 == k { print $2; exit }' "$RECEIPT"; }
+receipt_ok() {
+  [[ -d $RECEIPT_DIR && ! -L $RECEIPT_DIR && -f $RECEIPT && ! -L $RECEIPT ]] || return 1
+  [[ "$(head -n 1 "$RECEIPT")" == "schema	$SCHEMA" ]]
+}
+
+unit_state() { # <is-enabled|is-active> <unit>: the value, or 'absent'
+  local v
+  if ! systemctl cat "$2" >/dev/null 2>&1; then echo absent; return 0; fi
+  v="$(systemctl "$1" "$2" 2>/dev/null || true)"
+  echo "${v:-unknown}"
+}
+
+cmd_pin() {
+  # 1) systemd-resolved stops managing /etc/resolv.conf.
+  if systemctl is-active --quiet systemd-resolved; then
+    systemctl stop systemd-resolved
+  fi
+  if systemctl is-enabled --quiet systemd-resolved; then
+    systemctl disable systemd-resolved
+  fi
+  # 2) /etc/resolv.conf is a plain file pointing at 127.0.0.1. A symlink (eg.
+  # to stub-resolv.conf) or a missing file is replaced; a differing file is
+  # backed up first.
+  if [[ -L $RESOLV || ! -f $RESOLV ]]; then
+    rm -f "$RESOLV"
+    printf '%s\n' "$PIN" >"$RESOLV"
+  elif ! pinned || ! grep -Fxq "$PIN" "$RESOLV"; then
+    # The record already holds the state before nice-dns; without one (a pin
+    # outside an install) keep a dated backup as before.
+    receipt_ok || cp "$RESOLV" "$RESOLV".bak."$(date +%Y%m%d_%H%M%S)"
+    printf '%s\n' "$PIN" >"$RESOLV"
+  fi
+  chmod 644 "$RESOLV"
+  echo "System-wide DNS now points to 127.0.0.1:53"
+}
+
+cmd_check() {
+  # Before a record exists nothing is ours yet: any state is the owner's.
+  receipt_ok || return 0
+  if ! pinned; then
+    echo "custom-dns-deb: /etc/resolv.conf was changed by another owner after nice-dns pinned it:" >&2
+    sed 's/^/  /' "$RESOLV" >&2 2>/dev/null || echo "  (missing)" >&2
+    echo "custom-dns-deb: not changing it. Run the uninstall to restore the recorded state, then install again." >&2
+    return 3
+  fi
+}
+
+cmd_snapshot() {
+  local tmp origin k v legacy_mark=0 f
+  if receipt_ok; then
+    echo "custom-dns-deb: keeping the existing record ($(receipt_get created))"
+    return 0
+  fi
+  [[ -L $R/var/lib/nice-dns ]] && { echo "custom-dns-deb: $R/var/lib/nice-dns is a symlink; refusing" >&2; return 1; }
+  install -d -m 700 "$RECEIPT_DIR"
+  [[ -L $RECEIPT_DIR ]] && { echo "custom-dns-deb: $RECEIPT_DIR is a symlink; refusing" >&2; return 1; }
+  for f in "${OWNED_FILES[@]}"; do [[ -e $f ]] && legacy_mark=1; done
+  # An install from before records: the pin is already there, so the state
+  # before nice-dns is unknown.
+  if (( legacy_mark )) && pinned; then origin=legacy; else origin=fresh; fi
+  tmp="$(mktemp "$RECEIPT_DIR/.receipt.XXXXXX")"
+  {
+    printf 'schema\t%s\n' "$SCHEMA"
+    printf 'origin\t%s\n' "$origin"
+    printf 'created\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if [[ -L $RESOLV ]]; then
+      printf 'resolv\tsymlink\t%s\n' "$(readlink "$RESOLV")"
+    elif [[ -f $RESOLV ]]; then
+      printf 'resolv\tfile\t%s\n' "$(stat -c %a "$RESOLV")"
+    else
+      printf 'resolv\tmissing\t-\n'
+    fi
+    printf 'resolved_enabled\t%s\n' "$(unit_state is-enabled systemd-resolved.service)"
+    printf 'resolved_active\t%s\n' "$(unit_state is-active systemd-resolved.service)"
+    for k in $SYSCTL_KEYS; do
+      v="$(sysctl -n "$k" 2>/dev/null || echo -)"
+      printf 'sysctl\t%s\t%s\n' "$k" "$v"
+    done
+  } >"$tmp"
+  if [[ -f $RESOLV && ! -L $RESOLV ]]; then
+    cp "$RESOLV" "$RECEIPT_DIR/resolv.conf.orig"
+    chmod 600 "$RECEIPT_DIR/resolv.conf.orig"
+  fi
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$RECEIPT"
+  echo "custom-dns-deb: recorded the resolver state ($origin)"
+}
+
+cmd_restore() {
+  local origin kind target mode k v f nm=0
+  if ! receipt_ok; then
+    echo "custom-dns-deb: no record of the resolver state before nice-dns; treating it as an install from before records" >&2
+    origin=legacy kind=unknown
+  else
+    origin="$(receipt_get origin)"
+    kind="$(awk -F '\t' '$1 == "resolv" { print $2; exit }' "$RECEIPT")"
+  fi
+  # The pin's own machinery goes first, so nothing writes 127.0.0.1 back.
+  systemctl disable --now custom-dns-deb.service >/dev/null 2>&1 || true
+  for f in "${OWNED_FILES[@]}"; do
+    if [[ -e $f || -L $f ]]; then
+      case "$f" in *NetworkManager*) nm=1 ;; esac
+      rm -f "${f:?}"
+    fi
+  done
+  rmdir "$R/etc/systemd/system/NetworkManager-wait-online.service.d" 2>/dev/null || true
+  systemctl daemon-reload >/dev/null 2>&1 || true
+
+  if [[ $origin == fresh ]]; then
+    for k in $SYSCTL_KEYS; do
+      v="$(awk -F '\t' -v k="$k" '$1 == "sysctl" && $2 == k { print $3; exit }' "$RECEIPT")"
+      [[ -n $v && $v != - ]] && sysctl -q -w "$k=$v" >/dev/null 2>&1 || true
+    done
+  else
+    sysctl --system >/dev/null 2>&1 || true
+  fi
+
+  if ! pinned; then
+    echo "custom-dns-deb: /etc/resolv.conf was changed by another owner; leaving it as it is" >&2
+  elif [[ $origin == fresh ]]; then
+    case "$kind" in
+      symlink)
+        target="$(awk -F '\t' '$1 == "resolv" { print $3; exit }' "$RECEIPT")"
+        rm -f "$RESOLV"; ln -s "$target" "$RESOLV" ;;
+      file)
+        mode="$(awk -F '\t' '$1 == "resolv" { print $3; exit }' "$RECEIPT")"
+        cp "$RECEIPT_DIR/resolv.conf.orig" "$RESOLV.nice-dns-new"
+        chmod "${mode:-644}" "$RESOLV.nice-dns-new"
+        mv -f "$RESOLV.nice-dns-new" "$RESOLV" ;;
+      missing) rm -f "$RESOLV" ;;
+    esac
+  else
+    # State before nice-dns unknown: the distribution default when
+    # systemd-resolved exists, otherwise the pin stays and the operator is told.
+    if [[ "$(unit_state is-enabled systemd-resolved.service)" != absent ]]; then
+      rm -f "$RESOLV"; ln -s ../run/systemd/resolve/stub-resolv.conf "$RESOLV"
+    else
+      echo "custom-dns-deb: no record and no systemd-resolved: /etc/resolv.conf still points at 127.0.0.1; set a resolver by hand" >&2
+    fi
+  fi
+
+  if [[ $origin == fresh ]]; then
+    case "$(receipt_get resolved_enabled)" in
+      enabled|enabled-runtime) systemctl enable systemd-resolved >/dev/null 2>&1 || true ;;
+    esac
+    [[ "$(receipt_get resolved_active)" == active ]] && { systemctl start systemd-resolved >/dev/null 2>&1 || true; }
+  elif [[ "$(unit_state is-enabled systemd-resolved.service)" != absent ]]; then
+    systemctl enable --now systemd-resolved >/dev/null 2>&1 || true
+  fi
+  if (( nm )) && systemctl is-active --quiet NetworkManager 2>/dev/null; then
+    systemctl reload NetworkManager >/dev/null 2>&1 || true
+  fi
+  rm -f "${RECEIPT_DIR:?}/receipt.tsv" "${RECEIPT_DIR:?}/resolv.conf.orig"
+  rmdir "$RECEIPT_DIR" 2>/dev/null || true
+  echo "custom-dns-deb: restored the resolver state from before nice-dns ($origin)"
+}
+
+cmd_discard() {
+  receipt_ok || return 0
+  if pinned; then
+    echo "custom-dns-deb: the resolver is pinned; use restore, not discard" >&2
+    return 1
+  fi
+  rm -f "${RECEIPT_DIR:?}/receipt.tsv" "${RECEIPT_DIR:?}/resolv.conf.orig"
+  rmdir "$RECEIPT_DIR" 2>/dev/null || true
+}
+
+case "${1:-pin}" in
+  pin) cmd_pin ;;
+  status) if pinned; then echo pinned; else echo unpinned; fi ;;
+  discard) cmd_discard ;;
+  check) cmd_check ;;
+  snapshot) cmd_snapshot ;;
+  restore) cmd_restore ;;
+  *) echo "usage: custom-dns-deb [pin|check|snapshot|restore|status|discard]" >&2; exit 2 ;;
+esac
