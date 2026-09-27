@@ -305,13 +305,14 @@ ca_cell() {
 
 # ca_reused <proxy/pihole>: DEC-009. The cell passed all six scenarios in a
 # run named by NICE_DNS_CELL_REUSE_RUNS, so it is not repeated: it is listed
-# in reused.tsv for live/controller-receipt, which carries its evidence and a
+# in reused-<platform>.tsv (one file per platform: the platforms run in
+# parallel) for live/controller-receipt, which carries its evidence and a
 # reuse row. A cell this run executes is never replaced by an earlier one.
 ca_reused() {
   local src
   src="$(cs_reuse_cell "$CA_PLAT/$1" 2>&1)" || fail "NICE_DNS_CELL_REUSE_RUNS: $src"
   [ -n "$src" ] || return 1
-  printf '%s/%s\t%s\n' "$CA_PLAT" "$1" "$src" >>"$CA_ROOT_DIR/reused.tsv"
+  printf '%s/%s\t%s\n' "$CA_PLAT" "$1" "$src" >>"$CA_ROOT_DIR/reused-$CA_PLAT.tsv"
   printf '== cell %s/%s reused from %s\n' "$CA_PLAT" "$1" "$src"
   return 0
 }

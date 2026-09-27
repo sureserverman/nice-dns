@@ -44,15 +44,16 @@ t_1_receipt() {
   cp "$CA_ROOT_DIR/wake.txt" "$out/CT-WAKE.txt"
   printf 'scenario\tCT-WAKE\t-\tpass\tCT-WAKE.txt\t%s\t-\n' "$(sha256sum "$out/CT-WAKE.txt" | cut -d' ' -f1)" >>"$r"
   # This run's cells, then the cells carried from earlier runs (DEC-009:
-  # controller-active skipped them and listed them in reused.tsv).
+  # controller-active skipped them and listed them in reused-<platform>.tsv).
   : >"$CASE_DIR/cell-dirs.tsv"
   for d in "$CA_ROOT_DIR"/*-*-*/; do printf '%s\t-\n' "${d%/}" >>"$CASE_DIR/cell-dirs.tsv"; done
-  if [ -f "$CA_ROOT_DIR/reused.tsv" ]; then
+  for f in "$CA_ROOT_DIR"/reused-*.tsv; do
+    [ -f "$f" ] || continue
     while IFS="$(printf '\t')" read -r cell d; do
       [ -d "$d" ] || fail "reused cell $cell: no directory $d"
       printf '%s\t%s\n' "$d" "$(basename "$(dirname "$(dirname "$d")")")" >>"$CASE_DIR/cell-dirs.tsv"
-    done <"$CA_ROOT_DIR/reused.tsv"
-  fi
+    done <"$f"
+  done
   while IFS="$(printf '\t')" read -r d from; do
     [ -f "$d/cell.tsv" ] || continue
     cell="$(awk -F '\t' '$1 == "cell" { print $2 }' "$d/cell.tsv")"
@@ -62,7 +63,7 @@ t_1_receipt() {
     for f in cell.tsv observations.tsv; do [ -f "$d/$f" ] && cp "$d/$f" "$out/cells/$key/"; done
     # A cell that did not pass all six scenarios stays in the denominator as
     # failed, and the receipt then never verifies (ARCH-09; close-out M3).
-    if [ "$(grep -c pass "$d/observations.tsv" 2>/dev/null)" -ne 6 ]; then
+    if [ "$(awk -F '\t' '$2 == "pass" && $1 ~ /^CT-(PROBES|PRIMARY-ONLY|RECOVERY-ACK|CACHE-VS-UPSTREAM|RUNTIME-WEDGE|BRIDGES)$/ { s[$1] = 1 } END { print length(s) }' "$d/observations.tsv" 2>/dev/null)" != 6 ]; then
       printf 'cell\t%s\t%s\t%s\t%s\t%s\tfailed\n' "${cell%%/*}" "$(printf '%s' "$cell" | cut -d/ -f2)" "${cell##*/}" \
         "$(awk -F '\t' '$1 == "target" { print $2 }' "$d/cell.tsv")" "$gen" >>"$r"
       continue
