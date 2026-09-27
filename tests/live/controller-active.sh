@@ -92,8 +92,8 @@ ca_deploy() {
     args=(--cell "$x/$h" --source-sha "$base")
     [ "$h" = hardened ] && args+=(--hardened-sha "$(git -C "$CS_SIBS/pi-hole-hardened" rev-parse HEAD)")
     # The installer's output may carry bridge lines: it stays out of the evidence.
-    cs_t "$a" install-cell "${args[@]}" >"$CASE_DIR/install-$x-$h.log" 2>&1 \
-      || fail "$a $x/$h: install-cell failed: $(grep -E '^(installer_exit|github_main)' "$CASE_DIR/install-$x-$h.log" | tr '\n' ' ')"
+    cs_t "$a" install-cell "${args[@]}" >"$CASE_DIR/install-$CA_PLAT-$x-$h.log" 2>&1 \
+      || fail "$a $x/$h: install-cell failed: $(grep -E '^(installer_exit|github_main)' "$CASE_DIR/install-$CA_PLAT-$x-$h.log" | tr '\n' ' ')"
     printf 'installed\t%s/%s\t%s\n' "$x" "$h" "$base" >>"$d/deploy.tsv"
   fi
   cs_t "$a" quiesce-agents >"$d/quiesce.tsv" 2>>"$d/ops.log" || fail "$a: quiesce-agents"

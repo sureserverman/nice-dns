@@ -91,10 +91,12 @@
 #                    Mac's sudo asks for no credential; nothing prompts). A cell
 #                    installed from origin/main otherwise keeps its old agent
 #   set-tunables     --mode fast writes the installed controller's
-#                    tunables.tsv (30 s startup allowance, grace and cooldown,
-#                    a 60 s ladder hold:
+#                    tunables.tsv (30 s startup allowance, grace and cooldown:
 #                    the live gate's extra configurations, user decision
-#                    2026-09-26); --mode default removes it (the real timers)
+#                    2026-09-26); --mode default removes it (the real timers).
+#                    The ladder hold keeps its real 660 s: a shorter one
+#                    recreates the proxy mid-bootstrap (live, mint haproxy,
+#                    run 20260927T082335Z-3babdc89: 70 s after the first)
 #   hold-bridge-refresh
 #                    stamp the controller's outage-refresh rate limit
 #                    (bridges.last = now), so an outage in the next hour does
@@ -688,7 +690,15 @@ case "$NICE_DNS_OP" in
     if [ "$inst" = install-mac.sh ]; then
       # install-mac.sh clones GitHub main itself: observe that ref from the
       # target just before, and refuse unless it is the pinned commit.
-      gm=$(git ls-remote https://github.com/sureserverman/nice-dns.git refs/heads/main </dev/null 2>/dev/null | cut -f1)
+      # The Mac's DNS is its own stack, which a previous cell may have just
+      # healed (live, run 20260927T082335Z-3babdc89: "unreadable" the second
+      # heal-runtime returned): retry for up to 5 minutes before refusing.
+      gm="" i=0
+      while [ -z "$gm" ] && [ "$i" -lt 20 ]; do
+        gm=$(git ls-remote https://github.com/sureserverman/nice-dns.git refs/heads/main </dev/null 2>/dev/null | cut -f1)
+        [ -n "$gm" ] || sleep 15
+        i=$((i + 1))
+      done
       printf 'github_main\t%s\n' "${gm:-unreadable}"
       [ "$gm" = "$NICE_DNS_SOURCE_SHA" ] || { echo "GitHub main is '${gm:-unreadable}', not $NICE_DNS_SOURCE_SHA; refusing" >&2; exit 2; }
     fi
@@ -907,7 +917,7 @@ case "$NICE_DNS_OP" in
     else f="${XDG_DATA_HOME:-$HOME/.local/share}/nice-dns-health/tunables.tsv"; fi
     [ -d "$(dirname "$f")" ] || { echo "no installed controller at $(dirname "$f")" >&2; exit 1; }
     if [ "$NICE_DNS_MODE" = fast ]; then
-      (umask 077 && printf 'ND_POLICY_STARTUP_S\t30\nND_POLICY_GRACE_S\t30\nND_POLICY_COOLDOWN_S\t30\nND_POLICY_LADDER_S\t60\n' >"$f") || exit 1
+      (umask 077 && printf 'ND_POLICY_STARTUP_S\t30\nND_POLICY_GRACE_S\t30\nND_POLICY_COOLDOWN_S\t30\n' >"$f") || exit 1
     else
       rm -f "$f"
     fi
