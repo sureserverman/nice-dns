@@ -117,6 +117,13 @@ ca_deploy() {
   # 20260925T200235Z-e3b4de89: mint's Tor lost its thin set minutes after a
   # recreate, which took every route down mid-scenario).
   ca_bridges "$a"
+  # The recreate below adopts the set CT-BRIDGES just applied. Hold the
+  # outage refresh until the scenarios are done: a cold bootstrap slower than
+  # the grace (mint, about 7 minutes) otherwise runs it, and its new set waits
+  # for the proxy, so the in-image scenario's first restart becomes the service
+  # restart that adopts it (live, run 20260927T102452Z-66cfa5eb, mint haproxy:
+  # "bridges changed" 11:04:50Z, then "adopting").
+  cs_t "$a" hold-bridge-refresh >>"$d/ops.log" 2>&1 || fail "$a: hold-bridge-refresh"
   cs_t "$a" build-proxy --component "tor-$x" --source-sha "$psha" >"$d/build.log" 2>&1 || fail "$a: build-proxy: $(tail -n 5 "$d/build.log")"
   cs_t "$a" recreate-proxy --component "tor-$x" >"$d/recreate.log" 2>&1 || fail "$a: recreate-proxy: $(tail -n 5 "$d/recreate.log")"
   assert_eq "$(awk -F '\t' '$1 == "candidate" { print $3 }' "$d/build.log")" "$(awk -F '\t' '$1 == "image" { print $3 }' "$d/recreate.log")" \
