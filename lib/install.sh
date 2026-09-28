@@ -868,6 +868,12 @@ _nd_inst_rollback() {
   trap '' INT TERM HUP
   _nd_inst_manifest_row "$ND_INST_MANIFEST" status rolling-back
   if [ "$ND_INST_PLATFORM" = linux ]; then _nd_inst_linux_stop_new; else _nd_inst_macos_stop_new; fi
+  # macOS: the builds and the volume hand-over may have wedged dnsnet before
+  # the failure, and only a runtime restart heals it. The start-container
+  # agent that brings a previous stack back cannot see a wedge with no
+  # containers left to probe, so the rollback restarts the runtime itself,
+  # as the forward path does before its stack (Tier-1, 2026-09-28).
+  if [ "$ND_INST_PLATFORM" = macos ]; then nd_install_macos_fresh_datapath || true; fi
   # The runtime may be down (a failed restart in nd_install_macos_fresh_datapath).
   if [ "$ND_INST_PLATFORM" = macos ] && ! "$CONTAINER_BIN" system status >/dev/null 2>&1; then
     { yes 2>/dev/null || true; } | "$CONTAINER_BIN" system start >/dev/null 2>&1 || true
@@ -1976,6 +1982,11 @@ nd_install_macos_teardown() {
 # _nd_inst_macos_stop_new: the rollback's first step, the new stack goes.
 _nd_inst_macos_stop_new() {
   local p c bin="${CONTAINER_BIN:-container}"
+  # A build that failed leaves Apple's builder running on the default
+  # network, which wedges dnsnet (live 2026-09-28: a failed apk fetch left
+  # buildkit up after the rollback). Stopping it does not heal a wedge that
+  # already happened: the rollback also restarts the runtime.
+  "$bin" builder stop >/dev/null 2>&1 || true
   for p in start-container health health-bridges; do
     launchctl unload "$HOME/Library/LaunchAgents/org.nice-dns.$p.plist" 2>/dev/null || true
   done

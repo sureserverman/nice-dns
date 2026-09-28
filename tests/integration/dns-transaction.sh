@@ -198,6 +198,20 @@ $(cat -n "$FAKE_LOG")"
   fi
   assert_match 'rolled back|rolling back|Rolling back' "$IP_OUT" "$ep/$mode/$inj: the rollback is reported"
   assert_not_match 'another owner' "$IP_OUT" "$ep/$mode/$inj: no false ownership warning"
+  # A builder the install started is stopped again, and the runtime is
+  # restarted after it (the builder wedges dnsnet; a restart heals it).
+  local bs st rs
+  bs="$(ip_last "$FAKE_LOG" '^container builder start')"
+  if [ -n "$bs" ]; then
+    st="$(ip_last "$FAKE_LOG" '^container builder stop')"
+    rs="$(ip_last "$FAKE_LOG" '^container system stop')"
+    assert_ne "" "$st" "$ep/$mode/$inj: the builder started at line $bs is stopped"
+    assert_ne "" "$rs" "$ep/$mode/$inj: the runtime is restarted"
+    assert_eq 1 "$(( ${st:-0} > bs ))" "$ep/$mode/$inj: the builder is stopped after it started (line $bs):
+$(cat -n "$FAKE_LOG")"
+    assert_eq 1 "$(( ${rs:-0} > bs ))" "$ep/$mode/$inj: the runtime restarts after the builder ran (line $bs):
+$(cat -n "$FAKE_LOG")"
+  fi
 }
 
 dt_injections() {
