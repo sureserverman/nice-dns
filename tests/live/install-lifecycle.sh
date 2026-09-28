@@ -179,6 +179,10 @@ il_install() {
   w=$!
   il_t "$a" "$act-cell" --cell "$(il_cell "$a" proxy)/$ph" --source-sha "$(il_cell "$a" source_sha)" ${hs[@]+"${hs[@]}"} >"$d/install-$label.log" 2>&1
   rc=$?
+  # The pin is an install's last step: sample a little past it before the
+  # watcher stops (live 2026-09-28, mint: the last sample came 2 s before the
+  # pin, so a correct install read as "never pinned").
+  sleep "${IL_WATCH_GRACE:-6}"
   il_stop_watch "$w"; wait "$w" 2>/dev/null
   printf '%s\t%s\t%s\n' "$label" "$act" "$rc" >>"$d/steps.tsv"
   return "$rc"

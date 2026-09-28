@@ -21,7 +21,14 @@ NICE_DNS_IL_DRY_RUN=1
 NICE_DNS_OPT_TARGETS=fake-targets.env
 NICE_DNS_OPT_VARIANTS=representative
 NICE_DNS_OPT_PLATFORMS=all
-export ARTIFACT_DIR NICE_DNS_TARGET_ADAPTER NICE_DNS_IL_DRY_RUN NICE_DNS_OPT_TARGETS NICE_DNS_OPT_VARIANTS NICE_DNS_OPT_PLATFORMS
+# A plan run passes --matrix all and the operator's reuse runs to every
+# group; the inherited cases are the representative run on fakes (live
+# 2026-09-28: plan installers failed all of them this way).
+NICE_DNS_OPT_MATRIX=""
+unset NICE_DNS_CELL_REUSE_RUNS
+# The fake samples at once; no grace is needed after an install.
+IL_WATCH_GRACE=0
+export IL_WATCH_GRACE ARTIFACT_DIR NICE_DNS_OPT_MATRIX NICE_DNS_TARGET_ADAPTER NICE_DNS_IL_DRY_RUN NICE_DNS_OPT_TARGETS NICE_DNS_OPT_VARIANTS NICE_DNS_OPT_PLATFORMS
 
 # shellcheck source=tests/live/install-lifecycle.sh
 . "$NICE_DNS_ROOT/tests/live/install-lifecycle.sh"
