@@ -72,6 +72,7 @@ VARIANT="$ACTION"
 nd_install_begin linux install-deb-hardened.sh hardened "$VARIANT" "$BRANCH"
 # Refuses (exit 3) before any change when another owner took over host DNS.
 nd_install_check_owned
+nd_install_check_route_dir
 # The reviewed image inputs (release/images.lock): shape, this host's
 # platform, the proxy's interfaces and, with cosign, the signatures.
 nd_install_read_lock

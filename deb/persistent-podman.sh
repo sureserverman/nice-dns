@@ -102,6 +102,20 @@ cp "$SCRIPT_DIR/quadlet/tor-${VARIANT}.container" "$QUADLET_DIR/"
 # unknown unit names in After= on every daemon-reload otherwise.
 sed -i "s/__VARIANT__/${VARIANT}/g" "$QUADLET_DIR/unbound.container"
 
+# Unbound's route directory (DEC-010): the installer seeds it before this
+# runs; run on its own, this seeds a missing one (lib/recovery.sh
+# seed_default_route keeps an existing route). Its path goes into the quadlet.
+ROUTE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROUTE_DIR="$(. "$ROUTE_ROOT/lib/platform/linux.sh" && nd_platform_route_dir)"
+if ! ROUTE_OUT="$(ND_PLATFORM=linux bash -c '. "$1/lib/recovery.sh" && seed_default_route' _ "$ROUTE_ROOT" 2>&1)"; then
+  echo "ERROR: cannot seed Unbound's route in $ROUTE_DIR: $ROUTE_OUT" >&2
+  exit 1
+fi
+case "$ROUTE_DIR" in *[!A-Za-z0-9._/-]*)
+  echo "ERROR: Unbound's route directory '$ROUTE_DIR' has characters a quadlet Volume= cannot carry" >&2; exit 1 ;;
+esac
+sed -i "s|__ROUTE_DIR__|${ROUTE_DIR}|g" "$QUADLET_DIR/unbound.container"
+
 echo "   ✓ Quadlet files installed."
 echo
 

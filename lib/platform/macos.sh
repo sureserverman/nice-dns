@@ -8,7 +8,9 @@
 # mac/start-container.sh).
 #
 #   ND_ROUTE_DIR           host directory mounted at /etc/unbound/route
-#                          (default ~/Library/Application Support/nice-dns/unbound-route)
+#                          (default $XDG_STATE_HOME/nice-dns/unbound-route, as on
+#                          Linux: beside the Tor state and the Pi-hole secret,
+#                          and a path without a space for the `-v` mount)
 #   ND_UNBOUND_CONTAINER   Unbound container name (default unbound)
 #   CONTAINER_BIN          the container CLI (default container)
 
@@ -17,7 +19,7 @@ nd_platform_name() { printf 'macos\n'; }
 nd_platform_route_addr() { printf '172.31.240.252\n'; }
 
 nd_platform_route_dir() {
-  printf '%s\n' "${ND_ROUTE_DIR:-${HOME:?HOME is unset}/Library/Application Support/nice-dns/unbound-route}"
+  printf '%s\n' "${ND_ROUTE_DIR:-${XDG_STATE_HOME:-${HOME:?HOME is unset}/.local/state}/nice-dns/unbound-route}"
 }
 
 # _nd_mac_exec <container CLI> <exec args...>: `<cli> exec`, with a missing

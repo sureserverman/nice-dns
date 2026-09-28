@@ -86,6 +86,18 @@
 #                    maintenance, tor-socat SIGSTOPs its listener; a detached
 #                    timer heals it after NICE_DNS_FREEZE_MAX_SECS
 #   heal-route       undo fault-route
+#   route-report     read-only (Sub-plan 5 Task 1.2): Unbound's route as the
+#                    host holds it (the directory's mode, the include's
+#                    marker and forwarder, desired.tsv), what the container
+#                    sees at /etc/unbound/route (desired.tsv read inside it:
+#                    the image ships none, so a match is the mount), the
+#                    running route read back over the control socket, the
+#                    image's probe-route verdict, and one fresh name
+#                    through Pi-hole. Run with the installed controller's
+#                    own bundle (lib/recovery.sh).
+#   route-apply      switch Unbound to --route (an identity route) with the
+#                    installed bundle's apply_route, under the controller's
+#                    state lock, at the next generation; prints its result
 #   thaw-on-request  wait (up to NICE_DNS_FREEZE_MAX_SECS) until the image
 #                    claims the controller's restart request, then SIGCONT
 #                    the frozen tor of --component: its pending TERM ends it
@@ -151,7 +163,7 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh install-agent set-tunables lifecycle-report watch-dns mark-state'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply'
 FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
@@ -195,7 +207,7 @@ if [ "$op" != collect ] && [ -n "$c_workload$c_count$c_identity" ]; then
 fi
 case "$op" in install-cell|uninstall-cell) ;; *) [ -z "$i_cell$i_hsha" ] || die "--cell/--hardened-sha are only valid for install-cell and uninstall-cell" ;; esac
 case "$op" in install-cell|uninstall-cell|build-proxy|install-controller|install-agent) ;; *) [ -z "$i_sha" ] || die "--source-sha is only valid for install-cell, uninstall-cell, build-proxy, install-controller and install-agent" ;; esac
-case "$op" in fault-route|heal-route) ;; *) [ -z "$i_route" ] || die "--route is only valid for fault-route and heal-route" ;; esac
+case "$op" in fault-route|heal-route|route-apply) ;; *) [ -z "$i_route" ] || die "--route is only valid for fault-route, heal-route and route-apply" ;; esac
 case "$op" in install-controller|set-tunables) ;; *) [ -z "$i_mode" ] || die "--mode is only valid for install-controller and set-tunables" ;; esac
 if [ "$op" = set-tunables ]; then case "$i_mode" in fast|default) ;; *) die "set-tunables needs --mode fast|default" ;; esac; fi
 
@@ -254,10 +266,11 @@ case "$op" in
   *) [ -z "$component" ] || die "--component is only valid for sever/heal/freeze/thaw-upstream, build/recreate-proxy, fault/heal-route and thaw-on-request" ;;
 esac
 case "$op" in
-  fault-route|heal-route)
+  fault-route|heal-route|route-apply)
+    # The identity routes only: `compat` is never selected (DEC-005).
     case " $FAULT_ROUTES " in
       *" $i_route "*) [ -n "$i_route" ] || die "--route is required" ;;
-      *) die "route '$i_route' cannot be faulted (allowed: $FAULT_ROUTES)" ;;
+      *) die "route '$i_route' is not an identity route (allowed: $FAULT_ROUTES)" ;;
     esac ;;
   build-proxy)
     [[ "$i_sha" =~ ^[0-9a-f]{40}$ ]] || die "build-proxy needs --source-sha <40-hex commit of the $component sibling>"
@@ -712,6 +725,50 @@ case "$NICE_DNS_OP" in
     rc=$?
     printf 'finished_utc\t%s\ninstaller_exit\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc"
     exit $rc ;;
+  route-report|route-apply)
+    [ "$plat" = macos ] && homebrew_path
+    if [ "$plat" = macos ]; then hd="$HOME/Library/Application Support/nice-dns-health"
+    else hd="${XDG_DATA_HOME:-$HOME/.local/share}/nice-dns-health"; fi
+    b=$(awk -F '\t' 'NR == 1 && $0 != "schema\tnice-dns-health-install/1" { exit } $1 == "bundle" { print $2; exit }' "$hd/install.tsv" 2>/dev/null)
+    case "$b" in ''|*[!A-Za-z0-9._-]*) echo "no installed controller bundle" >&2; exit 2 ;; esac
+    [ -f "$hd/bundles/$b/lib/recovery.sh" ] || { echo "the installed bundle $b has no lib/recovery.sh" >&2; exit 2; }
+    if [ "$NICE_DNS_OP" = route-report ]; then
+      identity
+      printf 'section\troute\nbundle\t%s\n' "$b"
+      # shellcheck disable=SC2016  # expanded by the bundle's bash
+      ND_PLATFORM="$plat" ND_ROUTES_FILE="$hd/bundles/$b/routes/providers.tsv" bash -c '
+        . "$1/lib/recovery.sh" || exit 2
+        d=$(nd_platform_route_dir)
+        printf "dir_mode\t%s\n" "$(stat -c %a "$d" 2>/dev/null || stat -f %Lp "$d" 2>/dev/null || echo absent)"
+        printf "include\t%s\n" "$(sed -n "s/.*\"\(route=[^\"]*\)\".*/\1/p" "$d/forward-route.conf" 2>/dev/null)"
+        printf "forwarder\t%s\n" "$(awk "\$1 == \"forward-addr:\" { print \$2 }" "$d/forward-route.conf" 2>/dev/null)"
+        printf "desired\t%s\n" "$(awk -F "\t" "\$1 == \"route\" || \$1 == \"generation\" { printf \"%s%s\", s, \$2; s = \" \" }" "$d/desired.tsv" 2>/dev/null)"
+        h=$(cat "$d/desired.tsv" 2>/dev/null | cksum)
+        c=$(nd_platform_unbound_exec cat /etc/unbound/route/desired.tsv 2>/dev/null </dev/null | cksum)
+        if [ -s "$d/desired.tsv" ] && [ "$h" = "$c" ]; then printf "container_sees_host\tyes\n"; else printf "container_sees_host\tno\n"; fi
+        if rb=$(route_readback </dev/null); then printf "readback\t%s\n" "$(printf "%s" "$rb" | tr "\t" " ")"; else printf "readback\tnone\n"; fi
+        nd_platform_unbound_exec /usr/local/bin/nice-dns-unbound-start probe-route . >/dev/null 2>&1 </dev/null
+        printf "probe_route\t%s\n" "$?"
+      ' _ "$hd/bundles/$b" </dev/null
+      n=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+      st=$(dig "@${RESOLVER%#*}" -p "${RESOLVER#*#}" +time=10 +tries=1 "nd-route-$n.example.com" A 2>/dev/null | awk '/status:/ { sub(/,.*/, "", $6); print $6; exit }')
+      printf 'client_fresh\t%s\n' "${st:-timeout}"
+    else
+      # shellcheck disable=SC2016
+      ND_PLATFORM="$plat" ND_ROUTES_FILE="$hd/bundles/$b/routes/providers.tsv" bash -c '
+        . "$1/lib/recovery.sh" || exit 2
+        nd_state_init || exit 2
+        tok=$(nd_state_lock) || { echo "the controller state lock is held" >&2; exit 5; }
+        g=0
+        _nd_route_read_desired "$(nd_platform_route_dir)" 2>/dev/null && [ -n "$_ND_DES_GEN" ] && g=$_ND_DES_GEN
+        s=$(nd_state_load 2>/dev/null | awk -F "\t" "\$1 == \"generation\" { print \$2; exit }")
+        case "$s" in ""|*[!0-9]*) ;; *) [ "$s" -gt "$g" ] && g=$s ;; esac
+        ND_RECOVERY_LOCK_TOKEN="$tok" apply_route "$2" $((g + 1)) </dev/null; rc=$?
+        nd_state_unlock "$tok"
+        exit $rc
+      ' _ "$hd/bundles/$b" "$NICE_DNS_ROUTE" </dev/null
+      exit $?
+    fi ;;
   lifecycle-report)
     [ "$plat" = macos ] && homebrew_path
     if [ "$plat" = macos ]; then
@@ -1133,7 +1190,7 @@ case "$op" in
     } >"$STATE/receipt.tsv"
     log_op 0
     printf 'snapshot %s -> %s\n' "$alias_" "$STATE/snapshot.tsv" ;;
-  config|health|controller-report|lifecycle-report)
+  config|health|controller-report|lifecycle-report|route-report)
     # Read-only; the output starts with the identity lines, which are checked.
     preconnect_guards
     probe_identity "$op"
@@ -1151,7 +1208,7 @@ case "$op" in
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|install-agent|set-tunables|mark-state)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|install-agent|set-tunables|mark-state|route-apply)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"

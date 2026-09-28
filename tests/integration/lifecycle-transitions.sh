@@ -192,7 +192,7 @@ t_linux_quadlets_mount_the_instance_state() {
 # lt_agent_args <container>: the start-container agent's arguments for it.
 lt_agent_args() {
   local f="$NICE_DNS_ROOT/mac/start-container.sh" snip
-  snip="$(awk -v c="$1" '/^(PIHOLE_SECRET_DIR|TOR_STATE_DIR|TOR_CONTAINER|TOR_IMAGE|VARIANT|ND_ANCHOR_VOLUME|ND_LISTS_VOLUME)=/ { print }
+  snip="$(awk -v c="$1" '/^(PIHOLE_SECRET_DIR|TOR_STATE_DIR|TOR_CONTAINER|TOR_IMAGE|VARIANT|ND_ANCHOR_VOLUME|ND_LISTS_VOLUME|ND_ROUTE_DIR)=/ { print }
     $0 ~ "^[[:space:]]*ensure_container " c "( |\\\\|$)" { f = 1 } f { print } f && !/\\$/ { exit }' "$f")"
   [ -n "$snip" ] || fail "no $1 launch in $f"
   env -i HOME="$IP_HOME" PATH="$PATH" bash -c 'BRIDGE_ARGS=(); ensure_container() { shift; printf "%s\n" "$@"; }; set -- socat; '"$snip"

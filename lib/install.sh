@@ -386,6 +386,9 @@ _nd_inst_pihole_credential_remove() {
 #                  macOS: ~/.local/state/nice-dns/tor-<proxy> (/app/data)
 #   root anchor    volume nice-dns-unbound-anchor (/var/lib/unbound)
 #   Pi-hole lists  volume nice-dns-pihole-lists (/var/lib/nice-dns-pihole)
+#   Unbound route  host directory nd_platform_route_dir, mounted read-only at
+#                  /etc/unbound/route (Sub-plan 5 Task 1.2, DEC-010); the
+#                  controller changes the route in it (apply_route)
 # plus the admin password above. Podman seeds a new named volume from the
 # image's directory, owner included; Apple's container creates a fresh
 # root-owned ext4 volume, so macOS creates them here and hands each to its
@@ -413,9 +416,58 @@ _nd_inst_macos_volume() {
     || { _nd_inst_err "cannot hand the volume $1 to $3"; return 1; }
 }
 
+# ───────────────────── Unbound's route (Sub-plan 5 Task 1.2) ─────────────────
+#
+# DEC-010, ARCH-04. The host directory lib/recovery.sh manages (apply_route)
+# is mounted into Unbound at /etc/unbound/route: the directory, never the
+# single include, so a route change is an atomic rename Unbound sees. The
+# install seeds it (seed_default_route) before Unbound first starts; a route
+# already there is the controller's and is kept. It is an owned path, so a
+# failed install puts it back as it was (or removes one it created).
+
+# _nd_inst_route_dir: the platform adapter's route directory.
+_nd_inst_route_dir() {
+  ( . "${ND_INST_TREE:-$ND_INST_SRC}/lib/platform/$ND_INST_PLATFORM.sh" && nd_platform_route_dir )
+}
+
+# _nd_inst_route_call <function>: a lib/recovery.sh route function, run from
+# the source tree for this platform.
+_nd_inst_route_call() {
+  ND_PLATFORM="$ND_INST_PLATFORM" bash -c '. "$1/lib/recovery.sh" && "$2"' _ "${ND_INST_TREE:-$ND_INST_SRC}" "$1"
+}
+
+# nd_install_check_route_dir: preparation. An existing route directory must
+# be one the controller could use (lib/recovery.sh _nd_route_dir_ok): a
+# symlink or a directory others can write fails the install before anything
+# changes, rather than Unbound falling back to its image default.
+nd_install_check_route_dir() {
+  local d out
+  d="$(_nd_inst_route_dir)" || { _nd_inst_err "cannot name Unbound's route directory"; exit 1; }
+  [ -e "$d" ] || [ -L "$d" ] || return 0
+  if ! out="$(ND_PLATFORM="$ND_INST_PLATFORM" bash -c '. "$1/lib/recovery.sh" && _nd_route_dir_ok "$2"' _ "$ND_INST_SRC" "$d" 2>&1)"; then
+    _nd_inst_err "Unbound's route directory is unusable: $out; nothing was changed."
+    exit 1
+  fi
+}
+
+# nd_install_seed_route: activation, before Unbound starts.
+nd_install_seed_route() {
+  local out
+  if ! out="$(_nd_inst_route_call seed_default_route 2>&1)"; then
+    _nd_inst_err "cannot seed Unbound's route: $(printf '%s\n' "$out" | awk -F '\t' '$1 == "detail" { print $2 }')"
+    return 1
+  fi
+  case "$(printf '%s\n' "$out" | awk -F '\t' '$1 == "result" { print $2 }')" in
+    kept) echo "  • Unbound keeps its route ($(_nd_inst_route_dir))." ;;
+    *) echo "  • Unbound's route is seeded: $(printf '%s\n' "$out" | awk -F '\t' '$1 == "route" { print $2 }') ($(_nd_inst_route_dir))." ;;
+  esac
+}
+
 # _nd_inst_state_remove: the uninstall's half, once the containers are gone.
 _nd_inst_state_remove() {
   local v d
+  d="$(_nd_inst_route_dir)"
+  if [ -L "$d" ]; then rm -f "$d"; else rm -rf "${d:?}"; fi
   if [ "$ND_INST_PLATFORM" = linux ]; then
     for v in $ND_INST_STATE_VOLUMES nice-dns-tor-haproxy nice-dns-tor-socat; do
       podman volume rm -f "$v" >/dev/null 2>&1 || true
@@ -607,6 +659,7 @@ _nd_inst_owned_paths() {
     printf 'f\t%s\t755\tuser\n' "$HOME/.local/bin/nice-dns-fetch-bridges" "$HOME/.local/bin/nice-dns-health" \
       "${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-health/bin/nice-dns-health"
     printf 'd\t%s\t755\tuser\n' "${XDG_DATA_HOME:-$HOME/.local/share}/nice-dns-health"
+    printf 'd\t%s\t755\tuser\n' "$(_nd_inst_route_dir)"
     printf 'f\t%s\t755\troot\n' "$R/usr/bin/custom-dns-deb" "$R/etc/NetworkManager/dispatcher.d/90-nice-dns-pin"
     printf 'f\t%s\t644\troot\n' "$R/etc/systemd/system/custom-dns-deb.service" "$R/etc/NetworkManager/conf.d/90-nice-dns.conf" \
       "$R/etc/sysctl.d/99-nice-dns-disable-ipv6.conf" \
@@ -617,6 +670,7 @@ _nd_inst_owned_paths() {
     done
     printf 'f\t%s\t755\tuser\n' "$HOME/.local/bin/nice-dns-health" "$HOME/Library/Logs/nice-dns-health/bin/nice-dns-health"
     printf 'd\t%s\t755\tuser\n' "$HOME/Library/Application Support/nice-dns-health"
+    printf 'd\t%s\t755\tuser\n' "$(_nd_inst_route_dir)"
     for f in start-container.sh start-container-root.sh nice-dns-fetch-bridges.sh nice-dns-bridge-eval.sh; do
       printf 'f\t%s\t755\troot\n' "$R/usr/local/sbin/$f"
     done
@@ -1515,6 +1569,7 @@ nd_install_linux_activate() {
   nd_install_linux_stop_stack
   nd_install_linux_interrupt_prereqs
   nd_install_linux_activate_images
+  nd_install_seed_route
   # Quadlets, the bridge selection, the pod start and the controller install
   # (whose own self-check must pass before it replaces anything).
   ( cd "$ND_INST_TREE" && ./deb/persistent-podman.sh "$ND_INST_VARIANT" "$ND_INST_PIHOLE" )
@@ -1587,7 +1642,7 @@ _nd_inst_uninstall_state() {
 _nd_inst_uninstall_verdict() {
   [ "$1" = 1 ] && return 0
   _nd_inst_err "the stack is removed, but host DNS was NOT given back (see the helper's message above); it may still point at nice-dns, which is gone."
-  _nd_inst_err "Fix the cause and run the uninstall again: the record of the state before nice-dns is kept, and so are the Tor state, root anchor, Pi-hole lists and admin password."
+  _nd_inst_err "Fix the cause and run the uninstall again: the record of the state before nice-dns is kept, and so are the Tor state, root anchor, Pi-hole lists and admin password, and Unbound's route."
   return 1
 }
 
@@ -2009,6 +2064,7 @@ nd_install_macos_activate() {
   nd_install_macos_build_images
   nd_install_macos_activate_images
   nd_install_macos_state_volumes
+  nd_install_seed_route
   nd_install_macos_fresh_datapath
   nd_install_macos_run_stack
   nd_install_wait_ready
@@ -2169,6 +2225,7 @@ nd_install_macos_run_stack() {
   "$CONTAINER_BIN" run -d --name unbound --network dnsnet \
     -c 1 -m 256M \
     -v nice-dns-unbound-anchor:/var/lib/unbound \
+    -v "$(_nd_inst_route_dir):/etc/unbound/route:ro" \
     unbound:latest >/dev/null
 
   "$CONTAINER_BIN" run -d --name "tor-${ND_INST_VARIANT}" --network dnsnet \

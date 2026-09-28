@@ -438,6 +438,26 @@ seed_route() {
   _nd_route_out applied "$route" "$gen" "$_ND_FWD" "seeded $dir/forward-route.conf (Unbound reads it when it starts)"
 }
 
+# seed_default_route: the installers' seed (Sub-plan 5 Task 1.2, DEC-010).
+# A directory that already holds an include is the controller's: it is
+# checked and kept (result kept). Otherwise ND_ROUTE_SEED is seeded at
+# generation 1: an identity-bound exit, usable while the onion is cold (ARCH-04;
+# the controller promotes the onion once it is sustained), never `compat`
+# (DEC-005). Exit 0 seeded or kept; 2 refused.
+ND_ROUTE_SEED=cloudflare-exit
+seed_default_route() {
+  local dir msg
+  dir="$(nd_platform_route_dir)"
+  if [ -e "$dir" ] || [ -L "$dir" ]; then
+    msg="$(_nd_route_dir_ok "$dir")" || { _nd_route_out refused - - - "$msg"; return 2; }
+    if [ -f "$dir/forward-route.conf" ]; then
+      _nd_route_out kept - - - "$dir/forward-route.conf exists; the controller owns it"
+      return 0
+    fi
+  fi
+  seed_route "$ND_ROUTE_SEED" 1
+}
+
 # ─── Recovery actions (Sub-plan 3, Task 1.3) ────────────────────────────────
 
 _ND_CTL_DIR=/app/data/control

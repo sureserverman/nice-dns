@@ -19,6 +19,12 @@ Pod=nice-dns.pod
 # the named volume from the image's /var/lib/unbound (unbound, 0700), which
 # nice-dns-unbound-start requires. Uninstall removes it.
 Volume=nice-dns-unbound-anchor:/var/lib/unbound
+# The selected route (ARCH-04, DEC-010): the host directory the controller
+# manages (lib/recovery.sh apply_route), read-only; the directory, never the
+# single include, so a route change is an atomic rename Unbound sees.
+# persistent-podman.sh fills in the path (lib/platform/linux.sh
+# nd_platform_route_dir) and seeds the directory when it is missing.
+Volume=__ROUTE_DIR__:/etc/unbound/route:ro
 NoNewPrivileges=true
 # Health reports; it never restarts (see tor-haproxy.container: the
 # nice-dns-health controller is the one restart owner). Healthy means Unbound

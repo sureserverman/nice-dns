@@ -44,6 +44,10 @@ TOR_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/tor-${VARIANT}"
 # (lib/install.sh nd_install_pihole_credential), and Pi-hole mounts it
 # read-only at /run/secrets.
 PIHOLE_SECRET_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/secrets/pihole"
+# Unbound's route (DEC-010): the directory the controller manages
+# (lib/platform/macos.sh nd_platform_route_dir), seeded by the installer and
+# mounted read-only at /etc/unbound/route.
+ND_ROUTE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/unbound-route"
 # Fingerprint of the bridge triple baked into the running tor container.
 # Apple's runtime bakes -e env at `container run` and reuses it on `container
 # start`, so the only way to apply new bridges is to recreate — but recreating
@@ -483,10 +487,13 @@ start_or_create_stack() {
     -e DISABLE_GITHUB_UPDATES=true \
     pi-hole:latest || return 1
 
-  # The anchor volume (created by the installer; nd_install_macos_state_volumes).
+  # The anchor volume (created by the installer; nd_install_macos_state_volumes)
+  # and the route directory (seeded by the installer). Keep these arguments
+  # identical to nd_install_macos_run_stack (integration/lifecycle-transitions).
   ensure_container unbound \
     -c 1 -m 256M \
     -v nice-dns-unbound-anchor:/var/lib/unbound \
+    -v "${ND_ROUTE_DIR}:/etc/unbound/route:ro" \
     unbound:latest || return 1
 
   # Recreate the tor container only when the bridge set actually changed.

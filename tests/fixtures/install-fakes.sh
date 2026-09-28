@@ -78,6 +78,14 @@ if [ -s "$FAKE/sigint" ] && printf '%s\n' "$l" | grep -Eq -f "$FAKE/sigint"; the
   echo "$me: injected interrupt" >&2; kill -INT "$PPID"; exit 1
 fi
 store="$FAKE/images"; touch "$store"
+# unbound_start <how>: the route include Unbound reads when it starts
+# ($FAKE/unbound-starts; Sub-plan 5 Task 1.2): its marker, or route-absent.
+unbound_start() {
+  rf="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/unbound-route/forward-route.conf"
+  if [ -f "$rf" ]; then m="$(sed -n 's/.*"\(route=[^"]*\)".*/\1/p' "$rf")"; else m=route-absent; fi
+  printf '%s %s\n' "$1" "$m" >>"$FAKE/unbound-starts"
+}
+case "$l" in "container run -d --name unbound "*) unbound_start "container run" ;; esac
 img_has() { awk -v r="$1" '$1 == r { f = 1 } END { exit !f }' "$store"; }
 img_id() { awk -v r="$1" '$1 == r { print $2; exit }' "$store"; }
 img_add() { awk -v r="$1" '$1 != r' "$store" >"$store.t"; printf '%s %s\n' "$1" "$2" >>"$store.t"; mv "$store.t" "$store"; }
@@ -218,6 +226,7 @@ case "$me" in
     if [ -n "${FAKE_ROOT:-}" ] && [ "$1" = --user ]; then
       case "$2 $3" in
         "start nice-dns-pod.service"|"restart nice-dns-pod.service")
+          unbound_start "systemctl $2"
           if [ -f "$FAKE/never_ready" ]; then rm -f "$FAKE/never_ready"
           elif [ ! -f "$FAKE/rollback_never_ready" ]; then : >"$FAKE/dns_up"; fi ;;
       esac
@@ -330,6 +339,9 @@ if [ -n "${FAKE_ROOT:-}" ]; then
   m="deploy $(cat "$FAKE/git_head")"
   q="$HOME/.config/containers/systemd"; mkdir -p "$q"
   for f in nice-dns.network nice-dns.pod unbound.container pi-hole.container "tor-$1.container"; do printf '%s %s\n' "$f" "$m" >"$q/$f"; done
+  rf="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/unbound-route/forward-route.conf"
+  if [ -f "$rf" ]; then r="$(sed -n 's/.*"\(route=[^"]*\)".*/\1/p' "$rf")"; else r=route-absent; fi
+  printf 'persistent-podman.sh %s\n' "$r" >>"$FAKE/unbound-starts"
   if [ -f "$FAKE/never_ready" ]; then rm -f "$FAKE/never_ready"; else : >"$FAKE/dns_up"; fi
 fi
 [ -f "$FAKE/persist_fail" ] && exit 1

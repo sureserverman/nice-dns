@@ -42,3 +42,5 @@ live	install-lifecycle	tests/live/install-lifecycle.sh	live
 integration	install-lifecycle-dryrun	tests/integration/install-lifecycle-dryrun.sh	local
 live	install-hardened	tests/live/install-hardened.sh	live
 live	installers-receipt	tests/live/installers-receipt.sh	live
+integration	route-mount	tests/integration/route-mount.sh	local
+live	route-apply	tests/live/route-apply.sh	live

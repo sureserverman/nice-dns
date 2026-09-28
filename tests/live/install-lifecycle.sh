@@ -142,7 +142,8 @@ il_each() {
       printf '%s: every cell reused (DEC-009); %s skipped\n' "$a" "$fn" >"$CASE_DIR/$p.log"
       continue
     fi
-    if [ "$fn" != il_before ] && [ "$fn" != il_hardened ] && [ ! -f "$(il_dir "$a")/cell.tsv" ]; then
+    # A group's first step records the cell (IL_FIRST_STEPS names others').
+    if case " il_before il_hardened ${IL_FIRST_STEPS:-} " in *" $fn "*) false ;; *) true ;; esac && [ ! -f "$(il_dir "$a")/cell.tsv" ]; then
       printf 'ASSERT FAIL: %s: no cell recorded (t_1_before failed); %s not run\n' "$a" "$fn" >"$CASE_DIR/$p.log"
       ( exit 1 ) &
     else
