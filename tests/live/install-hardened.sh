@@ -62,6 +62,8 @@ il_hardened() {
     assert_eq "" "$(GIT_OPTIONAL_LOCKS=0 git -C "$NICE_DNS_ROOT" status --porcelain --untracked-files=no)" "the checkout is committed (the archive is of HEAD)"
     assert_eq "" "$(GIT_OPTIONAL_LOCKS=0 git -C "$IH_SIB" status --porcelain --untracked-files=no)" "pi-hole-hardened is committed (its archive is of HEAD)"
   fi
+  # target.sh changes a target only after a snapshot in this run.
+  il_t "$a" snapshot >>"$d/ops.log" 2>&1 || fail "snapshot $a"
   il_report "$a" before || fail "lifecycle-report $a: $(tail -n 5 "$d/ops.log")"
   proxy="$(il_proxy "$d/before.tsv")"
   assert_match '^(haproxy|socat)$' "$proxy" "$a runs a standard deployment to install over"

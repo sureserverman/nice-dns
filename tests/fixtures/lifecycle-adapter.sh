@@ -112,8 +112,13 @@ report() {
   elif [ "$inst" != 0 ]; then printf 'unit\tnice-dns-health.timer\tenabled\n'; fi
 }
 
+# As target.sh: a change needs a snapshot of the target in this run.
 case "$op" in
-  snapshot) echo "snapshot $alias_" ;;
+  install-cell|uninstall-cell|mark-state)
+    [ -f "${ARTIFACT_DIR:?}/targets/$alias_/snapshot.tsv" ] || { echo "target.sh: no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first" >&2; exit 1; } ;;
+esac
+case "$op" in
+  snapshot) mkdir -p "$ARTIFACT_DIR/targets/$alias_" && echo fake >"$ARTIFACT_DIR/targets/$alias_/snapshot.tsv"; echo "snapshot $alias_" ;;
   lifecycle-report) report ;;
   watch-dns)
     pinned=0; [ "$dns" = pinned ] && pinned=1

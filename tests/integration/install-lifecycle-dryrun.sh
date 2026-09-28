@@ -189,3 +189,18 @@ t_x_reuse_rule_ignores_docs_not_product() {
   ( NICE_DNS_ROOT="$c"; il_same_product "$prod" macos )
   assert_rc 0 "$?" "HEAD is the same product as itself"
 }
+
+# live/install-hardened on its own run (live 2026-09-28: it took no snapshot,
+# and target.sh refuses a change without one in the same run).
+t_x_hardened_group_runs_alone() {
+  local out
+  out="$(
+    IL_FAKE_DIR="$CASE_DIR/fake"; export IL_FAKE_DIR; mkdir -p "$IL_FAKE_DIR"
+    ARTIFACT_DIR="$CASE_DIR/r1" RUN_ID=20260101T000100Z-0000000a; export ARTIFACT_DIR RUN_ID; mkdir -p "$ARTIFACT_DIR"
+    for s in il_before il_upgrade; do ( il_each "$s" ) >"$CASE_DIR/r1-$s.log" 2>&1 || { echo "setup-failed:$s"; exit 0; }; done
+    ARTIFACT_DIR="$CASE_DIR/r2" RUN_ID=20260101T000200Z-0000000b; export ARTIFACT_DIR RUN_ID; mkdir -p "$ARTIFACT_DIR"
+    ( . "$NICE_DNS_ROOT/tests/live/install-hardened.sh"; il_each il_hardened ) >"$CASE_DIR/r2-hardened.log" 2>&1 || { echo failed; exit 0; }
+    echo passed
+  )"
+  assert_eq passed "$out" "the hardened group passes on a run of its own ($(tail -n 6 "$CASE_DIR/r2-hardened.log" 2>/dev/null))"
+}
