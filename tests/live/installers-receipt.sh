@@ -226,7 +226,7 @@ ir_receipt() {
   done
   # DEC-010: no deployment mounts /etc/unbound/route yet.
   printf 'limit\troute-mount\t-\tscope=sub-plan-5\tno deployment mounts or seeds /etc/unbound/route: every stack uses the image default, the compat :853 route (DEC-005), and route switches stay unmanaged (DEC-010)\n' >>"$r"
-  printf 'limit\tlegacy-profile-pin-restore\t-\tscope=sub-plan-4\tthe restore of a legacy NetworkManager profile pin is proven in the fixture only: mint'"'"'s legacy pin was reset by hand before the fix could run\n' >>"$r"
+  printf 'limit\tlegacy-profile-pin-restore\t-\tscope=sub-plan-4\taccepted residual (DEC-011): the restore of a legacy NetworkManager profile pin is proven in the fixture only; mint'"'"'s legacy pin was reset by hand before the fix could run, and no target is a legacy install any more\n' >>"$r"
 
   req=(--require-platforms all --require-dep controller --require-entrypoints all)
   if il_gate; then

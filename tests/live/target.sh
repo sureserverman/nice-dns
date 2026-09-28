@@ -490,7 +490,10 @@ identity() {
 }
 dns_owner() {
   if [ "$plat" = macos ]; then
-    networksetup -listallnetworkservices | tail -n +2 | sed 's/^\*//' | while IFS= read -r svc; do
+    # Enabled services only, as mac/start-container-root.sh services(): a
+    # disabled one is never nice-dns's and may carry its own DNS (round-2
+    # review, 2026-09-28).
+    networksetup -listallnetworkservices | tail -n +2 | { grep -v '^\*' || true; } | while IFS= read -r svc; do
       printf '%s\t%s\n' "$svc" "$(networksetup -getdnsservers "$svc" | tr '\n' ' ')"
     done
     printf 'section\tagents\n'
@@ -779,7 +782,7 @@ case "$NICE_DNS_OP" in
     end=$(( $(date +%s) + NICE_DNS_WATCH_SECS ))
     while [ "$(date +%s)" -lt "$end" ]; do
       if [ "$plat" = macos ]; then
-        s=$(networksetup -listallnetworkservices | tail -n +2 | sed 's/^\*//' | while IFS= read -r svc; do
+        s=$(networksetup -listallnetworkservices | tail -n +2 | { grep -v '^\*' || true; } | while IFS= read -r svc; do
               printf '%s=%s;' "$svc" "$(networksetup -getdnsservers "$svc" | tr '\n' ' ' | sed 's/ $//')"; done)
       else
         s="$(readlink /etc/resolv.conf 2>/dev/null || echo file);$(awk '/^nameserver/ { printf "%s ", $2 }' /etc/resolv.conf 2>/dev/null)"
