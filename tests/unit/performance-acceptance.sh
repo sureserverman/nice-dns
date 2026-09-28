@@ -587,11 +587,13 @@ t_check_holds_a_cell_to_its_frozen_limits() {
   assert_eq 1 "$PA_RC" "one timeout over a frozen zero fails: $PA_OUT"
   assert_eq fail "$(pa_verdict cold)" "cold fails"
   assert_eq fail "$(pa_cell_verdict)" "and the cell"
+  # DEC-013: warm's frozen p95 target is context, never a gate (the baseline
+  # arm itself missed it on 2026-09-28).
   pa_setup linux/socat/standard
   PA_WARM_C="$(pa_seq 1000 31000 1)" pa_cell_data
   pa_check
-  assert_eq 1 "$PA_RC" "a warm p95 over the frozen platform target fails: $PA_OUT"
-  assert_eq fail "$(pa_field warm target)" "target check"
+  assert_rc 0 "$PA_RC" "a warm p95 over the frozen platform target is reported, not failed: $PA_OUT"
+  assert_eq context:over "$(pa_field warm target)" "target reported as context"
   # The timeout limit on its own: macos/socat/standard warm froze 1 failure
   # and 0 timeouts in 1000, so one timeout is within the failure limit and
   # over the timeout limit (a timeout also counts as a failure elsewhere).
@@ -666,4 +668,22 @@ t_scoped_compare_is_never_a_full_cell() {
   PA_OUT="$(python3 "$PA_TOOL" compare --manifest "$PA_M" --bl-targets "$PA_BL" --cell "$PA_CELL" \
     --baseline "$PA_B" --candidate "$PA_C" --workloads cold,bogus 2>&1)"
   assert_eq 2 $? "an unknown workload is refused: $PA_OUT"
+}
+
+# DEC-013: in a comparison, warm is held to the same-session baseline arm
+# (the slowdown test), not to the frozen absolute p95 target.
+t_warm_is_judged_against_the_baseline_arm() {
+  pa_setup linux/socat/standard
+  PA_WARM_B="$(pa_seq 1000 31000 1)" PA_WARM_C="$(pa_seq 1000 31000 1)" pa_cell_data
+  pa_compare
+  assert_rc 0 "$PA_RC" "both arms over the frozen target, equal to each other: $PA_OUT"
+  assert_eq pass "$(pa_verdict warm)" "warm passes"
+  assert_eq context:over "$(pa_field warm target)" "the frozen target is reported as context"
+  pa_setup linux/socat/standard
+  PA_WARM_C="$(pa_seq 1000 6000 1)" pa_cell_data
+  pa_compare
+  assert_eq 1 "$PA_RC" "a warm median far slower than the arm fails: $PA_OUT"
+  assert_eq slower "$(pa_field warm latency)" "the slowdown test"
+  assert_eq fail "$(pa_verdict warm)" "warm fails"
+  assert_eq n/a "$(pa_field warm improvement)" "and warm still never counts as an improvement"
 }

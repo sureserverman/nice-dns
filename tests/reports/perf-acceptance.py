@@ -274,9 +274,10 @@ def derive(bl_path):
         "arm measured interleaved in the same session; without that arm it is blocked")
     add("rule\tno-problem-class-slowdown\ttightening: a cold/idle/wake class whose candidate median "
         "is slower beyond measured variability fails, so one problem class is never bought with "
-        "another")
-    add("rule\tplatform-target\tper cell, the candidate p95_all_us of a frozen workload must not "
-        "exceed its platform target")
+        "another; warm is held to the same test against its same-session arm (DEC-013)")
+    add("rule\tplatform-target\tper cell, the candidate p95_all_us of a frozen problem class must not "
+        "exceed its platform target; warm's target is reported as context, never gated (DEC-013: the "
+        "baseline arm itself missed it on 2026-09-28)")
     add("rule\tsample-budget\tan arm below its budget is insufficient, never pass")
     add("rule\tinterleaved-arms\tbaseline and candidate arms of one workload alternate in time: "
         "ordered by utc_start, no same-arm run exceeds ceil(n_arm/min_blocks) samples and each arm "
@@ -662,7 +663,12 @@ def compare(m, cell, base, cand, scope=None):
             if tgt:
                 mx = tgt["p95_all_us_max"]
                 ok = mx == "inf" or (sc["p95_all_us"] != "inf" and int(sc["p95_all_us"]) <= int(mx))
-                f.update({"p95_target": mx, "target": "pass" if ok else "fail"})
+                # DEC-013: warm's absolute target is context; the baseline arm
+                # measured alongside is its reference (the slowdown test below).
+                if is_problem:
+                    f.update({"p95_target": mx, "target": "pass" if ok else "fail"})
+                else:
+                    f.update({"p95_target": mx, "target": "context:within" if ok else "context:over"})
             else:
                 f.update({"p95_target": "n/a", "target": "n/a"})
             f.update({"blocks_base": str(blocks[0]), "blocks_cand": str(blocks[1])})
@@ -672,7 +678,9 @@ def compare(m, cell, base, cand, scope=None):
                               % (budget, len(b), len(c)))
             else:
                 failed = [k for k in ("timeout", "failure", "target") if f[k] == "fail"]
-                if is_problem and f["latency"] == "slower":
+                # Every workload is held to the arm measured alongside it: the
+                # problem classes (Task 1.1) and warm (DEC-013).
+                if f["latency"] == "slower":
                     failed.append("slower")
                 verdict = "fail" if failed else "pass"
                 if failed:
@@ -759,7 +767,10 @@ def check(m, cell, cand):
                 if tgt:
                     mx = tgt["p95_all_us_max"]
                     ok = mx == "inf" or (sc["p95_all_us"] != "inf" and int(sc["p95_all_us"]) <= int(mx))
-                    f.update({"p95_target": mx, "target": "pass" if ok else "fail"})
+                    if kind == "problem":
+                        f.update({"p95_target": mx, "target": "pass" if ok else "fail"})
+                    else:  # DEC-013: context, never a gate
+                        f.update({"p95_target": mx, "target": "context:within" if ok else "context:over"})
                 else:
                     f.update({"p95_target": "n/a", "target": "n/a"})
                 if len(c) < budget:

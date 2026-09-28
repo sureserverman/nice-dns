@@ -16,7 +16,7 @@
 #              (target.sh arm-prepare / arm-set, the image swap)
 #   candidate  the images this checkout's installer deployed
 #
-# Per block and arm: 6 cold names (fresh) and 200 warm (cached) queries
+# Per block and arm: 18 cold names (fresh; DEC-013) and 200 warm (cached) queries
 # through Pi-hole, 5000 ms timeout as in the baseline. The block files are
 # kept; each arm's rows are appended into one sample file per arm, ids
 # continuing, under the arm's own run id. tests/reports/perf-acceptance.py
@@ -35,7 +35,7 @@ il_dir() { printf '%s\n' "$ARTIFACT_DIR/tune-resolver/$1"; }
 IL_FIRST_STEPS=tr_cell
 TR_BASE_SHA=b85bc9b7786efc7d3bf0572875e95e214dfa1d6c
 TR_BLOCKS="${NICE_DNS_TR_BLOCKS:-5}"
-TR_COLD="${NICE_DNS_TR_COLD:-6}"
+TR_COLD="${NICE_DNS_TR_COLD:-18}"   # 90 cold per arm over 5 blocks (DEC-013)
 TR_WARM="${NICE_DNS_TR_WARM:-200}"
 TR_PA="$NICE_DNS_ROOT/tests/reports/perf-acceptance.py"
 # NICE_DNS_TR_ROUTE: an identity route the candidate is pinned to for the
