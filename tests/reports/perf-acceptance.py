@@ -554,9 +554,17 @@ def not_above(k, n, lk, ln):
 # ─────────────────────────── compare ───────────────────────────
 
 
-def compare(m, cell, base, cand):
+def compare(m, cell, base, cand, scope=None):
+    """scope: the workloads judged (DEC-012: a tuning attempt interleaves cold and
+    warm only); the others are `deferred` and the cell row names the scope, so
+    summarize never takes it for the cell's result."""
     if cell not in m["cells"]:
         refuse("cell %s is not in the manifest" % cell)
+    names = [w for w, _, _ in m["workloads"]]
+    if scope is not None:
+        unknown = [w for w in scope if w not in names]
+        if unknown or not scope:
+            refuse("--workloads names unknown workloads: %s" % ",".join(unknown))
     B = load_arm(base, "baseline", cell)
     C = load_arm(cand, "candidate", cell)
     if B["run_id"] == C["run_id"]:
@@ -575,6 +583,8 @@ def compare(m, cell, base, cand):
     # Refusals first, for every workload, before any verdict is printed.
     per = {}
     for w, cls, kind in m["workloads"]:
+        if scope is not None and w not in scope:
+            continue
         b = [r for r in B["rows"] if r["workload"] == w]
         c = [r for r in C["rows"] if r["workload"] == w]
         for label, rows in (("baseline", b), ("candidate", c)):
@@ -593,6 +603,11 @@ def compare(m, cell, base, cand):
             blocks = [0, 0]
         per[w] = (b, c, blocks)
     for w, cls, kind in m["workloads"]:
+        if scope is not None and w not in scope:
+            verdicts.append("deferred")
+            out.append("workload\t%s\t%s\tdeferred\treason=outside this comparison's scope (%s)"
+                       % (cell, w, ",".join(scope)))
+            continue
         b, c, blocks = per[w]
         lim = m["limits"][(cell, w)]
         budget = int(lim["budget"])
@@ -673,7 +688,10 @@ def compare(m, cell, base, cand):
     for cls, why in m["unmeasured"]:
         out.append("unmeasured\t%s\t%s" % (cls, why))
     cell_v = next((v for v in ("fail", "blocked", "insufficient") if v in verdicts), "pass")
-    out.append("cell\t%s\t%s\timproved=%s" % (cell, cell_v, ",".join(improved) or "none"))
+    row = "cell\t%s\t%s\timproved=%s" % (cell, cell_v, ",".join(improved) or "none")
+    if scope is not None:
+        row += "\tscope=%s" % ",".join(scope)
+    out.append(row)
     return "\n".join(out) + "\n", cell_v == "pass"
 
 
@@ -783,6 +801,8 @@ def summarize(m, platforms, results):
         if len(cells) != 1:
             refuse("%s: expected one cell row" % path)
         c = cells[0]
+        if any(x.startswith("scope=") for x in c[4:]):
+            refuse("%s: a scoped comparison (%s) is never a cell's result" % (path, c[-1]))
         if c[1] in got:
             refuse("cell %s has two results" % c[1])
         got[c[1]] = (c[2], c[3][len("improved="):])
@@ -868,11 +888,12 @@ def main(argv):
                                                       m["prov"]["bl_targets_sha256"]))
         return 0
     if cmd == "compare":
-        o, rest = opts(args, ("manifest", "bl-targets", "cell", "baseline", "candidate"))
+        o, rest = opts(args, ("manifest", "bl-targets", "cell", "baseline", "candidate", "workloads"))
         if rest or not (o["cell"] and o["baseline"] and o["candidate"]):
-            refuse("usage: compare [--manifest M] [--bl-targets F] --cell C --baseline A --candidate B")
+            refuse("usage: compare [--manifest M] [--bl-targets F] --cell C --baseline A --candidate B [--workloads W,W]")
         m = verified_manifest(o)
-        text, ok = compare(m, o["cell"], o["baseline"], o["candidate"])
+        scope = [w for w in o["workloads"].split(",")] if o["workloads"] else None
+        text, ok = compare(m, o["cell"], o["baseline"], o["candidate"], scope)
         sys.stdout.write(text)
         return 0 if ok else 1
     if cmd == "check":

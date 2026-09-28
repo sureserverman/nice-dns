@@ -643,3 +643,27 @@ t_platform_of_checks_needs_one_interleaved_improvement() {
   assert_eq 0 $? "three checks and one interleaved improvement: $out"
   assert_match '^platform	linux	pass	.*improved=linux/haproxy/standard:cold' "$out" "the platform passes"
 }
+
+# A tuning attempt interleaves cold and warm only (DEC-012 scope): the
+# other workloads are deferred, the cell row says so, and summarize never
+# counts a scoped result as the cell's.
+t_scoped_compare_is_never_a_full_cell() {
+  local out
+  pa_setup linux/haproxy/standard
+  PA_COLD_B="$(pa_cold_unfavorable)" PA_COLD_C="$(pa_seq 30 400000 10000)" PA_IDLE_B=NONE PA_IDLE_C=NONE PA_WAKE_B=NONE PA_WAKE_C=NONE pa_cell_data
+  PA_OUT="$(python3 "$PA_TOOL" compare --manifest "$PA_M" --bl-targets "$PA_BL" --cell "$PA_CELL" \
+    --baseline "$PA_B" --candidate "$PA_C" --workloads cold,warm 2>&1)"; PA_RC=$?
+  assert_rc 0 "$PA_RC" "cold and warm pass: $PA_OUT"
+  assert_eq pass "$(pa_verdict cold)" "cold"
+  assert_eq yes "$(pa_field cold improvement)" "the unfavorable cold class improves"
+  assert_eq deferred "$(pa_verdict idle)" "idle is deferred, not blocked"
+  assert_eq deferred "$(pa_verdict wake)" "wake too"
+  assert_match '^cell	linux/haproxy/standard	pass	improved=cold	scope=cold,warm$' "$PA_OUT" "the cell row names its scope"
+  printf '%s\n' "$PA_OUT" >"$CASE_DIR/scoped.tsv"
+  out="$(python3 "$PA_TOOL" summarize --manifest "$PA_M" --bl-targets "$PA_BL" --platform linux "$CASE_DIR/scoped.tsv" 2>&1)"
+  assert_eq 2 $? "summarize refuses a scoped result: $out"
+  assert_match 'scoped' "$out" "and says why"
+  PA_OUT="$(python3 "$PA_TOOL" compare --manifest "$PA_M" --bl-targets "$PA_BL" --cell "$PA_CELL" \
+    --baseline "$PA_B" --candidate "$PA_C" --workloads cold,bogus 2>&1)"
+  assert_eq 2 $? "an unknown workload is refused: $PA_OUT"
+}
