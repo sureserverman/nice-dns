@@ -88,9 +88,9 @@
 #   heal-route       undo fault-route
 #   route-report     read-only (Sub-plan 5 Task 1.2): Unbound's route as the
 #                    host holds it (the directory's mode, the include's
-#                    marker and forwarder, desired.tsv), what the container
-#                    sees at /etc/unbound/route (desired.tsv read inside it:
-#                    the image ships none, so a match is the mount), the
+#                    marker and forwarder, desired.tsv), whether the
+#                    container reads the host's include at /etc/unbound/route
+#                    (desired.tsv is 0600, unreadable to Unbound's user), the
 #                    running route read back over the control socket, the
 #                    image's probe-route verdict, and one fresh name
 #                    through Pi-hole. Run with the installed controller's
@@ -743,9 +743,9 @@ case "$NICE_DNS_OP" in
         printf "include\t%s\n" "$(sed -n "s/.*\"\(route=[^\"]*\)\".*/\1/p" "$d/forward-route.conf" 2>/dev/null)"
         printf "forwarder\t%s\n" "$(awk "\$1 == \"forward-addr:\" { print \$2 }" "$d/forward-route.conf" 2>/dev/null)"
         printf "desired\t%s\n" "$(awk -F "\t" "\$1 == \"route\" || \$1 == \"generation\" { printf \"%s%s\", s, \$2; s = \" \" }" "$d/desired.tsv" 2>/dev/null)"
-        h=$(cat "$d/desired.tsv" 2>/dev/null | cksum)
-        c=$(nd_platform_unbound_exec cat /etc/unbound/route/desired.tsv 2>/dev/null </dev/null | cksum)
-        if [ -s "$d/desired.tsv" ] && [ "$h" = "$c" ]; then printf "container_sees_host\tyes\n"; else printf "container_sees_host\tno\n"; fi
+        h=$(cat "$d/forward-route.conf" 2>/dev/null | cksum)
+        c=$(nd_platform_unbound_exec cat /etc/unbound/route/forward-route.conf 2>/dev/null </dev/null | cksum)
+        if [ -s "$d/forward-route.conf" ] && [ "$h" = "$c" ]; then printf "container_sees_host\tyes\n"; else printf "container_sees_host\tno\n"; fi
         if rb=$(route_readback </dev/null); then printf "readback\t%s\n" "$(printf "%s" "$rb" | tr "\t" " ")"; else printf "readback\tnone\n"; fi
         nd_platform_unbound_exec /usr/local/bin/nice-dns-unbound-start probe-route . >/dev/null 2>&1 </dev/null
         printf "probe_route\t%s\n" "$?"

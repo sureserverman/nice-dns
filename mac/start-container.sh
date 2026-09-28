@@ -46,7 +46,10 @@ TOR_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/tor-${VARIANT}"
 PIHOLE_SECRET_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/secrets/pihole"
 # Unbound's route (DEC-010): the directory the controller manages
 # (lib/platform/macos.sh nd_platform_route_dir), seeded by the installer and
-# mounted read-only at /etc/unbound/route.
+# mounted read-only at /etc/unbound/route. An exported ND_ROUTE_DIR (the
+# adapter's override, for tests) is deliberately not honoured here: the
+# agent mounts the default the installer seeded, as it does for the Tor state
+# and the secret.
 ND_ROUTE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/unbound-route"
 # Fingerprint of the bridge triple baked into the running tor container.
 # Apple's runtime bakes -e env at `container run` and reuses it on `container

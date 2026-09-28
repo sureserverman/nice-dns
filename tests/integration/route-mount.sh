@@ -272,3 +272,37 @@ t_unusable_directory_fails_the_install() {
     ) || exit 1
   done
 }
+
+# A route directory whose path a quadlet Volume= or a `-v` mount cannot carry
+# (a space, a colon) fails in preparation, before anything changes (Tier-1
+# review, Important). persistent-podman.sh run on its own refuses it before
+# it seeds anything.
+t_unmountable_path_fails_in_preparation() {
+  local ep
+  rm_eps
+  for ep in $RM_EPS; do
+    (
+      local out rc
+      dt_world "$ep" "$(dt_fresh_state "$ep")"
+      out="$(env -i HOME="$IP_HOME" PATH="$PATH" XDG_STATE_HOME="$IP_W/state dir" ND_INST_PLATFORM="$(ip_platform "$ep")" ND_INST_SRC="$IP_TREE" \
+        bash -c '. "$1/lib/install.sh" && nd_install_check_route_dir' _ "$IP_TREE" 2>&1)"; rc=$?
+      assert_nonzero "$rc" "$ep: a route directory under a path with a space is refused: $out"
+      assert_match 'cannot be mounted' "$out" "$ep: and the refusal says why"
+      assert_no_path "$IP_W/state dir" "$ep: nothing is created"
+    ) || exit 1
+  done
+  dt_select_platforms
+  case " $DT_PLATS " in *" linux "*) ;; *) return 0 ;; esac
+  (
+    local f rc
+    dt_world install-deb resolved
+    mkdir -p "$IP_W/real"
+    for f in deb mac scripts health lib routes; do cp -R "$NICE_DNS_ROOT/$f" "$IP_W/real/"; done
+    IP_OUT="$(cd "$IP_W" && env -i HOME="$IP_HOME" USER=tester LOGNAME=tester PATH="$IP_BIN" TMPDIR="$IP_W/tmp" \
+      XDG_STATE_HOME="$IP_W/state dir" XDG_CONFIG_HOME="$IP_HOME/.config" XDG_RUNTIME_DIR="$IP_W/run" \
+      FAKE="$FAKE" FAKE_LOG="$FAKE_LOG" FAKE_UNAME=Linux FAKE_ARCH=x86_64 FAKE_ROOT="$FAKE_ROOT" \
+      bash "$IP_W/real/deb/persistent-podman.sh" socat standard 2>&1)"; rc=$?
+    assert_nonzero "$rc" "persistent-podman.sh refuses an unmountable route directory: $IP_OUT"
+    assert_no_path "$IP_W/state dir/nice-dns/unbound-route" "persistent-podman.sh seeds nothing first"
+  ) || exit 1
+}

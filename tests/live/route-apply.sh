@@ -41,15 +41,26 @@ ra_report() { il_t "$1" route-report >"$(il_dir "$1")/route-$2.tsv" 2>>"$(il_dir
 ra_val() { awk -F '\t' -v k="$2" '$1 == "section" { on = ($2 == "route"); next } on && $1 == k { print $2; exit }' "$1"; }
 ra_addr() { if [ "$1" = linux ]; then echo 127.0.0.1; else echo 172.31.240.252; fi; }
 
-# ra_check <platform> <report> <route> <generation> <label>
+# ra_check <platform> <report> <route> <generation> <label> [first-tick]
+# With first-tick, desired.tsv may carry a later generation of the same
+# route: the controller's first pass after the install (before the quiesce)
+# selects the seeded route at its own next generation, which apply_route
+# records without a reload (live mint 2026-09-28: desired cloudflare-exit 86,
+# include and readback still generation 1).
 ra_check() {
-  local plat="$1" r="$2" route="$3" gen="$4" l="$5" port
+  local plat="$1" r="$2" route="$3" gen="$4" l="$5" first="${6:-}" port dg
   case "$route" in cloudflare-exit) port=18532 ;; quad9-exit) port=18533 ;; *) port=18531 ;; esac
   assert_eq 755 "$(ra_val "$r" dir_mode)" "$l: the route directory is 0755"
   assert_eq "route=$route generation=$gen" "$(ra_val "$r" include)" "$l: the include selects $route generation $gen"
   assert_match "^$(ra_addr "$plat")@$port#" "$(ra_val "$r" forwarder)" "$l: forwarding to the platform's $route listener"
-  assert_eq "$route $gen" "$(ra_val "$r" desired)" "$l: recorded as desired"
-  assert_eq yes "$(ra_val "$r" container_sees_host)" "$l: Unbound sees the host's directory (the mount)"
+  if [ -n "$first" ]; then
+    dg="$(ra_val "$r" desired)"
+    assert_eq "$route" "${dg% *}" "$l: recorded as desired"
+    assert_eq 1 "$(( ${dg##* } >= gen ))" "$l: at the seed's generation or the controller's later one ($dg)"
+  else
+    assert_eq "$route $gen" "$(ra_val "$r" desired)" "$l: recorded as desired"
+  fi
+  assert_eq yes "$(ra_val "$r" container_sees_host)" "$l: Unbound reads the host's include (the mount)"
   assert_eq "$route $gen $(ra_addr "$plat")" "$(ra_val "$r" readback)" "$l: and runs that route (control-socket readback)"
   assert_eq 0 "$(ra_val "$r" probe_route)" "$l: probe-route resolves over it in a fresh TLS session"
   assert_match '^(NOERROR|NXDOMAIN)$' "$(ra_val "$r" client_fresh)" "$l: a fresh name resolves through Pi-hole"
@@ -66,7 +77,7 @@ ra_check_kept() {
   g="$(printf '%s\n' "$inc" | sed -n 's/^route=[a-z0-9-]* generation=\([0-9]*\)$/\1/p')"
   assert_match '^(cloudflare-onion|cloudflare-exit|quad9-exit)$' "$route" "$l: an identity route runs ($inc)"
   assert_eq 1 "$(( g >= gen ))" "$l: at generation $g, not reseeded (the controller's was $gen)"
-  assert_eq "$route $g" "$(ra_val "$r" desired)" "$l: recorded as desired"
+  assert_eq "$route" "$(ra_val "$r" desired | cut -d' ' -f1)" "$l: recorded as desired"
   assert_eq "$route $g $(ra_addr "$plat")" "$(ra_val "$r" readback)" "$l: and running"
   assert_eq yes "$(ra_val "$r" container_sees_host)" "$l: through the mount"
   assert_eq 0 "$(ra_val "$r" probe_route)" "$l: probe-route passes"
@@ -101,7 +112,7 @@ ra_cell() {
   il_report "$a" after-install || fail "lifecycle-report"
   il_check_deployed "$plat" "$d/after-install.tsv" "$proxy"
   ra_report "$a" seeded || fail "route-report: $(tail -n 5 "$d/ops.log")"
-  ra_check "$plat" "$d/route-seeded.tsv" cloudflare-exit 1 "$a seeded"
+  ra_check "$plat" "$d/route-seeded.tsv" cloudflare-exit 1 "$a seeded" first-tick
 
   # The switch, under cached-name load through Pi-hole.
   il_t "$a" collect --workload warm --count 1 --identity "$d/identity.tsv" >/dev/null 2>>"$d/ops.log" || true

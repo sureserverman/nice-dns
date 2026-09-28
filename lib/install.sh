@@ -436,15 +436,22 @@ _nd_inst_route_call() {
   ND_PLATFORM="$ND_INST_PLATFORM" bash -c '. "$1/lib/recovery.sh" && "$2"' _ "${ND_INST_TREE:-$ND_INST_SRC}" "$1"
 }
 
-# nd_install_check_route_dir: preparation. An existing route directory must
-# be one the controller could use (lib/recovery.sh _nd_route_dir_ok): a
-# symlink or a directory others can write fails the install before anything
-# changes, rather than Unbound falling back to its image default.
+# nd_install_check_route_dir: preparation, before anything changes. The
+# path must be one a quadlet Volume= and a `-v` mount can carry (no space or
+# colon), and an existing directory one the controller could use
+# (lib/recovery.sh _nd_route_dir_ok): a symlink or a directory others can
+# write fails the install, rather than Unbound falling back to its image
+# default.
 nd_install_check_route_dir() {
   local d out
   d="$(_nd_inst_route_dir)" || { _nd_inst_err "cannot name Unbound's route directory"; exit 1; }
+  case "$d" in /*) ;; *) _nd_inst_err "Unbound's route directory '$d' is not an absolute path; nothing was changed."; exit 1 ;; esac
+  case "$d" in *[!A-Za-z0-9._/-]*)
+    _nd_inst_err "Unbound's route directory '$d' cannot be mounted (only A-Z a-z 0-9 . _ / - are allowed in the path); nothing was changed."
+    exit 1 ;;
+  esac
   [ -e "$d" ] || [ -L "$d" ] || return 0
-  if ! out="$(ND_PLATFORM="$ND_INST_PLATFORM" bash -c '. "$1/lib/recovery.sh" && _nd_route_dir_ok "$2"' _ "$ND_INST_SRC" "$d" 2>&1)"; then
+  if ! out="$(ND_PLATFORM="$ND_INST_PLATFORM" bash -c '. "$1/lib/recovery.sh" && _nd_route_dir_ok "$2"' _ "${ND_INST_TREE:-$ND_INST_SRC}" "$d" 2>&1)"; then
     _nd_inst_err "Unbound's route directory is unusable: $out; nothing was changed."
     exit 1
   fi
