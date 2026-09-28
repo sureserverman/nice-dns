@@ -6,13 +6,13 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the
 - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)
   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.
 - Baseline source: this repository at commit
-  `3148e1421274f106ad1f2c5211fd895567ba3e34`. Citations are `path:line` at that commit.
+  `66f16661fd1c030a18413f7b0b0e47ba762e95a2`. Citations are `path:line` at that commit.
   The eight-cell baseline receipt measured b85bc9b. The document was first
   written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,
   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02
   re-pins after each change to a cited file (Task 1.1: 04b98cf, Unbound
   anchor and control; Task 1.3: d6c1a1f, Pi-hole HealthCmd; Stage 1 gate: 80d6c18, control refusal; Task 2.1: 9e71d32, route include; Task 2.3: bc846b2, Unbound WORKDIR; Stage 2 gate: 94a9c60, route resolution check). Sub-plan 03 re-pins the same
-  way (Task 1.1: ba144fd, health observations and platform adapters; Task 1.2: e81697f, state directory and boot identity appended to the platform adapters; Task 1.3: 6bf29f3, acknowledged recovery; Stage 1 gate: 4b11779, one controller pass; 20589e8, route recorded on success; Task 2.1: 3a4b4d6, bundle and minute schedules; Task 2.2: d934ed5, bridge lifecycle; Task 2.3: b8b9bb8, shadow install and privacy-safe failure dump; 93a9122, macOS exec reports a missing executable as 127; 674635f, the macOS fallback always rebuilds; 8f10ffe, it rebuilds the whole stack; e6436ad, restart ladder; dca5b57, a stopped macOS container has no generation; Stage 2 gate: 969945e, bridge refresh ownership; 5de0e7d, policy timers from tunables.tsv; close-out: a4eea01, the ladder waits out the first restart's readiness; ca16537, quadlet health checks verify and only report, Wants= not Requires=; c55ea50, probe-route bounded; 778df19, a failed macOS kickstart withdraws its request; 5dff7b7, a Linux adapter comment; 0efca9c, the macOS proxy lookup honours the recovery deadline; pre-merge review: 16d65cb, a runtime fault the platform cannot repair escalates). Sub-plan 4 re-pins the same way (Task 1.1: 509a6de, shared installer preparation in lib/install.sh; 7019cf0, the macOS hardened pi-hole build has no --pull; fdf6179, a first install migrates podman before its builds; Task 1.2: ec2b51c, owned DNS receipts and transactional cutover; Task 1.3: 495241e, immutable release inputs; Stage 1 gate: 58e6472, restores that cannot half-fail; Task 2.1: 57db2a3, private admin credential, host-only DNS, least privilege; Task 2.2: 3148e14, instance state kept across the lifecycle). `check-contracts` fails when a cited file changes
+  way (Task 1.1: ba144fd, health observations and platform adapters; Task 1.2: e81697f, state directory and boot identity appended to the platform adapters; Task 1.3: 6bf29f3, acknowledged recovery; Stage 1 gate: 4b11779, one controller pass; 20589e8, route recorded on success; Task 2.1: 3a4b4d6, bundle and minute schedules; Task 2.2: d934ed5, bridge lifecycle; Task 2.3: b8b9bb8, shadow install and privacy-safe failure dump; 93a9122, macOS exec reports a missing executable as 127; 674635f, the macOS fallback always rebuilds; 8f10ffe, it rebuilds the whole stack; e6436ad, restart ladder; dca5b57, a stopped macOS container has no generation; Stage 2 gate: 969945e, bridge refresh ownership; 5de0e7d, policy timers from tunables.tsv; close-out: a4eea01, the ladder waits out the first restart's readiness; ca16537, quadlet health checks verify and only report, Wants= not Requires=; c55ea50, probe-route bounded; 778df19, a failed macOS kickstart withdraws its request; 5dff7b7, a Linux adapter comment; 0efca9c, the macOS proxy lookup honours the recovery deadline; pre-merge review: 16d65cb, a runtime fault the platform cannot repair escalates). Sub-plan 4 re-pins the same way (Task 1.1: 509a6de, shared installer preparation in lib/install.sh; 7019cf0, the macOS hardened pi-hole build has no --pull; fdf6179, a first install migrates podman before its builds; Task 1.2: ec2b51c, owned DNS receipts and transactional cutover; Task 1.3: 495241e, immutable release inputs; Stage 1 gate: 58e6472, restores that cannot half-fail; Task 2.1: 57db2a3, private admin credential, host-only DNS, least privilege; Task 2.2: 3148e14, instance state kept across the lifecycle; Task 2.3: 66f1666, legacy profile pins restored and the macOS stack started on a fresh datapath). `check-contracts` fails when a cited file changes
   after this commit.
 - Checked by `bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md`.
   The check needs every workflow ID below, every operation ID in
@@ -111,7 +111,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   (pihole/etc/pihole.toml:12-14). The Linux quadlet sets
   `DNS1=127.0.0.1#5335` (deb/quadlet/pi-hole.container:39).
 - On macOS the installer and LaunchAgent override the upstream to
-  `172.31.240.251#5335` (lib/install.sh:2106-2107, mac/start-container.sh:481-482).
+  `172.31.240.251#5335` (lib/install.sh:2142-2143, mac/start-container.sh:481-482).
 - Pi-hole query logging is off in the shipped config
   (pihole/etc/pihole.toml:197). dnsmasq `log-queries` is commented out
   (pihole/etc/dnsmasq.conf:48). baseline: unverified at runtime for both
@@ -168,8 +168,8 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   through Pi-hole. The run writes the transport receipt
   (`bash tests/run.sh receipt transport`) [EVD-FAILURES-COUNTED].
 - The macOS installers edit the build copies: unbound.conf binds 0.0.0.0 and
-  allows 172.31.240.248/29 (lib/install.sh:1743-1746), and the route include
-  forwards to `172.31.240.252@853` (lib/install.sh:1749-1750).
+  allows 172.31.240.248/29 (lib/install.sh:1753-1756), and the route include
+  forwards to `172.31.240.252@853` (lib/install.sh:1759-1760).
 - Provider identity is mixed today. The default route authenticates
   `tor.cloudflare-dns.com` (unbound/route/forward-route.conf:17). The health script
   used to describe the proxy backends as the onion primary, a 1.1.1.1 backup
@@ -202,7 +202,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   [SEC-DNSSEC-SIGNED] [SEC-DNSSEC-UNSIGNED] [SEC-DNSSEC-BOGUS].
   Since Sub-plan 4 Task 2.2 /var/lib/unbound is the volume
   nice-dns-unbound-anchor on both platforms (deb/quadlet/unbound.container:21,
-  lib/install.sh:2113, mac/start-container.sh:489), so a new container keeps
+  lib/install.sh:2149, mac/start-container.sh:489), so a new container keeps
   the anchor's RFC 5011 state; until then each one re-seeded from the image.
 - Resolver management is a Unix socket, `/run/unbound/control.sock`, with
   `control-use-cert: no` and no TCP listener or key files
@@ -214,7 +214,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   refused. The nice-dns image deletes any control keys an older published
   base still carries (unbound/Containerfile:32-34) [SEC-CONTROL-LOCAL].
 - Unbound does not use IPv6 (`do-ip6: no`, unbound/etc/unbound.conf:19).
-  Linux installs disable IPv6 through sysctl (lib/install.sh:1452-1475).
+  Linux installs disable IPv6 through sysctl (lib/install.sh:1462-1485).
 - The Linux pod publishes DNS and the admin UI on the host loopback only:
   127.0.0.1:53 TCP/UDP and 127.0.0.1:8880 (deb/quadlet/nice-dns.pod:17-19)
   [SEC-LISTENERS]. Until Sub-plan 4 Task 2.1 it published :53 with no host
@@ -541,25 +541,29 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
 - Only the two root helpers write host DNS: `deb/custom-dns-deb` on Linux
   and `mac/start-container-root.sh` on macOS. They write the pin or the
   state recorded before nice-dns, nothing else
-  (deb/custom-dns-deb:71, mac/start-container-root.sh:58).
+  (deb/custom-dns-deb:119, mac/start-container-root.sh:58).
   No installer code names resolv.conf or network-service DNS, and the
   helpers name no public resolver; a static case checks both
   (tests/integration/dns-transaction.sh) [PRIV-NO-HOST-PUBLIC].
 - Before any work, an install refuses (exit 3) when another owner changed
   host DNS after nice-dns pinned it
   (lib/install.sh:528-560): Linux compares
-  /etc/resolv.conf against the pin (deb/custom-dns-deb:95-104);
+  /etc/resolv.conf against the pin (deb/custom-dns-deb:143-152);
   macOS compares every service the record knows
   (mac/start-container-root.sh:141-160). A service added after
   the install is not a refusal.
 - The record is taken once, before the first interruption, in a root-only
   directory, 0600, and kept across reinstalls, so it stays the state before
-  nice-dns (deb/custom-dns-deb:106-145,
+  nice-dns (deb/custom-dns-deb:154-196,
   mac/start-container-root.sh:105-139). Linux records
   resolv.conf (symlink target, file copy and mode, or missing),
   systemd-resolved's enabled and active state and the ipv6 sysctls; macOS
   records each service's servers. An install from before records is
   `legacy`: its state before nice-dns is unknown [SEC-OWNED-RESTORE].
+  On a `legacy` host the Linux record also lists the NetworkManager
+  profiles an older installer pinned to 127.0.0.1 with automatic DNS off
+  (`nm_pin`); a fresh host's profiles are never claimed
+  (deb/custom-dns-deb:75-91, deb/custom-dns-deb:185-187).
 - Preparation comes first since Sub-plan 4 Task 1.1: packages, source
   staging, image builds and pulls and a prepare manifest finish before
   anything interrupts the stack or touches host DNS
@@ -570,24 +574,29 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   (lib/install.sh:629-690).
 - The interruption keeps the host pinned: the stack stops, but host DNS is
   not touched, so it fails closed until the new stack answers
-  (lib/install.sh:1364-1390). The controller's
+  (lib/install.sh:1374-1400). The controller's
   schedules are held for the transaction (lib/install.sh:738-756).
   macOS builds run in the interruption window (`container build` wedges a
   running dnsnet), without `--pull`; their bases are pulled in preparation
-  (lib/install.sh:52, lib/install.sh:1776-1784).
+  (lib/install.sh:52, lib/install.sh:1786-1794).
+  The builds and the volume hand-over run containers on the default
+  network, after which Apple's runtime brings dnsnet containers up with
+  their interfaces down, so the runtime is restarted before dnsnet and the
+  stack start; a rollback starts it again if that restart failed
+  (lib/install.sh:2090-2105, lib/install.sh:871-880).
 - The resolver is pinned only after the new stack answers an ordinary query
   at the pinned address and Unbound resolves over its authenticated route
   (lib/install.sh:773-788,
   lib/install.sh:794-804), and after the installed
   controller passes its self-check (lib/install.sh:822-828).
-  Linux: lib/install.sh:1495-1510. macOS:
-  lib/install.sh:1969-1992; `mac/persist.sh` loads the
+  Linux: lib/install.sh:1505-1520. macOS:
+  lib/install.sh:1979-2003; `mac/persist.sh` loads the
   start-container agent, whose first run pins every service, only after the
   controller installed and its installed copy passed its self-check
   (mac/persist.sh:43-66). The pin is
   then verified (lib/install.sh:831-834).
 - Any failure after the interruption began, including Ctrl-C, rolls back
-  (lib/install.sh:851-863, lib/install.sh:865-912):
+  (lib/install.sh:851-863, lib/install.sh:865-922):
   the new stack goes, the saved files and image tags come back, the
   previous stack and the controller restart, and a first install gives back
   the recorded DNS state (or drops an unused record). A second interrupt
@@ -598,38 +607,42 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   (manifest status `rolled-back-dns-not-restored`).
 - Uninstall removes the stack, images, bridge service and controller and
   gives back the recorded DNS state
-  (lib/install.sh:1517-1554,
-  lib/install.sh:1997-2008;
-  deb/custom-dns-deb:154-228, mac/start-container-root.sh:162-192).
+  (lib/install.sh:1527-1564,
+  lib/install.sh:2008-2019;
+  deb/custom-dns-deb:205-294, mac/start-container-root.sh:162-192).
   The Linux helper puts resolv.conf back first and whole (a new file or
   link renamed over it) while `dns=none` still holds NetworkManager off it;
   if that fails, nothing else changes, the host stays pinned and the record
-  stays (deb/custom-dns-deb:148-152). The macOS helper tries every
+  stays (deb/custom-dns-deb:199-203). The macOS helper tries every
   service and keeps the record when one fails. A restore that did not
   complete fails the uninstall, which says so after removing the rest
-  (lib/install.sh:1558-1563).
+  (lib/install.sh:1568-1573).
   A setting another owner changed is left alone. A `legacy` record restores
   the distribution default: the systemd-resolved stub on Linux, `Empty`
-  (DHCP) for each pinned macOS service. Uninstall claims only that the
+  (DHCP) for each pinned macOS service. The recorded legacy profile pins get
+  automatic DNS back and are reapplied, before the NetworkManager reload and
+  only while still as recorded; with no record at all, the pins found then;
+  a profile that cannot be reset fails the restore and keeps the record
+  (deb/custom-dns-deb:93-116, deb/custom-dns-deb:273-288). Uninstall claims only that the
   recorded state is back, not that it is private.
 - Around the transaction: the sudo credential is kept fresh without
   prompting until the install ends, so a late rollback can still use sudo
   (lib/install.sh:545-554). NetworkManager's `dns=dnsmasq` is overridden by
   the owned `90-nice-dns.conf` drop-in, never by editing NetworkManager.conf
-  (lib/install.sh:1567-1589). On a host where the user had no
+  (lib/install.sh:1577-1599). On a host where the user had no
   subordinate id ranges, preparation runs `podman system migrate` for the
   ranges it added and names any running container that stops
-  (lib/install.sh:1247-1255).
+  (lib/install.sh:1257-1265).
 - Builds resolve through `--dns 1.1.1.1` (lib/install.sh:48,
   lib/install.sh:52) [PRIV-BOOTSTRAP-DECLARED].
 - Since Sub-plan 4 Task 1.3 every pulled image and build base is the
   reviewed digest in release/images.lock, with its platforms, source commit
   and signer (docs/release-inputs.md). Before any interruption an install
   checks the lock, this host's platform and the proxy's interfaces
-  (lib/install.sh:957-1008) and, with cosign, the
-  signatures (lib/install.sh:1017-1045). The
+  (lib/install.sh:967-1018) and, with cosign, the
+  signatures (lib/install.sh:1027-1055). The
   quadlet still names `:latest` (deb/quadlet/tor-haproxy.container:14), which activation
-  points at the locked image (lib/install.sh:1626-1635).
+  points at the locked image (lib/install.sh:1636-1645).
   Each generation's manifest records the source commit, the local image
   ids, the locked references and the signature results
   (lib/install.sh:237-299).
@@ -661,7 +674,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   secret `nice-dns-pihole-webpassword` (lib/install.sh:361), which the
   quadlet mounts for uid 1000 (deb/quadlet/pi-hole.container:33-34).
   macOS mounts the directory read-only at /run/secrets at both launch
-  sites (lib/install.sh:2096-2109, mac/start-container.sh:471-484). Both
+  sites (lib/install.sh:2132-2145, mac/start-container.sh:471-484). Both
   images read it through `WEBPASSWORD_FILE` and refuse to start when it is
   missing, unreadable or empty (pihole/nd-start.sh:30-38; the
   hardened base's start.sh, pi-hole-hardened 4574d52). Uninstall removes
@@ -673,28 +686,28 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   (deb/quadlet/pi-hole-standard.conf:13-14); the hardened image keeps
   NET_BIND_SERVICE with no-new-privileges
   (deb/quadlet/pi-hole-hardened.conf:11-13). macOS runs the standard set for
-  both (lib/install.sh:2101). pihole-FTL runs as uid 1000 in both. Pi-hole's
+  both (lib/install.sh:2137). pihole-FTL runs as uid 1000 in both. Pi-hole's
   NTP server and client are off (pihole/etc/pihole.toml:492, 502, 515), so
   it listens on :53, :80 and :443 only (tests/integration/deployment-security.sh)
   [SEC-LEAST-PRIV] [SEC-LISTENERS].
 - Since Sub-plan 4 Task 2.2 each deployment keeps its instance state across
   repair, reinstall, proxy and Pi-hole image switches, failed installs and
   upgrades; only uninstall removes it (lib/install.sh:417-432, called at
-  lib/install.sh:1521 and lib/install.sh:2001). Tor state: the Linux volume
+  lib/install.sh:1531 and lib/install.sh:2012). Tor state: the Linux volume
   nice-dns-tor-<proxy> (deb/quadlet/tor-haproxy.container:20,
   deb/quadlet/tor-socat.container:16), on macOS
   ~/.local/state/nice-dns/tor-<proxy>, now mounted by the installer's run
-  too (lib/install.sh:2118, mac/start-container.sh:520). The root anchor:
+  too (lib/install.sh:2154, mac/start-container.sh:520). The root anchor:
   WF-DNS-001. The operator's Pi-hole lists (user decision: lists survive,
   configuration comes from the image): gravity.db on the volume
   nice-dns-pihole-lists (pihole/etc/pihole.toml:946,
-  deb/quadlet/pi-hole.container:19, lib/install.sh:2099,
+  deb/quadlet/pi-hole.container:19, lib/install.sh:2135,
   mac/start-container.sh:474). Each image keeps its build's gravity.db as a
   seed; pihole/nd-start.sh uses the volume as it is while the seed ids
   match and otherwise carries the operator's rows into the new seed
   (pihole/nd-start.sh:47, pihole/merge-lists.sql), keeping the previous
   file. macOS creates its volumes and hands them to the image's user in the
-  interruption window (lib/install.sh:399-414, lib/install.sh:1977):
+  interruption window (lib/install.sh:399-414, lib/install.sh:1987):
   Apple's volumes start root-owned and empty. Checked per entrypoint by
   tests/integration/lifecycle-transitions.sh, whose failed steps must leave
   the previous deployment exactly as it was [SEC-OWNED-RESTORE].
@@ -832,8 +845,8 @@ Sources: ARCH-07, design "Bridge lifecycle".
   and keeps the cache (mac/start-container.sh:121-123). Tor's DataDirectory
   persists (mac/start-container.sh:42, mac/start-container.sh:520).
 - The macOS installers run the fetcher without `--force`
-  (lib/install.sh:1832). They require at least three bridges
-  (lib/install.sh:1852-1855). Since Sub-plan 4 Task 1.1 both pass every
+  (lib/install.sh:1842). They require at least three bridges
+  (lib/install.sh:1862-1865). Since Sub-plan 4 Task 1.1 both pass every
   BRIDGEn to the proxy; the hardened one used to pass only BRIDGE1 and
   BRIDGE2.
 

@@ -40,3 +40,5 @@ integration	deployment-security	tests/integration/deployment-security.sh	local
 integration	lifecycle-transitions	tests/integration/lifecycle-transitions.sh	local
 live	install-lifecycle	tests/live/install-lifecycle.sh	live
 integration	install-lifecycle-dryrun	tests/integration/install-lifecycle-dryrun.sh	local
+live	install-hardened	tests/live/install-hardened.sh	live
+live	installers-receipt	tests/live/installers-receipt.sh	live

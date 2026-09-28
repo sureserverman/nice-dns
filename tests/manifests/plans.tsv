@@ -22,5 +22,8 @@ controller	live	controller-wake
 controller	live	controller-receipt
 installers	integration	deployment-security
 installers	integration	lifecycle-transitions
-installers	live	install-lifecycle
+installers	integration	installers-interaction
 installers	integration	install-lifecycle-dryrun
+installers	live	install-lifecycle
+installers	live	install-hardened
+installers	live	installers-receipt

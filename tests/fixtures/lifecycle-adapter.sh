@@ -12,6 +12,11 @@
 #   image-mismatch    Pi-hole runs an image that is not the generation's
 #   sudoers-extra     the macOS sudoers rule allows one more command
 #   listen-all        Linux publishes :53 on every interface
+#   old-proxy-left    a proxy switch leaves the old proxy running
+#   hardened-standard the hardened entrypoint installs the standard Pi-hole
+#   bundle-mismatch   the installed controller bundle is not the source's
+# The controller bundle reported is IL_FAKE_BUNDLE (the dry run sets it to the
+# id the checkout builds).
 # Nothing here touches the host.
 set -u
 op="${1:-}"; shift || true
@@ -19,7 +24,7 @@ alias_=""
 [ "$op" = validate ] || { alias_="${1:-}"; shift || true; }
 cell=""
 while [ $# -gt 0 ]; do
-  case "$1" in --cell) cell="$2"; shift 2 ;; --targets|--source-sha) shift 2 ;; *) shift ;; esac
+  case "$1" in --cell) cell="$2"; shift 2 ;; --targets|--source-sha|--hardened-sha) shift 2 ;; *) shift ;; esac
 done
 F="${IL_FAKE_DIR:-${ARTIFACT_DIR:?}/il-fake}"
 brk="$(cat "$F/break" 2>/dev/null || true)"
@@ -31,7 +36,7 @@ put() { mkdir -p "$S"; printf '%s\n' "$2" >"$S/$1"; }
 if [ "$op" = validate ]; then printf 'lin1\tlinux\tlin1-ssh\nmac1\tmacos\tmac1-ssh\n'; exit 0; fi
 mkdir -p "$S"
 [ -f "$S/installed" ] || { put installed legacy; put proxy "$([ "$plat" = linux ] && echo haproxy || echo socat)"; put dns pinned; put gen 0; }
-inst="$(get installed)" proxy="$(get proxy)" gen="$(get gen 0)" dns="$(get dns)"
+inst="$(get installed)" proxy="$(get proxy)" gen="$(get gen 0)" dns="$(get dns)" ph="$(get pihole standard)" prev="$(get prev none)" oldp="$(get oldproxy)"
 
 report() {
   local m
@@ -52,6 +57,9 @@ report() {
   printf 'section\tgeneration\n'
   if [ "$inst" = 1 ]; then
     printf 'current\tgen-%s\n' "$gen"
+    printf 'entrypoint\tinstall-%s%s.sh\npihole\t%s\nvariant\t%s\n' "$([ "$plat" = linux ] && echo deb || echo mac)" "$([ "$ph" = hardened ] && echo -hardened)" "$ph" "$proxy"
+    if [ "$prev" = none ]; then printf 'previous\tnone\nrollback\tnone\n'
+    else printf 'previous\tgen-%s\nrollback\tgen-%s\tavailable\n' "$prev" "$prev"; fi
     printf 'image\tunbound\tlocalhost/unbound:gen-%s\tu%063d\n' "$gen" "$gen"
     printf 'image\tpi-hole\tlocalhost/pi-hole:gen-%s\tp%063d\n' "$gen" "$gen"
     printf 'image\tproxy\tlocalhost/tor-%s:gen-%s\tt%063d\n' "$proxy" "$gen" "$gen"
@@ -63,9 +71,11 @@ report() {
     [ "$brk" = image-mismatch ] && pi="x$(printf '%063d' "$gen")"
     if [ "$plat" = macos ]; then pfx=sha256:; else pfx=; fi
     printf 'running\tpi-hole\t%s%s\nrunning\tunbound\t%su%063d\nrunning\ttor-%s\t%st%063d\n' "$pfx" "$pi" "$pfx" "$gen" "$proxy" "$pfx" "$gen"
+    [ "$brk" = old-proxy-left ] && [ -n "$oldp" ] && printf 'running\ttor-%s\t%sold\n' "$oldp" "$pfx"
   fi
   printf 'section\tcontroller\n'
-  [ "$inst" = 1 ] && printf 'schema\tnice-dns-health-install/1\nentrypoint\t/home/t/.local/bin/nice-dns-health\n'
+  [ "$inst" = 1 ] && printf 'schema\tnice-dns-health-install/1\nbundle\t%s\nentrypoint\t/home/t/.local/bin/nice-dns-health\nmode\tactive\n' \
+    "$([ "$brk" = bundle-mismatch ] && echo 0000000000000000 || echo "${IL_FAKE_BUNDLE:-unset}")"
   printf 'section\tvolumes\n'
   if [ "$inst" = 1 ] || { [ "$inst" = 0 ] && [ "$brk" = volume-left ]; }; then
     printf 'volume\tnice-dns-pihole-lists\nvolume\tnice-dns-unbound-anchor\n'
@@ -117,10 +127,13 @@ case "$op" in
         case "$s" in pinned) v='Wi-Fi=172.31.240.250;Ethernet=172.31.240.250;' ;; public) v='Wi-Fi=9.9.9.9;Ethernet=172.31.240.250;' ;;
           *) v="Wi-Fi=There aren't any DNS Servers set on Wi-Fi.;Ethernet=There aren't any DNS Servers set on Ethernet.;" ;; esac
       fi
-      printf '%s\t%s\n' "$(( $(date +%s) + i * 2 ))" "$v"
+      printf '%s\t%s\n' "$(( $(date +%s) - (6 - i) * 2 ))" "$v"
     done ;;
   install-cell)
     sleep 1
+    if [ "$inst" = 1 ]; then put prev "$gen"; else put prev none; fi
+    if [ "$proxy" != "${cell%/*}" ] && [ "$inst" != 0 ]; then put oldproxy "$proxy"; else put oldproxy ""; fi
+    if [ "$brk" = hardened-standard ]; then put pihole standard; else put pihole "${cell#*/}"; fi
     put installed 1; put gen $((gen + 1)); put proxy "${cell%/*}"; put dns pinned
     [ "$brk" = marker-lost ] && put mark ""
     echo "fake install ${cell}" ;;

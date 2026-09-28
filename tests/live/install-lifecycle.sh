@@ -24,6 +24,16 @@
 #   t_6_evidence_is_private the evidence holds no bridge material, session or
 #                           password
 #
+# Gate mode (--matrix all, as `plan installers` passes it; user decision
+# 2026-09-28): each platform's cells are both proxies with the standard
+# Pi-hole. A cell that passed a whole earlier run of this group, at a commit
+# whose product files (everything outside tests/) equal HEAD's, is reused
+# (DEC-009): NICE_DNS_CELL_REUSE_RUNS lists absolute run directories, and the
+# reuse is listed in install-lifecycle/reused-<platform>.tsv. The one cell
+# left per platform is executed; when a different proxy runs, t_2 installs
+# over it (a proxy switch) and the old proxy must be gone afterwards. One
+# executed cell per platform per run: the target holds one deployment.
+#
 # A deployment is checked (il_check_deployed) for: the generation's images are
 # the ones running, the controller is installed, the state volumes exist, the
 # anchor and Tor state are present, the Pi-hole lists volume is on the image's
@@ -41,6 +51,27 @@
 IL_TG="${NICE_DNS_TARGET_ADAPTER:-$NICE_DNS_ROOT/tests/live/target.sh}"
 
 il_dir() { printf '%s\n' "$ARTIFACT_DIR/install-lifecycle/$1"; }
+il_gate() { [ "${NICE_DNS_OPT_MATRIX:-}" = all ]; }
+
+# il_reusable <platform> <alias> <proxy>: the directory of that standard cell
+# in a run listed in NICE_DNS_CELL_REUSE_RUNS, when the run passed every case
+# of this group and its commit differs from HEAD only under tests/ (DEC-009).
+il_reusable() {
+  local k="$1/$3/standard" r d sha
+  for r in ${NICE_DNS_CELL_REUSE_RUNS:-}; do
+    case "$r" in /*) ;; *) fail "NICE_DNS_CELL_REUSE_RUNS: $r is not an absolute run directory" ;; esac
+    [ -d "$r" ] || fail "NICE_DNS_CELL_REUSE_RUNS: no run directory $r"
+    d="$r/install-lifecycle/$2"
+    [ -f "$d/cell.tsv" ] && [ "$(awk -F '\t' '$1 == "cell" { print $2; exit }' "$d/cell.tsv")" = "$k" ] || continue
+    [ "$(awk -F '\t' '$1 == "adapter" { print $2; exit }' "$d/cell.tsv")" = "$([ -n "${NICE_DNS_TARGET_ADAPTER:-}" ] && echo fake || echo real)" ] || continue
+    awk -F '\t' '$1 == "live/install-lifecycle" { n++; if ($4 != "pass") bad = 1 } END { exit !(n >= 6 && !bad) }' "$r/results.tsv" 2>/dev/null || continue
+    sha="$(awk -F '\t' '$1 == "source_sha" { print $2; exit }' "$d/cell.tsv")"
+    git -C "$NICE_DNS_ROOT" diff --quiet "$sha" HEAD -- . ':(exclude)tests' 2>/dev/null || continue
+    printf '%s\n' "$d"
+    return 0
+  done
+  return 0
+}
 il_platforms() {
   local p="${NICE_DNS_OPT_PLATFORMS:-all}"
   if [ "$p" = all ]; then printf 'linux macos\n'; else printf '%s\n' "$p" | tr ',' ' '; fi
@@ -52,7 +83,8 @@ il_selection() {
     [ "${NICE_DNS_IL_DRY_RUN:-0}" = 1 ] || fail "live runs use the real guarded adapter (NICE_DNS_TARGET_ADAPTER is for the dry run only)"
   fi
   assert_ne "" "${NICE_DNS_OPT_TARGETS:-}" "--targets FILE"
-  case "${NICE_DNS_OPT_VARIANTS:-representative}" in representative) ;; *) fail "--variants must be representative (one cell per platform; the other cells are the gate's)" ;; esac
+  case "${NICE_DNS_OPT_VARIANTS:-representative}" in representative) ;; all) il_gate || fail "--variants all needs --matrix all (the gate)" ;; *) fail "--variants must be representative (one cell per platform; the other cells are the gate's)" ;; esac
+  case "${NICE_DNS_OPT_MATRIX:-representative}" in representative|all) ;; *) fail "--matrix must be all (the gate) or left out" ;; esac
   for x in $(il_platforms); do
     case "$x" in linux|macos) ;; *) fail "unknown --platforms value '$x' (all, linux, macos)" ;; esac
   done
@@ -88,11 +120,12 @@ il_each() {
   for p in $(il_platforms); do
     il_alias "$p"; a="$IL_ALIAS"
     mkdir -p "$(il_dir "$a")"
-    if [ "$fn" != il_before ] && [ ! -f "$(il_dir "$a")/cell.tsv" ]; then
+    if [ "$fn" != il_before ] && [ "$fn" != il_hardened ] && [ ! -f "$(il_dir "$a")/cell.tsv" ]; then
       printf 'ASSERT FAIL: %s: no cell recorded (t_1_before failed); %s not run\n' "$a" "$fn" >"$CASE_DIR/$p.log"
       ( exit 1 ) &
     else
-      ( "$fn" "$p" "$a" ) >"$CASE_DIR/$p.log" 2>&1 &
+      # passed.tsv: the steps this cell passed, read by the installers receipt.
+      ( "$fn" "$p" "$a" && printf '%s\n' "$fn" >>"$(il_dir "$a")/passed.tsv" ) >"$CASE_DIR/$p.log" 2>&1 &
     fi
     pids="$pids $p:$!"
   done
@@ -108,16 +141,26 @@ il_each() {
 
 il_cell() { awk -F '\t' -v k="$2" '$1 == k { print $2; exit }' "$(il_dir "$1")/cell.tsv"; }
 
-# il_install <alias> <label> <install|uninstall>: the entrypoint from the
-# archive, with the resolver sampled for the whole run.
+# il_stop_watch <pid>: the watcher and every process under it. Killing only
+# the subshell left target.sh's ssh sampling for its whole NICE_DNS_WATCH_SECS
+# (live 2026-09-28: four watchers on mint for an hour each).
+il_stop_watch() {
+  local c
+  for c in $(pgrep -P "$1" 2>/dev/null); do il_stop_watch "$c"; done
+  kill "$1" 2>/dev/null
+}
+
+# il_install <alias> <label> <install|uninstall> [standard|hardened]: the
+# entrypoint from the archive, with the resolver sampled for the whole run.
 il_install() {
-  local a="$1" label="$2" act="$3" d w rc
+  local a="$1" label="$2" act="$3" ph="${4:-standard}" d w rc hs=()
   d="$(il_dir "$a")"
+  [ "$ph" = standard ] || hs=(--hardened-sha "$(il_cell "$a" hardened_sha)")
   NICE_DNS_WATCH_SECS=3600 il_t "$a" watch-dns >"$d/watch-$label.tsv" 2>>"$d/ops.log" &
   w=$!
-  il_t "$a" "$act-cell" --cell "$(il_cell "$a" proxy)/standard" --source-sha "$(il_cell "$a" source_sha)" >"$d/install-$label.log" 2>&1
+  il_t "$a" "$act-cell" --cell "$(il_cell "$a" proxy)/$ph" --source-sha "$(il_cell "$a" source_sha)" ${hs[@]+"${hs[@]}"} >"$d/install-$label.log" 2>&1
   rc=$?
-  kill "$w" 2>/dev/null; wait "$w" 2>/dev/null
+  il_stop_watch "$w"; wait "$w" 2>/dev/null
   printf '%s\t%s\t%s\n' "$label" "$act" "$rc" >>"$d/steps.tsv"
   return "$rc"
 }
@@ -204,7 +247,20 @@ il_before() {
   il_t "$a" snapshot >>"$d/ops.log" 2>&1 || fail "snapshot $a"
   il_report "$a" before || fail "lifecycle-report $a: $(tail -n 5 "$d/ops.log")"
   proxy="$(il_proxy "$d/before.tsv")"
-  if [ -z "$proxy" ]; then
+  if il_gate; then
+    # The gate: the one standard cell of this platform not reused.
+    local x src todo=""
+    for x in haproxy socat; do
+      src="$(il_reusable "$plat" "$a" "$x")" || fail "$src"
+      if [ -n "$src" ]; then printf '%s/%s/standard\t%s\n' "$plat" "$x" "$src" >>"$ARTIFACT_DIR/install-lifecycle/reused-$plat.tsv"
+      else todo="$todo $x"; fi
+    done
+    # shellcheck disable=SC2086 # one word per proxy
+    set -- $todo
+    [ $# -gt 0 ] || fail "both $plat cells are reused; this run has nothing to execute on $a"
+    [ $# -eq 1 ] || fail "both $plat cells need a run, and a run executes one per platform: reuse one through NICE_DNS_CELL_REUSE_RUNS"
+    proxy="$1"
+  elif [ -z "$proxy" ]; then
     # Nothing installed (e.g. after an uninstall): --proxies names the cell.
     case "${NICE_DNS_OPT_PROXIES:-}" in haproxy|socat) proxy="$NICE_DNS_OPT_PROXIES" ;; esac
   fi
@@ -214,7 +270,7 @@ il_before() {
 }
 
 il_upgrade() {
-  local plat="$1" a="$2" d
+  local plat="$1" a="$2" d old
   d="$(il_dir "$a")"
   il_install "$a" upgrade install || fail "the install over the legacy deployment failed: $(tail -n 20 "$d/install-upgrade.log")"
   # Over a running deployment the resolver never leaves the stack; over none,
@@ -224,6 +280,11 @@ il_upgrade() {
   il_report "$a" after-upgrade || fail "lifecycle-report"
   il_check_deployed "$plat" "$d/after-upgrade.tsv" "$(il_cell "$a" proxy)"
   assert_eq "" "$(comm -23 <(il_unowned_agents "$d/before.tsv") <(il_agents "$d/after-upgrade.tsv"))" "no schedule nice-dns does not own was removed"
+  old="$(il_proxy "$d/before.tsv")"
+  if [ -n "$old" ] && [ "$old" != "$(il_cell "$a" proxy)" ]; then
+    # A proxy switch: the old proxy is gone.
+    assert_eq "" "$(il_val3 "$d/after-upgrade.tsv" running running "tor-$old")" "the switch left no tor-$old running"
+  fi
 }
 
 il_state() {
@@ -247,11 +308,17 @@ il_state() {
 }
 
 il_uninstall() {
-  local plat="$1" a="$2" d r
+  local plat="$1" a="$2" d
   d="$(il_dir "$a")"
   il_install "$a" uninstall uninstall || fail "the uninstall failed: $(tail -n 20 "$d/install-uninstall.log")"
   il_report "$a" after-uninstall || fail "lifecycle-report"
-  r="$d/after-uninstall.tsv"
+  il_assert_uninstalled "$plat" "$d/before.tsv" "$d/after-uninstall.tsv"
+}
+
+# il_assert_uninstalled <platform> <before report> <after report>: the host is
+# back on the DNS state recorded before nice-dns and nothing owned is left.
+il_assert_uninstalled() {
+  local plat="$1" b="$2" r="$3"
   assert_eq yes "$(il_val "$r" resolution resolves)" "the host resolves after the uninstall (live 2026-09-28: mint did not)"
   assert_eq "" "$(il_sec "$r" volumes)" "no nice-dns volume is left"
   assert_eq "" "$(il_val "$r" admin admin_secret_mode)" "the admin password is gone"
@@ -265,7 +332,7 @@ il_uninstall() {
     # Legacy record: every pinned service back to Empty (DHCP).
     assert_eq "" "$(il_sec "$r" dns | awk -F '\t' 'NF >= 2 && $2 ~ /172\.31\.240\.250/')" "no network service points at the stack any more"
     assert_eq "" "$(il_agents "$r" | grep -E '^org\.nice-dns\.(start-container|health|health-bridges|bridge-eval)$')" "the owned agents are gone"
-    assert_eq "" "$(comm -23 <(il_unowned_agents "$d/before.tsv") <(il_agents "$r"))" "an agent nice-dns does not own is left alone"
+    assert_eq "" "$(comm -23 <(il_unowned_agents "$b") <(il_agents "$r"))" "an agent nice-dns does not own is left alone"
   fi
 }
 
