@@ -26,16 +26,42 @@ unset -f t_1_before t_2_upgrade_from_legacy t_3_state_survives t_4_uninstall_res
 il_dir() { printf '%s\n' "$ARTIFACT_DIR/install-hardened/$1"; }
 IH_SIB="${NICE_DNS_SIBLINGS_DIR:-$(dirname "$NICE_DNS_ROOT")}/pi-hole-hardened"
 
+# ih_reused <alias> <entrypoint>: the entrypoint.tsv of a run listed in
+# NICE_DNS_CELL_REUSE_RUNS that passed this group with <entrypoint> on
+# <alias>, at a commit whose product files equal HEAD's and with this
+# checkout's pi-hole-hardened HEAD (DEC-009).
+ih_reused() {
+  local r f
+  for r in ${NICE_DNS_CELL_REUSE_RUNS:-}; do
+    f="$r/install-hardened/$1/entrypoint.tsv"
+    [ -f "$f" ] || continue
+    awk -F '\t' '$1 == "live/install-hardened" { n++; if ($4 != "pass") bad = 1 } END { exit !(n >= 1 && !bad) }' "$r/results.tsv" 2>/dev/null || continue
+    [ "$(awk -F '\t' '$1 == "entrypoint" && $3 == "pass" { print $2 }' "$f")" = "$2" ] || continue
+    [ "$(il_cell_of_dir "$(dirname "$f")" adapter)" = "$( [ -n "${NICE_DNS_TARGET_ADAPTER:-}" ] && echo fake || echo real)" ] || continue
+    git -C "$NICE_DNS_ROOT" diff --quiet "$(il_cell_of_dir "$(dirname "$f")" source_sha)" HEAD -- . ':(exclude)tests' 2>/dev/null || continue
+    [ "$(il_cell_of_dir "$(dirname "$f")" hardened_sha)" = "$(git -C "$IH_SIB" rev-parse HEAD)" ] || continue
+    printf '%s\n' "$f"; return 0
+  done
+  return 0
+}
+il_cell_of_dir() { awk -F '\t' -v k="$2" '$1 == k { print $2; exit }' "$1/cell.tsv"; }
+
 il_hardened() {
-  local plat="$1" a="$2" d proxy ent r
+  local plat="$1" a="$2" d proxy ent r src
   d="$(il_dir "$a")"
+  case "$plat" in linux) ent=install-deb-hardened.sh ;; *) ent=install-mac-hardened.sh ;; esac
+  src="$(ih_reused "$a" "$ent")"
+  if [ -n "$src" ]; then
+    printf '%s\t%s\n' "$ent" "$src" >"$d/reused.tsv"
+    echo "$ent on $a passed in $src (DEC-009); not repeated"
+    return 0
+  fi
   if [ "${NICE_DNS_IL_DRY_RUN:-0}" = 1 ]; then
     echo "dry run: the committed-checkout check is skipped"
   else
     assert_eq "" "$(GIT_OPTIONAL_LOCKS=0 git -C "$NICE_DNS_ROOT" status --porcelain --untracked-files=no)" "the checkout is committed (the archive is of HEAD)"
     assert_eq "" "$(GIT_OPTIONAL_LOCKS=0 git -C "$IH_SIB" status --porcelain --untracked-files=no)" "pi-hole-hardened is committed (its archive is of HEAD)"
   fi
-  case "$plat" in linux) ent=install-deb-hardened.sh ;; *) ent=install-mac-hardened.sh ;; esac
   il_report "$a" before || fail "lifecycle-report $a: $(tail -n 5 "$d/ops.log")"
   proxy="$(il_proxy "$d/before.tsv")"
   assert_match '^(haproxy|socat)$' "$proxy" "$a runs a standard deployment to install over"

@@ -123,3 +123,40 @@ t_z_gate_flow_catches_every_seeded_defect() {
     assert_eq "caught-by:$w" "$out" "the seeded defect '$b' fails $w"
   done
 }
+
+# A rerun after a passed gate run: every cell and entrypoint is reused, both
+# platforms are skipped, and the receipt still verifies (DEC-009).
+t_y_rerun_skips_what_is_proven() {
+  local base="$CASE_DIR/gate-none" out r
+  out="$(dr_gate_flow none)"
+  assert_eq passed "$out" "the first gate flow passes"
+  out="$(
+    R1=20260101T000100Z-0000000a R2=20260101T000200Z-0000000b R3=20260101T000300Z-0000000c
+    IL_FAKE_DIR="$base/fake" NICE_DNS_IR_CONTROLLER_ROOT="$(dirname "$(dirname "$DR_RUN_DIR")")"
+    IL_FAKE_BUNDLE="$( . "$NICE_DNS_ROOT/tests/live/installers-receipt.sh"; ir_expected_bundle HEAD )"
+    ARTIFACT_DIR="$base/root/runs/$R3" RUN_ID="$R3" NICE_DNS_OPT_MATRIX=all
+    NICE_DNS_CELL_REUSE_RUNS="$base/root/runs/$R1 $base/root/runs/$R2"
+    export IL_FAKE_DIR NICE_DNS_IR_CONTROLLER_ROOT IL_FAKE_BUNDLE ARTIFACT_DIR RUN_ID NICE_DNS_OPT_MATRIX NICE_DNS_CELL_REUSE_RUNS
+    mkdir -p "$ARTIFACT_DIR"
+    for s in il_before il_upgrade il_state il_uninstall il_final; do
+      ( il_each "$s" ) >"$base-r3-$s.log" 2>&1 || { echo "failed:$s"; exit 0; }
+    done
+    for c in t_1_before t_2_upgrade_from_legacy t_3_state_survives t_4_uninstall_restores t_5_final_install t_6_evidence_is_private; do
+      printf 'live/install-lifecycle\tfile\t%s\tpass\n' "$c"; done >>"$ARTIFACT_DIR/results.tsv"
+    ( . "$NICE_DNS_ROOT/tests/live/install-hardened.sh"; il_each il_hardened ) >"$base-r3-hardened.log" 2>&1 || { echo "failed:il_hardened"; exit 0; }
+    printf 'live/install-hardened\tfile\tt_1_hardened_entrypoints\tpass\n' >>"$ARTIFACT_DIR/results.tsv"
+    mkdir -p "$ARTIFACT_DIR/cases/integration-installers-interaction/t_bootstrap_use_is_declared"
+    echo "dry run" >"$ARTIFACT_DIR/cases/integration-installers-interaction/t_bootstrap_use_is_declared/case.log"
+    printf 'integration/installers-interaction\tfile\tt_bootstrap_use_is_declared\tpass\n' >>"$ARTIFACT_DIR/results.tsv"
+    ( CASE_DIR="$base/receipt-case-r3"; mkdir -p "$CASE_DIR"; . "$NICE_DNS_ROOT/tests/live/installers-receipt.sh"; ir_receipt ) >"$base-r3-receipt.log" 2>&1 || { echo "failed:ir_receipt"; exit 0; }
+    echo passed
+  )"
+  assert_eq passed "$out" "the rerun passes ($(tail -n 8 "$base"-r3-*.log 2>/dev/null | tail -n 8))"
+  r="$base/root/runs/20260101T000300Z-0000000c"
+  assert_file "$r/install-lifecycle/lin1/skip" "linux was skipped"
+  assert_file "$r/install-lifecycle/mac1/skip" "macOS was skipped"
+  assert_file "$r/install-hardened/lin1/reused.tsv" "the linux hardened entrypoint was reused"
+  assert_no_path "$r/install-hardened/lin1/after-hardened.tsv" "and not run again"
+  r="$base/root/receipts/installers/20260101T000300Z-0000000c/receipt.tsv"
+  assert_eq 4 "$(awk -F '\t' '$1 == "reuse"' "$r" | grep -c .)" "all four cells are reuse rows"
+}

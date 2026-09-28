@@ -32,7 +32,9 @@
 # reuse is listed in install-lifecycle/reused-<platform>.tsv. The one cell
 # left per platform is executed; when a different proxy runs, t_2 installs
 # over it (a proxy switch) and the old proxy must be gone afterwards. One
-# executed cell per platform per run: the target holds one deployment.
+# executed cell per platform per run: the target holds one deployment. A
+# platform whose cells are all reused is skipped (install-lifecycle/<alias>/
+# skip), so a rerun repeats only the cells that did not pass.
 #
 # A deployment is checked (il_check_deployed) for: the generation's images are
 # the ones running, the controller is installed, the state volumes exist, the
@@ -120,6 +122,10 @@ il_each() {
   for p in $(il_platforms); do
     il_alias "$p"; a="$IL_ALIAS"
     mkdir -p "$(il_dir "$a")"
+    if [ -f "$(il_dir "$a")/skip" ]; then
+      printf '%s: every cell reused (DEC-009); %s skipped\n' "$a" "$fn" >"$CASE_DIR/$p.log"
+      continue
+    fi
     if [ "$fn" != il_before ] && [ "$fn" != il_hardened ] && [ ! -f "$(il_dir "$a")/cell.tsv" ]; then
       printf 'ASSERT FAIL: %s: no cell recorded (t_1_before failed); %s not run\n' "$a" "$fn" >"$CASE_DIR/$p.log"
       ( exit 1 ) &
@@ -257,7 +263,11 @@ il_before() {
     done
     # shellcheck disable=SC2086 # one word per proxy
     set -- $todo
-    [ $# -gt 0 ] || fail "both $plat cells are reused; this run has nothing to execute on $a"
+    if [ $# -eq 0 ]; then
+      # Every cell of this platform is proven: the later steps skip it.
+      echo "both $plat cells are reused; nothing to execute on $a"
+      : >"$d/skip"; return 0
+    fi
     [ $# -eq 1 ] || fail "both $plat cells need a run, and a run executes one per platform: reuse one through NICE_DNS_CELL_REUSE_RUNS"
     proxy="$1"
   elif [ -z "$proxy" ]; then
