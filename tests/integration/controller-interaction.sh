@@ -13,7 +13,9 @@
 # shellcheck disable=SC2030,SC2031
 . "$NICE_DNS_ROOT/tests/fixtures/health-fakes.sh"
 
-CI_TOOLS="awk basename bash cat chmod comm cp cut date dirname env expr find grep head id kill ln ls mkdir mktemp mv od ps readlink rm sed sh sleep sort stat tail tee touch tr uniq wc xargs"
+# sha256sum (Linux) / shasum (macOS): the bridge-set hash (lib/recovery.sh)
+# and the proxy generation (lib/health.sh) use whichever exists.
+CI_TOOLS="awk basename bash cat chmod comm cp cut date dirname env expr find grep head id kill ln ls mkdir mktemp mv od ps readlink rm sed sh sha256sum shasum sleep sort stat tail tee touch tr uniq wc xargs"
 
 # ci_env <linux|macos>: fakes for a healthy stack, reduced PATH, private
 # HOME and state, and the libraries sourced into this (sub)shell.

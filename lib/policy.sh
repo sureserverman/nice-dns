@@ -27,9 +27,18 @@
 # Rules, in order (tunables in seconds unless noted):
 #   * Unreadable observations escalate; the state is only time-stamped.
 #   * A new boot restarts the startup allowance, the outage clock, the restart
-#     count, the cooldown and every streak; the last route stays selected. A
-#     wall clock that moved back (now < updated) restarts the allowance and
-#     the outage clock, and restarts the cooldown at now (never shortens it).
+#     count, the cooldown and every streak. A wall clock that moved back (now <
+#     updated) restarts the allowance and the outage clock, and restarts the
+#     cooldown at now (never shortens it).
+#   * A fresh proxy (Sub-plan 5 Task 1.3, ARCH-04: an authenticated exit while
+#     the onion is cold): a new boot, or a proxy observation whose generation
+#     differs from the recorded proxy_gen (the first one seen included),
+#     restarts every streak, and a selected *-onion route is dropped, so the
+#     selection below takes the preferred healthy exit and the onion returns
+#     only once sustained. An exit route stays selected. Measured on mint
+#     2026-09-28: cold names after a restart took p50 691 ms on the kept onion
+#     against 309 ms on the exit. No proxy record, or an indeterminate one,
+#     is no evidence of a restart.
 #   * Streaks: a healthy route observation adds to ok and clears fail, an
 #     unhealthy one the reverse; an indeterminate or missing one changes
 #     neither. unknown counts consecutive observations that were not healthy
@@ -81,18 +90,22 @@ nd_policy_decide() {
   local routes="${ND_ROUTES_FILE:-$ND_POLICY_LIB_DIR/../routes/providers.tsv}"
   local tab=$'\t' cr=$'\r' a b c d e rest i j n=0 v
   local -a rid=() rok=() rfail=() runk=() robs=()
-  local s_boot=- s_updated=- s_started=- s_route=- s_out=- s_rest=0 s_la=- s_laat=- s_rec=-
+  local s_boot=- s_updated=- s_started=- s_route=- s_out=- s_rest=0 s_la=- s_laat=- s_rec=- s_pgen=- p_gen="" fresh=0
   local rt=- rt_reason="" compat_ok=0 valid=1 why="" notes=""
   local action=no-op target=- reason=""
 
   _nd_p_num "$now" || { printf 'policy: now must be an epoch, got %s\n' "$now" >&2; return 2; }
   case "$boot" in ''|*[!A-Za-z0-9._-]*) printf 'policy: bad boot id %s\n' "$boot" >&2; return 2 ;; esac
+  [ "${#boot}" -le 64 ] || { printf 'policy: boot id longer than 64 characters\n' >&2; return 2; }
   [ -r "$obs" ] && [ -r "$stf" ] && [ -r "$routes" ] || { printf 'policy: unreadable input\n' >&2; return 2; }
 
   # Identity routes, in table order (preference order).
   local compat_ids=" "
   while IFS="$tab" read -r a b c d e rest || [ -n "$a" ]; do
     case "$a" in ''|'#'*|schema) continue ;; esac
+    # Route ids as lib/state.sh accepts them (it validates the next state).
+    case "$a" in *[!a-z0-9-]*|-*|*-|*--*) printf 'policy: bad route id %s\n' "$a" >&2; return 2 ;; esac
+    [ "${#a}" -le 64 ] || { printf 'policy: route id %s is too long\n' "$a" >&2; return 2; }
     case "$e" in
       identity) rid[n]="$a"; rok[n]=0; rfail[n]=0; runk[n]=0; robs[n]=-; n=$((n + 1)) ;;
       compat) compat_ids="$compat_ids$a " ;;
@@ -111,6 +124,7 @@ nd_policy_decide() {
     case "$a" in
       boot_id) s_boot="$b" ;; updated) s_updated="$b" ;; started) s_started="$b" ;;
       route) s_route="$b" ;; outage_since) s_out="$b" ;; outage_restarts) s_rest="$b" ;;
+      proxy_gen) s_pgen="$b" ;;
       last_action) s_la="$b" ;; last_action_at) s_laat="$b" ;; recovery_at) s_rec="$b" ;;
       streak)
         i=0
@@ -143,6 +157,7 @@ nd_policy_decide() {
     case "$c" in healthy|unhealthy|indeterminate) ;; *) valid=0; why="unknown observation state '$c' for $b"; break ;; esac
     case "$b" in
       runtime) rt="$c"; rt_reason="$e" ;;
+      proxy) case "$c:$e" in healthy:generation:*) p_gen="${e#generation:}" ;; esac ;;
       route:*)
         i=0
         while [ "$i" -lt "$n" ]; do
@@ -160,10 +175,27 @@ nd_policy_decide() {
     s_boot="$boot" s_started="$now" s_out=- s_rest=0 s_rec=- s_laat=-
     [ "$s_la" = - ] || s_la=-
     i=0; while [ "$i" -lt "$n" ]; do rok[i]=0; rfail[i]=0; runk[i]=0; i=$((i + 1)); done
+    fresh=1
   elif _nd_p_num "$s_updated" && [ "$now" -lt "$s_updated" ]; then
     notes="clock moved back; timers restart; "
     s_started="$now" s_out=-
     [ "$s_rec" = - ] || s_rec="$now"
+  fi
+  # A fresh proxy: its circuits are cold (see the rules above).
+  # Exactly the shape lib/state.sh accepts (the tick acts before it commits,
+  # so a value the commit refuses would desync the action from the state).
+  case "$p_gen" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) p_gen="" ;; esac
+  if [ -n "$p_gen" ] && [ "$p_gen" != "$s_pgen" ]; then
+    notes="${notes}fresh proxy (generation $p_gen); streaks restart; "
+    i=0; while [ "$i" -lt "$n" ]; do rok[i]=0; rfail[i]=0; runk[i]=0; i=$((i + 1)); done
+    fresh=1
+  fi
+  [ -n "$p_gen" ] && s_pgen="$p_gen"
+  if [ "$fresh" = 1 ]; then
+    case "$s_route" in *-onion)
+      notes="${notes}the onion is re-promoted once sustained (ARCH-04); "
+      s_route=- ;;
+    esac
   fi
   _nd_p_num "$s_started" || s_started="$now"
   s_updated="$now"
@@ -277,7 +309,7 @@ nd_policy_decide() {
 
   printf 'schema\tnice-dns-decision/1\naction\t%s\ntarget\t%s\nreason\t%s\n' "$action" "$target" "$reason"
   printf 'schema\tnice-dns-controller-state/1\nboot_id\t%s\nupdated\t%s\nstarted\t%s\nroute\t%s\n' "$s_boot" "$s_updated" "$s_started" "$s_route"
-  printf 'outage_since\t%s\noutage_restarts\t%s\nlast_action\t%s\nlast_action_at\t%s\nrecovery_at\t%s\n' "$s_out" "$s_rest" "$s_la" "$s_laat" "$s_rec"
+  printf 'outage_since\t%s\noutage_restarts\t%s\nlast_action\t%s\nlast_action_at\t%s\nrecovery_at\t%s\nproxy_gen\t%s\n' "$s_out" "$s_rest" "$s_la" "$s_laat" "$s_rec" "$s_pgen"
   i=0
   while [ "$i" -lt "$n" ]; do
     printf 'streak\t%s\t%s\t%s\t%s\n' "${rid[i]}" "${rok[i]}" "${rfail[i]}" "${runk[i]}"

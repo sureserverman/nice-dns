@@ -130,6 +130,7 @@ _nd_state_check() {
       else if (k == "boot_id") ok = v == "-" || (v ~ /^[A-Za-z0-9._-]+$/ && length(v) <= 64)
       else if (k == "updated" || k == "started" || k == "outage_since" || k == "last_action_at" || k == "recovery_at") ok = epoch(v)
       else if (k == "route") ok = v == "-" || rid(v)
+      else if (k == "proxy_gen") ok = v == "-" || v ~ /^[0-9a-f]{16}$/
       else if (k == "outage_restarts") ok = num(v)
       else if (k == "last_action") ok = v ~ /^(-|no-op|switch-route|refresh-bridges|restart-component|repair-runtime|escalate)$/
       else { bad("unknown key " k); next }

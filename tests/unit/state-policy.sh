@@ -496,7 +496,10 @@ t_policy_reboot_resets_timers_and_cooldown() {
   assert_eq $((SP_T0 + 60)) "$(sp_key "$CASE_DIR/next" outage_since)" "the outage clock restarts"
   assert_eq 0 "$(sp_key "$CASE_DIR/next" outage_restarts)" "restart count is per boot"
   assert_eq 0/1 "$(sp_streak "$CASE_DIR/next" cloudflare-onion)" "streaks restart"
-  assert_eq cloudflare-onion "$(sp_key "$CASE_DIR/next" route)" "the last route stays in place"
+  # Sub-plan 5 Task 1.3 (ARCH-04): a boot means cold circuits, so a selected
+  # onion is dropped (was: "the last route stays in place"); with no route
+  # healthy nothing is selected yet.
+  assert_eq - "$(sp_key "$CASE_DIR/next" route)" "a boot drops the onion"
 }
 
 t_policy_clock_rollback_restarts_timers() {
@@ -617,4 +620,122 @@ t_policy_escalates_a_runtime_fault_the_platform_cannot_repair() {
     assert_eq containers-missing "$(nd_platform_runtime_repairs)" "linux: only missing containers are repairable" ) || exit 1
   ( . "$NICE_DNS_ROOT/lib/platform/macos.sh"
     assert_eq "runtime-down containers-missing" "$(nd_platform_runtime_repairs)" "macos: both faults are repairable" ) || exit 1
+}
+
+# ───────── a fresh proxy (Sub-plan 5 Task 1.3; ARCH-04 startup rule) ─────────
+# After the proxy restarts (its generation changes) or the host boots, Tor's
+# circuits are cold: a selected onion gives way to the preferred healthy
+# exit, and the onion is promoted again only once sustained.
+
+# sp_proxy <obs file> <generation>: adds the proxy observation.
+sp_proxy() { printf 'obs\tproxy\thealthy\t4\tgeneration:%s\n' "$2" >>"$1"; }
+
+sp_onion_state() {
+  # sp_onion_state <file> <proxy_gen or ->: onion selected and long sustained.
+  printf 'schema\tnice-dns-controller-state/1\nboot_id\tboot-a\nupdated\t%s\nstarted\t1\nroute\tcloudflare-onion\noutage_since\t-\noutage_restarts\t0\nlast_action\tswitch-route\nlast_action_at\t%s\nrecovery_at\t-\nstreak\tcloudflare-onion\t40\t0\t0\nstreak\tcloudflare-exit\t40\t0\t0\nstreak\tquad9-exit\t40\t0\t0\n' \
+    "$SP_T0" "$SP_T0" >"$1"
+  [ "$2" = - ] || printf 'proxy_gen\t%s\n' "$2" >>"$1"
+}
+
+t_policy_fresh_proxy_falls_back_to_an_exit() {
+  local t
+  sp_libs
+  sp_onion_state "$CASE_DIR/cur" 0123456789abcdef
+  sp_obs "$CASE_DIR/o" healthy healthy healthy healthy healthy
+  sp_proxy "$CASE_DIR/o" fedcba9876543210
+  sp_decide "$CASE_DIR/o" "$CASE_DIR/cur" $((SP_T0 + 60))
+  assert_eq switch-route "$SP_ACTION" "a restarted proxy moves off the onion: $SP_OUT"
+  assert_eq cloudflare-exit "$SP_TARGET" "to the preferred healthy exit"
+  assert_match 'fresh proxy' "$SP_REASON" "and says why"
+  assert_eq fedcba9876543210 "$(sp_key "$CASE_DIR/next" proxy_gen)" "the new generation is recorded"
+  assert_eq 1/0 "$(sp_streak "$CASE_DIR/next" cloudflare-onion)" "the onion's streak restarts"
+  cp "$CASE_DIR/next" "$CASE_DIR/cur"
+  for t in 2 3 4 5; do
+    sp_steps "$CASE_DIR/o" $((SP_T0 + 60 * t))
+    [ "$t" = 5 ] || assert_eq no-op "$SP_ACTION" "observation $t of 5 does not promote the onion"
+  done
+  assert_eq switch-route "$SP_ACTION" "the fifth sustained observation promotes it again"
+  assert_eq cloudflare-onion "$SP_TARGET" "to the onion"
+}
+
+t_policy_same_proxy_keeps_the_onion() {
+  sp_libs
+  sp_onion_state "$CASE_DIR/cur" 0123456789abcdef
+  sp_obs "$CASE_DIR/o" healthy healthy healthy healthy healthy
+  sp_proxy "$CASE_DIR/o" 0123456789abcdef
+  sp_decide "$CASE_DIR/o" "$CASE_DIR/cur" $((SP_T0 + 60))
+  assert_eq no-op "$SP_ACTION" "an unchanged proxy keeps the sustained onion: $SP_OUT"
+  assert_eq cloudflare-onion "$(sp_key "$CASE_DIR/next" route)" "route"
+  assert_eq 41/0 "$(sp_streak "$CASE_DIR/next" cloudflare-onion)" "streaks continue"
+}
+
+t_policy_first_proxy_generation_counts_as_fresh() {
+  # A state from before this rule has no proxy_gen: the first one seen is a
+  # fresh proxy (installs recreate the proxy), which costs one promotion wait.
+  sp_libs
+  sp_onion_state "$CASE_DIR/cur" -
+  sp_obs "$CASE_DIR/o" healthy healthy healthy healthy healthy
+  sp_proxy "$CASE_DIR/o" 0123456789abcdef
+  sp_decide "$CASE_DIR/o" "$CASE_DIR/cur" $((SP_T0 + 60))
+  assert_eq cloudflare-exit "$SP_TARGET" "first generation seen: back to the exit: $SP_OUT"
+}
+
+t_policy_without_a_proxy_observation_nothing_is_fresh() {
+  sp_libs
+  sp_onion_state "$CASE_DIR/cur" 0123456789abcdef
+  sp_obs "$CASE_DIR/o" healthy healthy healthy healthy healthy
+  sp_decide "$CASE_DIR/o" "$CASE_DIR/cur" $((SP_T0 + 60))
+  assert_eq no-op "$SP_ACTION" "no proxy record is no evidence of a restart: $SP_OUT"
+  assert_eq 0123456789abcdef "$(sp_key "$CASE_DIR/next" proxy_gen)" "the known generation is kept"
+  printf 'obs\tproxy\tindeterminate\t10000\tdeadline: inspect\n' >>"$CASE_DIR/o"
+  sp_decide "$CASE_DIR/o" "$CASE_DIR/cur" $((SP_T0 + 60))
+  assert_eq no-op "$SP_ACTION" "an indeterminate proxy record is no evidence either"
+}
+
+t_policy_fresh_proxy_keeps_an_exit_route() {
+  sp_libs
+  sp_onion_state "$CASE_DIR/cur" 0123456789abcdef
+  sed -i 's/^route\tcloudflare-onion$/route\tquad9-exit/' "$CASE_DIR/cur"
+  sp_obs "$CASE_DIR/o" healthy healthy healthy healthy healthy
+  sp_proxy "$CASE_DIR/o" fedcba9876543210
+  sp_decide "$CASE_DIR/o" "$CASE_DIR/cur" $((SP_T0 + 60))
+  assert_eq no-op "$SP_ACTION" "an exit route stays through a restart: $SP_OUT"
+  assert_eq quad9-exit "$(sp_key "$CASE_DIR/next" route)" "route"
+}
+
+t_state_accepts_and_checks_proxy_gen() {
+  local d
+  sp_libs
+  d="$CASE_DIR/state"; nd_state_init || fail "init"
+  sp_onion_state "$CASE_DIR/s" 0123456789abcdef
+  _nd_state_check "$CASE_DIR/s" 0 2>"$CASE_DIR/err"
+  assert_rc 0 "$?" "a 16-hex proxy_gen is valid: $(cat "$CASE_DIR/err")"
+  sp_onion_state "$CASE_DIR/s" 'not-hex!'
+  _nd_state_check "$CASE_DIR/s" 0 2>"$CASE_DIR/err"
+  assert_nonzero "$?" "a malformed proxy_gen is refused"
+  assert_match 'proxy_gen' "$(cat "$CASE_DIR/err")" "and named"
+  sp_onion_state "$CASE_DIR/s" -
+  _nd_state_check "$CASE_DIR/s" 0 2>"$CASE_DIR/err"
+  assert_rc 0 "$?" "a state without proxy_gen (older bundles) stays valid"
+}
+
+# Tier-1 review (Important): the policy never writes a value into the next
+# state that lib/state.sh would refuse, because the tick acts before it
+# commits. A malformed generation is no evidence; an overlong boot id or a
+# malformed route id refuses the whole decision (exit 2) before any action.
+t_policy_never_emits_state_the_validator_refuses() {
+  sp_libs
+  sp_onion_state "$CASE_DIR/cur" 0123456789abcdef
+  sp_obs "$CASE_DIR/o" healthy healthy healthy healthy healthy
+  printf 'obs\tproxy\thealthy\t4\tgeneration:a\n' >>"$CASE_DIR/o"
+  sp_decide "$CASE_DIR/o" "$CASE_DIR/cur" $((SP_T0 + 60))
+  assert_eq no-op "$SP_ACTION" "a malformed generation is no evidence of a restart: $SP_OUT"
+  assert_eq 0123456789abcdef "$(sp_key "$CASE_DIR/next" proxy_gen)" "the recorded generation is kept"
+  _nd_state_check "$CASE_DIR/next" 0 2>"$CASE_DIR/err"
+  assert_rc 0 "$?" "the next state validates: $(cat "$CASE_DIR/err")"
+  nd_policy_decide "$CASE_DIR/o" "$CASE_DIR/cur" $((SP_T0 + 60)) "$(printf 'b%.0s' $(seq 1 65))" >/dev/null 2>"$CASE_DIR/err"
+  assert_eq 2 "$?" "a boot id longer than state allows is refused: $(cat "$CASE_DIR/err")"
+  { cat "$ND_ROUTES_FILE"; printf 'Bad_Route\t18534\tx.example\tx\tidentity\n'; } >"$CASE_DIR/routes.tsv"
+  ND_ROUTES_FILE="$CASE_DIR/routes.tsv" nd_policy_decide "$CASE_DIR/o" "$CASE_DIR/cur" $((SP_T0 + 60)) boot-a >/dev/null 2>"$CASE_DIR/err"
+  assert_eq 2 "$?" "a route id state would refuse is refused: $(cat "$CASE_DIR/err")"
 }

@@ -22,6 +22,11 @@
 #                  proxy (tor-haproxy or tor-socat) run. Reasons start with
 #                  running: | cli-missing: | runtime-down: |
 #                  containers-missing: | deadline:
+#   proxy          the Tor proxy container's generation, "generation:<16 hex>"
+#                  (a hash that changes when the proxy restarts or is
+#                  recreated; indeterminate when unreadable). Optional to
+#                  the validator: the policy's fresh-proxy rule reads it
+#                  (Sub-plan 5 Task 1.3, ARCH-04)
 #   dns-owner      the host resolves through nice-dns (platform adapter:
 #                  Linux resolv.conf, macOS networksetup and scutil)
 #   local-service  Pi-hole FTL answers pi.hole (A) at the platform endpoint
@@ -215,6 +220,31 @@ _nd_obs_runtime() {
   else
     _nd_obs runtime healthy $(($(_nd_now_ms) - t0)) "running: pi-hole unbound $_ND_H_PROXY"
   fi
+}
+
+# _nd_obs_proxy: the proxy container's generation (Sub-plan 5 Task 1.3): a
+# hash of the platform's container generation line, which changes whenever
+# the proxy restarts or is recreated, so the policy can tell a fresh Tor with
+# cold circuits (ARCH-04 startup rule). Indeterminate when it cannot be read.
+_nd_obs_proxy() {
+  local t0 dl out h
+  t0="$(_nd_now_ms)"
+  if [ "$_ND_H_RT" != ok ] || [ -z "$_ND_H_PROXY" ]; then
+    _nd_obs proxy indeterminate 0 "runtime not listed: no proxy generation"; return 0
+  fi
+  dl="$(_nd_deadline "${ND_HEALTH_CMD_DEADLINE:-10}")"
+  if [ "$dl" -le 0 ]; then _nd_obs proxy indeterminate 0 "deadline: observation budget spent"; return 0; fi
+  if ! out="$(nd_platform_container_generation "$_ND_H_PROXY" "$dl" "$_ND_H_TMP")" || [ -z "$out" ]; then
+    _nd_obs proxy indeterminate $(($(_nd_now_ms) - t0)) "unknown: $_ND_H_PROXY generation not readable"; return 0
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then h="$(printf '%s' "$out" | sha256sum | cut -c1-16)"
+  else h="$(printf '%s' "$out" | shasum -a 256 2>/dev/null | cut -c1-16)"; fi
+  # Never a healthy record without a generation (a PATH without either tool
+  # hashed to nothing, and the policy would read that as a restart).
+  case "$h" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) _nd_obs proxy indeterminate $(($(_nd_now_ms) - t0)) "unknown: no sha256sum or shasum to hash the generation"; return 0 ;;
+  esac
+  _nd_obs proxy healthy $(($(_nd_now_ms) - t0)) "generation:$h"
 }
 
 # ─── DNS owner ───────────────────────────────────────────────────────────────
@@ -417,6 +447,7 @@ nd_health_observe() {
   _ND_H_TMP="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-health.XXXXXX")" || { printf 'health.sh: cannot create a scratch directory\n' >&2; return 1; }
   printf 'schema\tnice-dns-observations/1\n'
   _nd_obs_runtime
+  _nd_obs_proxy
   _nd_obs_dns_owner
   _nd_obs_dns local-service "${ND_HEALTH_LOCAL_NAME:-pi.hole}" local
   _nd_obs_dns filtering "${ND_HEALTH_FILTER_NAME:-doubleclick.net}" sinkhole
@@ -436,8 +467,9 @@ nd_health_validate() {
     NR == 1 { if ($0 != "schema\tnice-dns-observations/1") bad("expected schema<TAB>nice-dns-observations/1"); next }
     /[\001-\010\013-\037\177\r]/ { bad("control character"); next }
     $1 != "obs" || NF != 5 { bad("expected obs<TAB>name<TAB>verdict<TAB>ms<TAB>reason"); next }
-    $2 !~ /^(runtime|dns-owner|local-service|filtering|local-cache|route-table|route:[a-z0-9]+(-[a-z0-9]+)*)$/ { bad("unknown observation name"); next }
+    $2 !~ /^(runtime|proxy|dns-owner|local-service|filtering|local-cache|route-table|route:[a-z0-9]+(-[a-z0-9]+)*)$/ { bad("unknown observation name"); next }
     $3 !~ /^(healthy|unhealthy|indeterminate)$/ { bad("unknown verdict"); next }
+    $2 == "proxy" && $3 == "healthy" && $5 !~ /^generation:[0-9a-f]{16}$/ { bad("a healthy proxy record needs generation:<16 hex>"); next }
     $4 !~ /^[0-9]+$/ { bad("duration is not an integer"); next }
     $5 == "" { bad("empty reason"); next }
     { if (seen[$2]++) bad("duplicate " $2); if ($2 ~ /^route/) routes++ }

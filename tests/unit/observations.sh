@@ -464,7 +464,7 @@ t_observe_output_is_valid_tsv_with_one_line_reasons() {
     else
       assert_match 'runtime-down: .*failed to connect' "$(ob_reason runtime)" "$plat: the runtime's error is the reason"
     fi
-    assert_eq "runtime dns-owner local-service filtering local-cache route:cloudflare-onion route:cloudflare-exit route:quad9-exit route:cloudflare-legacy " \
+    assert_eq "runtime proxy dns-owner local-service filtering local-cache route:cloudflare-onion route:cloudflare-exit route:quad9-exit route:cloudflare-legacy " \
       "$(printf '%s\n' "$OB_OUT" | awk -F '\t' '$1 == "obs" { print $2 }' | tr '\n' ' ')" "$plat: the documented names, in order"
   done
 }
@@ -708,8 +708,8 @@ INNER
   assert_match '^response\|NOERROR\|104\.16\.132\.229 104\.16\.133\.229$' "$out" "dig parse under 3.2 (BusyBox awk)"
   assert_match '^bounded=124 secs=[12]$' "$out" "the deadline holds under 3.2"
   assert_match '^left=0$' "$out" "no process left under 3.2"
-  assert_eq 9 "$(awk -F '\t' '$1 == "obs" && $3 == "healthy"' "$w/obs-linux.tsv" | wc -l | tr -d ' ')" "all nine linux observations healthy under 3.2"
-  assert_eq 9 "$(awk -F '\t' '$1 == "obs" && $3 == "healthy"' "$w/obs-macos.tsv" | wc -l | tr -d ' ')" "all nine macos observations healthy under 3.2"
+  assert_eq 10 "$(awk -F '\t' '$1 == "obs" && $3 == "healthy"' "$w/obs-linux.tsv" | wc -l | tr -d ' ')" "all ten linux observations healthy under 3.2 (proxy added, Sub-plan 5 Task 1.3)"
+  assert_eq 10 "$(awk -F '\t' '$1 == "obs" && $3 == "healthy"' "$w/obs-macos.tsv" | wc -l | tr -d ' ')" "all ten macos observations healthy under 3.2 (proxy added, Sub-plan 5 Task 1.3)"
   for p in linux macos; do
     assert_match "^cli-run-$p=0\$" "$out" "$p: CLI run passes under 3.2"
     assert_match "^cli-indeterminate-$p=1\$" "$out" "$p: CLI indeterminate run under 3.2"
@@ -762,5 +762,52 @@ t_probe_timeout_is_unhealthy_not_indeterminate() {
     for r in 18531 18532 18533 853; do printf 'timeout\n' >"$FAKE/probe/$r"; done
     ob_observe
     for r in $(ob_routes); do ob_expect "route:$r" unhealthy 'no-answer' "$plat: route $r timed out in the probe"; done
+  done
+}
+
+# Sub-plan 5 Task 1.3: the proxy's generation, which changes when the proxy
+# restarts or is recreated (the policy's fresh-proxy rule, ARCH-04).
+t_proxy_generation_is_observed_and_changes_on_restart() {
+  local plat g1 g2
+  ob_setup linux
+  for plat in $(ob_platforms); do
+    ob_platform "$plat"
+    ob_observe
+    ob_expect proxy healthy '^generation:[0-9a-f]{16}$' "$plat: the proxy's generation"
+    g1="$(ob_reason proxy)"
+    printf '2026-09-28T21:00:00Z\n' >"$FAKE/started"
+    ob_observe
+    g2="$(ob_reason proxy)"
+    assert_ne "$g1" "$g2" "$plat: a restarted proxy has a new generation"
+    ob_observe
+    assert_eq "$g2" "$(ob_reason proxy)" "$plat: and it is stable while the proxy runs"
+    rm -f "$FAKE/started"
+  done
+}
+
+# Tier-1 review (Suggestion): a healthy proxy record must carry a well-formed
+# generation, checked at the same boundary as the other structural rules.
+t_validator_checks_the_proxy_generation() {
+  local base out
+  base="$(printf 'schema\tnice-dns-observations/1\n'; for n in runtime dns-owner local-service filtering local-cache route:a; do printf 'obs\t%s\thealthy\t1\tfine\n' "$n"; done)"
+  printf '%s\nobs\tproxy\thealthy\t1\tgeneration:0123456789abcdef\n' "$base" | bash -c '. "$1" && nd_health_validate' _ "$OB_HEALTH" 2>/dev/null
+  assert_rc 0 "$?" "a well-formed generation"
+  out="$(printf '%s\nobs\tproxy\thealthy\t1\tgeneration:xyz\n' "$base" | bash -c '. "$1" && nd_health_validate' _ "$OB_HEALTH" 2>&1)"
+  assert_nonzero "$?" "a malformed generation is refused"
+  assert_match 'generation' "$out" "and named"
+  printf '%s\nobs\tproxy\tindeterminate\t9\tdeadline: inspect\n' "$base" | bash -c '. "$1" && nd_health_validate' _ "$OB_HEALTH" 2>/dev/null
+  assert_rc 0 "$?" "an indeterminate proxy record needs no generation"
+}
+
+# Without a hashing tool the proxy record is indeterminate, never a healthy
+# record with an empty generation (controller-interaction's reduced PATH).
+t_proxy_generation_without_a_hash_tool_is_indeterminate() {
+  local plat t
+  ob_setup linux
+  for plat in $(ob_platforms); do
+    ob_platform "$plat"
+    for t in sha256sum shasum; do rm -f "$OB_BIN/$t"; done
+    ob_observe
+    ob_expect proxy indeterminate '^unknown: no sha256sum or shasum' "$plat: no hash tool"
   done
 }
