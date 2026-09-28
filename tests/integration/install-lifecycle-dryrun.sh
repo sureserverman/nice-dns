@@ -173,13 +173,19 @@ t_x_reuse_rule_ignores_docs_not_product() {
   printf '\nnote\n' >>"$c/docs/workflows/dns-lifecycle.md"; printf 'note\n' >>"$c/README.md"; printf '# t\n' >>"$c/tests/run.sh"
   git -C "$c" -c user.name=t -c user.email=t@t commit -qam docs
   docs="$(git -C "$c" rev-parse HEAD)"
-  ( NICE_DNS_ROOT="$c"; il_same_product "$base" )
+  ( NICE_DNS_ROOT="$c"; il_same_product "$base" linux && il_same_product "$base" macos )
   assert_rc 0 "$?" "a docs, Markdown and tests change keeps the product the same"
+  printf '# t\n' >>"$c/mac/start-container-root.sh"
+  git -C "$c" -c user.name=t -c user.email=t@t commit -qam mac
+  ( NICE_DNS_ROOT="$c"; il_same_product "$docs" linux )
+  assert_rc 0 "$?" "a mac/ change keeps the Linux product the same"
+  ( NICE_DNS_ROOT="$c"; il_same_product "$docs" macos )
+  assert_rc 1 "$?" "but not the macOS one"
   printf '# t\n' >>"$c/lib/install.sh"
   git -C "$c" -c user.name=t -c user.email=t@t commit -qam product
   prod="$(git -C "$c" rev-parse HEAD)"
-  ( NICE_DNS_ROOT="$c"; il_same_product "$docs" )
+  ( NICE_DNS_ROOT="$c"; il_same_product "$docs" linux )
   assert_rc 1 "$?" "a change to lib/install.sh is a different product"
-  ( NICE_DNS_ROOT="$c"; il_same_product "$prod" )
+  ( NICE_DNS_ROOT="$c"; il_same_product "$prod" macos )
   assert_rc 0 "$?" "HEAD is the same product as itself"
 }

@@ -213,7 +213,7 @@ ir_receipt() {
         ent="$(awk -F '\t' '$1 == "entrypoint" && $3 == "pass" { print $2 }' "$f")"
         [ "$ent" = "$e" ] || continue
         [ "$(il_cell_of "$(dirname "$f")" adapter)" = "$(ir_adapter)" ] || continue
-        il_same_product "$(il_cell_of "$(dirname "$f")" source_sha)" || continue
+        il_same_product "$(il_cell_of "$(dirname "$f")" source_sha)" "$(il_cell_of "$(dirname "$f")" cell | cut -d/ -f1)" || continue
         [ "$(il_cell_of "$(dirname "$f")" hardened_sha)" = "$(git -C "$IR_SIBS/pi-hole-hardened" rev-parse HEAD)" ] || continue
         st=pass; mkdir -p "$out/entrypoints"; cp "$f" "$out/entrypoints/$e.tsv"
       done

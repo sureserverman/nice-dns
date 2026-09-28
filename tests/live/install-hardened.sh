@@ -38,7 +38,7 @@ ih_reused() {
     awk -F '\t' '$1 == "live/install-hardened" { n++; if ($4 != "pass") bad = 1 } END { exit !(n >= 1 && !bad) }' "$r/results.tsv" 2>/dev/null || continue
     [ "$(awk -F '\t' '$1 == "entrypoint" && $3 == "pass" { print $2 }' "$f")" = "$2" ] || continue
     [ "$(il_cell_of_dir "$(dirname "$f")" adapter)" = "$( [ -n "${NICE_DNS_TARGET_ADAPTER:-}" ] && echo fake || echo real)" ] || continue
-    il_same_product "$(il_cell_of_dir "$(dirname "$f")" source_sha)" || continue
+    il_same_product "$(il_cell_of_dir "$(dirname "$f")" source_sha)" "$(il_cell_of_dir "$(dirname "$f")" cell | cut -d/ -f1)" || continue
     [ "$(il_cell_of_dir "$(dirname "$f")" hardened_sha)" = "$(git -C "$IH_SIB" rev-parse HEAD)" ] || continue
     printf '%s\n' "$f"; return 0
   done

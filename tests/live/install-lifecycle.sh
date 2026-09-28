@@ -28,7 +28,8 @@
 # 2026-09-28): each platform's cells are both proxies with the standard
 # Pi-hole. A cell that passed a whole earlier run of this group, at a commit
 # whose product files (everything outside tests/) equal HEAD's, is reused
-# (DEC-009; docs and Markdown do not count either, il_same_product):
+# (DEC-009; docs, Markdown and the other platform's directory do not count
+# either, il_same_product):
 # NICE_DNS_CELL_REUSE_RUNS lists absolute run directories, and the
 # reuse is listed in install-lifecycle/reused-<platform>.tsv. The one cell
 # left per platform is executed; when a different proxy runs, t_2 installs
@@ -56,10 +57,15 @@ IL_TG="${NICE_DNS_TARGET_ADAPTER:-$NICE_DNS_ROOT/tests/live/target.sh}"
 il_dir() { printf '%s\n' "$ARTIFACT_DIR/install-lifecycle/$1"; }
 il_gate() { [ "${NICE_DNS_OPT_MATRIX:-}" = all ]; }
 
-# il_same_product <sha>: nice-dns at <sha> installs what HEAD installs: no
-# change since but to the tests, the workflow docs or Markdown (DEC-009).
+# il_same_product <sha> <linux|macos>: nice-dns at <sha> installs on that
+# platform what HEAD installs: no change since but to the tests, the workflow
+# docs, Markdown, or the other platform's directory (DEC-009). A Linux
+# install never runs mac/ (lib/install.sh names it only in macOS branches),
+# a macOS install never runs deb/.
 il_same_product() {
-  git -C "$NICE_DNS_ROOT" diff --quiet "$1" HEAD -- . ':(exclude)tests' ':(exclude)docs' ':(exclude,glob)**/*.md' 2>/dev/null
+  local other
+  case "$2" in linux) other=mac ;; macos) other=deb ;; *) return 1 ;; esac
+  git -C "$NICE_DNS_ROOT" diff --quiet "$1" HEAD -- . ':(exclude)tests' ':(exclude)docs' ':(exclude,glob)**/*.md' ":(exclude)$other" 2>/dev/null
 }
 
 # il_reusable <platform> <alias> <proxy>: the directory of that standard cell
@@ -75,7 +81,7 @@ il_reusable() {
     [ "$(awk -F '\t' '$1 == "adapter" { print $2; exit }' "$d/cell.tsv")" = "$([ -n "${NICE_DNS_TARGET_ADAPTER:-}" ] && echo fake || echo real)" ] || continue
     awk -F '\t' '$1 == "live/install-lifecycle" { n++; if ($4 != "pass") bad = 1 } END { exit !(n >= 6 && !bad) }' "$r/results.tsv" 2>/dev/null || continue
     sha="$(awk -F '\t' '$1 == "source_sha" { print $2; exit }' "$d/cell.tsv")"
-    il_same_product "$sha" || continue
+    il_same_product "$sha" "$1" || continue
     printf '%s\n' "$d"
     return 0
   done
