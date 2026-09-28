@@ -803,9 +803,10 @@ case "$NICE_DNS_OP" in
       if [ "$plat" = macos ]; then ctl image inspect "$1" 2>/dev/null | tr ',' '\n' | sed -n 's/.*"digest"[[:space:]]*:[[:space:]]*"\(sha256:[0-9a-f]*\)".*/\1/p' | head -1
       else ctl image inspect --format '{{.Id}}' "$1" 2>/dev/null; fi
     }
+    # ready [tries]: Pi-hole answers within tries x (up to 10 s); default 60.
     ready() {
       i=0
-      while [ "$i" -lt 60 ]; do
+      while [ "$i" -lt "${1:-60}" ]; do
         dig "@${RESOLVER%#*}" -p "${RESOLVER#*#}" +time=5 +tries=1 +short example.com A 2>/dev/null | grep -Eq '^[0-9.]+$' && return 0
         i=$((i + 1)); sleep 5
       done
@@ -875,7 +876,11 @@ case "$NICE_DNS_OP" in
         ctl builder stop >/dev/null 2>&1; ctl system stop >/dev/null 2>&1; sleep 8
         { yes 2>/dev/null || true; } | ctl system start >/dev/null 2>&1
         i=0; until ctl system status >/dev/null 2>&1; do i=$((i + 1)); [ "$i" -lt 10 ] || break; sleep 4; done
-        restart_stack; ready || { echo "the stack did not answer after the baseline build" >&2; exit 1; }
+        # 15 min: after a runtime restart the agent waits 300 s for Tor and 150 s
+        # for the chain before its one rebuild (live mac 2026-09-28: Tor did not
+        # bootstrap on the reused bridges; the rebuild bootstrapped in 52 s, just
+        # after a 10-minute wait had given up).
+        restart_stack; ready 90 || { echo "the stack did not answer after the baseline build" >&2; exit 1; }
         [ "$rc" = 0 ] || exit 1
       else
         ctl build -q -t "$(arm_ref unbound baseline)" "$w/nice-dns/unbound" >/dev/null 2>"$w/build.log" \
