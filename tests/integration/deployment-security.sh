@@ -433,6 +433,9 @@ t_hardened_image_never_serves_an_open_admin() {
   ds_select
   ds_need "$c"
   (
+    # A subshell starts without the case's EXIT trap: without its own, a
+    # failed assertion leaves the containers running.
+    trap tp_cleanup EXIT
     ds_start hardened
     ds_wait_web "$c (no password configured)"
     assert_eq 401 "$(ds_http http://127.0.0.1/api/stats/summary)" "$c: with no password configured the API still requires one"
@@ -456,6 +459,7 @@ t_images_refuse_an_unusable_secret() {
     # readable file with nothing in it (an empty password means none at all).
     for i in missing 'a/b' '' empty; do
       (
+        trap tp_cleanup EXIT
         if [ "$i" = empty ]; then
           # Readable by the pihole user: the directory too (the runner's umask
           # makes it 0700, and inside the container it belongs to root).
