@@ -82,6 +82,7 @@ il_hardened() {
 
   il_install "$a" hardened-uninstall uninstall hardened || fail "the hardened uninstall failed: $(tail -n 20 "$d/install-hardened-uninstall.log")"
   il_report "$a" after-uninstall || fail "lifecycle-report"
+  il_watch_restore "$plat" "$d/watch-hardened-uninstall.tsv"
   il_assert_uninstalled "$plat" "$d/before.tsv" "$d/after-uninstall.tsv"
 
   il_install "$a" standard install || fail "the standard install failed: $(tail -n 20 "$d/install-standard.log")"

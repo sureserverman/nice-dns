@@ -13,7 +13,8 @@
 #                     after it shows the host resolving on the recorded state
 #   IN-NO-HOST-PUBLIC per cell: every resolver sample of the installs over a
 #                     deployment is the stack; from a restored host, once the
-#                     stack, always the stack
+#                     stack, always the stack; during the uninstall, the stack
+#                     or the restored state
 #   IN-BUNDLE         per cell: the running images are the generation's, the
 #                     controller bundle is the one this source builds, and a
 #                     reinstall kept the previous generation for rollback
@@ -77,7 +78,7 @@ ir_evidence() {
     if [ "$plat" = linux ]; then
       il_sec "$d/after-uninstall.tsv" dns | grep -q '^resolv\.conf	/run/systemd/resolve/stub-resolv\.conf$' && st=pass
     else
-      [ -z "$(il_sec "$d/after-uninstall.tsv" dns | awk -F '\t' 'NF >= 2 && $2 ~ /172\.31\.240\.250/')" ] && st=pass
+      [ -z "$(il_sec "$d/after-uninstall.tsv" dns | awk -F '\t' 'NF >= 2 && $2 !~ /^There aren.t any DNS Servers set on /')" ] && st=pass
     fi
   fi
   printf 'IN-OWNED-RESTORE\t%s\towned-restore.tsv\n' "$st"
@@ -87,11 +88,13 @@ ir_evidence() {
   # Only the samples taken up to the report that followed the install: a
   # watcher that outlived its step (before il_stop_watch) kept sampling the
   # later steps, the uninstall among them.
-  for s in upgrade reinstall final; do
+  for s in upgrade reinstall uninstall final; do
     t="$(awk -F '\t' '$1 == "now" { print $2; exit }' "$d/after-$s.tsv")"
     [ -n "$t" ] && [ -f "$d/watch-$s.tsv" ] && awk -F '\t' -v s="$s" -v t="$t" 'NF >= 2 && $1 <= t { print s "\t" $0 }' "$d/watch-$s.tsv" >>"$f"
   done
   st=pass
+  # The uninstall: the stack or the restored state, never anything else.
+  ( il_watch_restore "$plat" <(awk -F '\t' '$1 == "uninstall" { sub(/^[^\t]*\t/, ""); print }' "$f") ) >/dev/null 2>&1 || st=fail
   for s in upgrade reinstall final; do
     mode=after-first
     { [ "$s" = reinstall ] || { [ "$s" = upgrade ] && [ -n "$(il_proxy "$d/before.tsv")" ]; }; } && mode=all

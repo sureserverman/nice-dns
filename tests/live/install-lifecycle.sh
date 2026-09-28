@@ -47,7 +47,10 @@
 # macOS sudoers rule allows exactly the agent's three helper verbs.
 #
 # Evidence: $ARTIFACT_DIR/install-lifecycle/<alias>/. The installer's own
-# output may hold bridge lines: it stays in install-*.log, which t_6 checks.
+# output may hold bridge lines (a declared bootstrap exception): it stays in
+# install-*.log and ops.log, in the run's private artifact directory, and is
+# never copied into a receipt. t_6 checks only the reports, samples and step
+# records (*.tsv), which the receipt copies and which must hold none.
 # NICE_DNS_TARGET_ADAPTER replaces target.sh only for the dry run
 # (integration/install-lifecycle-dryrun, NICE_DNS_IL_DRY_RUN=1); a live run
 # refuses it.
@@ -194,7 +197,37 @@ il_pinned_sample() {
   if [ "$1" = linux ]; then
     case "$2" in 'file;127.0.0.1 ') return 0 ;; *) return 1 ;; esac
   fi
-  printf '%s\n' "$2" | tr ';' '\n' | grep . | awk -F '=' '$2 != "172.31.240.250" { bad = 1 } END { exit bad }'
+  # An empty sample (networksetup answered nothing) is not pinned: with no
+  # record the check would otherwise pass vacuously (Tier-2, 2026-09-28).
+  [ -n "$2" ] || return 1
+  printf '%s\n' "$2" | tr ';' '\n' | grep . | awk -F '=' '{ n++ } $2 != "172.31.240.250" { bad = 1 } END { exit (bad || n == 0) }'
+}
+
+# il_restored_sample <platform> <sample>: 0 when the sample is the state
+# these hosts had before nice-dns (the distribution default: the
+# systemd-resolved stub on Linux, no servers set, DHCP, on every macOS
+# service). The recorded state itself is root-only and gone after the
+# restore, so the reports cannot compare against it.
+il_restored_sample() {
+  if [ "$1" = linux ]; then
+    case "$2" in '../run/systemd/resolve/stub-resolv.conf;127.0.0.53 ') return 0 ;; *) return 1 ;; esac
+  fi
+  [ -n "$2" ] || return 1
+  printf '%s\n' "$2" | tr ';' '\n' | grep . | awk '{ n++; v = $0; sub(/^[^=]*=/, "", v) } v !~ /^There aren.t any DNS Servers set on / { bad = 1 } END { exit (bad || n == 0) }'
+}
+
+# il_watch_restore <platform> <file>: during an uninstall every sample is the
+# stack or the restored state, never anything else (a public resolver on the
+# way out would be); second pass, 2026-09-28.
+il_watch_restore() {
+  local plat="$1" f="$2" n=0 t s
+  while IFS="$(printf '\t')" read -r t s; do
+    [ -n "$t" ] || continue
+    n=$((n + 1))
+    il_pinned_sample "$plat" "$s" || il_restored_sample "$plat" "$s" \
+      || fail "during the uninstall the host resolver was neither the stack nor the restored state at $(date -u -d "@$t" +%H:%M:%S 2>/dev/null || echo "$t"): $s"
+  done <"$f"
+  [ "$n" -ge 1 ] || fail "no resolver sample during the uninstall ($f)"
 }
 
 # il_watch_pinned <platform> <file> <all|after-first>: all: every sample is
@@ -339,6 +372,7 @@ il_uninstall() {
   d="$(il_dir "$a")"
   il_install "$a" uninstall uninstall || fail "the uninstall failed: $(tail -n 20 "$d/install-uninstall.log")"
   il_report "$a" after-uninstall || fail "lifecycle-report"
+  il_watch_restore "$plat" "$d/watch-uninstall.tsv"
   il_assert_uninstalled "$plat" "$d/before.tsv" "$d/after-uninstall.tsv"
 }
 
@@ -358,6 +392,7 @@ il_assert_uninstalled() {
   else
     # Legacy record: every pinned service back to Empty (DHCP).
     assert_eq "" "$(il_sec "$r" dns | awk -F '\t' 'NF >= 2 && $2 ~ /172\.31\.240\.250/')" "no network service points at the stack any more"
+    assert_eq "" "$(il_sec "$r" dns | awk -F '\t' 'NF >= 2 && $2 !~ /^There aren.t any DNS Servers set on /')" "every service is back to no servers set (DHCP), the state recorded before nice-dns"
     assert_eq "" "$(il_agents "$r" | grep -E '^org\.nice-dns\.(start-container|health|health-bridges|bridge-eval)$')" "the owned agents are gone"
     assert_eq "" "$(comm -23 <(il_unowned_agents "$b") <(il_agents "$r"))" "an agent nice-dns does not own is left alone"
   fi

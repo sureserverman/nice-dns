@@ -6,6 +6,11 @@
 # name to $IL_FAKE_DIR/break:
 #   admin-open        the admin API answers an anonymous request (200)
 #   public-sample     one resolver sample during an install is public DNS
+#   empty-sample      one resolver sample during an install is empty
+#   public-on-uninstall  one resolver sample during the uninstall (the third
+#                     install-lifecycle watch) is public DNS
+#   restore-elsewhere uninstall leaves the resolver on another server, not
+#                     the recorded state (macOS: 10.9.9.9 on every service)
 #   marker-lost       a reinstall loses the Tor, anchor and lists marks
 #   volume-left       uninstall leaves the state volumes
 #   dns-not-restored  uninstall leaves the resolver pinned
@@ -48,12 +53,13 @@ report() {
     printf 'section\tunits\n'
   else
     for s in Wi-Fi Ethernet; do
-      if [ "$dns" = pinned ]; then printf '%s\t172.31.240.250 \n' "$s"; else printf "%s\tThere aren't any DNS Servers set on %s. \n" "$s" "$s"; fi
+      if [ "$dns" = pinned ]; then printf '%s\t172.31.240.250 \n' "$s"
+      elif [ "$dns" = elsewhere ]; then printf '%s\t10.9.9.9 \n' "$s"; else printf "%s\tThere aren't any DNS Servers set on %s. \n" "$s" "$s"; fi
     done
     printf 'section\tagents\n'
   fi
   printf 'section\tresolution\n'
-  if { [ "$dns" = pinned ] && [ "$inst" != 0 ]; } || [ "$dns" = restored ]; then printf 'resolves\tyes\n'; else printf 'resolves\tno\n'; fi
+  if { [ "$dns" = pinned ] && [ "$inst" != 0 ]; } || [ "$dns" = restored ] || [ "$dns" = elsewhere ]; then printf 'resolves\tyes\n'; else printf 'resolves\tno\n'; fi
   printf 'section\tgeneration\n'
   if [ "$inst" = 1 ]; then
     printf 'current\tgen-%s\n' "$gen"
@@ -121,15 +127,18 @@ case "$op" in
   snapshot) mkdir -p "$ARTIFACT_DIR/targets/$alias_" && echo fake >"$ARTIFACT_DIR/targets/$alias_/snapshot.tsv"; echo "snapshot $alias_" ;;
   lifecycle-report) report ;;
   watch-dns)
+    w=$(( $(get watches 0) + 1 )); put watches "$w"
     pinned=0; [ "$dns" = pinned ] && pinned=1
     for i in 1 2 3 4 5; do
       [ "$i" = 3 ] && pinned=1   # an install pins by the third sample at the latest
       if [ "$brk" = public-sample ] && [ "$i" = 4 ]; then s=public
+      elif [ "$brk" = empty-sample ] && [ "$i" = 4 ]; then s=empty
+      elif [ "$brk" = public-on-uninstall ] && [ "$w" = 3 ] && [ "$i" = 4 ]; then s=public
       elif [ "$pinned" = 1 ]; then s=pinned; else s=restored; fi
       if [ "$plat" = linux ]; then
-        case "$s" in pinned) v='file;127.0.0.1 ' ;; public) v='file;9.9.9.9 ' ;; *) v='../run/systemd/resolve/stub-resolv.conf;127.0.0.53 ' ;; esac
+        case "$s" in pinned) v='file;127.0.0.1 ' ;; public) v='file;9.9.9.9 ' ;; empty) v='' ;; *) v='../run/systemd/resolve/stub-resolv.conf;127.0.0.53 ' ;; esac
       else
-        case "$s" in pinned) v='Wi-Fi=172.31.240.250;Ethernet=172.31.240.250;' ;; public) v='Wi-Fi=9.9.9.9;Ethernet=172.31.240.250;' ;;
+        case "$s" in pinned) v='Wi-Fi=172.31.240.250;Ethernet=172.31.240.250;' ;; public) v='Wi-Fi=9.9.9.9;Ethernet=172.31.240.250;' ;; empty) v='' ;;
           *) v="Wi-Fi=There aren't any DNS Servers set on Wi-Fi.;Ethernet=There aren't any DNS Servers set on Ethernet.;" ;; esac
       fi
       printf '%s\t%s\n' "$(( $(date +%s) - (6 - i) * 2 ))" "$v"
@@ -145,7 +154,8 @@ case "$op" in
   uninstall-cell)
     sleep 1
     put installed 0; put mark ""
-    [ "$brk" = dns-not-restored ] || put dns restored
+    if [ "$brk" = restore-elsewhere ] && [ "$plat" = macos ]; then put dns elsewhere
+    elif [ "$brk" != dns-not-restored ]; then put dns restored; fi
     echo "fake uninstall" ;;
   mark-state) put mark "nd-live-${RUN_ID:?}"; printf 'marked\tunbound\n' ;;
   *) echo "fake adapter: unsupported op $op" >&2; exit 2 ;;

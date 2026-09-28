@@ -56,9 +56,12 @@ t_z_dry_run_catches_every_seeded_defect() {
   dr_catches listen-all       il_before il_upgrade
   dr_catches sudoers-extra    il_before il_upgrade
   dr_catches public-sample    il_before il_upgrade
+  dr_catches empty-sample     il_before il_upgrade
   dr_catches marker-lost      il_before il_upgrade il_state
   dr_catches volume-left      il_before il_upgrade il_state il_uninstall
   dr_catches dns-not-restored il_before il_upgrade il_state il_uninstall
+  dr_catches public-on-uninstall il_before il_upgrade il_state il_uninstall
+  dr_catches restore-elsewhere il_before il_upgrade il_state il_uninstall
 }
 
 # ── The gate flow (plan installers, --matrix all; user decisions 2026-09-28) ──
