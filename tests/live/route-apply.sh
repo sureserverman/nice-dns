@@ -11,11 +11,14 @@
 #   install     this checkout's HEAD (`git archive`, target.sh install-cell),
 #               the host's resolver never leaving the stack; the deployment
 #               is checked as in live/install-lifecycle
-#   seeded      the include is cloudflare-exit generation 1, the container
-#               sees the host's directory (the mount), Unbound runs that route
-#               (control-socket readback), probe-route passes (so a Tor
-#               restart's readiness is corroborated through Unbound, DEC-006)
-#               and a fresh name resolves through Pi-hole
+#   seeded      the installer seeded cloudflare-exit (or kept the route a
+#               host already had); what runs then is an identity route,
+#               possibly the controller's first choice (its schedules run
+#               until the quiesce), read by Unbound from the host's
+#               directory (the mount), running as recorded (control-socket
+#               readback); probe-route passes (so a Tor restart's readiness
+#               is corroborated through Unbound, DEC-006) and a fresh name
+#               resolves through Pi-hole
 #   switch      with the controller's schedules quiesced (so it cannot race
 #               the switch), the bundle's apply_route moves to quad9-exit
 #               while cached names are queried through Pi-hole every 250 ms
@@ -41,25 +44,15 @@ ra_report() { il_t "$1" route-report >"$(il_dir "$1")/route-$2.tsv" 2>>"$(il_dir
 ra_val() { awk -F '\t' -v k="$2" '$1 == "section" { on = ($2 == "route"); next } on && $1 == k { print $2; exit }' "$1"; }
 ra_addr() { if [ "$1" = linux ]; then echo 127.0.0.1; else echo 172.31.240.252; fi; }
 
-# ra_check <platform> <report> <route> <generation> <label> [first-tick]
-# With first-tick, desired.tsv may carry a later generation of the same
-# route: the controller's first pass after the install (before the quiesce)
-# selects the seeded route at its own next generation, which apply_route
-# records without a reload (live mint 2026-09-28: desired cloudflare-exit 86,
-# include and readback still generation 1).
+# ra_check <platform> <report> <route> <generation> <label>: after a switch
+# made here, with the controller's schedules quiesced.
 ra_check() {
-  local plat="$1" r="$2" route="$3" gen="$4" l="$5" first="${6:-}" port dg
+  local plat="$1" r="$2" route="$3" gen="$4" l="$5" port
   case "$route" in cloudflare-exit) port=18532 ;; quad9-exit) port=18533 ;; *) port=18531 ;; esac
   assert_eq 755 "$(ra_val "$r" dir_mode)" "$l: the route directory is 0755"
   assert_eq "route=$route generation=$gen" "$(ra_val "$r" include)" "$l: the include selects $route generation $gen"
   assert_match "^$(ra_addr "$plat")@$port#" "$(ra_val "$r" forwarder)" "$l: forwarding to the platform's $route listener"
-  if [ -n "$first" ]; then
-    dg="$(ra_val "$r" desired)"
-    assert_eq "$route" "${dg% *}" "$l: recorded as desired"
-    assert_eq 1 "$(( ${dg##* } >= gen ))" "$l: at the seed's generation or the controller's later one ($dg)"
-  else
-    assert_eq "$route $gen" "$(ra_val "$r" desired)" "$l: recorded as desired"
-  fi
+  assert_eq "$route $gen" "$(ra_val "$r" desired)" "$l: recorded as desired"
   assert_eq yes "$(ra_val "$r" container_sees_host)" "$l: Unbound reads the host's include (the mount)"
   assert_eq "$route $gen $(ra_addr "$plat")" "$(ra_val "$r" readback)" "$l: and runs that route (control-socket readback)"
   assert_eq 0 "$(ra_val "$r" probe_route)" "$l: probe-route resolves over it in a fresh TLS session"
@@ -77,7 +70,11 @@ ra_check_kept() {
   g="$(printf '%s\n' "$inc" | sed -n 's/^route=[a-z0-9-]* generation=\([0-9]*\)$/\1/p')"
   assert_match '^(cloudflare-onion|cloudflare-exit|quad9-exit)$' "$route" "$l: an identity route runs ($inc)"
   assert_eq 1 "$(( g >= gen ))" "$l: at generation $g, not reseeded (the controller's was $gen)"
+  # desired.tsv may be at a later generation of the same route: a same-route
+  # selection is recorded without a reload (live mint 2026-09-28: desired
+  # cloudflare-exit 86 over include generation 1).
   assert_eq "$route" "$(ra_val "$r" desired | cut -d' ' -f1)" "$l: recorded as desired"
+  assert_eq 755 "$(ra_val "$r" dir_mode)" "$l: the route directory is 0755"
   assert_eq "$route $g $(ra_addr "$plat")" "$(ra_val "$r" readback)" "$l: and running"
   assert_eq yes "$(ra_val "$r" container_sees_host)" "$l: through the mount"
   assert_eq 0 "$(ra_val "$r" probe_route)" "$l: probe-route passes"
@@ -111,8 +108,18 @@ ra_cell() {
   il_t "$a" quiesce-agents >"$d/quiesce.tsv" 2>>"$d/ops.log" || fail "$a: quiesce-agents: $(cat "$d/quiesce.tsv")"
   il_report "$a" after-install || fail "lifecycle-report"
   il_check_deployed "$plat" "$d/after-install.tsv" "$proxy"
+  # The installer says whether it seeded (a host without the directory) or
+  # kept the route. The controller's schedules run from the end of the
+  # install until the quiesce, so its first pass may already have moved the
+  # route (live mac 2026-09-28: it applied cloudflare-onion generation 149,
+  # the onion having been healthy for days, 4 s before the quiesce); what
+  # runs is then checked for consistency, not for the seed.
+  r="$(grep -ho "Unbound's route is seeded: [a-z0-9-]*\|Unbound keeps its route" "$d/install-candidate.log" | tail -n 1)"
+  assert_match "^(Unbound's route is seeded: cloudflare-exit|Unbound keeps its route)\$" "$r" "$a: the installer seeded the identity exit route or kept the one there"
+  printf 'install_route\t%s\n' "$r" >>"$d/cell.tsv"
   ra_report "$a" seeded || fail "route-report: $(tail -n 5 "$d/ops.log")"
-  ra_check "$plat" "$d/route-seeded.tsv" cloudflare-exit 1 "$a seeded" first-tick
+  ra_check_kept "$plat" "$d/route-seeded.tsv" 1 "$a after the install"
+  assert_match '^(NOERROR|NXDOMAIN)$' "$(ra_val "$d/route-seeded.tsv" client_fresh)" "$a after the install: a fresh name resolves through Pi-hole"
 
   # The switch, under cached-name load through Pi-hole.
   il_t "$a" collect --workload warm --count 1 --identity "$d/identity.tsv" >/dev/null 2>>"$d/ops.log" || true
