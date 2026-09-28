@@ -38,6 +38,10 @@ TR_BLOCKS="${NICE_DNS_TR_BLOCKS:-5}"
 TR_COLD="${NICE_DNS_TR_COLD:-6}"
 TR_WARM="${NICE_DNS_TR_WARM:-200}"
 TR_PA="$NICE_DNS_ROOT/tests/reports/perf-acceptance.py"
+# NICE_DNS_TR_ROUTE: an identity route the candidate is pinned to for the
+# measurement (applied after the quiesce, so the controller cannot move it);
+# unset, the candidate runs whatever route the deployment holds.
+TR_ROUTE="${NICE_DNS_TR_ROUTE:-}"
 
 tr_proxy() { if [ "$1" = linux ]; then echo haproxy; else echo socat; fi; }
 tr_tag() { if [ "$1" = haproxy ]; then echo v2.13; else echo v2.9; fi; }
@@ -79,6 +83,11 @@ tr_cell() {
   il_report "$a" after-install || fail "lifecycle-report"
   il_check_deployed "$plat" "$d/after-install.tsv" "$proxy"
 
+  if [ -n "$TR_ROUTE" ]; then
+    il_t "$a" route-apply --route "$TR_ROUTE" >"$d/route-pin.tsv" 2>>"$d/ops.log" || fail "$a: route-apply $TR_ROUTE: $(cat "$d/route-pin.tsv")"
+    assert_match '^(applied|unchanged)$' "$(awk -F '\t' '$1 == "result" { print $2 }' "$d/route-pin.tsv")" "$a: the candidate is pinned to $TR_ROUTE"
+  fi
+  printf 'candidate_route_pin\t%s\n' "${TR_ROUTE:-none}" >>"$d/cell.tsv"
   il_t "$a" arm-prepare --component "tor-$proxy" --proxy-tag "$tag" --source-sha "$TR_BASE_SHA" >"$d/arms.tsv" 2>>"$d/ops.log" \
     || fail "$a: arm-prepare: $(tail -n 20 "$d/ops.log")"
   for arm in baseline candidate; do
@@ -100,6 +109,11 @@ tr_cell() {
         || fail "$a: arm-set $arm (block $k): $(tail -n 5 "$d/ops.log")"
       # A primed cached name, then the block: cold names first (fresh), then warm.
       il_t "$a" collect --workload warm --count 1 --identity "$d/identity-$arm.tsv" >/dev/null 2>>"$d/ops.log" || true
+      if [ "$arm" = candidate ]; then
+        il_t "$a" route-report >"$d/blocks/route-$k.tsv" 2>>"$d/ops.log" || true
+        printf 'block\t%s\t%s\n' "$k" "$(awk -F '\t' '$1 == "readback" { print $2 }' "$d/blocks/route-$k.tsv")" >>"$d/candidate-routes.tsv"
+        [ -z "$TR_ROUTE" ] || assert_match "^$TR_ROUTE " "$(awk -F '\t' '$1 == "readback" { print $2 }' "$d/blocks/route-$k.tsv")" "$a: block $k runs the pinned route"
+      fi
       tr_collect "$a" "$arm" cold "$TR_COLD" "$k"
       tr_collect "$a" "$arm" warm "$TR_WARM" "$k"
     done
