@@ -340,3 +340,19 @@ require	stage:installers	OP-OWNED-RESTORE	integration	installers-interaction	t_l
 require	stage:installers	OP-FAILURES-EMPTY	unit	harness-contracts	t_zero_case_group_rejected	tests/unit/harness-contracts.sh
 require	stage:installers	OP-FAILURES-CELL	unit	harness-contracts	t_matrix_each_single_cell_deletion_fails	tests/unit/harness-contracts.sh
 count	stage:installers	5
+require	plan:installers	OP-ADMIN-AUTH-HARDENED-DEFAULT	integration	deployment-security	t_hardened_image_never_serves_an_open_admin	tests/integration/deployment-security.sh
+require	plan:installers	OP-ADMIN-AUTH-IMAGES	integration	deployment-security	t_images_enforce_the_deployment_password	tests/integration/deployment-security.sh
+require	plan:installers	OP-ADMIN-AUTH-KEPT	integration	deployment-security	t_reinstall_keeps_the_credential	tests/integration/deployment-security.sh
+require	plan:installers	OP-ADMIN-AUTH-MAC-AGREE	integration	deployment-security	t_macos_launch_paths_agree	tests/integration/deployment-security.sh
+require	plan:installers	OP-ADMIN-AUTH-PROVISION	integration	deployment-security	t_installers_provision_a_private_credential	tests/integration/deployment-security.sh
+require	plan:installers	OP-ADMIN-AUTH-UNINSTALL	integration	deployment-security	t_uninstall_removes_the_credential	tests/integration/deployment-security.sh
+require	plan:installers	OP-ADMIN-AUTH-UNSAFE	integration	deployment-security	t_unsafe_credential_state_is_refused	tests/integration/deployment-security.sh
+require	plan:installers	OP-ADMIN-AUTH-UNUSABLE	integration	deployment-security	t_images_refuse_an_unusable_secret	tests/integration/deployment-security.sh
+require	plan:installers	OP-BOOTSTRAP	integration	installers-interaction	t_bootstrap_use_is_declared	tests/integration/installers-interaction.sh
+require	plan:installers	OP-LEAST-PRIV	integration	deployment-security	t_images_enforce_the_deployment_password	tests/integration/deployment-security.sh
+require	plan:installers	OP-LISTENERS	integration	deployment-security	t_images_enforce_the_deployment_password	tests/integration/deployment-security.sh
+require	plan:installers	OP-NO-HOST-PUBLIC	integration	installers-interaction	t_no_step_points_the_host_at_public_dns	tests/integration/installers-interaction.sh
+require	plan:installers	OP-OWNED-RESTORE	integration	installers-interaction	t_lifecycle_restores_exactly_what_it_owns	tests/integration/installers-interaction.sh
+require	plan:installers	OP-OWNED-RESTORE-LIFECYCLE	integration	lifecycle-transitions	t_every_transition_keeps_the_instance_state	tests/integration/lifecycle-transitions.sh
+count	plan:installers	14
+owner	plan:installers	installers
