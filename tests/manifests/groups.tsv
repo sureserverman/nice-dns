@@ -45,3 +45,4 @@ live	installers-receipt	tests/live/installers-receipt.sh	live
 integration	route-mount	tests/integration/route-mount.sh	local
 live	route-apply	tests/live/route-apply.sh	live
 unit	performance-acceptance	tests/unit/performance-acceptance.sh	local
+live	tune-resolver	tests/live/tune-resolver.sh	live
