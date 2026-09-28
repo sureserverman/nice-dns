@@ -471,6 +471,22 @@ t_incomplete_dns_restore_is_reported() {
       assert_not_match 'nice-dns uninstalled' "$IP_OUT" "$ep: it does not claim success"
       assert_no_path "$IP_HOME/.local/bin/nice-dns-health" "$ep: the rest of the uninstall still ran"
       assert_file "$(dt_receipt "$plat")" "$ep: the record stays for the retry"
+      # The instance state and the password stay until DNS is given back.
+      assert_eq "" "$(grep -E '^(podman|container) volume rm ' "$FAKE_LOG" || true)" "$ep: no state volume was removed"
+      assert_file "$IP_HOME/.local/state/nice-dns/secrets/pihole/pihole_webpassword" "$ep: the admin password is kept"
+      assert_match 'Tor state, root anchor, Pi-hole lists and admin password' "$IP_OUT" "$ep: and says so"
+      assert_file "$IP_STATE/current" "$ep: the current generation stays named, for a reinstall's rollback"
+      # The retry, with the cause fixed, removes them. Linux: only the
+      # record's copy is put back (restore content is t_helper_snapshot_and_
+      # restore_are_exact's); macOS: the failing service works again.
+      if [ "$plat" = linux ]; then dt_helper linux snapshot >/dev/null 2>&1 || true; cp "$FAKE_ROOT/etc/resolv.conf" "$(dirname "$(dt_receipt linux)")/resolv.conf.orig" 2>/dev/null || true
+      else rm -f "$FAKE/fail"; fi
+      : >"$FAKE_LOG"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep: the retry succeeds: $IP_OUT"
+      assert_match '(podman|container) volume rm ' "$(cat "$FAKE_LOG")" "$ep: the retry removes the state volumes"
+      assert_no_path "$IP_HOME/.local/state/nice-dns/secrets/pihole/pihole_webpassword" "$ep: and the admin password"
+      assert_no_path "$IP_STATE/current" "$ep: and the current-generation marker"
     ) || exit 1
     (
       local plat h

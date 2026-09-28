@@ -1528,7 +1528,6 @@ nd_install_linux_uninstall() {
   local R="$ND_INST_ROOT" ref ep sd dns_ok=1
   ND_INST_TREE="$ND_INST_SRC"
   nd_install_linux_stop_stack
-  _nd_inst_state_remove
   systemctl --user disable --now nice-dns-fetch-bridges.service 2>/dev/null || true
   rm -f "$HOME/.config/systemd/user/nice-dns-fetch-bridges.service" "$HOME/.local/bin/nice-dns-fetch-bridges"
   ep="$(_nd_inst_controller_entry)"
@@ -1558,9 +1557,23 @@ nd_install_linux_uninstall() {
     fi
   fi
   sudo systemctl daemon-reload
+  _nd_inst_uninstall_state "$dns_ok"
+  _nd_inst_uninstall_verdict "$dns_ok"
+}
+
+# _nd_inst_uninstall_state <dns_ok>: the instance state (Tor, root anchor,
+# Pi-hole lists) and the admin password go last, and only once host DNS was
+# given back. An uninstall that stops before that, or whose restore failed,
+# keeps them, so an operator who then reinstalls instead of retrying loses
+# nothing (Stage 2 gate second pass, 2026-09-28). The current-generation
+# marker goes with them: a reinstall reads it as the generation to keep for
+# rollback (nd_install_begin).
+_nd_inst_uninstall_state() {
+  local sd
+  [ "$1" = 1 ] || return 0
+  _nd_inst_state_remove
   _nd_inst_pihole_credential_remove
   sd="$(nd_install_state_dir)" && rm -f "${sd:?}/current"
-  _nd_inst_uninstall_verdict "$dns_ok"
 }
 
 # _nd_inst_uninstall_verdict <dns_ok>: fails the uninstall when host DNS was
@@ -1568,7 +1581,7 @@ nd_install_linux_uninstall() {
 _nd_inst_uninstall_verdict() {
   [ "$1" = 1 ] && return 0
   _nd_inst_err "the stack is removed, but host DNS was NOT given back (see the helper's message above); it may still point at nice-dns, which is gone."
-  _nd_inst_err "Fix the cause and run the uninstall again: the record of the state before nice-dns is kept."
+  _nd_inst_err "Fix the cause and run the uninstall again: the record of the state before nice-dns is kept, and so are the Tor state, root anchor, Pi-hole lists and admin password."
   return 1
 }
 
@@ -2009,12 +2022,10 @@ nd_install_macos_uninstall() {
   local ep sd dns_ok=1
   ND_INST_TREE="$ND_INST_SRC"
   nd_install_macos_teardown uninstall
-  _nd_inst_state_remove
   ep="$(_nd_inst_controller_entry)"
   if [ -n "$ep" ] && [ -f "$ep" ]; then bash "$ep" uninstall || true; fi
   _nd_inst_dns_helper restore || dns_ok=0
-  _nd_inst_pihole_credential_remove
-  sd="$(nd_install_state_dir)" && rm -f "${sd:?}/current"
+  _nd_inst_uninstall_state "$dns_ok"
   _nd_inst_uninstall_verdict "$dns_ok"
 }
 
