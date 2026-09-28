@@ -160,3 +160,26 @@ t_y_rerun_skips_what_is_proven() {
   r="$base/root/receipts/installers/20260101T000300Z-0000000c/receipt.tsv"
   assert_eq 4 "$(awk -F '\t' '$1 == "reuse"' "$r" | grep -c .)" "all four cells are reuse rows"
 }
+
+# The reuse rule (il_same_product): a cell proven at an earlier commit is
+# reused only when nothing it installs changed since. Live 2026-09-28: the
+# first single-cell run refused Task 2.3's cell because a docs commit came
+# after it; the fakes always ran at HEAD and could not see that.
+t_x_reuse_rule_ignores_docs_not_product() {
+  local c="$CASE_DIR/clone" base docs prod
+  git clone -q --no-hardlinks "$NICE_DNS_ROOT" "$c" || fail "clone"
+  git -C "$c" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
+  base="$(git -C "$c" rev-parse HEAD)"
+  printf '\nnote\n' >>"$c/docs/workflows/dns-lifecycle.md"; printf 'note\n' >>"$c/README.md"; printf '# t\n' >>"$c/tests/run.sh"
+  git -C "$c" -c user.name=t -c user.email=t@t commit -qam docs
+  docs="$(git -C "$c" rev-parse HEAD)"
+  ( NICE_DNS_ROOT="$c"; il_same_product "$base" )
+  assert_rc 0 "$?" "a docs, Markdown and tests change keeps the product the same"
+  printf '# t\n' >>"$c/lib/install.sh"
+  git -C "$c" -c user.name=t -c user.email=t@t commit -qam product
+  prod="$(git -C "$c" rev-parse HEAD)"
+  ( NICE_DNS_ROOT="$c"; il_same_product "$docs" )
+  assert_rc 1 "$?" "a change to lib/install.sh is a different product"
+  ( NICE_DNS_ROOT="$c"; il_same_product "$prod" )
+  assert_rc 0 "$?" "HEAD is the same product as itself"
+}
