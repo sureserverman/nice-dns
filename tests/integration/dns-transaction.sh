@@ -552,3 +552,77 @@ t_sudo_keepalive_refreshes_and_stops() {
   assert_eq "$n1" "$n2" "no refresh after it stopped"
   assert_eq 0 "$(ND_INST_SUDO_KEEPALIVE=0 bash -c '. "$1/lib/install.sh"; _nd_inst_sudo_keepalive; echo "${ND_INST_KEEPALIVE_PID:-0}"' _ "$NICE_DNS_ROOT")" "0 disables it"
 }
+
+# Live finding 2026-09-28 (mint): an older installer had pinned the Wi-Fi
+# profile to 127.0.0.1 with automatic DNS ignored and never recorded it, so a
+# legacy uninstall left the host without DNS. The helper now records those
+# pins on a legacy host and gives them automatic DNS back; an unrelated
+# profile, a fresh host's profile and a pin changed since are left alone.
+dt_nm_profile() { mkdir -p "$FAKE_ROOT/.nm/$1"; printf '%s\n' "$2" >"$FAKE_ROOT/.nm/$1/dns"; printf '%s\n' "$3" >"$FAKE_ROOT/.nm/$1/ignore"; printf '%s' "$4" >"$FAKE_ROOT/.nm/$1/device"; }
+dt_nm_state() { local p; for p in "$FAKE_ROOT"/.nm/*; do printf '%s dns=%s ignore=%s\n' "${p##*/}" "$(cat "$p/dns")" "$(cat "$p/ignore")"; done; }
+t_legacy_profile_pins_get_automatic_dns_back() {
+  (
+    dt_world install-deb legacy
+    dt_nm_profile wifi-1 127.0.0.1 yes wlp1
+    dt_nm_profile vpn-2 10.8.0.1 yes tun0
+    dt_nm_profile eth-3 '' no ''
+    # Listed after the pin, as on mint (Tier-1 review: a last profile that is
+    # not a pin must not end the snapshot).
+    dt_nm_profile zt-4 '' no zt0
+    ip_install install-deb socat
+    assert_rc 0 "$IP_RC" "legacy upgrade: $IP_OUT"
+    assert_match "$(printf 'nm_pin\twifi-1')" "$(cat "$(dt_receipt linux)")" "the record names the legacy profile pin"
+    assert_not_match 'nm_pin.(vpn-2|eth-3)' "$(cat "$(dt_receipt linux)")" "and only it"
+    : >"$FAKE_LOG"
+    ip_install install-deb uninstall
+    assert_rc 0 "$IP_RC" "uninstall: $IP_OUT"
+    assert_eq "$(printf 'eth-3 dns= ignore=no\nvpn-2 dns=10.8.0.1 ignore=yes\nwifi-1 dns= ignore=no\nzt-4 dns= ignore=no')" "$(dt_nm_state)" "the pinned profile uses automatic DNS again; the others are as they were"
+    assert_eq 1 "$(( $(ip_last "$FAKE_LOG" '^nmcli con mod ') < $(ip_first "$FAKE_LOG" '^systemctl reload NetworkManager') ))" "the profile is reset before NetworkManager is reloaded"
+    assert_match '^nmcli dev reapply wlp1$' "$(cat "$FAKE_LOG")" "and is reapplied on its device"
+    assert_eq 1 "$(grep -c '^nmcli con mod ' "$FAKE_LOG")" "one profile changed"
+  ) || exit 1
+  (
+    dt_world install-deb resolved
+    dt_nm_profile own-1 127.0.0.1 yes eth0
+    ip_install install-deb socat
+    assert_rc 0 "$IP_RC" "fresh install: $IP_OUT"
+    assert_not_match 'nm_pin' "$(cat "$(dt_receipt linux)")" "a fresh host's profile is not claimed"
+    ip_install install-deb uninstall
+    assert_eq 'own-1 dns=127.0.0.1 ignore=yes' "$(dt_nm_state)" "and uninstall leaves it alone"
+  ) || exit 1
+  (
+    dt_world install-deb legacy
+    dt_nm_profile wifi-1 127.0.0.1 yes wlp1
+    ip_install install-deb socat
+    printf '9.9.9.9\n' >"$FAKE_ROOT/.nm/wifi-1/dns"
+    ip_install install-deb uninstall
+    assert_rc 0 "$IP_RC" "uninstall: $IP_OUT"
+    assert_eq 'wifi-1 dns=9.9.9.9 ignore=yes' "$(dt_nm_state)" "a pin another owner changed since is left alone"
+    assert_match 'changed since the record' "$IP_OUT" "and says so"
+  ) || exit 1
+  (
+    dt_world install-deb legacy
+    dt_nm_profile wifi-1 127.0.0.1 yes wlp1
+    dt_helper linux restore
+    assert_rc 0 "$DT_RC" "a legacy restore with no record: $DT_OUT"
+    assert_eq 'wifi-1 dns= ignore=no' "$(dt_nm_state)" "finds the pin as it is now and resets it"
+  ) || exit 1
+}
+
+t_a_profile_that_cannot_be_reset_fails_the_restore() {
+  (
+    dt_world install-deb legacy
+    dt_nm_profile wifi-1 127.0.0.1 yes wlp1
+    ip_install install-deb socat
+    assert_rc 0 "$IP_RC" "legacy upgrade: $IP_OUT"
+    printf '^nmcli con mod \n' >"$FAKE/fail"
+    ip_install install-deb uninstall
+    assert_nonzero "$IP_RC" "the uninstall reports it: $IP_OUT"
+    assert_match 'still points at 127\.0\.0\.1' "$IP_OUT" "names the profile problem"
+    assert_file "$(dt_receipt linux)" "and keeps the record for a retry"
+    rm -f "$FAKE/fail"
+    dt_helper linux restore
+    assert_rc 0 "$DT_RC" "the retry: $DT_OUT"
+    assert_eq 'wifi-1 dns= ignore=no' "$(dt_nm_state)" "resets the profile"
+  ) || exit 1
+}

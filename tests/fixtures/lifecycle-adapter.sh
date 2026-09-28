@@ -47,6 +47,8 @@ report() {
     done
     printf 'section\tagents\n'
   fi
+  printf 'section\tresolution\n'
+  if { [ "$dns" = pinned ] && [ "$inst" != 0 ]; } || [ "$dns" = restored ]; then printf 'resolves\tyes\n'; else printf 'resolves\tno\n'; fi
   printf 'section\tgeneration\n'
   if [ "$inst" = 1 ]; then
     printf 'current\tgen-%s\n' "$gen"
@@ -75,7 +77,8 @@ report() {
     printf 'tor_marker\ttor-%s\t%s\ntor_state_file\ttor-%s\tpresent\n' "$proxy" "$m" "$proxy"
     printf 'anchor_marker\t%s\nanchor_file\tpresent\n' "$m"
     printf 'lists_seed\tseed%s\tseed%s\n' "$gen" "$gen"
-    printf 'lists_marker_rules\t%s\n' "$([ -n "$m" ] && echo "$m.example")"
+    # Pi-hole stores domains in lower case, as the real report shows.
+    printf 'lists_marker_rules\t%s\n' "$([ -n "$m" ] && echo "$m.example" | tr '[:upper:]' '[:lower:]')"
   fi
   printf 'section\tadmin\n'
   if [ "$inst" = 1 ]; then

@@ -18,7 +18,11 @@
 #
 # Only these are owned: /etc/resolv.conf, systemd-resolved's enabled and
 # active state, the ipv6 sysctl runtime values, and the nice-dns-named files
-# in OWNED_FILES. VPN and other network configuration are never touched.
+# in OWNED_FILES; on a host an older installer set up (origin legacy), also
+# the NetworkManager connection profiles it pinned: ipv4 DNS exactly
+# 127.0.0.1 with automatic DNS ignored (user decision 2026-09-28, after mint
+# was left without DNS by an uninstall that kept them). VPN and other network
+# configuration are never touched.
 # The record lives in a root-only directory; it is data, never sourced.
 #
 # ND_DNS_TEST_ROOT prefixes every path for the fixture tests. It is honoured
@@ -66,6 +70,50 @@ unit_state() { # <is-enabled|is-active> <unit>: the value, or 'absent'
   if ! systemctl cat "$2" >/dev/null 2>&1; then echo absent; return 0; fi
   v="$(systemctl "$1" "$2" 2>/dev/null || true)"
   echo "${v:-unknown}"
+}
+
+# nm_pinned_profiles: UUIDs of the connection profiles pinned the way older
+# nice-dns installers pinned them: ipv4 DNS exactly 127.0.0.1, automatic DNS
+# ignored. Nothing when NetworkManager's CLI is absent.
+nm_pinned_profiles() {
+  command -v nmcli >/dev/null 2>&1 || return 0
+  local u
+  # No statement here may end non-zero: under set -e and pipefail a caller's
+  # pipeline would abort (Tier-1 review: a last profile that is not a pin
+  # ended the loop with 1 and killed the snapshot before its record).
+  { nmcli -t -f UUID con show 2>/dev/null || true; } | while IFS= read -r u; do
+    [[ -n $u ]] || continue
+    if [[ "$(nmcli -g ipv4.dns,ipv4.ignore-auto-dns con show "$u" 2>/dev/null | tr '\n' ' ')" == "127.0.0.1 yes " ]]; then
+      printf '%s\n' "$u"
+    fi
+  done
+  return 0
+}
+
+# nm_unpin_legacy <uuid...>: each profile still pinned as recorded goes back
+# to automatic DNS and is reapplied on its device; one changed since by
+# another owner is left alone. Exit 1 when a profile could not be reset.
+nm_unpin_legacy() {
+  local u dev d still rc=0
+  still="$(nm_pinned_profiles)"
+  for u in "$@"; do
+    if ! printf '%s\n' "$still" | grep -Fxq "$u"; then
+      echo "custom-dns-deb: NetworkManager profile $u changed since the record; leaving it as it is" >&2
+      continue
+    fi
+    if nmcli con mod "$u" ipv4.dns "" ipv4.ignore-auto-dns no >/dev/null 2>&1; then
+      echo "custom-dns-deb: NetworkManager profile $u uses automatic DNS again"
+      dev="$(nmcli -g GENERAL.DEVICES con show "$u" 2>/dev/null || true)"
+      # A bond or team lists several devices.
+      for d in ${dev//,/ }; do
+        nmcli dev reapply "$d" >/dev/null 2>&1 || echo "custom-dns-deb: could not reapply $d; reconnect it to use the new DNS" >&2
+      done
+    else
+      echo "custom-dns-deb: could not reset NetworkManager profile $u to automatic DNS" >&2
+      rc=1
+    fi
+  done
+  return "$rc"
 }
 
 cmd_pin() {
@@ -134,6 +182,9 @@ cmd_snapshot() {
       v="$(sysctl -n "$k" 2>/dev/null || echo -)"
       printf 'sysctl\t%s\t%s\n' "$k" "$v"
     done
+    if [[ $origin == legacy ]]; then
+      nm_pinned_profiles | while IFS= read -r v; do printf 'nm_pin\t%s\n' "$v"; done
+    fi
   } >"$tmp"
   if [[ -f $RESOLV && ! -L $RESOLV ]]; then
     cp "$RESOLV" "$RECEIPT_DIR/resolv.conf.orig"
@@ -219,8 +270,23 @@ cmd_restore() {
       systemctl enable --now systemd-resolved >/dev/null 2>&1 || true
     fi
   fi
+  # 4) An older installer's profile pins (legacy only): from the record, or,
+  #    with no record at all, as found now (an install from before records,
+  #    whose pins are nice-dns's by the same signature). Before the
+  #    NetworkManager reload, so NetworkManager never takes resolv.conf back
+  #    while a stale pin is still in place.
+  local pins="" nm_ok=1
+  if [[ $origin == legacy ]]; then
+    if receipt_ok; then pins="$(awk -F '\t' '$1 == "nm_pin" { print $2 }' "$RECEIPT")"; else pins="$(nm_pinned_profiles)"; fi
+    # shellcheck disable=SC2086  # UUIDs, one word each
+    if [[ -n $pins ]]; then nm_unpin_legacy $pins || nm_ok=0; fi
+  fi
   if (( nm )) && systemctl is-active --quiet NetworkManager 2>/dev/null; then
     systemctl reload NetworkManager >/dev/null 2>&1 || true
+  fi
+  if (( ! nm_ok )); then
+    echo "custom-dns-deb: a NetworkManager profile still points at 127.0.0.1 (see above); the record is kept: fix it and run the restore again" >&2
+    exit 1
   fi
   rm -f "${RECEIPT_DIR:?}/receipt.tsv" "${RECEIPT_DIR:?}/resolv.conf.orig"
   rmdir "$RECEIPT_DIR" 2>/dev/null || true

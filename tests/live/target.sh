@@ -723,6 +723,11 @@ case "$NICE_DNS_OP" in
       identity
       printf 'now\t%s\n' "$(date +%s)"
       printf 'section\tdns\n'; dns_owner
+      # Through the host's own resolver, the health probes' controlled name.
+      printf 'section\tresolution\n'
+      if [ "$plat" = macos ]; then
+        if dscacheutil -q host -a name cloudflare.com 2>/dev/null | grep -q '^ip_address'; then printf 'resolves\tyes\n'; else printf 'resolves\tno\n'; fi
+      elif getent ahostsv4 cloudflare.com >/dev/null 2>&1; then printf 'resolves\tyes\n'; else printf 'resolves\tno\n'; fi
       printf 'section\tgeneration\n'
       g=$(cat "$sd/current" 2>/dev/null)
       printf 'current\t%s\n' "${g:-none}"

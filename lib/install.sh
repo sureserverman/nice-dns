@@ -868,6 +868,16 @@ _nd_inst_rollback() {
   trap '' INT TERM HUP
   _nd_inst_manifest_row "$ND_INST_MANIFEST" status rolling-back
   if [ "$ND_INST_PLATFORM" = linux ]; then _nd_inst_linux_stop_new; else _nd_inst_macos_stop_new; fi
+  # The runtime may be down (a failed restart in nd_install_macos_fresh_datapath).
+  if [ "$ND_INST_PLATFORM" = macos ] && ! "$CONTAINER_BIN" system status >/dev/null 2>&1; then
+    { yes 2>/dev/null || true; } | "$CONTAINER_BIN" system start >/dev/null 2>&1 || true
+    local up=0 i=0
+    while [ "$i" -lt 10 ]; do
+      if "$CONTAINER_BIN" system status >/dev/null 2>&1; then up=1; break; fi
+      i=$((i + 1)); sleep 4
+    done
+    [ "$up" = 1 ] || echo "! The container runtime did not start again; run 'container system start'." >&2
+  fi
   if [ "$ND_INST_HAD_DEPLOY" = 0 ]; then
     # A first install: give back the DNS state recorded before it, or drop
     # the unused record when nothing was pinned.
@@ -1975,6 +1985,7 @@ nd_install_macos_activate() {
   nd_install_macos_build_images
   nd_install_macos_activate_images
   nd_install_macos_state_volumes
+  nd_install_macos_fresh_datapath
   nd_install_macos_run_stack
   nd_install_wait_ready
   # persist.sh installs the controller, runs the installed copy's self-check
@@ -2066,6 +2077,31 @@ nd_install_macos_build_images() {
   # Builder VM isn't needed once images are built; reclaim ~2 GB RAM. It will
   # auto-start again on the next `container build`.
   "$CONTAINER_BIN" builder stop >/dev/null 2>&1 || true
+}
+
+# nd_install_macos_fresh_datapath: the stack starts on a freshly started
+# runtime. The builds (buildkit) and the volume hand-over ran containers on
+# the default network, and Apple's runtime cannot carry two vmnet networks at
+# once: the dnsnet containers then come up with their vmenet interfaces down
+# (live, 2026-09-28 mac upgrade: vmenet3-5 down, the readiness wait ran out
+# and the install rolled back). Recreating containers does not heal it; a
+# runtime restart does (mac/start-container.sh restart_container_runtime),
+# and during an install no agent is loaded to do it.
+nd_install_macos_fresh_datapath() {
+  local tries=0
+  "$CONTAINER_BIN" builder stop >/dev/null 2>&1 || true
+  "$CONTAINER_BIN" system stop >/dev/null 2>&1 || true
+  sleep 8
+  # `yes` answers system start's first-run prompts, as in
+  # nd_install_macos_host_prereqs; the agent's copy runs after an install,
+  # when there is nothing left to answer.
+  { yes 2>/dev/null || true; } | "$CONTAINER_BIN" system start >/dev/null || { _nd_inst_err "the container runtime did not start again"; return 1; }
+  until "$CONTAINER_BIN" system status >/dev/null 2>&1; do
+    tries=$((tries + 1))
+    [ "$tries" -lt 10 ] || { _nd_inst_err "the container runtime is not up after its restart"; return 1; }
+    sleep 4
+  done
+  echo "  • Container runtime restarted, so the stack starts on a fresh network datapath."
 }
 
 # nd_install_macos_activate_images: points :latest at this generation.

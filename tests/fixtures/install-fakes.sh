@@ -275,6 +275,19 @@ case "$me" in
       esac
     fi
     exit 0 ;;
+  nmcli)
+    # With profiles in $FAKE_ROOT/.nm/<uuid>/{dns,ignore,device} (a test made
+    # them), the connection-profile calls the DNS helper makes are stateful.
+    if [ -n "${FAKE_ROOT:-}" ] && [ -d "$FAKE_ROOT/.nm" ]; then
+      nm="$FAKE_ROOT/.nm"
+      case "$*" in
+        "-t -f UUID con show") ls "$nm"; exit 0 ;;
+        "-g ipv4.dns,ipv4.ignore-auto-dns con show "*) u="${*##* }"; [ -d "$nm/$u" ] || exit 10; cat "$nm/$u/dns" "$nm/$u/ignore"; exit 0 ;;
+        "-g GENERAL.DEVICES con show "*) u="${*##* }"; cat "$nm/$u/device" 2>/dev/null; exit 0 ;;
+        "con mod "*" ipv4.dns  ipv4.ignore-auto-dns no") u="$3"; [ -d "$nm/$u" ] || exit 10; : >"$nm/$u/dns"; printf 'no\n' >"$nm/$u/ignore"; exit 0 ;;
+      esac
+    fi
+    exit 0 ;;
   cosign) [ -f "$FAKE/cosign_fail" ] && exit 1; exit 0 ;;
   dpkg) exit 1 ;;
   sysctl)

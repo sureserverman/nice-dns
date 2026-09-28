@@ -151,6 +151,7 @@ il_watch_pinned() {
 il_check_deployed() {
   local plat="$1" r="$2" proxy="$3" c role img want got v
   assert_ne none "$(il_val "$r" generation current)" "a generation is current"
+  assert_eq yes "$(il_val "$r" resolution resolves)" "the host resolves through the stack"
   for c in pi-hole unbound "tor-$proxy"; do
     case "$c" in tor-*) role=proxy ;; *) role="$c" ;; esac
     img="$(il_val3 "$r" running running "$c")"
@@ -203,7 +204,11 @@ il_before() {
   il_t "$a" snapshot >>"$d/ops.log" 2>&1 || fail "snapshot $a"
   il_report "$a" before || fail "lifecycle-report $a: $(tail -n 5 "$d/ops.log")"
   proxy="$(il_proxy "$d/before.tsv")"
-  assert_match '^(haproxy|socat)$' "$proxy" "$a runs a proxy now"
+  if [ -z "$proxy" ]; then
+    # Nothing installed (e.g. after an uninstall): --proxies names the cell.
+    case "${NICE_DNS_OPT_PROXIES:-}" in haproxy|socat) proxy="$NICE_DNS_OPT_PROXIES" ;; esac
+  fi
+  assert_match '^(haproxy|socat)$' "$proxy" "$a runs a proxy now, or --proxies names one"
   printf 'cell\t%s/%s/standard\nproxy\t%s\nsource_sha\t%s\nadapter\t%s\n' "$plat" "$proxy" "$proxy" "$(il_sha)" \
     "$( [ -n "${NICE_DNS_TARGET_ADAPTER:-}" ] && echo fake || echo real)" >"$d/cell.tsv"
 }
@@ -212,7 +217,10 @@ il_upgrade() {
   local plat="$1" a="$2" d
   d="$(il_dir "$a")"
   il_install "$a" upgrade install || fail "the install over the legacy deployment failed: $(tail -n 20 "$d/install-upgrade.log")"
-  il_watch_pinned "$plat" "$d/watch-upgrade.tsv" all
+  # Over a running deployment the resolver never leaves the stack; over none,
+  # once pinned it stays pinned.
+  if [ -n "$(il_proxy "$d/before.tsv")" ]; then il_watch_pinned "$plat" "$d/watch-upgrade.tsv" all
+  else il_watch_pinned "$plat" "$d/watch-upgrade.tsv" after-first; fi
   il_report "$a" after-upgrade || fail "lifecycle-report"
   il_check_deployed "$plat" "$d/after-upgrade.tsv" "$(il_cell "$a" proxy)"
   assert_eq "" "$(comm -23 <(il_unowned_agents "$d/before.tsv") <(il_agents "$d/after-upgrade.tsv"))" "no schedule nice-dns does not own was removed"
@@ -233,7 +241,9 @@ il_state() {
   assert_ne "$(il_val "$d/after-upgrade.tsv" generation current)" "$(il_val "$r" generation current)" "the reinstall made a new generation"
   assert_eq "$m" "$(il_val "$r" state anchor_marker)" "the anchor state survived the reinstall"
   assert_eq "$m" "$(il_val3 "$r" state tor_marker "tor-$(il_cell "$a" proxy)")" "the Tor state survived the reinstall"
-  assert_match "$m\\.example" "$(il_val "$r" state lists_marker_rules)" "the operator's allow rule survived the reinstall"
+  # Pi-hole stores domains in lower case (live, 2026-09-28: the run id's T and
+  # Z came back as t and z).
+  assert_match "$(printf '%s' "$m" | tr '[:upper:]' '[:lower:]')\\.example" "$(il_val "$r" state lists_marker_rules)" "the operator's allow rule survived the reinstall"
 }
 
 il_uninstall() {
@@ -242,6 +252,7 @@ il_uninstall() {
   il_install "$a" uninstall uninstall || fail "the uninstall failed: $(tail -n 20 "$d/install-uninstall.log")"
   il_report "$a" after-uninstall || fail "lifecycle-report"
   r="$d/after-uninstall.tsv"
+  assert_eq yes "$(il_val "$r" resolution resolves)" "the host resolves after the uninstall (live 2026-09-28: mint did not)"
   assert_eq "" "$(il_sec "$r" volumes)" "no nice-dns volume is left"
   assert_eq "" "$(il_val "$r" admin admin_secret_mode)" "the admin password is gone"
   assert_eq "" "$(il_sec "$r" running | awk -F '\t' '$1 == "running"')" "no stack container runs"

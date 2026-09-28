@@ -222,6 +222,13 @@ t_macos_launch_paths_mount_the_instance_state() {
         assert_ne "" "$ini" "$ep: and handed to the image's user"
         assert_eq 1 "$(( cre < ini && ini < run ))" "$ep: before the stack starts (lines $cre, $ini, $run)"
       done
+      # Live 2026-09-28: containers on the default network (buildkit, the
+      # volume hand-over) wedge dnsnet; the stack starts on a restarted runtime.
+      ini="$(ip_last "$FAKE_LOG" '^container run --rm --user 0 ')"
+      cre="$(ip_last "$FAKE_LOG" '^container system stop$')"
+      run="$(ip_last "$FAKE_LOG" '^container system start$')"
+      assert_ne "" "$cre" "$ep: the runtime is stopped"
+      assert_eq 1 "$(( ini < cre && cre < run && run < $(ip_first "$FAKE_LOG" '^container network create ') ))" "$ep: after the last default-network container and before dnsnet and the stack (lines $ini, $cre, $run)"
       assert_match "^container run --rm --user 0 -v nice-dns-unbound-anchor:/mnt .*chown unbound:unbound /mnt" "$(cat "$FAKE_LOG")" "$ep: the anchor volume belongs to unbound"
       assert_match "^container run --rm --user 0 -v nice-dns-pihole-lists:/mnt .*chown pihole:pihole /mnt" "$(cat "$FAKE_LOG")" "$ep: the lists volume belongs to pihole"
     ) || exit 1
