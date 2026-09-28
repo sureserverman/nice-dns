@@ -309,7 +309,7 @@ STUB
   if [ "$plat" = linux ]; then
     for s in podman crun; do ln -s fakecmd "$b/$s"; done
   else
-    for s in container brew softwareupdate sw_vers networksetup launchctl ifconfig; do ln -s fakecmd "$b/$s"; done
+    for s in container brew softwareupdate sw_vers networksetup launchctl ifconfig dscacheutil killall; do ln -s fakecmd "$b/$s"; done
   fi
   for s in $IP_TOOLS; do [ -e "$b/$s" ] || ln -s "$(type -P "$s")" "$b/$s"; done
 }

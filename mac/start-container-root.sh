@@ -61,6 +61,15 @@ set_local_dns() {
   done
 }
 
+# flush_dns_cache: after the host resolver changes, drop what macOS cached
+# while the stack was down. Live, 2026-09-28 (mac, haproxy reinstall): the
+# stack answered github.com again at once, but getaddrinfo (mDNSResponder)
+# kept failing it for 80 s, until this flush fixed it on the spot.
+flush_dns_cache() {
+  dscacheutil -flushcache 2>/dev/null || true
+  killall -HUP mDNSResponder 2>/dev/null || true
+}
+
 # dns_of <service>: its DNS servers, space-separated, or Empty.
 dns_of() {
   local out
@@ -182,6 +191,8 @@ cmd_restore() {
       failed=1
     fi
   done < <(services)
+  # A partial restore changed some services too.
+  flush_dns_cache
   if (( failed )); then
     echo "the restore did not complete; the record is kept: run it again" >&2
     return 1
@@ -218,6 +229,7 @@ case "${1:-}" in
       launchctl bootstrap system "$MULLVAD_PLIST" 2>/dev/null || true
     fi
     set_local_dns
+    flush_dns_cache
     ;;
   snapshot) cmd_snapshot ;;
   check) cmd_check ;;

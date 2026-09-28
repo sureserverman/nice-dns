@@ -51,6 +51,40 @@ t_helper_snapshot_and_restore_are_exact() {
   done
 }
 
+# macOS keeps what it cached while the stack was down (live 2026-09-28:
+# getaddrinfo failed github.com for 80 s after the stack answered it), so
+# every change of the host resolver ends with a cache flush.
+t_helper_flushes_the_macos_cache_after_each_change() {
+  dt_select_platforms
+  case " $DT_PLATS " in *" macos "*) ;; *) echo "macos not selected (--platforms)"; return 0 ;; esac
+  (
+    local set flush v
+    dt_world "$(dt_ep_of macos)" fresh
+    # post; restore; then a restore that fails on one service after it
+    # changed another (the record stays; the changed service is flushed too).
+    for v in post restore post partial-restore; do
+      : >"$FAKE_LOG"
+      if [ "$v" = partial-restore ]; then
+        printf '^networksetup -setdnsservers Ethernet\n' >"$FAKE/fail"
+        dt_helper macos restore
+        rm -f "$FAKE/fail"
+        assert_nonzero "$DT_RC" "the partial restore fails: $DT_OUT"
+      else
+        # The record is taken before a pin (a second snapshot keeps it).
+        [ "$v" = post ] && dt_helper macos snapshot
+        dt_helper macos "$v"
+        assert_rc 0 "$DT_RC" "$v: $DT_OUT"
+      fi
+      set="$(ip_last "$FAKE_LOG" '^networksetup -setdnsservers ')"
+      flush="$(ip_first "$FAKE_LOG" '^dscacheutil -flushcache$')"
+      assert_ne "" "$set" "$v changes the resolver"
+      assert_ne "" "$flush" "$v flushes the directory service cache: $(cat "$FAKE_LOG")"
+      assert_eq 1 "$((flush > set))" "$v flushes after its last change"
+      assert_ne "" "$(ip_first "$FAKE_LOG" '^killall -HUP mDNSResponder$')" "$v resets mDNSResponder"
+    done
+  ) || exit 1
+}
+
 t_helper_refuses_external_changes() {
   local plat
   dt_select_platforms
