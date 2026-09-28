@@ -555,3 +555,91 @@ t_stale_answers_are_reported_unmeasured() {
   pa_compare
   assert_match '^unmeasured	stale	' "$PA_OUT" "comparison repeats it; stale is never silently green"
 }
+
+# ─────────────── DEC-012: cells without a baseline arm ───────────────
+# Every cell is held to the frozen limits from its candidate samples alone
+# (`check`); the improvement comes from an interleaved `compare` on one
+# representative cell per platform. idle and wake have no frozen limit, so a
+# `check` reports them unbaselined (measured, not gated).
+
+pa_check() {
+  PA_OUT="$(python3 "$PA_TOOL" check --manifest "${PA_USE_M:-$PA_M}" --bl-targets "$PA_BL" \
+    --cell "$PA_CELL" --candidate "$PA_C" 2>&1)"
+  PA_RC=$?
+}
+
+t_check_holds_a_cell_to_its_frozen_limits() {
+  pa_setup linux/socat/standard
+  pa_cell_data
+  pa_check
+  assert_rc 0 "$PA_RC" "a clean candidate passes its frozen limits: $PA_OUT"
+  assert_eq pass "$(pa_verdict cold)" "cold"
+  assert_eq pass "$(pa_verdict warm)" "warm"
+  assert_eq unbaselined "$(pa_verdict idle)" "idle has no frozen limit"
+  assert_eq unbaselined "$(pa_verdict wake)" "nor has wake"
+  assert_eq "0/30" "$(pa_field cold timeout_limit)" "the frozen limit is applied"
+  assert_eq pass "$(pa_cell_verdict)" "cell"
+  assert_eq none "$(pa_cell_improved)" "a check never claims an improvement"
+  assert_not_match '^arm	baseline' "$PA_OUT" "no baseline arm is read"
+  pa_setup linux/socat/standard
+  PA_COLD_C="$(pa_seq 29 200000 10000; printf 'TO\n')" pa_cell_data
+  pa_check
+  assert_eq 1 "$PA_RC" "one timeout over a frozen zero fails: $PA_OUT"
+  assert_eq fail "$(pa_verdict cold)" "cold fails"
+  assert_eq fail "$(pa_cell_verdict)" "and the cell"
+  pa_setup linux/socat/standard
+  PA_WARM_C="$(pa_seq 1000 31000 1)" pa_cell_data
+  pa_check
+  assert_eq 1 "$PA_RC" "a warm p95 over the frozen platform target fails: $PA_OUT"
+  assert_eq fail "$(pa_field warm target)" "target check"
+  # The timeout limit on its own: macos/socat/standard warm froze 1 failure
+  # and 0 timeouts in 1000, so one timeout is within the failure limit and
+  # over the timeout limit (a timeout also counts as a failure elsewhere).
+  pa_setup macos/socat/standard
+  PA_WARM_C="$(pa_seq 999 3000 1; printf 'TO\n')" pa_cell_data
+  pa_check
+  assert_eq 1 "$PA_RC" "one warm timeout over a frozen zero fails: $PA_OUT"
+  assert_eq pass "$(pa_field warm failure)" "within the frozen 1/1000 failures"
+  assert_eq fail "$(pa_field warm timeout)" "over the frozen 0/1000 timeouts"
+}
+
+t_check_below_budget_is_insufficient() {
+  pa_setup linux/socat/standard
+  PA_COLD_C="$(pa_seq 20 200000 10000)" pa_cell_data
+  pa_check
+  assert_eq 1 "$PA_RC" "never green below the budget: $PA_OUT"
+  assert_eq insufficient "$(pa_verdict cold)" "cold"
+  assert_eq insufficient "$(pa_cell_verdict)" "cell"
+  pa_setup linux/socat/standard
+  PA_COLD_C=NONE pa_cell_data
+  pa_check
+  assert_eq blocked "$(pa_verdict cold)" "no cold rows at all is blocked: $PA_OUT"
+}
+
+t_platform_of_checks_needs_one_interleaved_improvement() {
+  local c out n=0
+  for c in linux/haproxy/hardened linux/socat/standard linux/socat/hardened; do
+    n=$((n + 1))
+    pa_setup "$c"
+    pa_cell_data
+    pa_check
+    assert_rc 0 "$PA_RC" "$c check: $PA_OUT"
+    printf '%s\n' "$PA_OUT" >"$CASE_DIR/c$n.tsv"
+  done
+  pa_setup linux/haproxy/standard
+  PA_COLD_C="$(pa_seq 30 400000 10000)" pa_cell_data
+  pa_check
+  printf '%s\n' "$PA_OUT" >"$CASE_DIR/c-check.tsv"
+  pa_setup linux/haproxy/standard
+  PA_COLD_B="$(pa_cold_unfavorable)" PA_COLD_C="$(pa_seq 30 400000 10000)" pa_cell_data
+  pa_compare
+  printf '%s\n' "$PA_OUT" >"$CASE_DIR/c-better.tsv"
+  out="$(python3 "$PA_TOOL" summarize --manifest "$PA_M" --bl-targets "$PA_BL" --platform linux \
+    "$CASE_DIR"/c1.tsv "$CASE_DIR"/c2.tsv "$CASE_DIR"/c3.tsv "$CASE_DIR"/c-check.tsv 2>&1)"
+  assert_eq 1 $? "checks alone prove no improvement: $out"
+  assert_match '^platform	linux	fail	.*no problem class' "$out" "the platform fails for want of one"
+  out="$(python3 "$PA_TOOL" summarize --manifest "$PA_M" --bl-targets "$PA_BL" --platform linux \
+    "$CASE_DIR"/c1.tsv "$CASE_DIR"/c2.tsv "$CASE_DIR"/c3.tsv "$CASE_DIR"/c-better.tsv 2>&1)"
+  assert_eq 0 $? "three checks and one interleaved improvement: $out"
+  assert_match '^platform	linux	pass	.*improved=linux/haproxy/standard:cold' "$out" "the platform passes"
+}

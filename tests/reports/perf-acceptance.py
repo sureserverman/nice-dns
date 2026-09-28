@@ -677,6 +677,94 @@ def compare(m, cell, base, cand):
     return "\n".join(out) + "\n", cell_v == "pass"
 
 
+# ─────────────────────────── check (DEC-012) ───────────────────────────
+
+
+def check(m, cell, cand):
+    """One cell from its candidate samples alone, against the frozen limits.
+
+    DEC-012: every cell is held to no regression against the frozen receipt;
+    the improvement is proven by `compare` on one representative cell per
+    platform. A workload without a frozen limit (idle, wake) is reported
+    `unbaselined`: measured, never gated here, never a pass either.
+    """
+    if cell not in m["cells"]:
+        refuse("cell %s is not in the manifest" % cell)
+    C = load_arm(cand, "candidate", cell)
+    platform = cell.split("/")[0]
+    out = ["# schema\t%s" % RESULT_SCHEMA,
+           "provenance\tbaseline_receipt=%s\tbl_targets_sha256=%s\tmanifest_sha256=%s"
+           % (m["prov"]["baseline_receipt"], m["prov"]["bl_targets_sha256"], m["sha256"]),
+           "mode\tcheck\tfrozen limits only (DEC-012); no baseline arm, no improvement claim",
+           "arm\tcandidate\trun_id=%s\tsource_rev=%s\timages=%s\ttarget_id=%s\tsamples=%d\tfile=%s"
+           % (C["run_id"], C["source_rev"], C["images"], C["target_id"], len(C["rows"]),
+              os.path.basename(C["path"]))]
+    known = {w for w, _, _ in m["workloads"]}
+    verdicts = []
+    for w, cls, kind in m["workloads"]:
+        c = [r for r in C["rows"] if r["workload"] == w]
+        bad = sorted({r["cache_class"] for r in c} - {cls})
+        if bad:
+            refuse("workload %s: candidate arm has cache_class %s where the manifest has %s; "
+                   "classes are never pooled" % (w, ",".join(bad), cls))
+    for w, cls, kind in m["workloads"]:
+        c = [r for r in C["rows"] if r["workload"] == w]
+        lim = m["limits"][(cell, w)]
+        budget = int(lim["budget"])
+        f = {"class": cls, "source": lim["source"], "n_cand": str(len(c)), "budget": str(budget)}
+        reason = []
+        if not c:
+            verdict = "blocked"
+            reason.append("no candidate rows for %s" % w)
+        else:
+            tc = sum(r["outcome"] == "timeout" for r in c)
+            fc = sum(not r["answered"] for r in c)
+            nxc = sum(r["outcome"] == "nxdomain" for r in c)
+            sc = C["stats"][w]
+            f.update({"timeouts_cand": "%d/%d" % (tc, len(c)), "timeout_ci95_cand": wilson(tc, len(c)),
+                      "failures_cand": "%d/%d" % (fc, len(c)), "failure_ci95_cand": wilson(fc, len(c)),
+                      "nx_cand": "%d/%d" % (nxc, len(c)),
+                      "p50_cand": fmt_us(nearest_rank([r["v"] for r in c], 50)),
+                      "p95_cand": sc["p95_all_us"], "p95_support_cand": sc["p95_support"],
+                      "p99_cand": sc["p99_all_us"], "p99_support_cand": sc["p99_support"]})
+            if lim["source"] != "frozen":
+                verdict = "unbaselined"
+                reason.append("no frozen limit; its baseline arm is measured on the platform's "
+                              "representative cell (DEC-012)")
+            else:
+                tlim, flim = ratio(lim["timeouts"]), ratio(lim["failures"])
+                f.update({"timeout_limit": "%d/%d" % tlim,
+                          "timeout": "pass" if not_above(tc, len(c), *tlim) else "fail",
+                          "failure_limit": "%d/%d" % flim,
+                          "failure": "pass" if not_above(fc, len(c), *flim) else "fail"})
+                tgt = m["targets"].get((platform, w))
+                if tgt:
+                    mx = tgt["p95_all_us_max"]
+                    ok = mx == "inf" or (sc["p95_all_us"] != "inf" and int(sc["p95_all_us"]) <= int(mx))
+                    f.update({"p95_target": mx, "target": "pass" if ok else "fail"})
+                else:
+                    f.update({"p95_target": "n/a", "target": "n/a"})
+                if len(c) < budget:
+                    verdict = "insufficient"
+                    reason.append("below the budget of %d (%d)" % (budget, len(c)))
+                else:
+                    failed = [k for k in ("timeout", "failure", "target") if f[k] == "fail"]
+                    verdict = "fail" if failed else "pass"
+                    if failed:
+                        reason.append("failed: " + ",".join(failed))
+        f["reason"] = "; ".join(reason) if reason else "-"
+        verdicts.append(verdict)
+        out.append("workload\t%s\t%s\t%s\t%s" % (cell, w, verdict,
+                                                 "\t".join("%s=%s" % kv_ for kv_ in f.items())))
+    for w in sorted({r["workload"] for r in C["rows"]} - known):
+        out.append("ignored\t%s\t%s\tnot a manifest workload" % (cell, w))
+    for cls, why in m["unmeasured"]:
+        out.append("unmeasured\t%s\t%s" % (cls, why))
+    cell_v = next((v for v in ("fail", "blocked", "insufficient") if v in verdicts), "pass")
+    out.append("cell\t%s\t%s\timproved=none" % (cell, cell_v))
+    return "\n".join(out) + "\n", cell_v == "pass"
+
+
 # ─────────────────────────── summarize ───────────────────────────
 
 
@@ -764,7 +852,7 @@ def verified_manifest(o):
 
 def main(argv):
     if not argv:
-        refuse("usage: perf-acceptance.py derive|check-manifest|compare|summarize ...")
+        refuse("usage: perf-acceptance.py derive|check-manifest|compare|check|summarize ...")
     cmd, args = argv[0], argv[1:]
     if cmd == "derive":
         if len(args) != 1:
@@ -785,6 +873,14 @@ def main(argv):
             refuse("usage: compare [--manifest M] [--bl-targets F] --cell C --baseline A --candidate B")
         m = verified_manifest(o)
         text, ok = compare(m, o["cell"], o["baseline"], o["candidate"])
+        sys.stdout.write(text)
+        return 0 if ok else 1
+    if cmd == "check":
+        o, rest = opts(args, ("manifest", "bl-targets", "cell", "candidate"))
+        if rest or not (o["cell"] and o["candidate"]):
+            refuse("usage: check [--manifest M] [--bl-targets F] --cell C --candidate B")
+        m = verified_manifest(o)
+        text, ok = check(m, o["cell"], o["candidate"])
         sys.stdout.write(text)
         return 0 if ok else 1
     if cmd == "summarize":
