@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Per-guard mutant battery for tests/reports/perf-acceptance.py.
+
+Maintainer tool (sub-plan 05, Task 1.1), not a test group: it edits
+perf-acceptance.py in place, one guard at a time, runs
+`unit performance-acceptance`, and restores the file (also on error or
+Ctrl-C). Each guard must turn at least one case red; a guard no case notices
+is untested or dead.
+
+Usage: python3 tests/reports/perf-acceptance-mutants.py [GUARD...]
+Exit: 0 every guard is caught; 1 some guard is not; 2 a mutation no longer
+applies (the guard's code changed: update the list below).
+"""
+import os, subprocess, sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+RUNNER = os.path.join(ROOT, "tests", "run.sh")
+TOOL = os.path.join(ROOT, "tests", "reports", "perf-acceptance.py")
+
+G = [
+ ("drop-frozen-class", '            if (c, w) not in frozen:\n                refuse("BL-TARGETS: cell', '            if False:\n                refuse("BL-TARGETS: cell'),
+ ("rate-not-count", '    if not 0 <= k <= n or "%.4f" % (k / n) != rate:', '    if not 0 <= k <= n:'),
+ ("frozen-rule-missing", '        if name not in [n for n, _ in rules]:\n            refuse("BL-TARGETS: frozen rule', '        if False:\n            refuse("BL-TARGETS: frozen rule'),
+ ("coverage", '    if coverage != "%d cells" % len(cells):', '    if False:'),
+ ("target-missing", '            if (p, w) not in targets:\n                refuse("BL-TARGETS: platform', '            if False:\n                refuse("BL-TARGETS: platform'),
+ ("manifest-equality", '    if fresh != text:', '    if False:'),
+ ("receipt-sha256", '    if sha256(bl_path) != prov.get("bl_targets_sha256"):', '    if False:'),
+ ("stats-refusal", '    if p.returncode != 0:\n        refuse("%s arm %s refused by stats.sh', '    if False:\n        refuse("%s arm %s refused by stats.sh'),
+ ("cell-rows", '        if (r["platform"], r["proxy"], r["pihole"]) != (platform, proxy, pihole):', '        if False:'),
+ ("clock-step", '        if prev is not None and r["t"] < prev:', '        if False:'),
+ ("failures-rank-worst", '        r["v"] = float(r["elapsed_us"]) if r["answered"] else INF', '        r["v"] = float(r["elapsed_us"])'),
+ ("nxdomain-answered", '        r["answered"] = r["outcome"] in ("ok", "nxdomain")', '        r["answered"] = r["outcome"] in ("ok",)'),
+ ("same-run", '    if B["run_id"] == C["run_id"]:', '    if False:'),
+ ("cache-class-pooling", '            if bad:', '            if False:'),
+ ("controls", '                if len(vals) != 1:', '                if False:'),
+ ("interleave-run-length", '        if length > bound:', '        if False:'),
+ ("interleave-run-count", '        if blocks[arm] < min(MIN_BLOCKS, n):', '        if False:'),
+ ("blocked", '            verdict = "blocked"', '            verdict = "pass"'),
+ ("frozen-limit", '            if lim["source"] == "frozen":', '            if False:'),
+ ("timeout-check", '"timeout": "pass" if not_above(tc, len(c), *tlim) else "fail",', '"timeout": "pass",'),
+ ("failure-check", '"failure": "pass" if not_above(fc, len(c), *flim) else "fail",', '"failure": "pass",'),
+ ("improvement-alpha", '("yes" if p_not_better < alpha else "no")', '("yes" if p_not_better < 0.5 else "no")'),
+ ("bonferroni", '    alpha = float(m["method"]["alpha_family"]) / int(m["method"]["comparisons_per_platform"])', '    alpha = float(m["method"]["alpha_family"])'),
+ ("problem-class-only", 'if is_problem else "n/a"', 'if True else "n/a"'),
+ ("slowdown-gate", '                if is_problem and f["latency"] == "slower":', '                if False:'),
+ ("platform-target", '                ok = mx == "inf" or', '                ok = True or'),
+ ("sample-budget", '            if len(b) < budget or len(c) < budget:', '            if False:'),
+ ("cell-verdict", '    cell_v = next((v for v in ("fail", "blocked", "insufficient") if v in verdicts), "pass")', '    cell_v = "pass"'),
+ ("summarize-improved", '        elif not imp:', '        elif False:'),
+ ("summarize-missing-cell", '        elif missing or "blocked" in vs:', '        elif "blocked" in vs:'),
+ ("summarize-manifest", '        if len(prov) != 1 or "manifest_sha256=%s" % m["sha256"] not in prov[0].split("\\t"):', '        if len(prov) != 1:'),
+]
+
+
+def main():
+    want = sys.argv[1:] or [n for n, _, _ in G]
+    original = open(TOOL).read()
+    missed = broken = 0
+    try:
+        for name, old, new in G:
+            if name not in want:
+                continue
+            if original.count(old) != 1:
+                print("%-24s MUTATION DOES NOT APPLY" % name)
+                broken += 1
+                continue
+            open(TOOL, "w").write(original.replace(old, new))
+            out = subprocess.run(["bash", RUNNER, "unit", "performance-acceptance"],
+                                 capture_output=True, text=True).stdout
+            red = [l.split()[1] for l in out.splitlines() if l.startswith("FAIL ")]
+            print("%-24s %2d red: %s" % (name, len(red), " ".join(red) if red else "NOT CAUGHT"),
+                  flush=True)
+            missed += not red
+    finally:
+        open(TOOL, "w").write(original)
+    sys.exit(2 if broken else (1 if missed else 0))
+
+
+if __name__ == "__main__":
+    main()
