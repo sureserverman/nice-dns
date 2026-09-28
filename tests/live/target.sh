@@ -36,16 +36,27 @@
 #                    product's own installer (install-{deb,mac}{,-hardened}.sh)
 #                    run from this checkout's `git archive` of --source-sha
 #                    SHA, sent inline (the target's own DNS may be the broken
-#                    stack being replaced, so nothing is fetched there).
-#                    install-mac.sh clones main itself, so it is refused
-#                    unless this checkout's origin/main is that commit and
-#                    `git ls-remote` of GitHub main, run on the target just
-#                    before and again just after, is that commit both times
-#                    (github_main, github_main_after; the install fails
-#                    otherwise). This is weaker than the inline archive: a
-#                    push and revert inside the window would not show. The
+#                    stack being replaced, so nothing is fetched there). Every
+#                    entrypoint installs the tree it sits in (Sub-plan 4 Task
+#                    1.1), so no platform depends on GitHub main any more. The
 #                    installer's output is streamed back; it may carry bridge
-#                    lines, so keep it out of portable evidence. Hardened
+#                    lines, so keep it out of portable evidence.
+#   uninstall-cell   the same entrypoint and archive, run with `uninstall`
+#                    (--cell names the entrypoint; the proxy is ignored).
+#   lifecycle-report read-only (Sub-plan 4 Task 2.3): the installed generation
+#                    and the images the containers run, the controller's
+#                    install record, the nice-dns volumes, the state markers,
+#                    DNS ownership, schedules, the macOS sudoers rule, Linux
+#                    :53 listeners, and the Pi-hole admin API asked
+#                    anonymously, with a wrong password and with the
+#                    deployment's (read on the target from its file, never
+#                    printed; the session is closed again).
+#   watch-dns        read-only: one row per 2 s of the host's resolver
+#                    settings for NICE_DNS_WATCH_SECS (10..3600, default 1800)
+#                    or until the caller hangs up; streamed.
+#   mark-state       write the run's marker into each state the deployment
+#                    must keep (the Tor data volume, the anchor volume) and
+#                    one operator allow rule through the admin API. Hardened
 #                    cells also need the pi-hole-hardened sibling, which has
 #                    no public source (no GitHub repo, no Docker Hub image):
 #                    --hardened-sha SHA must equal this checkout's sibling
@@ -140,7 +151,7 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell quiesce-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh install-agent set-tunables'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh install-agent set-tunables lifecycle-report watch-dns mark-state'
 FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
@@ -182,10 +193,8 @@ done
 if [ "$op" != collect ] && [ -n "$c_workload$c_count$c_identity" ]; then
   die "--workload/--count/--identity are only valid for collect"
 fi
-if [ "$op" != install-cell ] && [ -n "$i_cell$i_hsha" ]; then
-  die "--cell/--hardened-sha are only valid for install-cell"
-fi
-case "$op" in install-cell|build-proxy|install-controller|install-agent) ;; *) [ -z "$i_sha" ] || die "--source-sha is only valid for install-cell, build-proxy, install-controller and install-agent" ;; esac
+case "$op" in install-cell|uninstall-cell) ;; *) [ -z "$i_cell$i_hsha" ] || die "--cell/--hardened-sha are only valid for install-cell and uninstall-cell" ;; esac
+case "$op" in install-cell|uninstall-cell|build-proxy|install-controller|install-agent) ;; *) [ -z "$i_sha" ] || die "--source-sha is only valid for install-cell, uninstall-cell, build-proxy, install-controller and install-agent" ;; esac
 case "$op" in fault-route|heal-route) ;; *) [ -z "$i_route" ] || die "--route is only valid for fault-route and heal-route" ;; esac
 case "$op" in install-controller|set-tunables) ;; *) [ -z "$i_mode" ] || die "--mode is only valid for install-controller and set-tunables" ;; esac
 if [ "$op" = set-tunables ]; then case "$i_mode" in fast|default) ;; *) die "set-tunables needs --mode fast|default" ;; esac; fi
@@ -269,15 +278,18 @@ freeze_max="${NICE_DNS_FREEZE_MAX_SECS:-900}"
 case "$freeze_max" in ''|*[!0-9]*) die "NICE_DNS_FREEZE_MAX_SECS must be an integer" ;; esac
 [ "$freeze_max" -ge 60 ] && [ "$freeze_max" -le 1800 ] || die "NICE_DNS_FREEZE_MAX_SECS must be 60..1800"
 INSTALL_ENV=''
-if [ "$op" = install-cell ]; then
+watch_secs="${NICE_DNS_WATCH_SECS:-1800}"
+case "$watch_secs" in ''|*[!0-9]*) die "NICE_DNS_WATCH_SECS must be an integer" ;; esac
+[ "$watch_secs" -ge 10 ] && [ "$watch_secs" -le 3600 ] || die "NICE_DNS_WATCH_SECS must be 10..3600"
+if [ "$op" = mark-state ]; then
+  [[ "${RUN_ID:-}" =~ $RE_RUNID ]] || die "mark-state needs RUN_ID (the run's id) in the environment"
+fi
+if [ "$op" = install-cell ] || [ "$op" = uninstall-cell ]; then
   case "$i_cell" in haproxy/standard|haproxy/hardened|socat/standard|socat/hardened) ;;
-    *) die "install-cell needs --cell haproxy|socat/standard|hardened" ;; esac
-  [[ "$i_sha" =~ ^[0-9a-f]{40}$ ]] || die "install-cell needs --source-sha <40-hex commit>"
+    *) die "$op needs --cell haproxy|socat/standard|hardened" ;; esac
+  [[ "$i_sha" =~ ^[0-9a-f]{40}$ ]] || die "$op needs --source-sha <40-hex commit>"
   [ "$(git -C "$ND_CHECKOUT" cat-file -t "$i_sha" 2>/dev/null)" = commit ] || die "--source-sha $i_sha is not a commit in $ND_CHECKOUT"
-  if [ "$T_PLATFORM/${i_cell#*/}" = macos/standard ] && [ "$(git -C "$ND_CHECKOUT" rev-parse origin/main 2>/dev/null)" != "$i_sha" ]; then
-    die "install-mac.sh installs origin/main, which is not $i_sha; refusing"
-  fi
-  INSTALL_ENV="NICE_DNS_PROXY=${i_cell%/*} NICE_DNS_PIHOLE=${i_cell#*/} NICE_DNS_SOURCE_SHA=$i_sha"
+  INSTALL_ENV="NICE_DNS_ACTION=${op%-cell} NICE_DNS_PROXY=${i_cell%/*} NICE_DNS_PIHOLE=${i_cell#*/} NICE_DNS_SOURCE_SHA=$i_sha"
   HSIB="$(cd "$ND_CHECKOUT/.." && pwd -P)/pi-hole-hardened"
   if [ "${i_cell#*/}" = hardened ]; then
     [[ "$i_hsha" =~ ^[0-9a-f]{40}$ ]] || die "a hardened cell needs --hardened-sha <40-hex pi-hole-hardened commit>"
@@ -387,9 +399,9 @@ remote_run() {
 
 build_payload() {
   if [ "$op" = collect ]; then remote_bundle || return 1; fi
-  case "$op" in install-cell|install-controller|install-agent) source_bundle || return 1 ;; esac
+  case "$op" in install-cell|uninstall-cell|install-controller|install-agent) source_bundle || return 1 ;; esac
   if [ "$op" = build-proxy ]; then proxy_bundle || return 1; fi
-  if [ "$op" = install-cell ] && [ -n "$i_hsha" ]; then hardened_bundle || return 1; fi
+  case "$op" in install-cell|uninstall-cell) [ -z "$i_hsha" ] || hardened_bundle || return 1 ;; esac
   remote_script
 }
 
@@ -665,7 +677,7 @@ case "$NICE_DNS_OP" in
     s=$(tor_states "$NICE_DNS_COMPONENT")
     printf 'tor_state\t%s\n' "$s"
     [ "$rc" -eq 0 ] && [ -n "$s" ] && case " $s " in *" T "*) false ;; *) true ;; esac ;;
-  install-cell)
+  install-cell|uninstall-cell)
     case "$plat/$NICE_DNS_PIHOLE" in
       linux/standard) inst=install-deb.sh ;;
       linux/hardened) inst=install-deb-hardened.sh ;;
@@ -687,37 +699,109 @@ case "$NICE_DNS_OP" in
       rm -f "$ND_HARDENED_TGZ"
       printf 'hardened_sha\t%s\n' "$NICE_DNS_HARDENED_SHA"
     fi
-    if [ "$inst" = install-mac.sh ]; then
-      # install-mac.sh clones GitHub main itself: observe that ref from the
-      # target just before, and refuse unless it is the pinned commit.
-      # The Mac's DNS is its own stack, which a previous cell may have just
-      # healed (live, run 20260927T082335Z-3babdc89: "unreadable" the second
-      # heal-runtime returned): retry for up to 5 minutes before refusing.
-      gm="" i=0
-      while [ -z "$gm" ] && [ "$i" -lt 20 ]; do
-        gm=$(git ls-remote https://github.com/sureserverman/nice-dns.git refs/heads/main </dev/null 2>/dev/null | cut -f1)
-        [ -n "$gm" ] || sleep 15
-        i=$((i + 1))
-      done
-      printf 'github_main\t%s\n' "${gm:-unreadable}"
-      [ "$gm" = "$NICE_DNS_SOURCE_SHA" ] || { echo "GitHub main is '${gm:-unreadable}', not $NICE_DNS_SOURCE_SHA; refusing" >&2; exit 2; }
-    fi
-    printf 'install_cell\t%s/%s\ninstaller\t%s\nsource_sha\t%s\nstarted_utc\t%s\n' "$NICE_DNS_PROXY" "$NICE_DNS_PIHOLE" "$inst" \
+    printf '%s_cell\t%s/%s\ninstaller\t%s\nsource_sha\t%s\nstarted_utc\t%s\n' "$NICE_DNS_ACTION" "$NICE_DNS_PROXY" "$NICE_DNS_PIHOLE" "$inst" \
       "$NICE_DNS_SOURCE_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    (cd "$w/nice-dns" && bash "./$inst" "$NICE_DNS_PROXY" main) </dev/null 2>&1
-    rc=$?
-    if [ "$inst" = install-mac.sh ]; then
-      # install-mac.sh's own clone happened between the two reads: main equal
-      # to the pin before and after bounds what it installed (a push and
-      # revert inside the window is the one case this cannot see).
-      ga=$(git ls-remote https://github.com/sureserverman/nice-dns.git refs/heads/main </dev/null 2>/dev/null | cut -f1)
-      printf 'github_main_after\t%s\n' "${ga:-unreadable}"
-      if [ "$ga" != "$NICE_DNS_SOURCE_SHA" ]; then
-        echo "GitHub main moved to '${ga:-unreadable}' during the install; what install-mac.sh cloned is unknown" >&2
-        [ "$rc" -eq 0 ] && rc=1
-      fi
+    if [ "$NICE_DNS_ACTION" = uninstall ]; then
+      (cd "$w/nice-dns" && bash "./$inst" uninstall) </dev/null 2>&1
+    else
+      (cd "$w/nice-dns" && bash "./$inst" "$NICE_DNS_PROXY" main) </dev/null 2>&1
     fi
+    rc=$?
     printf 'finished_utc\t%s\ninstaller_exit\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc"
+    exit $rc ;;
+  lifecycle-report)
+    [ "$plat" = macos ] && homebrew_path
+    if [ "$plat" = macos ]; then
+      sd="$HOME/Library/Application Support/nice-dns-install"; hd="$HOME/Library/Application Support/nice-dns-health"
+      base=http://172.31.240.250
+    else
+      sd="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-install"; hd="${XDG_DATA_HOME:-$HOME/.local/share}/nice-dns-health"
+      base=http://127.0.0.1:8880
+    fi
+    pwf="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/secrets/pihole/pihole_webpassword"
+    {
+      identity
+      printf 'now\t%s\n' "$(date +%s)"
+      printf 'section\tdns\n'; dns_owner
+      printf 'section\tgeneration\n'
+      g=$(cat "$sd/current" 2>/dev/null)
+      printf 'current\t%s\n' "${g:-none}"
+      [ -n "$g" ] && awk -F '\t' '$1 ~ /^(generation|entrypoint|pihole|variant|source_commit|previous|rollback|replaces|image|credential|status)$/' "$sd/generations/$g/prepare.tsv" 2>/dev/null
+      printf 'section\trunning\n'
+      for c in pi-hole unbound tor-haproxy tor-socat; do
+        running "$c" && printf 'running\t%s\t%s\n' "$c" "$(image_of "$c")"
+      done
+      printf 'section\tcontroller\n'; cat "$hd/install.tsv" 2>/dev/null
+      printf 'section\tvolumes\n'
+      if [ "$plat" = macos ]; then ctl volume list 2>/dev/null | awk 'NR > 1 && $1 ~ /^nice-dns-/ { print "volume\t" $1 }'
+      else ctl volume ls --format '{{.Name}}' 2>/dev/null | awk '/^nice-dns-/ { print "volume\t" $0 }'; fi
+      printf 'section\tstate\n'
+      for c in tor-haproxy tor-socat; do
+        running "$c" || continue
+        printf 'tor_marker\t%s\t%s\n' "$c" "$(ctl_exec "$c" cat /app/data/.nd-live-marker 2>/dev/null)"
+        printf 'tor_state_file\t%s\t%s\n' "$c" "$(ctl_exec "$c" sh -c 'test -s /app/data/tor/state && echo present || echo absent' 2>/dev/null)"
+      done
+      if running unbound; then
+        printf 'anchor_marker\t%s\n' "$(ctl_exec unbound cat /var/lib/unbound/.nd-live-marker 2>/dev/null)"
+        printf 'anchor_file\t%s\n' "$(ctl_exec unbound sh -c 'test -s /var/lib/unbound/root.key && echo present || echo absent' 2>/dev/null)"
+      fi
+      if running pi-hole; then
+        printf 'lists_seed\t%s\t%s\n' "$(ctl_exec pi-hole cat /var/lib/nice-dns-pihole/seed-id 2>/dev/null)" "$(ctl_exec pi-hole cat /usr/share/nice-dns/pihole/seed-id 2>/dev/null)"
+        printf 'lists_marker_rules\t%s\n' "$(ctl_exec pi-hole pihole-FTL sqlite3 -ni /var/lib/nice-dns-pihole/gravity.db "SELECT group_concat(domain) FROM domainlist WHERE domain LIKE 'nd-live-%.example'" 2>/dev/null)"
+      fi
+      printf 'section\tadmin\n'
+      printf 'admin_secret_mode\t%s\n' "$(ls -ln "$pwf" 2>/dev/null | cut -c1-10)"
+      printf 'anonymous\t%s\n' "$(curl -s -m 5 -o /dev/null -w '%{http_code}' "$base/api/stats/summary")"
+      printf 'wrong\t%s\n' "$(curl -s -m 10 --data '{"password":"nd-live-wrong"}' "$base/api/auth" | grep -o '"valid":[a-z]*')"
+      if [ -s "$pwf" ]; then
+        r=$({ printf '{"password":"'; tr -d '\n' <"$pwf"; printf '"}'; } | curl -s -m 10 --data @- "$base/api/auth")
+        printf 'right\t%s\n' "$(printf '%s' "$r" | grep -o '"valid":[a-z]*')"
+        sid=$(printf '%s' "$r" | sed -n 's/.*"sid":"\([^"]*\)".*/\1/p')
+        [ -n "$sid" ] && curl -s -m 5 -o /dev/null -X DELETE -H "X-FTL-SID: $sid" "$base/api/auth"
+      else
+        printf 'right\tno-secret-file\n'
+      fi
+      printf 'section\tlisteners\n'
+      if [ "$plat" = linux ]; then ss -H -lntu 2>/dev/null | awk '$5 ~ /:53$/ { print "listen\t" $1 "\t" $5 }'; fi
+      printf 'section\tprivilege\n'
+      if [ "$plat" = macos ]; then sudo -n cat /etc/sudoers.d/start-container 2>/dev/null | grep -v '^[[:space:]]*#' | grep . | sed 's/^/sudoers\t/'
+      else for f in /etc/sudoers.d/*; do case "$f" in *nice*|*start-container*) printf 'sudoers\t%s\n' "$f" ;; esac; done; fi
+      printf 'section\tschedules\n'
+      if [ "$plat" = macos ]; then launchctl list | awk '$3 ~ /^org\.nice-dns\./ { print "agent\t" $3 }'
+      else systemctl --user list-unit-files --no-legend 'nice-dns*' 2>/dev/null | awk '{ print "unit\t" $1 "\t" $2 }'; fi
+    } | redact ;;
+  watch-dns)
+    end=$(( $(date +%s) + NICE_DNS_WATCH_SECS ))
+    while [ "$(date +%s)" -lt "$end" ]; do
+      if [ "$plat" = macos ]; then
+        s=$(networksetup -listallnetworkservices | tail -n +2 | sed 's/^\*//' | while IFS= read -r svc; do
+              printf '%s=%s;' "$svc" "$(networksetup -getdnsservers "$svc" | tr '\n' ' ' | sed 's/ $//')"; done)
+      else
+        s="$(readlink /etc/resolv.conf 2>/dev/null || echo file);$(awk '/^nameserver/ { printf "%s ", $2 }' /etc/resolv.conf 2>/dev/null)"
+      fi
+      printf '%s\t%s\n' "$(date +%s)" "$s" || exit 0
+      sleep 2
+    done ;;
+  mark-state)
+    [ "$plat" = macos ] && homebrew_path
+    m="nd-live-$NICE_DNS_RUN_ID"
+    rc=0
+    for c in tor-haproxy tor-socat; do
+      running "$c" || continue
+      ctl_exec "$c" sh -c "printf '%s\n' '$m' >/app/data/.nd-live-marker" && printf 'marked\t%s\n' "$c" || rc=1
+    done
+    if running unbound; then ctl_exec --user unbound unbound sh -c "printf '%s\n' '$m' >/var/lib/unbound/.nd-live-marker" && printf 'marked\tunbound\n' || rc=1; fi
+    if [ "$plat" = macos ]; then base=http://172.31.240.250; else base=http://127.0.0.1:8880; fi
+    pwf="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/secrets/pihole/pihole_webpassword"
+    r=$({ printf '{"password":"'; tr -d '\n' <"$pwf"; printf '"}'; } | curl -s -m 10 --data @- "$base/api/auth")
+    sid=$(printf '%s' "$r" | sed -n 's/.*"sid":"\([^"]*\)".*/\1/p')
+    if [ -n "$sid" ]; then
+      a=$(curl -s -m 10 -H "X-FTL-SID: $sid" --data "{\"domain\":\"$m.example\",\"comment\":\"nice-dns live marker\"}" "$base/api/domains/allow/exact")
+      curl -s -m 5 -o /dev/null -X DELETE -H "X-FTL-SID: $sid" "$base/api/auth"
+      case "$a" in *'"errors":[]'*) printf 'marked\tpi-hole-lists\n' ;; *) echo "Pi-hole refused the marker rule" >&2; rc=1 ;; esac
+    else
+      echo "no admin session" >&2; rc=1
+    fi
     exit $rc ;;
   quiesce-agents)
     if [ "$plat" = macos ]; then
@@ -1041,11 +1125,17 @@ case "$op" in
     } >"$STATE/receipt.tsv"
     log_op 0
     printf 'snapshot %s -> %s\n' "$alias_" "$STATE/snapshot.tsv" ;;
-  config|health|controller-report)
+  config|health|controller-report|lifecycle-report)
     # Read-only; the output starts with the identity lines, which are checked.
     preconnect_guards
     probe_identity "$op"
     printf '%s\n' "$PROBE_OUT" ;;
+  watch-dns)
+    # Read-only and streamed: the identity is checked first, separately.
+    preconnect_guards
+    probe_identity probe
+    remote_run "NICE_DNS_OP=watch-dns NICE_DNS_WATCH_SECS=$watch_secs"
+    exit 0 ;;
   collect)
     preconnect_guards
     probe_identity probe
@@ -1053,7 +1143,7 @@ case "$op" in
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|quiesce-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|install-agent|set-tunables)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|install-agent|set-tunables|mark-state)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"
@@ -1061,8 +1151,10 @@ case "$op" in
     probe_identity probe
     [ "$(kv machine_id "$(cat "$STATE/receipt.tsv")")" = "$PROBE_MID" ] \
       || die "snapshot for $alias_ is of machine $(kv machine_id "$(cat "$STATE/receipt.tsv")"), target now reports $PROBE_MID"
-    if [ "$op" = install-cell ]; then
-      remote_run "NICE_DNS_OP=install-cell $INSTALL_ENV"; rc=$?
+    if [ "$op" = install-cell ] || [ "$op" = uninstall-cell ]; then
+      remote_run "NICE_DNS_OP=$op $INSTALL_ENV"; rc=$?
+    elif [ "$op" = mark-state ]; then
+      remote_run "NICE_DNS_OP=mark-state NICE_DNS_RUN_ID=$RUN_ID"; rc=$?
     elif [ "$op" = restore ]; then
       names=''
       for c in $(awk -F '\t' '$1 == "section" { s = $2; next } s == "containers" && $2 == "running" { print $1 }' "$STATE/snapshot.tsv"); do

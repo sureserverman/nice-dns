@@ -291,7 +291,10 @@ t_macos_uses_container_cli_and_no_credentials() {
   tg sever-upstream mac1 --targets "$CASE_DIR/targets.env" --component tor-socat
   assert_rc 0 "$TG_RC" "mac sever: $TG_OUT"
   assert_match '^container stop tor-socat$' "$(cat "$FAKE_LOG")" "sever stops only the named proxy container"
-  assert_not_match '(password|passwd|sshpass|PRIVATE KEY)' "$(cat "$FAKE_LOG" "$NICE_DNS_ROOT/tests/live/target.sh")" "no embedded credentials"
+  # The word is allowed only in comments, the admin password file's path and
+  # the Pi-hole API's JSON key (Sub-plan 4 Task 2.3); no value is embedded.
+  assert_not_match '(password|passwd|sshpass|PRIVATE KEY)' "$(cat "$FAKE_LOG" "$NICE_DNS_ROOT/tests/live/target.sh" \
+    | grep -v -e '^[[:space:]]*#' -e 'secrets/pihole/pihole_webpassword"$' -e "printf '{\"password\":\"'" -e "'{\"password\":\"nd-live-wrong\"}'")" "no embedded credentials"
 }
 
 t_linux_uses_rootless_podman() {
@@ -430,7 +433,15 @@ t_remote_script_never_reads_secret_sources() {
   local script
   script="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG" | grep -v "^[[:space:]]*#")"
   assert_match 'NICE_DNS_OP' "$script" "extracted the remote script"
-  assert_not_match 'torrc|\.Env|printenv|environ|Bridge|pwhash|webpassword|ps -o[^|]*args' "$script" \
+  # Sub-plan 4 Task 2.3: the one sanctioned credential read. lifecycle-report
+  # and mark-state read the Pi-hole admin password file on the target and feed
+  # it to curl on stdin, to prove the real admin API (SEC-ADMIN-AUTH); how is
+  # checked in t_lifecycle_ops_are_guarded. Exactly those two path lines may
+  # name it; every other read stays forbidden.
+  assert_eq 2 "$(printf '%s\n' "$script" | grep -c 'webpassword')" "only the two sanctioned lines name the admin password file"
+  assert_eq 2 "$(printf '%s\n' "$script" | grep -c '^    pwf="\${XDG_STATE_HOME:-\$HOME/\.local/state}/nice-dns/secrets/pihole/pihole_webpassword"$')" "and they are the path assignments"
+  assert_not_match 'torrc|\.Env|printenv|environ|Bridge|pwhash|webpassword|ps -o[^|]*args' \
+    "$(printf '%s\n' "$script" | grep -v '^    pwf="\${XDG_STATE_HOME:-\$HOME/\.local/state}/nice-dns/secrets/pihole/pihole_webpassword"$')" \
     "no tor arguments, container env, torrc or Pi-hole credentials are read"
 }
 
@@ -470,7 +481,7 @@ t_install_cell_needs_snapshot_valid_cell_and_pinned_commit() {
   : >"$FAKE_LOG"
   tg install-cell lin1 --targets "$CASE_DIR/targets.env" --cell haproxy/standard --source-sha "$sha"
   assert_rc 0 "$TG_RC" "install after snapshot: $TG_OUT"
-  assert_match "NICE_DNS_OP=install-cell NICE_DNS_PROXY=haproxy NICE_DNS_PIHOLE=standard NICE_DNS_SOURCE_SHA=$sha " "$(cat "$FAKE_LOG")" "install sent as data words"
+  assert_match "NICE_DNS_OP=install-cell NICE_DNS_ACTION=install NICE_DNS_PROXY=haproxy NICE_DNS_PIHOLE=standard NICE_DNS_SOURCE_SHA=$sha " "$(cat "$FAKE_LOG")" "install sent as data words"
 }
 
 t_install_cell_maps_each_cell_to_its_installer() {
@@ -482,12 +493,13 @@ t_install_cell_maps_each_cell_to_its_installer() {
   assert_match 'macos/hardened\) inst=install-mac-hardened\.sh' "$script" "macos hardened"
   assert_match 'tar -xzf "\$ND_SOURCE_TGZ" -C "\$w/nice-dns"' "$script" "installs the pinned commit's archive"
   assert_not_match 'git clone' "$script" "nothing is fetched on the target (its DNS may be the broken stack)"
-  assert_match 'install-mac\.sh installs origin/main, which is not' "$(cat "$TG")" "install-mac.sh (clones main itself) is refused unless main is the pinned commit"
+  # Sub-plan 4 Task 1.1: every entrypoint installs the tree it sits in, so
+  # the macOS installer runs from the inline archive like the others.
+  assert_not_match 'origin/main' "$(grep -v '^[[:space:]]*#' "$TG")" "no cell depends on this checkout's origin/main"
+  assert_not_match 'ls-remote' "$script" "nothing reads GitHub main on the target"
+  assert_match 'bash "\./\$inst" "\$NICE_DNS_PROXY" main\)' "$script" "install runs the archived entrypoint"
+  assert_match 'bash "\./\$inst" uninstall\)' "$script" "uninstall-cell runs the archived entrypoint's uninstall"
   assert_match "test -d /pihole && echo hardened" "$script" "hardened marker survives the image's own lockdown (post-install.sh deletes itself)"
-  assert_match 'git ls-remote https://github.com/sureserverman/nice-dns.git refs/heads/main' "$script" "GitHub main is observed on the target before install-mac.sh clones it"
-  assert_match 'GitHub main is .*not \$NICE_DNS_SOURCE_SHA; refusing' "$script" "and refused when it is not the pinned commit"
-  assert_match "printf 'github_main_after" "$script" "GitHub main is read again after install-mac.sh's own clone"
-  assert_match 'GitHub main moved to .* during the install' "$script" "and a move during the install fails the operation"
   assert_match 'if \[ "\$plat" = macos \]; then PATH="/opt/homebrew/bin:' "$script" "macOS installers get Homebrew on PATH (ssh shells are not login shells)"
 }
 
@@ -801,4 +813,38 @@ t_set_tunables_writes_only_the_controller_timers() {
   op="$(printf '%s\n' "$script" | sed -n '/^  set-tunables)/,/;;$/p')"
   assert_match 'nice-dns-health/tunables\.tsv' "$op" "only the controller's tunables file"
   assert_match 'ND_POLICY_GRACE_S' "$op" "the policy timers"
+}
+
+# Sub-plan 4 Task 2.3: the lifecycle operations.
+t_lifecycle_ops_are_guarded() {
+  local sha script op
+  sha="$(git -C "$NICE_DNS_ROOT" rev-parse HEAD)"
+  tg_setup
+  tg uninstall-cell lin1 --targets "$CASE_DIR/targets.env" --cell haproxy/standard --source-sha "$sha"
+  assert_nonzero "$TG_RC" "uninstall-cell without a snapshot"
+  assert_match 'no restore snapshot' "$TG_OUT" "names the snapshot"
+  tg mark-state lin1 --targets "$CASE_DIR/targets.env"
+  assert_nonzero "$TG_RC" "mark-state without a snapshot"
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  : >"$FAKE_LOG"
+  tg uninstall-cell lin1 --targets "$CASE_DIR/targets.env" --source-sha "$sha"
+  assert_rc 2 "$TG_RC" "uninstall-cell needs --cell"
+  tg uninstall-cell lin1 --targets "$CASE_DIR/targets.env" --cell haproxy/standard
+  assert_rc 2 "$TG_RC" "uninstall-cell needs --source-sha"
+  tg lifecycle-report lin1 --targets "$CASE_DIR/targets.env" --cell haproxy/standard
+  assert_rc 2 "$TG_RC" "--cell is refused on other operations"
+  NICE_DNS_WATCH_SECS=5 tg watch-dns lin1 --targets "$CASE_DIR/targets.env"
+  assert_rc 2 "$TG_RC" "watch-dns is bounded (10..3600 s)"
+  assert_eq 0 "$(tg_sent)" "nothing sent for a refused operation"
+  tg uninstall-cell lin1 --targets "$CASE_DIR/targets.env" --cell haproxy/standard --source-sha "$sha"
+  assert_rc 0 "$TG_RC" "uninstall-cell after snapshot: $TG_OUT"
+  assert_match "NICE_DNS_OP=uninstall-cell NICE_DNS_ACTION=uninstall NICE_DNS_PROXY=haproxy NICE_DNS_PIHOLE=standard NICE_DNS_SOURCE_SHA=$sha " "$(cat "$FAKE_LOG")" "uninstall sent as data words"
+  script="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG")"
+  op="$(printf '%s\n' "$script" | sed -n '/^  lifecycle-report)/,/;;$/p')"
+  assert_match "tr -d '.n' <\"\\\$pwf\"; printf '\"}'; } \\| curl -s -m 10 --data @-" "$op" "the admin password goes to curl on stdin, never as an argument"
+  assert_match 'X-FTL-SID: \$sid" "\$base/api/auth"' "$op" "and the session is closed again"
+  assert_match '\| redact ;;' "$op" "the report is redacted"
+  op="$(printf '%s\n' "$script" | sed -n '/^  mark-state)/,/;;$/p')"
+  assert_match '\| curl -s -m 10 --data @-' "$op" "mark-state logs in the same way"
+  assert_not_match 'echo .*pwf|cat "\$pwf"' "$op" "and never prints the password"
 }
