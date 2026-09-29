@@ -555,6 +555,15 @@ redact() {
     -e 's/(^|[^0-9A-Fa-f])[0-9A-F]{40}([^0-9A-Fa-f]|$)/\1<fingerprint>\2/g'
 }
 homebrew_path() { PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$PATH"; export PATH; }
+# mac_room: a macOS build (install, arm-prepare) needs room: one tune-resolver
+# cell took about 12 GiB of Apple's container store, and the mac was down to
+# 271 MiB free on 2026-09-29. Refused before anything changes, never mid-build.
+mac_room() {
+  [ "$plat" = macos ] || return 0
+  k=$(df -k "$HOME" | awk 'NR == 2 { print $4 }')
+  case "$k" in ''|*[!0-9]*) echo "cannot read the free space on the mac" >&2; return 1 ;; esac
+  [ "$k" -ge 20971520 ] || { echo "only $((k / 1048576)) GiB free on the mac; a build needs 20 GiB" >&2; return 1; }
+}
 # started <container>: its start time (changes on every recreate), or nothing.
 started() {
   if [ "$plat" = macos ]; then ctl list --all | awk -v c="$1" '$1 == c && $5 == "running" { print $NF }'
@@ -728,6 +737,7 @@ case "$NICE_DNS_OP" in
     # A non-login ssh shell lacks Homebrew's bin dir, which the macOS
     # installers need (brew, container); a login shell would have it.
     if [ "$plat" = macos ]; then PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$PATH"; export PATH; fi
+    [ "$NICE_DNS_ACTION" = uninstall ] || mac_room || exit 2
     w=$(mktemp -d "$HOME/.nice-dns-harness-install.XXXXXX") || exit 1
     trap 'rm -rf "$w"' EXIT
     [ -s "${ND_SOURCE_TGZ:-}" ] || { echo "install without the nice-dns source archive" >&2; exit 2; }
@@ -872,6 +882,7 @@ case "$NICE_DNS_OP" in
     }
     running "$c" || { echo "the stack does not run $c" >&2; exit 2; }
     if [ "$NICE_DNS_OP" = arm-prepare ]; then
+      mac_room || exit 2
       w=$(mktemp -d "$HOME/.nice-dns-harness-arm.XXXXXX") || exit 1
       trap 'rm -rf "$w"' EXIT
       [ -s "${ND_SOURCE_TGZ:-}" ] || { echo "arm-prepare without the nice-dns source archive" >&2; exit 2; }
