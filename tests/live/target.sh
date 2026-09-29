@@ -971,13 +971,29 @@ case "$NICE_DNS_OP" in
       fi
       exit 1
     fi
-    bad=0
-    for x in unbound pi-hole "$c"; do
-      want=$(img_id "$(arm_ref "$x" "$a")"); got=$(image_of "$x")
-      printf 'runs\t%s\t%s\t%s\n' "$x" "$a" "$got"
-      [ "${got#sha256:}" = "${want#sha256:}" ] || { echo "$x runs $got, not the $a image $want" >&2; bad=1; }
-    done
-    exit $bad ;;
+    # A container missing here is the macOS agent rebuilding the stack in its
+    # own recovery (live 2026-09-29: first answer after 548 s, one second
+    # before the agent's rebuild), from the same image names: wait until it
+    # answers again and look again, up to 3 times. A container running
+    # another image is the wrong arm and fails at once.
+    try=1
+    while :; do
+      bad=0 gone=0 out=''
+      for x in unbound pi-hole "$c"; do
+        want=$(img_id "$(arm_ref "$x" "$a")"); got=$(image_of "$x")
+        out="$out$(printf 'runs\t%s\t%s\t%s' "$x" "$a" "$got")
+"
+        [ -n "$got" ] || gone=1
+        [ -z "$got" ] || [ "${got#sha256:}" = "${want#sha256:}" ] || { echo "$x runs $got, not the $a image $want" >&2; bad=1; }
+      done
+      if [ "$bad" = 0 ] && [ "$gone" = 1 ] && [ "$try" -lt 3 ]; then
+        echo "a container is missing (the agent rebuilding?); waiting for the stack (try $try)" >&2
+        try=$((try + 1)); ready 60 || true; continue
+      fi
+      printf '%s' "$out"
+      [ "$gone" = 0 ] || { echo "a container of the $a arm is not running" >&2; bad=1; }
+      exit $bad
+    done ;;
   lifecycle-report)
     [ "$plat" = macos ] && homebrew_path
     if [ "$plat" = macos ]; then
