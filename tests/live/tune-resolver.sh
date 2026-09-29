@@ -8,7 +8,7 @@
 # 7/30) and macos/socat/standard (the slowest macOS cold class). Each
 # target is switched to that proxy by this checkout's installer, the
 # controller's schedules are quiesced for both arms, and the two arms
-# alternate 5 times (DEC-012 scope: cold and warm only):
+# alternate 10 times (DEC-012 scope: cold and warm; DEC-014 adds restart):
 #
 #   baseline   nice-dns b85bc9b built on the target with the nearest
 #              published proxy tag (tor-haproxy v2.13, tor-socat v2.9): a
@@ -16,13 +16,16 @@
 #              (target.sh arm-prepare / arm-set, the image swap)
 #   candidate  the images this checkout's installer deployed
 #
-# Per block and arm: 18 cold names (fresh; DEC-013) and 200 warm (cached) queries
-# through Pi-hole, 5000 ms timeout as in the baseline. The block files are
-# kept; each arm's rows are appended into one sample file per arm, ids
-# continuing, under the arm's own run id. tests/reports/perf-acceptance.py
-# compare --workloads cold,warm judges them (scope=cold,warm: never a full
-# cell result). The target ends on the candidate arm with its schedules
-# started again (a reinstall of the candidate).
+# Per block and arm: one restart sample (DEC-014: arm-set's time from the
+# stack restart to the first answer), 9 cold names (fresh) and 100 warm
+# (cached) queries through Pi-hole, 5000 ms timeout as in the baseline: per
+# arm 10 restarts, 90 cold (DEC-013) and 1000 warm, each class's budget. The
+# block files are kept; each arm's rows are appended into one sample file per
+# arm, ids continuing, under the arm's own run id. tests/reports/
+# perf-acceptance.py compare --workloads cold,warm,restart judges them (a
+# scoped comparison: never a full cell result). The target ends on the
+# candidate arm with its schedules started again (a reinstall of the
+# candidate).
 #
 # Evidence: $ARTIFACT_DIR/tune-resolver/<alias>/ (private; the *.tsv hold no
 # bridge material, t_2).
@@ -34,9 +37,9 @@ unset -f t_1_before t_2_upgrade_from_legacy t_3_state_survives t_4_uninstall_res
 il_dir() { printf '%s\n' "$ARTIFACT_DIR/tune-resolver/$1"; }
 IL_FIRST_STEPS=tr_cell
 TR_BASE_SHA=b85bc9b7786efc7d3bf0572875e95e214dfa1d6c
-TR_BLOCKS="${NICE_DNS_TR_BLOCKS:-5}"
-TR_COLD="${NICE_DNS_TR_COLD:-18}"   # 90 cold per arm over 5 blocks (DEC-013)
-TR_WARM="${NICE_DNS_TR_WARM:-200}"
+TR_BLOCKS="${NICE_DNS_TR_BLOCKS:-10}"  # 10 restarts per arm (DEC-014)
+TR_COLD="${NICE_DNS_TR_COLD:-9}"   # 90 cold per arm over 10 blocks (DEC-013)
+TR_WARM="${NICE_DNS_TR_WARM:-100}"
 TR_PA="$NICE_DNS_ROOT/tests/reports/perf-acceptance.py"
 # NICE_DNS_TR_ROUTE: an identity route the candidate is pinned to for the
 # measurement (applied after the quiesce, so the controller cannot move it);
@@ -63,6 +66,26 @@ tr_collect() {
   rc=$?
   case "$rc" in 0|3) ;; *) fail "$a: collect $w ($arm, block $5) failed (exit $rc)" ;; esac
   assert_eq "$(($4 + 1))" "$(grep -vc '^#' "$f")" "$a: $4 $w samples ($arm, block $5)"
+  tr_append "$f" "$d/samples-$arm.tsv"
+}
+
+# tr_restart <alias> <arm> <block>: arm-set's first_answer line as one
+# nice-dns-sample/1 row of workload restart (DEC-014), labelled from the arm's
+# identity like collect.sh's rows, onto the arm's file.
+tr_restart() {
+  local a="$1" arm="$2" k="$3" d s f
+  d="$(il_dir "$a")"
+  s="$d/blocks/set-$arm-$k.tsv" f="$d/blocks/$arm-restart-$k.tsv"
+  assert_eq 1 "$(awk -F '\t' '$1 == "first_answer"' "$s" | grep -c .)" "$a: one first answer ($arm, block $k)"
+  awk -F '\t' -v OFS='\t' -v run="$RUN_ID-$arm" '
+    FILENAME == ARGV[1] { id[$1] = $2; next }
+    $1 == "resolver" { res = $2 }
+    $1 == "first_answer" { t0 = $2; us = $3; oc = $4; rc = $5; q = $6; cap = $7 }
+    END {
+      print "# schema", "nice-dns-sample/1"
+      print "run_id", "sample_id", "utc_start", "elapsed_us", "workload", "cache_class", "target_id", "platform", "proxy", "pihole", "source_rev", "images", "resolver", "transport", "qname", "qtype", "outcome", "rcode", "timeout_ms"
+      print run, 1, t0, us, "restart", "after-restart", id["target_id"], id["platform"], id["proxy"], id["pihole"], id["source_rev"], id["images"], res, "udp", q, "A", oc, rc, cap
+    }' "$d/identity-$arm.tsv" "$s" >"$f"
   tr_append "$f" "$d/samples-$arm.tsv"
 }
 
@@ -107,6 +130,7 @@ tr_cell() {
     for arm in baseline candidate; do
       il_t "$a" arm-set --component "tor-$proxy" --mode "$arm" >"$d/blocks/set-$arm-$k.tsv" 2>>"$d/ops.log" \
         || fail "$a: arm-set $arm (block $k): $(tail -n 5 "$d/ops.log")"
+      tr_restart "$a" "$arm" "$k"
       # A primed cached name, then the block: cold names first (fresh), then warm.
       il_t "$a" collect --workload warm --count 1 --identity "$d/identity-$arm.tsv" >/dev/null 2>>"$d/ops.log" || true
       if [ "$arm" = candidate ]; then
@@ -123,7 +147,7 @@ tr_cell() {
   printf 'first_sample_utc\t%s\n' "$first" >>"$d/cell.tsv"
 
   python3 "$TR_PA" compare --cell "$plat/$proxy/standard" --baseline "$d/samples-baseline.tsv" \
-    --candidate "$d/samples-candidate.tsv" --workloads cold,warm >"$d/compare.tsv" 2>"$d/compare.err"
+    --candidate "$d/samples-candidate.tsv" --workloads cold,warm,restart >"$d/compare.tsv" 2>"$d/compare.err"
   printf 'compare_exit\t%s\n' "$?" >>"$d/cell.tsv"
   [ -s "$d/compare.tsv" ] || fail "$a: the comparison was refused: $(cat "$d/compare.err")"
 

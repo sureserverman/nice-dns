@@ -111,7 +111,9 @@
 #                    candidate, restart the stack through its own path (Linux
 #                    the pod service; macOS the start-container agent, after
 #                    removing the three containers) and wait until Pi-hole
-#                    answers; prints the images that run, and fails unless
+#                    answers; prints the resolver, the time from the restart
+#                    command to the first answer (DEC-014: `first_answer`, up
+#                    to 600 s) and the images that run, and fails unless
 #                    they are the arm's
 #   thaw-on-request  wait (up to NICE_DNS_FREEZE_MAX_SECS) until the image
 #                    claims the controller's restart request, then SIGCONT
@@ -820,6 +822,46 @@ case "$NICE_DNS_OP" in
       done
       return 1
     }
+    # first_answer <t0 epoch s> <cap s>: DEC-014's sample. A fresh name every
+    # 0.5 s, each waiting 5 s as collect.sh's queries do (a shorter wait would
+    # abandon a slow first answer through Tor); the first answered one ends it.
+    # Prints: first_answer, t0 UTC, elapsed us (to the arrival, +-50 ms),
+    # outcome, rcode, qname, cap ms. No answer within the cap is a timeout.
+    first_answer() {
+      perl -MTime::HiRes=time,sleep -MPOSIX=WNOHANG,strftime -e '
+        my ($t0, $cap, $addr, $port) = @ARGV;
+        my (%kid, $best, $q, $rc);
+        my $next = time;
+        while (1) {
+          my $now = time;
+          if ($now >= $next && $now - $t0 < $cap) {
+            my $n = join("", map { sprintf "%02x", int(rand(256)) } 1 .. 8) . ".example.com";
+            pipe(my $r, my $w) or die "pipe: $!";
+            my $pid = fork(); die "fork: $!" unless defined $pid;
+            if (!$pid) {
+              close $r; open(STDOUT, ">&", $w); open(STDERR, ">", "/dev/null");
+              exec("dig", "\@$addr", "-p", $port, "+time=5", "+tries=1", "+noall", "+comments", $n, "A"); exit 127;
+            }
+            close $w; $kid{$pid} = [$r, $n]; $next = $now + 0.5;
+          }
+          while ((my $pid = waitpid(-1, WNOHANG)) > 0) {
+            my $k = delete $kid{$pid} or next;
+            my $end = time; my $fh = $k->[0]; local $/; my $out = <$fh> // ""; close $fh;
+            my ($s) = $out =~ /status: ([A-Z]+)/;
+            if (defined $s && ($s eq "NOERROR" || $s eq "NXDOMAIN") && (!defined $best || $end < $best)) { ($best, $q, $rc) = ($end, $k->[1], $s); }
+          }
+          last if defined $best || (time - $t0 >= $cap && !%kid);
+          sleep 0.05;
+        }
+        kill "TERM", keys %kid;
+        my $iso = strftime("%Y-%m-%dT%H:%M:%S", gmtime($t0)) . sprintf(".%06dZ", int(($t0 - int($t0)) * 1e6));
+        if (defined $best) {
+          printf "first_answer\t%s\t%d\t%s\t%s\t%s\t%d\n", $iso, int(($best - $t0) * 1e6), $rc eq "NOERROR" ? "ok" : "nxdomain", $rc, $q, $cap * 1000;
+          exit 0;
+        }
+        printf "first_answer\t%s\t%d\ttimeout\t-\t-\t%d\n", $iso, $cap * 1e6, $cap * 1000;
+        exit 1;' "$1" "$2" "${RESOLVER%#*}" "${RESOLVER#*#}"
+    }
     restart_stack() {
       if [ "$plat" = macos ]; then
         for x in pi-hole unbound "$c"; do ctl stop "$x" >/dev/null 2>&1; ctl rm "$x" >/dev/null 2>&1; done
@@ -903,8 +945,11 @@ case "$NICE_DNS_OP" in
     for x in unbound pi-hole "$c"; do [ -n "$(img_id "$(arm_ref "$x" "$a")")" ] || { echo "no $a image for $x: run arm-prepare first" >&2; exit 2; }; done
     ctl image tag "$(arm_ref unbound "$a")" "$u_ref" && ctl image tag "$(arm_ref pi-hole "$a")" "$p_ref" \
       && ctl image tag "$(arm_ref "$c" "$a")" "$x_ref" || exit 1
+    # DEC-014: timed from the restart command, both arms through this path.
+    t0=$(perl -MTime::HiRes=time -e 'printf "%.6f", time')
     restart_stack || exit 1
-    if ! ready; then
+    printf 'resolver\t%s\n' "$RESOLVER"
+    if ! first_answer "$t0" 600; then
       echo "the stack did not answer on the $a arm" >&2
       # Never leave the host on a dead arm: the candidate (the deployment
       # the installer made) comes back.

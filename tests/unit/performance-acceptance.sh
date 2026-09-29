@@ -101,23 +101,29 @@ pa_arms() {
 }
 
 pa_cell_data() {
-  # Both arms, all four workloads, clean and equal, unless PA_{COLD,WARM,IDLE,WAKE}_{B,C}
-  # (newline-separated values; the word NONE for no rows) override one.
-  local cb cc wb wc ib ic kb kc
+  # Both arms, all five workloads, clean and equal, unless
+  # PA_{COLD,WARM,IDLE,WAKE,RESTART}_{B,C} (newline-separated values; the word
+  # NONE for no rows) override one. restart: one sample per arm and block
+  # (DEC-014), so its arms alternate one by one.
+  local cb cc wb wc ib ic kb kc rb rc
   cb="${PA_COLD_B:-$(pa_seq 30 200000 10000)}" cc="${PA_COLD_C:-$(pa_seq 30 200000 10000)}"
   wb="${PA_WARM_B:-$(pa_seq 1000 3000 1)}" wc="${PA_WARM_C:-$(pa_seq 1000 3000 1)}"
   ib="${PA_IDLE_B:-$(pa_seq 30 30000 1000)}" ic="${PA_IDLE_C:-$(pa_seq 30 30000 1000)}"
   kb="${PA_WAKE_B:-$(pa_seq 30 900000 30000)}" kc="${PA_WAKE_C:-$(pa_seq 30 900000 30000)}"
+  rb="${PA_RESTART_B:-$(pa_seq 10 30000000 100000)}" rc="${PA_RESTART_C:-$(pa_seq 10 30000000 100000)}"
   [ "$cb" = NONE ] && cb=''
   [ "$cc" = NONE ] && cc=''
   [ "$ib" = NONE ] && ib=''
   [ "$ic" = NONE ] && ic=''
   [ "$kb" = NONE ] && kb=''
   [ "$kc" = NONE ] && kc=''
+  [ "$rb" = NONE ] && rb=''
+  [ "$rc" = NONE ] && rc=''
   pa_arms cold miss 1 "${PA_COLD_BLOCK:-5}" "$cb" "$cc"
   pa_arms warm hit 2 100 "$wb" "$wc"
   pa_arms idle hit-after-idle 3 5 "$ib" "$ic"
   pa_arms wake after-wake 4 5 "$kb" "$kc"
+  pa_arms restart after-restart 5 1 "$rb" "$rc"
 }
 
 pa_compare() {
@@ -175,7 +181,7 @@ t_committed_manifest_equals_fresh_derivation() {
   assert_eq "" "$(diff "$PA_MANIFEST" "$CASE_DIR/fresh.tsv")" "committed manifest equals a fresh derivation"
   python3 "$PA_TOOL" check-manifest --manifest "$PA_MANIFEST" --bl-targets "$bl" >/dev/null 2>&1
   assert_rc 0 $? "check-manifest accepts the committed manifest"
-  assert_eq 32 "$(grep -c '^limit	' "$PA_MANIFEST")" "one limit row per cell and workload (8 x 4)"
+  assert_eq 40 "$(grep -c '^limit	' "$PA_MANIFEST")" "one limit row per cell and workload (8 x 5)"
   assert_match '^limit	linux/haproxy/standard	cold	source=frozen	budget=30	timeouts=7/30	failures=7/30	.*p95_all_us=inf' \
     "$(cat "$PA_MANIFEST")" "the unfavorable cold class stays recorded with its 7/30 timeouts and p95 inf"
 }
@@ -415,12 +421,13 @@ t_noise_difference_is_not_improvement() {
 
 t_improvement_needs_family_corrected_evidence() {
   # An 80 ms shift of 30 evenly spread trials has P(gain <= 0) = 0.023: it
-  # would pass at 0.05 alone, not at 0.05/12 (every cell x problem class of a
-  # platform). A 130 ms shift has P = 0.0003 and counts.
+  # would pass at 0.05 alone, not at 0.05/16 (every cell x problem class of a
+  # platform: 4 x cold, idle, wake, restart). A 130 ms shift has P = 0.0003
+  # and counts.
   pa_setup linux/socat/standard
   PA_COLD_C="$(pa_seq 30 120000 10000)" pa_cell_data
   pa_compare
-  assert_eq 0.004167 "$(pa_field cold alpha)" "per-comparison alpha: $PA_OUT"
+  assert_eq 0.003125 "$(pa_field cold alpha)" "per-comparison alpha: $PA_OUT"
   assert_eq no "$(pa_field cold improvement)" "evidence at 0.023 is not enough after correction"
   pa_setup linux/socat/standard
   PA_COLD_C="$(pa_seq 30 70000 10000)" pa_cell_data
@@ -605,6 +612,18 @@ t_check_holds_a_cell_to_its_frozen_limits() {
   assert_eq fail "$(pa_field warm timeout)" "over the frozen 0/1000 timeouts"
 }
 
+# A fast SERVFAIL is a failure without being a timeout: the check's failure
+# limit, not its timeout limit, must catch it (mutant check-failure).
+t_check_fails_a_traded_failure() {
+  pa_setup linux/socat/standard
+  PA_COLD_C="$(pa_seq 29 200000 10000; printf 'SF:9000\n')" pa_cell_data
+  pa_check
+  assert_eq 1 "$PA_RC" "one SERVFAIL over a frozen zero fails: $PA_OUT"
+  assert_eq pass "$(pa_field cold timeout)" "no timeout"
+  assert_eq fail "$(pa_field cold failure)" "the failure limit catches it"
+  assert_eq fail "$(pa_verdict cold)" "cold fails"
+}
+
 t_check_below_budget_is_insufficient() {
   pa_setup linux/socat/standard
   PA_COLD_C="$(pa_seq 20 200000 10000)" pa_cell_data
@@ -686,4 +705,80 @@ t_warm_is_judged_against_the_baseline_arm() {
   assert_eq slower "$(pa_field warm latency)" "the slowdown test"
   assert_eq fail "$(pa_verdict warm)" "warm fails"
   assert_eq n/a "$(pa_field warm improvement)" "and warm still never counts as an improvement"
+}
+
+# ─────────────── DEC-014: time to first answer after a stack restart ───────────────
+# One sample per arm at every arm swap (tests/live/tune-resolver.sh): the time
+# from the restart command to the first answered fresh query. A problem class
+# with no frozen row, so it is judged against its same-session arm only.
+
+t_restart_is_a_same_session_problem_class() {
+  pa_setup linux/haproxy/standard
+  assert_match '^workload	restart	after-restart	problem$' "$(cat "$PA_M")" "restart is a problem class"
+  assert_match '^limit	linux/haproxy/standard	restart	source=same-session	budget=10	timeouts=arm	failures=arm$' \
+    "$(cat "$PA_M")" "judged against the same-session arm, 10 per arm"
+  assert_match '^method	comparisons_per_platform	16$' "$(cat "$PA_M")" "the Bonferroni family counts it (4 cells x 4 classes)"
+  assert_match '^rule	restart-first-answer	.*DEC-014' "$(cat "$PA_M")" "the rule that adds it names its decision"
+  assert_eq 5 "$(grep -c '^limit	macos/socat/standard	' "$PA_M")" "every cell carries it"
+}
+
+t_restart_improvement_proves_a_platform() {
+  local c out n=0
+  for c in linux/haproxy/hardened linux/socat/standard linux/socat/hardened; do
+    n=$((n + 1))
+    pa_setup "$c"
+    pa_cell_data
+    pa_compare
+    printf '%s\n' "$PA_OUT" >"$CASE_DIR/r$n.tsv"
+  done
+  pa_setup linux/haproxy/standard
+  PA_COLD_B="$(pa_cold_unfavorable)" PA_COLD_C="$(pa_cold_unfavorable)" \
+    PA_RESTART_C="$(pa_seq 10 12000000 100000)" pa_cell_data
+  pa_compare
+  assert_rc 0 "$PA_RC" "a faster first answer with nothing else changed: $PA_OUT"
+  assert_eq yes "$(pa_field restart improvement)" "restart improved beyond variability"
+  assert_eq no "$(pa_field cold improvement)" "cold did not"
+  assert_eq restart "$(pa_cell_improved)" "the cell names restart"
+  printf '%s\n' "$PA_OUT" >"$CASE_DIR/r-restart.tsv"
+  out="$(python3 "$PA_TOOL" summarize --manifest "$PA_M" --bl-targets "$PA_BL" --platform linux \
+    "$CASE_DIR"/r1.tsv "$CASE_DIR"/r2.tsv "$CASE_DIR"/r3.tsv "$CASE_DIR"/r-restart.tsv 2>&1)"
+  assert_eq 0 $? "restart is the platform's improved class: $out"
+  assert_match '^platform	linux	pass	.*improved=linux/haproxy/standard:restart' "$out" "the platform passes on it"
+  # Noise is not an improvement: a 1% shift of 10 restarts.
+  pa_setup linux/haproxy/standard
+  PA_RESTART_C="$(pa_seq 10 29700000 99000)" pa_cell_data
+  pa_compare
+  assert_eq no "$(pa_field restart improvement)" "a 1% shift is inside variability: $PA_OUT"
+  # A slower first answer fails the cell, as for every problem class.
+  pa_setup linux/haproxy/standard
+  PA_RESTART_C="$(pa_seq 10 90000000 100000)" pa_cell_data
+  pa_compare
+  assert_eq slower "$(pa_field restart latency)" "three times slower: $PA_OUT"
+  assert_eq fail "$(pa_verdict restart)" "fails"
+}
+
+t_restart_needs_its_budget_and_its_arm() {
+  pa_setup linux/haproxy/standard
+  PA_RESTART_B="$(pa_seq 9 30000000 100000)" PA_RESTART_C="$(pa_seq 9 12000000 100000)" pa_cell_data
+  pa_compare
+  assert_eq insufficient "$(pa_verdict restart)" "9 restarts per arm are below the budget: $PA_OUT"
+  assert_eq none "$(pa_cell_improved)" "an insufficient class never counts as improved"
+  pa_setup linux/haproxy/standard
+  PA_RESTART_B=NONE pa_cell_data
+  pa_compare
+  assert_eq blocked "$(pa_verdict restart)" "no baseline arm: $PA_OUT"
+  pa_setup linux/haproxy/standard
+  pa_cell_data
+  pa_check
+  assert_eq unbaselined "$(pa_verdict restart)" "a check reports it, never gates it: $PA_OUT"
+}
+
+t_restart_without_an_answer_counts_against_the_arm() {
+  pa_setup linux/haproxy/standard
+  PA_RESTART_C="$(pa_seq 9 12000000 100000; printf 'TO\n')" pa_cell_data
+  pa_compare
+  assert_eq "1/10" "$(pa_field restart timeouts_cand)" "a restart that never answered: $PA_OUT"
+  assert_eq "0/10" "$(pa_field restart timeout_limit)" "the arm had none"
+  assert_eq fail "$(pa_verdict restart)" "fails however fast the others were"
+  assert_eq none "$(pa_cell_improved)" "and is no improvement"
 }

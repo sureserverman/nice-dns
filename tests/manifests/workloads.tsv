@@ -1,6 +1,7 @@
 # Measurement workloads, parsed as data by tests/live/collect.sh (never sourced).
 # Columns (tab-separated): workload  cache_class  qname_template  qtype
 #   cache_class is the declared expectation: miss | hit | hit-after-idle | after-wake
+#   | after-restart
 #   {nonce} expands to 16 fresh hex digits per query, so a cold query can
 #   never be answered from cache. Names are synthetic and controlled: no
 #   client query history ever enters a sample file.
@@ -9,7 +10,11 @@
 #   valid answer, not a failure.
 # Orchestration (priming before warm, the idle pause, the sleep/wake event)
 # belongs to the caller; the collector only labels and times the queries.
+# restart (DEC-014) is the one exception: its sample is the time from a stack
+# restart to the first answered query, so tests/live/target.sh arm-set times
+# it from the restart command and collect.sh refuses it.
 cold	miss	{nonce}.example.com	A
 warm	hit	example.com	A
 idle	hit-after-idle	example.com	A
 wake	after-wake	{nonce}.example.com	A
+restart	after-restart	{nonce}.example.com	A

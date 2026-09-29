@@ -22,14 +22,15 @@ rule	improve-problem-class	per platform, at least one previously problematic col
 rule	security-absolute	no latency target is met by weakening TLS, DNSSEC or the no-direct-resolver guarantees
 rule	no-failure-regression	tightening: per cell and workload, the candidate failure count (timeout, SERVFAIL, REFUSED, error) must not exceed the baseline failure rate either, so timeouts traded for fast failures never pass
 rule	same-session-baseline	a workload without a frozen row is compared with a baseline arm measured interleaved in the same session; without that arm it is blocked
-rule	no-problem-class-slowdown	tightening: a cold/idle/wake class whose candidate median is slower beyond measured variability fails, so one problem class is never bought with another; warm is held to the same test against its same-session arm (DEC-013)
+rule	restart-first-answer	DEC-014: the time from a stack restart to the first answered query is a problem class, one sample per arm at every arm swap; the frozen Linux cold class came from lookups right after an install, which a steady cold name no longer reproduces; it has no frozen row, so it is held to its same-session arm
+rule	no-problem-class-slowdown	tightening: a cold/idle/wake/restart class whose candidate median is slower beyond measured variability fails, so one problem class is never bought with another; warm is held to the same test against its same-session arm (DEC-013)
 rule	platform-target	per cell, the candidate p95_all_us of a frozen problem class must not exceed its platform target; warm's target is reported as context, never gated (DEC-013: the baseline arm itself missed it on 2026-09-28)
 rule	sample-budget	an arm below its budget is insufficient, never pass
 rule	interleaved-arms	baseline and candidate arms of one workload alternate in time: ordered by utc_start, no same-arm run exceeds ceil(n_arm/min_blocks) samples and each arm forms at least min(min_blocks, n_arm) runs; otherwise the comparison is refused
 rule	separate-classes	one cache_class per workload, never pooled; NXDOMAIN answers are answered queries and their share is reported per arm
 method	improvement	exact percentile bootstrap (no resampling noise, no seed) of the difference of nearest-rank medians, baseline minus candidate; each arm resampled independently; every failed attempt ranks worst (+inf)
 method	alpha_family	0.05
-method	comparisons_per_platform	12
+method	comparisons_per_platform	16
 method	improved_when	P(gain <= 0) < alpha_family/comparisons_per_platform (one-sided, Bonferroni over every cell x problem class of a platform)
 method	slower_when	P(gain >= 0) < alpha_family/comparisons_per_platform
 method	min_blocks	5
@@ -39,38 +40,47 @@ workload	cold	miss	problem
 workload	warm	hit	steady
 workload	idle	hit-after-idle	problem
 workload	wake	after-wake	problem
+workload	restart	after-restart	problem
 limit	linux/haproxy/standard	cold	source=frozen	budget=30	timeouts=7/30	failures=7/30	p50_all_us=2933962	p95_all_us=inf	p99_all_us=inf	p95_support=exploratory
 limit	linux/haproxy/standard	warm	source=frozen	budget=1000	timeouts=0/1000	failures=0/1000	p50_all_us=28179	p95_all_us=30644	p99_all_us=33681	p95_support=supported
 limit	linux/haproxy/standard	idle	source=same-session	budget=30	timeouts=arm	failures=arm
 limit	linux/haproxy/standard	wake	source=same-session	budget=30	timeouts=arm	failures=arm
+limit	linux/haproxy/standard	restart	source=same-session	budget=10	timeouts=arm	failures=arm
 limit	linux/haproxy/hardened	cold	source=frozen	budget=30	timeouts=0/30	failures=0/30	p50_all_us=651989	p95_all_us=2006251	p99_all_us=2190277	p95_support=exploratory
 limit	linux/haproxy/hardened	warm	source=frozen	budget=1000	timeouts=0/1000	failures=0/1000	p50_all_us=28224	p95_all_us=30752	p99_all_us=34424	p95_support=supported
 limit	linux/haproxy/hardened	idle	source=same-session	budget=30	timeouts=arm	failures=arm
 limit	linux/haproxy/hardened	wake	source=same-session	budget=30	timeouts=arm	failures=arm
+limit	linux/haproxy/hardened	restart	source=same-session	budget=10	timeouts=arm	failures=arm
 limit	linux/socat/standard	cold	source=frozen	budget=30	timeouts=0/30	failures=0/30	p50_all_us=1158331	p95_all_us=1415202	p99_all_us=3384766	p95_support=exploratory
 limit	linux/socat/standard	warm	source=frozen	budget=1000	timeouts=0/1000	failures=0/1000	p50_all_us=28099	p95_all_us=30298	p99_all_us=32321	p95_support=supported
 limit	linux/socat/standard	idle	source=same-session	budget=30	timeouts=arm	failures=arm
 limit	linux/socat/standard	wake	source=same-session	budget=30	timeouts=arm	failures=arm
+limit	linux/socat/standard	restart	source=same-session	budget=10	timeouts=arm	failures=arm
 limit	linux/socat/hardened	cold	source=frozen	budget=30	timeouts=0/30	failures=0/30	p50_all_us=1045219	p95_all_us=1659231	p99_all_us=3706175	p95_support=exploratory
 limit	linux/socat/hardened	warm	source=frozen	budget=1000	timeouts=0/1000	failures=0/1000	p50_all_us=28165	p95_all_us=30512	p99_all_us=33441	p95_support=supported
 limit	linux/socat/hardened	idle	source=same-session	budget=30	timeouts=arm	failures=arm
 limit	linux/socat/hardened	wake	source=same-session	budget=30	timeouts=arm	failures=arm
+limit	linux/socat/hardened	restart	source=same-session	budget=10	timeouts=arm	failures=arm
 limit	macos/haproxy/standard	cold	source=frozen	budget=30	timeouts=0/30	failures=0/30	p50_all_us=122634	p95_all_us=173254	p99_all_us=193632	p95_support=exploratory
 limit	macos/haproxy/standard	warm	source=frozen	budget=1000	timeouts=0/1000	failures=0/1000	p50_all_us=4277	p95_all_us=4516	p99_all_us=4600	p95_support=supported
 limit	macos/haproxy/standard	idle	source=same-session	budget=30	timeouts=arm	failures=arm
 limit	macos/haproxy/standard	wake	source=same-session	budget=30	timeouts=arm	failures=arm
+limit	macos/haproxy/standard	restart	source=same-session	budget=10	timeouts=arm	failures=arm
 limit	macos/haproxy/hardened	cold	source=frozen	budget=30	timeouts=0/30	failures=0/30	p50_all_us=258778	p95_all_us=363358	p99_all_us=366114	p95_support=exploratory
 limit	macos/haproxy/hardened	warm	source=frozen	budget=1000	timeouts=0/1000	failures=0/1000	p50_all_us=4355	p95_all_us=4605	p99_all_us=4798	p95_support=supported
 limit	macos/haproxy/hardened	idle	source=same-session	budget=30	timeouts=arm	failures=arm
 limit	macos/haproxy/hardened	wake	source=same-session	budget=30	timeouts=arm	failures=arm
+limit	macos/haproxy/hardened	restart	source=same-session	budget=10	timeouts=arm	failures=arm
 limit	macos/socat/standard	cold	source=frozen	budget=30	timeouts=0/30	failures=0/30	p50_all_us=296799	p95_all_us=635932	p99_all_us=668795	p95_support=exploratory
 limit	macos/socat/standard	warm	source=frozen	budget=1000	timeouts=0/1000	failures=1/1000	p50_all_us=4368	p95_all_us=4675	p99_all_us=4834	p95_support=supported
 limit	macos/socat/standard	idle	source=same-session	budget=30	timeouts=arm	failures=arm
 limit	macos/socat/standard	wake	source=same-session	budget=30	timeouts=arm	failures=arm
+limit	macos/socat/standard	restart	source=same-session	budget=10	timeouts=arm	failures=arm
 limit	macos/socat/hardened	cold	source=frozen	budget=30	timeouts=0/30	failures=0/30	p50_all_us=258682	p95_all_us=437890	p99_all_us=438046	p95_support=exploratory
 limit	macos/socat/hardened	warm	source=frozen	budget=1000	timeouts=0/1000	failures=0/1000	p50_all_us=4383	p95_all_us=4733	p99_all_us=5735	p95_support=supported
 limit	macos/socat/hardened	idle	source=same-session	budget=30	timeouts=arm	failures=arm
 limit	macos/socat/hardened	wake	source=same-session	budget=30	timeouts=arm	failures=arm
+limit	macos/socat/hardened	restart	source=same-session	budget=10	timeouts=arm	failures=arm
 target	linux	cold	timeout_rate_max=0.2333	p95_all_us_max=inf
 target	linux	warm	timeout_rate_max=0.0000	p95_all_us_max=30752
 target	macos	cold	timeout_rate_max=0.0000	p95_all_us_max=635932

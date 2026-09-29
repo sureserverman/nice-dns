@@ -112,6 +112,8 @@ while IFS='	' read -r name class template qtype extra || [ -n "$name" ]; do
   fi
 done <"$workloads"
 [ -n "$w_template" ] || die "unknown workload '$workload' (not in $workloads)"
+# DEC-014: timed from the restart command by target.sh arm-set, never here.
+[ "$workload" != restart ] || die "workload 'restart' is timed from the stack restart by target.sh arm-set, not by collect.sh"
 case "$w_template" in *[!a-z0-9.{}-]*) die "workload '$workload' template has unexpected characters" ;; esac
 case "$w_qtype" in ''|*[!A-Z0-9]*) die "workload '$workload' qtype is invalid" ;; esac
 

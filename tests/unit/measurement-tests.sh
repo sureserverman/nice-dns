@@ -143,6 +143,17 @@ t_collect_refuses_names_outside_workloads() {
   assert_no_path "$CASE_DIR/samples.tsv" "nothing written for a free-form name"
 }
 
+# DEC-014: a restart sample is timed from the restart command (target.sh
+# arm-set); collect.sh cannot see that moment, so it never labels one.
+t_collect_refuses_the_restart_workload() {
+  mt_start
+  MT_OUT="$(bash "$MT_COLLECT" --resolver "$MT_RESOLVER" --workload restart --count 1 \
+    --identity "$CASE_DIR/identity.tsv" --out "$CASE_DIR/samples.tsv" 2>&1)"
+  assert_nonzero $? "restart refused"
+  assert_match 'arm-set' "$MT_OUT" "refusal names where it is timed"
+  assert_no_path "$CASE_DIR/samples.tsv" "nothing written"
+}
+
 t_collect_refuses_incomplete_identity() {
   local k
   mt_start

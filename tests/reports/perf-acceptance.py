@@ -35,7 +35,8 @@ Verdict of a workload, first match wins:
   pass          otherwise
 A cell is fail if any workload fails, else blocked, else insufficient, else pass.
 A platform (summarize) passes only when every one of its matrix cells has a
-result and passes, and at least one cell improved a problem class.
+result and passes, and at least one cell improved a problem class (cold, idle,
+wake, or restart: time to the first answer after a stack restart, DEC-014).
 
 Refusals (exit 2, no verdicts): manifest not a fresh derivation, invalid sample
 file, arms from one run, rows of another cell, a workload row whose cache_class
@@ -63,8 +64,12 @@ RESULT_SCHEMA = "nice-dns-perf-compare/1"
 
 # Frozen by this task (sub-plan 05 Task 1.1); changing any of them changes
 # every derivation, so it is visible in the committed manifest's diff.
-MIN_BUDGET = {"warm": 1000, "cold": 30, "idle": 30, "wake": 30}
-PROBLEM = ("cold", "idle", "wake")
+# restart (DEC-014): one sample per arm swap, so its budget is sized to the
+# swaps a run can afford; simulated with this tool's test at alpha 0.05/16,
+# n=10 per arm keeps the no-difference false-improvement rate at or below
+# alpha and detects a 20% cut 86% of the time at log-spread 0.1 (40%: 100%).
+MIN_BUDGET = {"warm": 1000, "cold": 30, "idle": 30, "wake": 30, "restart": 10}
+PROBLEM = ("cold", "idle", "wake", "restart")
 ALPHA_FAMILY = "0.05"
 MIN_BLOCKS = 5
 CONTROLS = ("target_id", "resolver", "transport", "qtype", "timeout_ms")
@@ -272,7 +277,11 @@ def derive(bl_path):
         "either, so timeouts traded for fast failures never pass")
     add("rule\tsame-session-baseline\ta workload without a frozen row is compared with a baseline "
         "arm measured interleaved in the same session; without that arm it is blocked")
-    add("rule\tno-problem-class-slowdown\ttightening: a cold/idle/wake class whose candidate median "
+    add("rule\trestart-first-answer\tDEC-014: the time from a stack restart to the first answered query "
+        "is a problem class, one sample per arm at every arm swap; the frozen Linux cold class came from "
+        "lookups right after an install, which a steady cold name no longer reproduces; it has no frozen "
+        "row, so it is held to its same-session arm")
+    add("rule\tno-problem-class-slowdown\ttightening: a cold/idle/wake/restart class whose candidate median "
         "is slower beyond measured variability fails, so one problem class is never bought with "
         "another; warm is held to the same test against its same-session arm (DEC-013)")
     add("rule\tplatform-target\tper cell, the candidate p95_all_us of a frozen problem class must not "
