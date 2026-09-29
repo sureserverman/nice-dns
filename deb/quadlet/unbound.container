@@ -41,6 +41,12 @@ HealthStartPeriod=300s
 HealthOnFailure=none
 
 [Service]
+# Sub-plan 5 Task 1.4 (fix A, ARCH-04's startup rule): before every start the
+# controller's launcher demotes a persisted onion route to the exit, so the
+# first answers after a restart never wait for a cold rendezvous. "-": a
+# missing launcher or a failure never blocks Unbound. persistent-podman.sh
+# fills in the path.
+ExecStartPre=-/bin/sh __HEALTH_ROOT__/route-start
 Restart=on-failure
 RestartSec=3s
 TimeoutStopSec=70

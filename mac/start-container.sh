@@ -470,6 +470,18 @@ ensure_container() {
   return 1
 }
 
+# route_start_hook: before Unbound is created (Sub-plan 5 Task 1.4, fix A,
+# ARCH-04's startup rule), the controller's launcher demotes a persisted onion
+# route to the exit, so the first answers never wait for a cold rendezvous.
+# Never blocks the start: no launcher, or a failure, leaves the route as it is.
+route_start_hook() {
+  local l="$HOME/Library/Application Support/nice-dns-health/route-start"
+  container_running unbound && return 0
+  if [ ! -f "$l" ]; then log "route-start: no controller launcher; the route stays as it is"; return 0; fi
+  /bin/sh "$l" >>"$LOG" 2>&1 || true
+  log "route-start ran before Unbound's start"
+}
+
 start_or_create_stack() {
   remove_wrong_tor_variant
 
@@ -493,6 +505,7 @@ start_or_create_stack() {
   # The anchor volume (created by the installer; nd_install_macos_state_volumes)
   # and the route directory (seeded by the installer). Keep these arguments
   # identical to nd_install_macos_run_stack (integration/lifecycle-transitions).
+  route_start_hook
   ensure_container unbound \
     -c 1 -m 256M \
     -v nice-dns-unbound-anchor:/var/lib/unbound \

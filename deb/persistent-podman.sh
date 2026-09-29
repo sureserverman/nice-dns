@@ -117,6 +117,18 @@ if ! ROUTE_OUT="$(ND_PLATFORM=linux bash -c '. "$1/lib/recovery.sh" && seed_defa
   exit 1
 fi
 sed -i "s|__ROUTE_DIR__|${ROUTE_DIR}|g" "$QUADLET_DIR/unbound.container"
+# The controller's route-start launcher (Sub-plan 5 Task 1.4), run before
+# Unbound starts: its root is health/nice-dns-health's HEALTH_LIB_ROOT_INSTALLED.
+# A controller installed later writes it there; until then the "-" skips it.
+HEALTH_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/nice-dns-health"
+# The hook is optional: a path a unit cannot carry drops it with a warning
+# rather than failing the install (Tier-1 review S4).
+case "$HEALTH_ROOT" in
+  /*[!A-Za-z0-9._/-]*|[!/]*)
+    echo "   ! The controller's directory '$HEALTH_ROOT' cannot go into a unit (absolute, A-Z a-z 0-9 . _ / - only): Unbound starts without the route-start hook." >&2
+    sed -i '/^ExecStartPre=-\/bin\/sh __HEALTH_ROOT__\/route-start$/d' "$QUADLET_DIR/unbound.container" ;;
+  *) sed -i "s|__HEALTH_ROOT__|${HEALTH_ROOT}|g" "$QUADLET_DIR/unbound.container" ;;
+esac
 
 echo "   ✓ Quadlet files installed."
 echo

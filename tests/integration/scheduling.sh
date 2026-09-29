@@ -324,6 +324,60 @@ t_installed_controller_reads_its_timers_from_the_tunables_file() {
   done
 }
 
+# Sub-plan 5 Task 1.4 (fix A): every launch path runs <controller root>/
+# route-start before Unbound starts; it runs the installed controller's
+# route-start, which demotes a persisted onion to the exit (lib/recovery.sh
+# start_route). Only an active controller acts; shadow records, never acts.
+t_route_start_launcher_demotes_an_onion_only_when_active() {
+  local plat
+  for plat in $(sc_platforms); do
+    (
+      local seed info
+      sc_env "$plat"
+      sc_launch() { SC_OUT="$(sh "$SC_ROOT/route-start" 2>&1)"; SC_RC=$?; }
+      seed() { ND_PLATFORM="$plat" bash -c '. "$1/lib/recovery.sh" && seed_route cloudflare-onion 4' _ "$SC_TREE" >/dev/null; }
+      info() { ND_PLATFORM="$plat" bash -c '. "$1/lib/recovery.sh" && _nd_route_file_info "$(nd_platform_route_dir)/forward-route.conf" | cut -f1,2' _ "$SC_TREE"; }
+      sc_cli "$SC_TREE/health/nice-dns-health" install --shadow
+      assert_rc 0 "$SC_RC" "$plat: install --shadow: $SC_OUT"
+      assert_file "$SC_ROOT/route-start" "$plat: the launcher is written with the receipt"
+      assert_eq 755 "$(stat -c %a "$SC_ROOT/route-start")" "$plat: executable, not group- or world-writable"
+      seed
+      assert_eq "cloudflare-onion	4" "$(info)" "$plat: an onion include, as the controller left it"
+      sc_launch
+      assert_rc 0 "$SC_RC" "$plat: the launcher never fails its caller: $SC_OUT"
+      assert_eq "cloudflare-onion	4" "$(info)" "$plat: a shadow controller never acts"
+      sc_cli "$SC_TREE/health/nice-dns-health" install
+      assert_rc 0 "$SC_RC" "$plat: activation: $SC_OUT"
+      sc_launch
+      assert_rc 0 "$SC_RC" "$plat: active: $SC_OUT"
+      assert_eq "cloudflare-exit	5" "$(info)" "$plat: an active controller demotes the onion to the exit at the next generation"
+      assert_match 'ROUTE-START result=applied route=cloudflare-exit generation=5' "$(cat "$(dirname "$SC_ROOT")/../Logs/nice-dns-health/health.log" "$XDG_STATE_HOME/nice-dns-health/health.log" 2>/dev/null)" "$plat: the controller log records it"
+      # A receipt the launcher must not trust, or cannot use: nothing runs,
+      # and it still succeeds (Tier-1 review S6). The onion is back first.
+      rm -f "$(ND_PLATFORM="$plat" bash -c '. "$1/lib/platform/'"$plat"'.sh" && nd_platform_route_dir' _ "$SC_TREE")"/forward-route.conf \
+        "$(ND_PLATFORM="$plat" bash -c '. "$1/lib/platform/'"$plat"'.sh" && nd_platform_route_dir' _ "$SC_TREE")"/desired.tsv
+      seed
+      mv "$SC_ROOT/install.tsv" "$SC_ROOT/install.tsv.away"
+      sc_launch
+      assert_rc 0 "$SC_RC" "$plat: without a receipt the launcher does nothing and still succeeds: $SC_OUT"
+      ln -s install.tsv.away "$SC_ROOT/install.tsv"
+      sc_launch
+      assert_rc 0 "$SC_RC" "$plat: a symlinked receipt: $SC_OUT"
+      rm -f "$SC_ROOT/install.tsv"
+      sed '1s/.*/schema\tsomething-else\/1/' "$SC_ROOT/install.tsv.away" >"$SC_ROOT/install.tsv"
+      sc_launch
+      assert_rc 0 "$SC_RC" "$plat: a receipt of another schema: $SC_OUT"
+      awk -F '\t' -v OFS='\t' '$1 == "entrypoint" { $2 = "/nonexistent/nice-dns-health" } { print }' "$SC_ROOT/install.tsv.away" >"$SC_ROOT/install.tsv"
+      sc_launch
+      assert_rc 0 "$SC_RC" "$plat: a receipt whose entrypoint is gone: $SC_OUT"
+      assert_eq "cloudflare-onion	4" "$(info)" "$plat: none of them ran the controller"
+      mv -f "$SC_ROOT/install.tsv.away" "$SC_ROOT/install.tsv"
+      sc_cli "$SC_BIN" uninstall
+      assert_no_path "$SC_ROOT/route-start" "$plat: uninstall removes the launcher"
+    ) || exit 1
+  done
+}
+
 t_quadlets_leave_chain_restarts_to_the_controller() {
   # Close-out evaluator B1 and M2 (Sub-plan 3). The controller is the only
   # actor that restarts the Tor proxy or Unbound for a chain fault (ARCH-02,

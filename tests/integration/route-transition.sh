@@ -383,6 +383,158 @@ t_unsafe_route_directory_refused() {
   assert_rc 2 "$RT_RRC" "seeding over an existing include is refused: $RT_RES"
 }
 
+# ─────────────────────────── cases: the route at start ───────────────────────
+# Sub-plan 5 Task 1.4 (fix A, ARCH-04's startup rule): before Unbound starts,
+# a persisted onion include is demoted to the seed exit, so the first queries
+# after a restart never wait for a cold rendezvous (mac 2026-09-29: 56 s,
+# until the controller's next tick). Unbound is not running yet: files only,
+# under the controller's state lock.
+
+rt_start_setup() {
+  rt_setup
+  ND_STATE_DIR="$CASE_DIR/state" ND_BOOT_ID=boot-a
+  export ND_STATE_DIR ND_BOOT_ID
+  # The proxy container's generation line, as the platform reads it; unset:
+  # no proxy container is readable (the macOS agent creates it after Unbound).
+  RT_PGEN=""
+  nd_platform_container_generation() { [ -n "$RT_PGEN" ] && printf '%s\n' "$RT_PGEN"; }
+}
+
+# rt_recorded_proxy <generation line>: the controller's state records that
+# proxy generation (its hash), as a pass does.
+rt_recorded_proxy() {
+  nd_state_init
+  { _nd_state_default; printf 'proxy_gen\t%s\n' "$(nd_generation_hash "$1")"; } >"$ND_STATE_DIR/state.tsv"
+  nd_state_load >/dev/null
+  assert_rc 0 $? "the state with a proxy_gen is valid"
+}
+
+t_start_demotes_a_persisted_onion_to_the_exit() {
+  local onion
+  rt_start_setup
+  rt_call seed_route cloudflare-onion 7
+  assert_rc 0 "$RT_RRC" "an onion include, as the controller left it: $RT_RES"
+  onion="$(cat "$ND_ROUTE_DIR/forward-route.conf")"
+  rt_call start_route
+  assert_rc 0 "$RT_RRC" "the start demotes the onion: $RT_RES"
+  assert_eq applied "$(rt_f result)" "result"
+  assert_eq cloudflare-exit "$(rt_f route)" "the seed exit is selected"
+  assert_eq 8 "$(rt_f generation)" "at the next generation"
+  assert_eq "cloudflare-exit	8	127.0.0.1@18532#dns.fixture.test" "$(_nd_route_file_info "$ND_ROUTE_DIR/forward-route.conf")" "the include names the exit"
+  assert_eq "$(printf 'schema\tnice-dns-route-desired/1\nroute\tcloudflare-exit\ngeneration\t8')" "$(cat "$ND_ROUTE_DIR/desired.tsv")" "desired follows"
+  assert_eq 644 "$(stat -c %a "$ND_ROUTE_DIR/forward-route.conf")" "the include stays readable by Unbound"
+  assert_eq "$onion" "$(cat "$ND_ROUTE_DIR/.forward-route.conf.prev")" "the onion include is kept as the previous one"
+  assert_no_path "$ND_STATE_DIR/lock" "the state lock is released"
+  # Unbound then starts on the exit and resolves through it.
+  rt_holder
+  rt_fixture
+  rt_overlay
+  rt_unbound
+  assert_eq "cloudflare-exit	8	127.0.0.1" "$(route_readback)" "Unbound runs the exit"
+  rt_resolves_via 18532
+}
+
+# Tier-1 review I1: Unbound restarting alone (the proxy did not restart) keeps
+# its onion; a demotion there would stick, since the controller's state
+# would still say onion and nothing re-selects.
+t_start_keeps_the_onion_of_a_proxy_that_did_not_restart() {
+  local before
+  rt_start_setup
+  rt_call seed_route cloudflare-onion 7
+  rt_recorded_proxy "abc123 2026-09-29T20:00:00Z running"
+  RT_PGEN="abc123 2026-09-29T20:00:00Z running"
+  before="$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")|$(rt_sha "$ND_ROUTE_DIR/desired.tsv")"
+  rt_call start_route
+  assert_rc 0 "$RT_RRC" "the same proxy: $RT_RES"
+  assert_eq kept "$(rt_f result)" "kept"
+  assert_match 'not fresh' "$(rt_f detail)" "the detail says why"
+  assert_eq "$before" "$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")|$(rt_sha "$ND_ROUTE_DIR/desired.tsv")" "include and desired untouched"
+  assert_no_path "$ND_STATE_DIR/lock" "the state lock is released"
+}
+
+t_start_demotes_when_the_proxy_restarted() {
+  rt_start_setup
+  rt_call seed_route cloudflare-onion 7
+  rt_recorded_proxy "abc123 2026-09-29T20:00:00Z running"
+  RT_PGEN="def456 2026-09-29T21:00:00Z running"
+  rt_call start_route
+  assert_rc 0 "$RT_RRC" "a restarted proxy: $RT_RES"
+  assert_eq applied "$(rt_f result)" "demoted"
+  assert_eq "cloudflare-exit	8" "$(_nd_route_file_info "$ND_ROUTE_DIR/forward-route.conf" | cut -f1,2)" "to the exit"
+  assert_match "generation $(nd_generation_hash "$RT_PGEN")" "$(rt_f detail)" "the detail names the fresh generation"
+}
+
+t_start_refuses_a_malformed_desired() {
+  local before
+  rt_start_setup
+  rt_call seed_route cloudflare-onion 7
+  printf 'not a desired file\n' >"$ND_ROUTE_DIR/desired.tsv"
+  before="$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")"
+  rt_call start_route
+  assert_rc 2 "$RT_RRC" "as apply_route refuses it: $RT_RES"
+  assert_eq "$before" "$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")" "the include is untouched"
+  assert_no_path "$ND_STATE_DIR/lock" "the state lock is released"
+}
+
+t_start_keeps_an_exit_route() {
+  local before
+  rt_start_setup
+  rt_call seed_route quad9-exit 3
+  before="$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")|$(rt_sha "$ND_ROUTE_DIR/desired.tsv")"
+  rt_call start_route
+  assert_rc 0 "$RT_RRC" "an exit route: $RT_RES"
+  assert_eq kept "$(rt_f result)" "kept"
+  assert_eq "$before" "$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")|$(rt_sha "$ND_ROUTE_DIR/desired.tsv")" "the include and desired are untouched"
+  assert_no_path "$ND_ROUTE_DIR/.forward-route.conf.prev" "no previous include is written"
+}
+
+t_start_without_an_include_changes_nothing() {
+  rt_start_setup
+  rt_call start_route
+  assert_rc 0 "$RT_RRC" "no route directory: $RT_RES"
+  assert_eq kept "$(rt_f result)" "nothing to demote"
+  assert_no_path "$ND_ROUTE_DIR" "the directory is not created (seeding is the installers')"
+}
+
+t_start_goes_past_the_desired_generation() {
+  rt_start_setup
+  rt_call seed_route cloudflare-onion 7
+  _nd_route_write_desired "$ND_ROUTE_DIR" cloudflare-onion 9
+  rt_call start_route
+  assert_rc 0 "$RT_RRC" "desired ahead of the include: $RT_RES"
+  assert_eq 10 "$(rt_f generation)" "the new generation is past both"
+}
+
+t_start_skips_while_the_controller_holds_the_lock() {
+  local tok before
+  rt_start_setup
+  rt_call seed_route cloudflare-onion 2
+  before="$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")"
+  nd_state_init
+  tok="$(nd_state_lock)"
+  assert_ne "" "$tok" "the controller holds the lock"
+  rt_call start_route
+  assert_rc 3 "$RT_RRC" "busy: $RT_RES"
+  assert_eq busy "$(rt_f result)" "result"
+  assert_eq "$before" "$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")" "the include is untouched"
+  nd_state_lock_held "$tok"
+  assert_rc 0 $? "the controller's lock is still its own"
+  nd_state_unlock "$tok"
+}
+
+t_start_refuses_an_unsafe_directory() {
+  local before
+  rt_start_setup
+  rt_call seed_route cloudflare-onion 2
+  before="$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")"
+  chmod 0775 "$ND_ROUTE_DIR"
+  rt_call start_route
+  assert_rc 2 "$RT_RRC" "a group-writable directory: $RT_RES"
+  assert_eq refused "$(rt_f result)" "result"
+  assert_eq "$before" "$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")" "the include is untouched"
+  chmod 0755 "$ND_ROUTE_DIR"
+}
+
 # ─────────────────────────── cases: interruption and rollback ────────────────
 
 t_interrupted_before_rename_keeps_route_then_reconciles() {

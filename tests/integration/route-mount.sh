@@ -101,6 +101,11 @@ t_every_launch_path_mounts_the_directory_read_only() {
     (
       local line
       dt_world "$ep" "$(dt_fresh_state "$ep")"
+      if [ "$(ip_platform "$ep")" = macos ]; then
+        # A controller from an earlier install: its launcher logs its run.
+        mkdir -p "$IP_HOME/Library/Application Support/nice-dns-health"
+        printf '#!/bin/sh\necho route-start >>"$FAKE_LOG"\n' >"$IP_HOME/Library/Application Support/nice-dns-health/route-start"
+      fi
       rm_install "$ep" haproxy
       assert_rc 0 "$IP_RC" "$ep: install: $IP_OUT"
       if [ "$(ip_platform "$ep")" = macos ]; then
@@ -111,6 +116,12 @@ t_every_launch_path_mounts_the_directory_read_only() {
         assert_match '^[[:space:]]*-v "\$\{ND_ROUTE_DIR\}:/etc/unbound/route:ro" \\$' "$(cat "$NICE_DNS_ROOT/mac/start-container.sh")" "$ep: so does the agent's"
         assert_eq "$(rm_dir)" "$(env -i HOME="$IP_HOME" XDG_STATE_HOME="$IP_HOME/.local/state" bash -c '. "$1/lib/platform/macos.sh"; nd_platform_route_dir' _ "$NICE_DNS_ROOT")" "$ep: the directory the controller manages"
         assert_eq "$(rm_dir)" "$(env -i HOME="$IP_HOME" XDG_STATE_HOME="$IP_HOME/.local/state" bash -c "$(grep -E '^ND_ROUTE_DIR=' "$NICE_DNS_ROOT/mac/start-container.sh"); printf '%s\\n' \"\$ND_ROUTE_DIR\"")" "$ep: is the one the agent mounts"
+        # Sub-plan 5 Task 1.4 (fix A): the controller's route-start runs
+        # before Unbound is created, by the installer and by the agent.
+        assert_match 'route-start' "$(cat "$FAKE_LOG")" "$ep: the installer ran the route-start launcher"
+        assert_eq "route-start" "$(grep -E '^(route-start|container run -d --name unbound )' "$FAKE_LOG" | tail -n 2 | head -n 1 | cut -d' ' -f1)" "$ep: before it created Unbound"
+        assert_eq 1 "$(awk '/^start_or_create_stack\(\)/ { f = 1 } f && /route_start_hook/ { print NR; exit }' "$NICE_DNS_ROOT/mac/start-container.sh" | grep -c .)" "$ep: the agent calls it in start_or_create_stack"
+        assert_eq 1 "$(awk '/^start_or_create_stack\(\)/ { f = 1 } f && /route_start_hook/ { h = NR } f && /ensure_container unbound/ { print (h && h < NR) ? 1 : 0; exit }' "$NICE_DNS_ROOT/mac/start-container.sh")" "$ep: before it creates Unbound"
       else
         assert_match '^Volume=__ROUTE_DIR__:/etc/unbound/route:ro$' "$(cat "$NICE_DNS_ROOT/deb/quadlet/unbound.container")" "$ep: the quadlet mounts the directory read-only (persistent-podman.sh fills in the path)"
       fi
@@ -139,6 +150,20 @@ t_linux_quadlet_mounts_the_seeded_directory() {
       | awk '$0 == "---unbound.service---" { f = 1; next } /^---.*---$/ { f = 0 } f && /^ExecStart=/')"
     assert_match " -v $(rm_dir):/etc/unbound/route:ro " "$gen " "the generated Unbound unit mounts the directory read-only"
     assert_eq "" "$(grep -rl '__ROUTE_DIR__' "$IP_HOME/.config/containers/systemd" || true)" "no placeholder is left in the installed quadlets"
+    # Sub-plan 5 Task 1.4 (fix A): before every Unbound start, the
+    # controller's launcher demotes a persisted onion; "-": never blocks it.
+    gen="$(QUADLET_UNIT_DIRS="$IP_HOME/.config/containers/systemd" "$q" -dryrun -user 2>/dev/null \
+      | awk '$0 == "---unbound.service---" { f = 1; next } /^---.*---$/ { f = 0 } f && /^ExecStartPre=/')"
+    assert_eq "ExecStartPre=-/bin/sh $IP_HOME/.local/share/nice-dns-health/route-start" "$gen" "the generated Unbound unit runs the route-start launcher first"
+    assert_eq "" "$(grep -rl '__HEALTH_ROOT__' "$IP_HOME/.config/containers/systemd" || true)" "no health-root placeholder is left"
+    # A controller directory a unit cannot carry drops the optional hook
+    # with a warning; the install goes on (Tier-1 review S4).
+    # (ip_run starts from a clean environment: a wrapper sets the variable.)
+    printf '#!/bin/bash\nXDG_DATA_HOME="$HOME/data with space" exec bash "$@"\n' >"$IP_W/with-space.sh"
+    ip_run "$IP_W/with-space.sh" "$IP_W/real/deb/persistent-podman.sh" socat standard
+    assert_rc 0 "$IP_RC" "an unusable controller path does not fail the install: $IP_OUT"
+    assert_match "without the route-start hook" "$IP_OUT" "it warns"
+    assert_eq "" "$(grep -E '^ExecStartPre=|__HEALTH_ROOT__' "$IP_HOME/.config/containers/systemd/unbound.container" || true)" "and the unit has no hook and no placeholder"
   ) || exit 1
 }
 

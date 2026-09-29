@@ -237,14 +237,20 @@ _nd_obs_proxy() {
   if ! out="$(nd_platform_container_generation "$_ND_H_PROXY" "$dl" "$_ND_H_TMP")" || [ -z "$out" ]; then
     _nd_obs proxy indeterminate $(($(_nd_now_ms) - t0)) "unknown: $_ND_H_PROXY generation not readable"; return 0
   fi
-  if command -v sha256sum >/dev/null 2>&1; then h="$(printf '%s' "$out" | sha256sum | cut -c1-16)"
-  else h="$(printf '%s' "$out" | shasum -a 256 2>/dev/null | cut -c1-16)"; fi
   # Never a healthy record without a generation (a PATH without either tool
   # hashed to nothing, and the policy would read that as a restart).
-  case "$h" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
-    *) _nd_obs proxy indeterminate $(($(_nd_now_ms) - t0)) "unknown: no sha256sum or shasum to hash the generation"; return 0 ;;
-  esac
+  h="$(nd_generation_hash "$out")" || { _nd_obs proxy indeterminate $(($(_nd_now_ms) - t0)) "unknown: no sha256sum or shasum to hash the generation"; return 0; }
   _nd_obs proxy healthy $(($(_nd_now_ms) - t0)) "generation:$h"
+}
+
+# nd_generation_hash <generation line>: its 16-hex hash, as the proxy
+# observation records it (and lib/recovery.sh start_route compares it with
+# the state's proxy_gen). Exit 1, nothing printed, when it cannot be hashed.
+nd_generation_hash() {
+  local h
+  if command -v sha256sum >/dev/null 2>&1; then h="$(printf '%s' "$1" | sha256sum | cut -c1-16)"
+  else h="$(printf '%s' "$1" | shasum -a 256 2>/dev/null | cut -c1-16)"; fi
+  case "$h" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) printf '%s\n' "$h" ;; *) return 1 ;; esac
 }
 
 # ─── DNS owner ───────────────────────────────────────────────────────────────

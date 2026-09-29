@@ -458,6 +458,102 @@ seed_default_route() {
   seed_route "$ND_ROUTE_SEED" 1
 }
 
+# start_route: before Unbound starts (Sub-plan 5 Task 1.4, ARCH-04's startup
+# rule: an authenticated exit while the onion is cold). When the proxy is
+# fresh, a persisted *-onion include is demoted to ND_ROUTE_SEED at the next
+# generation, as an install seeds it. Measured on the mac 2026-09-29: after a
+# restart on a kept onion the first answer waited 56 s for the rendezvous,
+# until the controller's next tick moved to the exit.
+#
+# Fresh is the policy's own test (lib/policy.sh, the fresh-proxy rule): the
+# proxy container's generation hash (nd_generation_hash, as the proxy
+# observation records it) differs from the state's proxy_gen, or cannot be
+# read (the proxy is being recreated). So the controller's next pass drops the
+# onion from its state too and selects the exit (unchanged), then promotes the
+# onion once sustained: include and state agree. Unbound restarting alone
+# while the proxy runs on (same generation) keeps its onion: the circuits are
+# warm, and a demotion there would stick, since the state would still say
+# onion (Tier-1 review I1). Accepted risk (review N1, backlog): a proxy
+# generation that cannot be read counts as fresh, which the macOS rebuild
+# needs (the proxy does not exist yet); a failed read of a warm proxy
+# therefore demotes too, and that demotion sticks until the proxy restarts.
+#
+# Files only (Unbound is not running), under the controller's state lock, so
+# a tick's apply_route never interleaves. A tick holding the lock wins (busy,
+# exit 3): the start then runs on the persisted route until that tick or the
+# next one decides (a tick restarting the proxy decides on its next pass).
+# desired.tsv is written first and the previous include copied by rename, as
+# apply_route does, so an interrupted demotion reconciles forward. A malformed
+# desired.tsv is refused, as apply_route refuses it. No include, or an exit,
+# is kept. Exit 0 applied or kept; 2 refused; 3 busy.
+start_route() {
+  local dir info cur igen gen tok rc msg pgen sgen
+  _ND_DES_ROUTE="" _ND_DES_GEN=""
+  dir="$(nd_platform_route_dir)"
+  if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
+    _nd_route_out kept - - - "no route directory $dir (seeding is the installers')"; return 0
+  fi
+  msg="$(_nd_route_dir_ok "$dir")" || { _nd_route_out refused - - - "$msg"; return 2; }
+  [ -e "$dir/forward-route.conf" ] || { _nd_route_out kept - - - "no include in $dir"; return 0; }
+  info="$(_nd_route_file_info "$dir/forward-route.conf")" || { _nd_route_out refused - - - "$dir/forward-route.conf is not a managed include"; return 2; }
+  cur="$(printf '%s\n' "$info" | cut -f1)" igen="$(printf '%s\n' "$info" | cut -f2)"
+  case "$cur" in
+    *-onion) ;;
+    *) _nd_route_read_desired "$dir" || true
+       _nd_route_out kept "$cur" "$igen" "$(printf '%s\n' "$info" | cut -f3)" "not an onion route; kept"; return 0 ;;
+  esac
+  msg="$(_nd_route_resolve "$ND_ROUTE_SEED")" || { _nd_route_out refused - - - "$msg"; return 2; }
+  _nd_route_resolve "$ND_ROUTE_SEED" >/dev/null
+  nd_state_init >/dev/null 2>&1 || { _nd_route_out refused - - - "cannot open the controller state directory"; return 2; }
+  tok="$(nd_state_lock 2>/dev/null)"; rc=$?
+  if [ "$rc" -eq 3 ]; then _nd_route_out busy "$cur" "$igen" - "the controller holds the state lock; the start runs on the persisted route until its pass decides"; return 3; fi
+  [ "$rc" -eq 0 ] || { _nd_route_out refused - - - "cannot take the controller state lock"; return 2; }
+  pgen="$(_nd_route_proxy_gen)"
+  sgen="$(awk -F '\t' '$1 == "proxy_gen" { print $2; exit }' "$(_nd_state_dir)/state.tsv" 2>/dev/null)"
+  if [ -n "$pgen" ] && [ "$pgen" = "$sgen" ]; then
+    nd_state_unlock "$tok" >/dev/null 2>&1
+    _nd_route_read_desired "$dir" || true
+    _nd_route_out kept "$cur" "$igen" "$(printf '%s\n' "$info" | cut -f3)" "the proxy is not fresh (generation $pgen, as the controller recorded it): its onion circuits are warm; kept"
+    return 0
+  fi
+  if ! _nd_route_read_desired "$dir"; then
+    nd_state_unlock "$tok" >/dev/null 2>&1
+    _nd_route_out refused "$cur" "$igen" - "$dir/desired.tsv is malformed"; return 2
+  fi
+  _nd_route_gen_ok "$igen" || igen=0
+  gen="$igen"
+  if _nd_route_gen_ok "${_ND_DES_GEN:-}" && [ "$_ND_DES_GEN" -gt "$gen" ]; then gen="$_ND_DES_GEN"; fi
+  gen=$((gen + 1))
+  if ! { _nd_route_write_desired "$dir" "$ND_ROUTE_SEED" "$gen" \
+         && (umask 022 && _nd_route_render "$ND_ROUTE_SEED" "$gen" "$_ND_FWD" >"$dir/.forward-route.conf.staged") \
+         && chmod 0644 "$dir/.forward-route.conf.staged" \
+         && cp -p "$dir/forward-route.conf" "$dir/.forward-route.conf.prev.tmp" \
+         && mv -f "$dir/.forward-route.conf.prev.tmp" "$dir/.forward-route.conf.prev" \
+         && mv -f "$dir/.forward-route.conf.staged" "$dir/forward-route.conf"; }; then
+    rm -f "$dir/.forward-route.conf.staged" "$dir/.forward-route.conf.prev.tmp"
+    nd_state_unlock "$tok" >/dev/null 2>&1
+    _nd_route_out refused - - - "cannot write the exit route in $dir"; return 2
+  fi
+  nd_state_unlock "$tok" >/dev/null 2>&1
+  _ND_DES_ROUTE="$ND_ROUTE_SEED" _ND_DES_GEN="$gen"
+  _nd_route_out applied "$ND_ROUTE_SEED" "$gen" "$_ND_FWD" "the proxy is fresh (generation ${pgen:-unreadable}, recorded ${sgen:--}): demoted $cur (generation $igen) before Unbound starts"
+}
+
+# _nd_route_proxy_gen: the running proxy container's generation hash, or
+# nothing when none can be read (not created yet: the macOS agent creates the
+# proxy after Unbound).
+_nd_route_proxy_gen() {
+  local c t out
+  t="$(mktemp -d "${TMPDIR:-/tmp}/nd-route-start.XXXXXX")" || return 0
+  for c in tor-haproxy tor-socat; do
+    if out="$(nd_platform_container_generation "$c" 10 "$t" 2>/dev/null)" && [ -n "$out" ]; then
+      nd_generation_hash "$out" || true
+      break
+    fi
+  done
+  rm -rf "${t:?}"
+}
+
 # ─── Recovery actions (Sub-plan 3, Task 1.3) ────────────────────────────────
 
 _ND_CTL_DIR=/app/data/control

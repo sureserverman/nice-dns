@@ -750,6 +750,9 @@ cmd_install() {
   mv -f "$INSTALLED_BIN.new" "$INSTALLED_BIN" || return 1
   old="$(receipt_get bundle 2>/dev/null)"
   prev="${old:--}"; [ "$prev" = "$id" ] && prev="$(receipt_get previous 2>/dev/null)"; prev="${prev:--}"
+  # Before anything is scheduled: an install that stops here leaves no unit
+  # running without its launcher (Tier-1 review S3).
+  write_route_start_launcher || { echo "$SCRIPT_NAME: install failed writing $HEALTH_LIB_ROOT_INSTALLED/route-start" >&2; return 1; }
   if [ "$IS_LINUX" -eq 1 ]; then
     write_systemd_units "$interp" "$mode" || { echo "$SCRIPT_NAME: install failed writing the systemd units" >&2; return 1; }
     units="$SYSTEMD_UNIT_DIR/$SYSTEMD_SVC $SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER"
@@ -946,6 +949,50 @@ cmd_observe() {
   printf '%s\n' "$out"
 }
 
+# cmd_route_start: before Unbound starts (Sub-plan 5 Task 1.4, fix A): when
+# the proxy is fresh, a persisted onion route is demoted to the exit
+# (lib/recovery.sh start_route, ARCH-04's startup rule). Run through
+# <root>/route-start by every launch path: the Unbound quadlet's ExecStartPre,
+# the macOS agent and installer. Only an active install acts; a shadow one
+# records and never acts.
+cmd_route_start() {
+  local out rc
+  if [ "$(receipt_get mode 2>/dev/null)" != active ]; then
+    echo "$SCRIPT_NAME: route-start: the controller is not installed active; nothing done"
+    return 0
+  fi
+  if ! load_health_libs; then
+    echo "$SCRIPT_NAME: not loading the health libraries: $HEALTH_LIB_ERROR" >&2
+    return 2
+  fi
+  mkdir -p "$LOG_DIR"
+  out="$(start_route)"; rc=$?
+  log_to_file "$(ts) ROUTE-START $(printf '%s\n' "$out" | awk -F '\t' '$1 == "result" || $1 == "route" || $1 == "generation" { printf "%s%s=%s", s, $1, $2; s = " " }')"
+  printf '%s\n' "$out"
+  return "$rc"
+}
+
+# write_route_start_launcher: <root>/route-start, the fixed path every launch
+# path runs before Unbound starts (the entrypoint's own path varies: see
+# pick_installed_bin). It reads the receipt at run time and never fails its
+# caller: no receipt, or no entrypoint, is nothing to do.
+write_route_start_launcher() {
+  local f="$HEALTH_LIB_ROOT_INSTALLED/route-start"
+  cat >"$f.new" <<'LAUNCHER' || return 1
+#!/bin/sh
+# Written by nice-dns-health install (Sub-plan 5 Task 1.4). Run before Unbound
+# starts; runs the installed controller's route-start. Never fails its caller.
+r="$(dirname "$0")/install.tsv"
+[ -f "$r" ] && [ ! -L "$r" ] || exit 0
+get() { awk -F '\t' -v k="$1" 'NR == 1 && $0 != "schema\tnice-dns-health-install/1" { exit } $1 == k { print $2; exit }' "$r"; }
+e="$(get entrypoint)" i="$(get interpreter)"
+[ -n "$e" ] && [ -f "$e" ] && [ -n "$i" ] && [ -x "$i" ] || exit 0
+"$i" "$e" route-start || true
+exit 0
+LAUNCHER
+  chmod 0755 "$f.new" && mv -f "$f.new" "$f"
+}
+
 # tick [--shadow]: one controller pass (lib/recovery.sh nd_recovery_tick):
 # observe, decide under the state lock, act (or, with --shadow, only record
 # what it would do, in a separate shadow state), commit. The schedules still
@@ -1023,6 +1070,9 @@ Usage: $SCRIPT_NAME <command>
   tick        One controller pass: observe, decide (lib/policy.sh) and act
               with acknowledged recovery (lib/recovery.sh). --shadow records
               the decision in a separate shadow state and never acts.
+  route-start Before Unbound starts: demote a persisted onion route to the
+              exit (active installs only). Run by <root>/route-start from
+              the Unbound quadlet, the macOS agent and the macOS installer.
   logs        Print the rolling log (one line per run).
   failures    List failure dumps. Add --last to print the most recent.
 
@@ -1058,6 +1108,7 @@ main() {
     run)        cmd_run "$@" ;;
     observe)    cmd_observe "$@" ;;
     tick)       cmd_tick "$@" ;;
+    route-start) cmd_route_start "$@" ;;
     self-check) cmd_self_check "$@" ;;
     bridges-refresh) cmd_bridges_refresh "$@" ;;
     logs)       cmd_logs "$@" ;;

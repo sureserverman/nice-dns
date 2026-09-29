@@ -2229,6 +2229,11 @@ nd_install_macos_run_stack() {
     -e DISABLE_GITHUB_UPDATES=true \
     pi-hole:latest >/dev/null
 
+  # Sub-plan 5 Task 1.4 (fix A): a controller from an earlier install demotes
+  # a persisted onion route before Unbound starts (never blocks the install).
+  if [ -f "$HOME/Library/Application Support/nice-dns-health/route-start" ]; then
+    /bin/sh "$HOME/Library/Application Support/nice-dns-health/route-start" >/dev/null 2>&1 || true
+  fi
   "$CONTAINER_BIN" run -d --name unbound --network dnsnet \
     -c 1 -m 256M \
     -v nice-dns-unbound-anchor:/var/lib/unbound \
