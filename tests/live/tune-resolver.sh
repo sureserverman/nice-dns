@@ -89,6 +89,23 @@ tr_restart() {
   tr_append "$f" "$d/samples-$arm.tsv"
 }
 
+# tr_dns_settled <alias>: the host resolver answers 3 checks in a row (5 s
+# apart, up to 3 min). arm-set returns on the first answered name, and the
+# macOS installer's preparation (brew update) right after it could not
+# resolve github.com (live 2026-09-29, mac: the reinstall refused, 11 s after
+# the restart).
+tr_dns_settled() {
+  local a="$1" d ok=0 i=0
+  d="$(il_dir "$a")"
+  while [ "$i" -lt 36 ]; do
+    i=$((i + 1))
+    if il_t "$a" lifecycle-report 2>>"$d/ops.log" | grep -q "^resolves	yes$"; then ok=$((ok + 1)); else ok=0; fi
+    [ "$ok" -ge 3 ] && return 0
+    sleep 5
+  done
+  return 1
+}
+
 tr_cell() {
   local plat="$1" a="$2" d proxy tag arm k first
   d="$(il_dir "$a")"
@@ -153,6 +170,7 @@ tr_cell() {
 
   # The target ends on the candidate with its schedules running again.
   il_t "$a" arm-set --component "tor-$proxy" --mode candidate >"$d/set-final.tsv" 2>>"$d/ops.log" || fail "$a: back to the candidate arm"
+  tr_dns_settled "$a" || fail "$a: the host resolver did not settle after the last arm swap"
   il_install "$a" reinstall install || fail "the reinstall failed: $(tail -n 20 "$d/install-reinstall.log")"
   il_watch_pinned "$plat" "$d/watch-reinstall.tsv" all
   il_report "$a" after-reinstall || fail "lifecycle-report"
