@@ -745,6 +745,14 @@ case "$NICE_DNS_OP" in
       (cd "$w/nice-dns" && bash "./$inst" "$NICE_DNS_PROXY" main) </dev/null 2>&1
     fi
     rc=$?
+    # Apple's runtime keeps a guest-side cause (e.g. `internalError: "mount"`,
+    # live 2026-09-28, mac) only in its own log, and keeps only its errors
+    # past a few minutes: take it with the failure, or it is gone.
+    if [ "$rc" -ne 0 ] && [ "$plat" = macos ]; then
+      echo "── runtime state after the failure ──"
+      container ls -a 2>&1; container volume list 2>&1
+      container system logs --last 10m 2>&1 | tail -n 400
+    fi
     printf 'finished_utc\t%s\ninstaller_exit\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc"
     exit $rc ;;
   route-report|route-apply)
