@@ -118,6 +118,19 @@ tr_hook_after_candidate() { :; }   # <alias> <block>
 # tr_candidate_images <alias>: the candidate arm's images label.
 tr_candidate_images() { printf 'generation-of-%s\n' "$(il_sha)"; }
 
+# tr_cleanup <alias> <proxy>: a cell that stops early never leaves the target
+# on the baseline arm with its schedules stopped (Stage 1 gate, S4): back to
+# the candidate arm (refused at once when the arms were never prepared), then
+# the schedules start again. Best effort; what it did is in cell.tsv.
+tr_cleanup() {
+  local a="$1" d rc
+  d="$(il_dir "$a")"
+  il_t "$a" arm-set --component "tor-$2" --mode candidate >"$d/cleanup-arm.tsv" 2>>"$d/ops.log"; rc=$?
+  printf 'cleanup_arm_set_exit\t%s\n' "$rc" >>"$d/cell.tsv"
+  il_t "$a" resume-agents >"$d/cleanup-resume.tsv" 2>>"$d/ops.log"; rc=$?
+  printf 'cleanup_resume_exit\t%s\n' "$rc" >>"$d/cell.tsv"
+}
+
 tr_cell() {
   local plat="$1" a="$2" d proxy tag arm k first
   d="$(il_dir "$a")"
@@ -131,6 +144,8 @@ tr_cell() {
     "$plat" "$proxy" "$proxy" "$(il_sha)" "$TR_BASE_SHA" "$tag" >"$d/cell.tsv"
   il_install "$a" candidate install || fail "the candidate install failed: $(tail -n 20 "$d/install-candidate.log")"
   il_watch_pinned "$plat" "$d/watch-candidate.tsv" all
+  # From here the cell changes what the target runs: undone on any early end.
+  trap 'tr_cleanup "$a" "$proxy"' EXIT
   il_t "$a" quiesce-agents >"$d/quiesce.tsv" 2>>"$d/ops.log" || fail "$a: quiesce-agents: $(cat "$d/quiesce.tsv")"
   il_report "$a" after-install || fail "lifecycle-report"
   il_check_deployed "$plat" "$d/after-install.tsv" "$proxy"
@@ -190,6 +205,7 @@ tr_cell() {
   il_watch_pinned "$plat" "$d/watch-reinstall.tsv" all
   il_report "$a" after-reinstall || fail "lifecycle-report"
   il_check_deployed "$plat" "$d/after-reinstall.tsv" "$proxy"
+  trap - EXIT
   printf '%s\t%s\tmeasured\n' "$TR_GROUP" "$plat/$proxy/standard" >"$d/measured.tsv"
 }
 

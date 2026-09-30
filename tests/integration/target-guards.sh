@@ -848,3 +848,121 @@ t_lifecycle_ops_are_guarded() {
   assert_match '\| curl -s -m 10 --data @-' "$op" "mark-state logs in the same way"
   assert_not_match 'echo .*pwf|cat "\$pwf"' "$op" "and never prints the password"
 }
+
+# ─── Stage 1 gate remediation R6 (Sub-plan 5): the arm harness ───────────────
+
+# tg_branch <first line pattern>: that operation's branch of the remote
+# script, without comment lines.
+tg_branch() {
+  sed -n "/^remote_script() {/,/^SH\$/p" "$TG" | sed -n "/^  $1)/,/;;\$/p" | grep -v '^[[:space:]]*#'
+}
+
+# tg_stdin_readers: the runtime commands of stdin's text that could read this
+# script's own stdin (the script arrives on it): every ctl, launchctl and
+# systemctl call that neither redirects its stdin nor is fed by a pipe.
+tg_stdin_readers() {
+  perl -ne 'while (/(\|\s*)?\b((?:ctl|launchctl|systemctl)\s+[^;&|\n]*)/g) { print "$2\n" unless defined $1 or index($2, "</dev/null") >= 0 }'
+}
+
+t_arm_and_build_ops_never_read_the_script_stdin() {
+  local b
+  assert_eq 'ctl build x >/dev/null 2>' "$(printf 'ctl build x >/dev/null 2>&1; ctl stop y </dev/null >/dev/null; yes | ctl system start\n' | tg_stdin_readers)" \
+    "the check finds a call that leaves stdin open, and only that one"
+  for b in 'arm-prepare|arm-set' build-proxy resume-agents; do
+    assert_match 'ctl |systemctl ' "$(tg_branch "$b")" "$b: the branch was extracted"
+    assert_eq "" "$(tg_branch "$b" | tg_stdin_readers)" "$b: no runtime command can swallow the rest of the script"
+  done
+}
+
+t_arm_prepare_restores_the_mac_when_the_build_window_is_cut() {
+  # Inside the window the stack is stopped and Apple's builder runs. A script
+  # that ends there (a dropped ssh session) must still delete the builder,
+  # restart the runtime and bring the stack back.
+  local b back n_trap n_stop
+  b="$(tg_branch 'arm-prepare|arm-set')"
+  back="$(printf '%s\n' "$b" | sed -n '/^ *mac_back() {/,/^ *}$/p')"
+  assert_match 'ctl builder delete' "$back" "the builder is deleted"
+  assert_match 'ctl system start' "$back" "the runtime is restarted"
+  assert_match 'restart_stack' "$back" "the stack comes back"
+  assert_match "trap '.*mac_back.*' EXIT" "$b" "the window is covered on every exit"
+  assert_match "trap 'exit 129' HUP" "$b" "a hang-up ends through the exit trap"
+  assert_match "trap 'exit 141' PIPE" "$b" "so does a closed output"
+  n_trap="$(printf '%s\n' "$b" | grep -n "mac_back.*EXIT" | head -1 | cut -d: -f1)"
+  n_stop="$(printf '%s\n' "$b" | grep -n 'for x in pi-hole unbound "\$c"; do ctl stop "\$x" </dev/null >/dev/null 2>&1; done' | head -1 | cut -d: -f1)"
+  [ -n "$n_trap" ] && [ -n "$n_stop" ] && [ "$n_trap" -lt "$n_stop" ] || fail "the trap is set before the stack stops (trap line $n_trap, stop line $n_stop)"
+}
+
+t_arm_set_never_leaves_a_failed_baseline_arm() {
+  local b
+  b="$(tg_branch 'arm-prepare|arm-set')"
+  assert_match 'to_arm "\$a" \|\| \{ \[ "\$a" = candidate \] \|\| to_arm candidate; exit 1; \}' "$b" "a half-made baseline retag is undone"
+  assert_match 'if \[ "\$fa_rc" != 0 \]; then' "$b" "no first answer"
+  assert_eq 2 "$(printf '%s\n' "$b" | grep -c 'back_to_candidate$')" "no answer and a wrong image both go back to the candidate"
+  assert_match '\[ "\$bad" = 0 \] \|\| back_to_candidate' "$b" "a wrong or missing image goes back too"
+}
+
+t_build_proxy_needs_room_on_the_mac() {
+  local b n_room n_tmp
+  b="$(tg_branch build-proxy)"
+  n_room="$(printf '%s\n' "$b" | grep -n 'mac_room || exit 2' | head -1 | cut -d: -f1)"
+  n_tmp="$(printf '%s\n' "$b" | grep -n 'mktemp' | head -1 | cut -d: -f1)"
+  [ -n "$n_room" ] && [ "$n_room" -lt "$n_tmp" ] || fail "build-proxy checks the mac's free space before it changes anything"
+  assert_match "trap '.*ctl builder delete.*' EXIT" "$b" "a cut build still deletes the builder"
+}
+
+t_resume_agents_is_guarded_and_starts_only_the_schedules() {
+  local b
+  tg_setup
+  tg resume-agents lin1 --targets "$CASE_DIR/targets.env"
+  assert_nonzero "$TG_RC" "resume-agents without a snapshot"
+  assert_match 'no restore snapshot' "$TG_OUT" "names the snapshot"
+  assert_eq 0 "$(tg_sent)" "nothing sent without a snapshot"
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  : >"$FAKE_LOG"
+  tg resume-agents lin1 --targets "$CASE_DIR/targets.env" --component tor-haproxy
+  assert_rc 2 "$TG_RC" "--component is refused: $TG_OUT"
+  assert_eq 0 "$(tg_sent)" "nothing sent for a refused operation"
+  tg resume-agents lin1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "resume-agents after snapshot: $TG_OUT"
+  assert_match 'NICE_DNS_OP=resume-agents ' "$(cat "$FAKE_LOG")" "sent"
+  b="$(tg_branch resume-agents)"
+  assert_match 'org\.nice-dns\.health org\.nice-dns\.bridge-eval org\.nice-dns\.health-bridges' "$b" "macOS: the agents quiesce-agents stops"
+  assert_match 'launchctl bootstrap "gui/\$\(id -u\)" "\$p"' "$b" "macOS: loaded again from their installed plists"
+  assert_match 'nice-dns-health\.timer nice-dns-health-bridges\.timer' "$b" "Linux: the timers quiesce-agents stops"
+  assert_match 'systemctl --user start "\$u"' "$b" "Linux: started again"
+  assert_not_match 'start-container|enable|daemon-reload|bootout|stop ' "$b" "nothing else is touched"
+}
+
+# tg_tune_cell <op that fails>: tune-resolver's cell on stubs; prints the
+# target operations it ran.
+tg_tune_cell() {
+  (
+    ARTIFACT_DIR="$CASE_DIR/art-$1" NICE_DNS_IL_DRY_RUN=1 TG_FAIL="$1" TG_OPS="$CASE_DIR/ops-$1"
+    mkdir -p "$ARTIFACT_DIR"; : >"$TG_OPS"
+    # shellcheck source=tests/live/tune-resolver.sh
+    . "$NICE_DNS_ROOT/tests/live/tune-resolver.sh"
+    il_t() { shift; printf '%s\n' "$*" >>"$TG_OPS"; [ "$1" != "$TG_FAIL" ]; }
+    il_install() { printf 'install %s\n' "$2" >>"$TG_OPS"; [ "$TG_FAIL" != install ]; }
+    il_watch_pinned() { :; }
+    il_report() { :; }
+    il_check_deployed() { :; }
+    ( tr_cell linux lin1 ) >"$CASE_DIR/cell-$1.log" 2>&1
+    printf 'exit %s\n' "$?" >>"$TG_OPS"
+    cat "$TG_OPS"
+  )
+}
+
+t_tune_cell_that_fails_returns_the_target() {
+  # A cell that stops early must not leave the target on the baseline arm
+  # with its schedules stopped (Stage 1 gate, second pass S4).
+  local ops
+  ops="$(tg_tune_cell arm-prepare)"
+  assert_match '^exit 1$' "$ops" "the cell failed: $ops"
+  assert_eq "arm-set --component tor-haproxy --mode candidate
+resume-agents
+exit 1" "$(printf '%s\n' "$ops" | sed -n '/^arm-prepare /,$p' | sed 1d)" "after the failure: back to the candidate arm, schedules resumed"
+  ops="$(tg_tune_cell install)"
+  assert_match '^exit 1$' "$ops" "the cell failed at its install: $ops"
+  assert_not_match 'arm-set|resume-agents' "$ops" "nothing was quiesced or swapped yet: nothing to undo"
+  assert_match '^  trap - EXIT$' "$(cat "$NICE_DNS_ROOT/tests/live/tune-resolver.sh")" "a finished cell ends without the cleanup"
+}

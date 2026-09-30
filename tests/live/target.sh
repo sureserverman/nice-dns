@@ -69,6 +69,10 @@
 #                    plists stay); Linux nice-dns-health.timer and
 #                    nice-dns-health-bridges.timer (stopped). The stack's own
 #                    starter and the read-only debug monitor keep running.
+#   resume-agents    start those schedules again (the inverse): macOS loads
+#                    each agent whose plist is installed and that is not
+#                    loaded; Linux starts each timer that is installed and
+#                    not active. A tune cell that stops early calls it.
 #   build-proxy      build --component's image on the target from the sibling
 #                    checkout's `git archive` of --source-sha (sent inline) as
 #                    nice-dns-candidate/<component>:<sha12> and tag it as the
@@ -187,7 +191,7 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set'
 FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
@@ -578,8 +582,8 @@ started() {
 }
 image_of() {
   if [ "$plat" = macos ]; then
-    ctl inspect "$1" 2>/dev/null | tr ',' '\n' | sed -n 's/.*"digest"[[:space:]]*:[[:space:]]*"\(sha256:[0-9a-f]*\)".*/\1/p' | head -1
-  else ctl inspect "$1" --format '{{.Image}}' 2>/dev/null; fi
+    ctl inspect "$1" </dev/null 2>/dev/null | tr ',' '\n' | sed -n 's/.*"digest"[[:space:]]*:[[:space:]]*"\(sha256:[0-9a-f]*\)".*/\1/p' | head -1
+  else ctl inspect "$1" --format '{{.Image}}' </dev/null 2>/dev/null; fi
 }
 tor_states() {
   # One process-state letter per tor pid in the proxy container (T = stopped).
@@ -848,8 +852,8 @@ case "$NICE_DNS_OP" in
     x_ref="docker.io/sureserver/$c:latest"
     arm_ref() { printf 'nd-arm-%s:%s\n' "$1" "$2"; }
     img_id() {
-      if [ "$plat" = macos ]; then ctl image inspect "$1" 2>/dev/null | tr ',' '\n' | sed -n 's/.*"digest"[[:space:]]*:[[:space:]]*"\(sha256:[0-9a-f]*\)".*/\1/p' | head -1
-      else ctl image inspect --format '{{.Id}}' "$1" 2>/dev/null; fi
+      if [ "$plat" = macos ]; then ctl image inspect "$1" </dev/null 2>/dev/null | tr ',' '\n' | sed -n 's/.*"digest"[[:space:]]*:[[:space:]]*"\(sha256:[0-9a-f]*\)".*/\1/p' | head -1
+      else ctl image inspect --format '{{.Id}}' "$1" </dev/null 2>/dev/null; fi
     }
     # ready [tries]: Pi-hole answers within tries x (up to 10 s); default 60.
     ready() {
@@ -902,11 +906,16 @@ case "$NICE_DNS_OP" in
     }
     restart_stack() {
       if [ "$plat" = macos ]; then
-        for x in pi-hole unbound "$c"; do ctl stop "$x" >/dev/null 2>&1; ctl rm "$x" >/dev/null 2>&1; done
-        launchctl kickstart -k "gui/$(id -u)/org.nice-dns.start-container" || return 1
+        for x in pi-hole unbound "$c"; do ctl stop "$x" </dev/null >/dev/null 2>&1; ctl rm "$x" </dev/null >/dev/null 2>&1; done
+        launchctl kickstart -k "gui/$(id -u)/org.nice-dns.start-container" </dev/null || return 1
       else
-        systemctl --user restart nice-dns-pod.service || return 1
+        systemctl --user restart nice-dns-pod.service </dev/null || return 1
       fi
+    }
+    # to_arm <arm>: the stack's three image names point at that arm's images.
+    to_arm() {
+      ctl image tag "$(arm_ref unbound "$1")" "$u_ref" </dev/null && ctl image tag "$(arm_ref pi-hole "$1")" "$p_ref" </dev/null \
+        && ctl image tag "$(arm_ref "$c" "$1")" "$x_ref" </dev/null
     }
     running "$c" || { echo "the stack does not run $c" >&2; exit 2; }
     if [ "$NICE_DNS_OP" = arm-prepare ]; then
@@ -921,12 +930,12 @@ case "$NICE_DNS_OP" in
       if [ -n "$(img_id "$(arm_ref unbound baseline)")" ] && [ "$(img_id "$(arm_ref unbound baseline)")" = "$(img_id "$u_ref")" ]; then
         echo "the stack runs the baseline arm: arm-set candidate first" >&2; exit 2
       fi
-      ctl image tag "$u_ref" "$(arm_ref unbound candidate)" && ctl image tag "$p_ref" "$(arm_ref pi-hole candidate)" \
-        && ctl image tag "$x_ref" "$(arm_ref "$c" candidate)" || exit 1
+      ctl image tag "$u_ref" "$(arm_ref unbound candidate)" </dev/null && ctl image tag "$p_ref" "$(arm_ref pi-hole candidate)" </dev/null \
+        && ctl image tag "$x_ref" "$(arm_ref "$c" candidate)" </dev/null || exit 1
       # baseline proxy, by its published tag
-      if [ "$plat" = macos ]; then ctl image pull "docker.io/sureserver/$c:$NICE_DNS_PROXY_TAG" >/dev/null || exit 1
-      else ctl pull -q "docker.io/sureserver/$c:$NICE_DNS_PROXY_TAG" >/dev/null || exit 1; fi
-      ctl image tag "docker.io/sureserver/$c:$NICE_DNS_PROXY_TAG" "$(arm_ref "$c" baseline)" || exit 1
+      if [ "$plat" = macos ]; then ctl image pull "docker.io/sureserver/$c:$NICE_DNS_PROXY_TAG" </dev/null >/dev/null || exit 1
+      else ctl pull -q "docker.io/sureserver/$c:$NICE_DNS_PROXY_TAG" </dev/null >/dev/null || exit 1; fi
+      ctl image tag "docker.io/sureserver/$c:$NICE_DNS_PROXY_TAG" "$(arm_ref "$c" baseline)" </dev/null || exit 1
       # The bases b85bc9b built on when the baseline ran (2026-09-23), pinned
       # on both platforms: hardened-unbound v1.3.4 (:latest from 2026-09-16
       # to v1.4.0 on 2026-09-27, which stopped shipping the remote-control
@@ -938,8 +947,8 @@ case "$NICE_DNS_OP" in
       else ub_base=localhost/nd-arm-unbound-base:baseline ph_base=localhost/nd-arm-pihole-base:baseline; fi
       for pair in "docker.io/sureserver/hardened-unbound:v1.3.4 $ub_base" "docker.io/pihole/pihole:2026.09.0 $ph_base"; do
         src="${pair% *}" dst="${pair#* }"
-        if [ "$plat" = macos ]; then ctl image pull "$src" >/dev/null || exit 1; else ctl pull -q "$src" >/dev/null || exit 1; fi
-        ctl image tag "$src" "$dst" || exit 1
+        if [ "$plat" = macos ]; then ctl image pull "$src" </dev/null >/dev/null || exit 1; else ctl pull -q "$src" </dev/null >/dev/null || exit 1; fi
+        ctl image tag "$src" "$dst" </dev/null || exit 1
         printf 'base\t%s\t%s\n' "$src" "$(img_id "$src")"
       done
       sed -e "s|^FROM sureserver/hardened-unbound:latest\$|FROM $ub_base|" "$w/nice-dns/unbound/Containerfile" >"$w/uc" && mv "$w/uc" "$w/nice-dns/unbound/Containerfile"
@@ -954,26 +963,36 @@ case "$NICE_DNS_OP" in
           -e 's|^    forward-addr: 127\.0\.0\.1@853#tor\.cloudflare-dns\.com$|    forward-addr: 172.31.240.252@853#tor.cloudflare-dns.com|' \
           "$w/nice-dns/unbound/etc/unbound.conf"
         grep -q '172.31.240.252@853' "$w/nice-dns/unbound/etc/unbound.conf" || { echo "the baseline tree was not rewritten as expected" >&2; exit 1; }
-        for x in pi-hole unbound "$c"; do ctl stop "$x" >/dev/null 2>&1; done
-        ctl builder start >/dev/null 2>&1
-        rc=0
-        ctl build --dns 1.1.1.1 --no-cache -t "$(arm_ref unbound baseline)" "$w/nice-dns/unbound" >"$w/build.log" 2>&1 \
-          && ctl build --dns 1.1.1.1 --no-cache -t "$(arm_ref pi-hole baseline)" "$w/nice-dns/pihole" >>"$w/build.log" 2>&1 || rc=1
-        [ "$rc" = 0 ] || tail -n 20 "$w/build.log" >&2
         # A fresh datapath before the stack returns (lib/install.sh
         # nd_install_macos_fresh_datapath), whether or not the build worked.
-        ctl builder stop >/dev/null 2>&1; ctl builder delete >/dev/null 2>&1; ctl system stop >/dev/null 2>&1; sleep 8
-        { yes 2>/dev/null || true; } | ctl system start >/dev/null 2>&1
-        i=0; until ctl system status >/dev/null 2>&1; do i=$((i + 1)); [ "$i" -lt 10 ] || break; sleep 4; done
+        mac_back() {
+          ctl builder stop </dev/null >/dev/null 2>&1; ctl builder delete </dev/null >/dev/null 2>&1; ctl system stop </dev/null >/dev/null 2>&1; sleep 8
+          { yes 2>/dev/null || true; } | ctl system start >/dev/null 2>&1
+          i=0; until ctl system status </dev/null >/dev/null 2>&1; do i=$((i + 1)); [ "$i" -lt 10 ] || break; sleep 4; done
+          restart_stack >/dev/null 2>&1
+        }
+        # The window: the stack is stopped and Apple's builder runs. Whatever
+        # ends this script inside it (a dropped ssh session: a hang-up, or a
+        # write to the closed output) still goes through mac_back.
+        window=1
+        trap '[ -z "$window" ] || { window=""; mac_back; }; rm -rf "$w"' EXIT
+        trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 141' PIPE; trap 'exit 143' TERM
+        for x in pi-hole unbound "$c"; do ctl stop "$x" </dev/null >/dev/null 2>&1; done
+        ctl builder start </dev/null >/dev/null 2>&1
+        rc=0
+        ctl build --dns 1.1.1.1 --no-cache -t "$(arm_ref unbound baseline)" "$w/nice-dns/unbound" </dev/null >"$w/build.log" 2>&1 \
+          && ctl build --dns 1.1.1.1 --no-cache -t "$(arm_ref pi-hole baseline)" "$w/nice-dns/pihole" </dev/null >>"$w/build.log" 2>&1 || rc=1
+        [ "$rc" = 0 ] || tail -n 20 "$w/build.log" >&2
         # 15 min: after a runtime restart the agent waits 300 s for Tor and 150 s
         # for the chain before its one rebuild (live mac 2026-09-28: Tor did not
         # bootstrap on the reused bridges; the rebuild bootstrapped in 52 s, just
         # after a 10-minute wait had given up).
-        restart_stack; ready 90 || { echo "the stack did not answer after the baseline build" >&2; exit 1; }
+        mac_back; window=''
+        ready 90 || { echo "the stack did not answer after the baseline build" >&2; exit 1; }
         [ "$rc" = 0 ] || exit 1
       else
-        ctl build -q -t "$(arm_ref unbound baseline)" "$w/nice-dns/unbound" >/dev/null 2>"$w/build.log" \
-          && ctl build -q -t "$(arm_ref pi-hole baseline)" "$w/nice-dns/pihole" >/dev/null 2>>"$w/build.log" \
+        ctl build -q -t "$(arm_ref unbound baseline)" "$w/nice-dns/unbound" </dev/null >/dev/null 2>"$w/build.log" \
+          && ctl build -q -t "$(arm_ref pi-hole baseline)" "$w/nice-dns/pihole" </dev/null >/dev/null 2>>"$w/build.log" \
           || { tail -n 20 "$w/build.log" >&2; exit 1; }
       fi
       for x in unbound pi-hole "$c"; do for a in baseline candidate; do printf 'arm\t%s\t%s\t%s\n' "$a" "$x" "$(img_id "$(arm_ref "$x" "$a")")"; done; done
@@ -982,8 +1001,14 @@ case "$NICE_DNS_OP" in
     # arm-set
     a="$NICE_DNS_MODE"
     for x in unbound pi-hole "$c"; do [ -n "$(img_id "$(arm_ref "$x" "$a")")" ] || { echo "no $a image for $x: run arm-prepare first" >&2; exit 2; }; done
-    ctl image tag "$(arm_ref unbound "$a")" "$u_ref" && ctl image tag "$(arm_ref pi-hole "$a")" "$p_ref" \
-      && ctl image tag "$(arm_ref "$c" "$a")" "$x_ref" || exit 1
+    # Never leave the host on a dead, wrong or half-tagged baseline arm: the
+    # candidate (the deployment the installer made) comes back.
+    back_to_candidate() {
+      [ "$a" = baseline ] || return 0
+      to_arm candidate && restart_stack && ready \
+        && echo "back on the candidate arm" >&2 || echo "the candidate arm did not come back either" >&2
+    }
+    to_arm "$a" || { [ "$a" = candidate ] || to_arm candidate; exit 1; }
     # DEC-014: timed from the restart command, both arms through this path.
     t0=$(perl -MTime::HiRes=time -e 'printf "%.6f", time')
     restart_stack || exit 1
@@ -992,16 +1017,10 @@ case "$NICE_DNS_OP" in
     # The proxy's own readiness line for this start (Sub-plan 5 Task 1.4, fix B:
     # "bootstrapped after N s, a stream works after M s (exit|onion)"); empty
     # for an image from before it.
-    printf 'proxy_ready\t%s\n' "$(ctl logs "$c" 2>&1 | grep 'a stream works after' | tail -n 1)"
+    printf 'proxy_ready\t%s\n' "$(ctl logs "$c" </dev/null 2>&1 | grep 'a stream works after' | tail -n 1)"
     if [ "$fa_rc" != 0 ]; then
       echo "the stack did not answer on the $a arm" >&2
-      # Never leave the host on a dead arm: the candidate (the deployment
-      # the installer made) comes back.
-      if [ "$a" = baseline ]; then
-        ctl image tag "$(arm_ref unbound candidate)" "$u_ref" && ctl image tag "$(arm_ref pi-hole candidate)" "$p_ref" \
-          && ctl image tag "$(arm_ref "$c" candidate)" "$x_ref" && restart_stack && ready \
-          && echo "back on the candidate arm" >&2 || echo "the candidate arm did not come back either" >&2
-      fi
+      back_to_candidate
       exit 1
     fi
     # A container missing here is the macOS agent rebuilding the stack in its
@@ -1025,6 +1044,7 @@ case "$NICE_DNS_OP" in
       fi
       printf '%s' "$out"
       [ "$gone" = 0 ] || { echo "a container of the $a arm is not running" >&2; bad=1; }
+      [ "$bad" = 0 ] || back_to_candidate
       exit $bad
     done ;;
   lifecycle-report)
@@ -1142,6 +1162,21 @@ case "$NICE_DNS_OP" in
       done
       systemctl --user list-units --plain --no-legend --all 'nice-dns*' | awk '{ printf "unit\t%s\t%s\n", $1, $4 }'
     fi ;;
+  resume-agents)
+    if [ "$plat" = macos ]; then
+      for l in org.nice-dns.health org.nice-dns.bridge-eval org.nice-dns.health-bridges; do
+        p="$HOME/Library/LaunchAgents/$l.plist"
+        if [ ! -f "$p" ]; then printf 'absent\t%s\n' "$l"
+        elif launchctl list "$l" </dev/null >/dev/null 2>&1; then printf 'loaded\t%s\n' "$l"
+        else launchctl bootstrap "gui/$(id -u)" "$p" </dev/null; printf 'resumed\t%s\trc=%s\n' "$l" "$?"; fi
+      done
+    else
+      for u in nice-dns-health.timer nice-dns-health-bridges.timer; do
+        if ! systemctl --user cat "$u" </dev/null >/dev/null 2>&1; then printf 'absent\t%s\n' "$u"
+        elif systemctl --user is-active --quiet "$u" </dev/null; then printf 'active\t%s\n' "$u"
+        else systemctl --user start "$u" </dev/null; printf 'resumed\t%s\trc=%s\n' "$u" "$?"; fi
+      done
+    fi ;;
   build-proxy)
     c="$NICE_DNS_COMPONENT"
     [ "$plat" = macos ] && { homebrew_path; C=$(command -v container); }
@@ -1150,8 +1185,8 @@ case "$NICE_DNS_OP" in
     [ "$plat" = linux ] && cand="localhost/$cand"
     pub="docker.io/sureserver/$c:latest"
     if [ "$plat" = macos ]; then
-      printf 'previous\t%s\t%s\n' "$pub" "$(ctl image inspect "$pub" 2>/dev/null | tr ',' '\n' | sed -n 's/.*"digest"[[:space:]]*:[[:space:]]*"\(sha256:[0-9a-f]*\)".*/\1/p' | head -1)"
-      have() { ctl image inspect "$cand" >/dev/null 2>&1; }
+      printf 'previous\t%s\t%s\n' "$pub" "$(ctl image inspect "$pub" </dev/null 2>/dev/null | tr ',' '\n' | sed -n 's/.*"digest"[[:space:]]*:[[:space:]]*"\(sha256:[0-9a-f]*\)".*/\1/p' | head -1)"
+      have() { ctl image inspect "$cand" </dev/null >/dev/null 2>&1; }
     else
       printf 'previous\t%s\t%s\n' "$pub" "$(podman image inspect "$pub" --format '{{.Id}}' 2>/dev/null)"
       have() { podman image exists "$cand"; }
@@ -1159,6 +1194,7 @@ case "$NICE_DNS_OP" in
     if have; then
       printf 'build\t%s\tcached\n' "$cand"
     else
+      mac_room || exit 2
       w=$(mktemp -d "$HOME/.nice-dns-harness-build.XXXXXX") || exit 1
       trap 'rm -rf "$w"' EXIT
       tar -xzf "$ND_PROXY_TGZ" -C "$w" || exit 1
@@ -1177,14 +1213,18 @@ case "$NICE_DNS_OP" in
           case "$im" in */*) ;; *) im="docker.io/library/$im" ;; esac
           ctl image pull "$im" </dev/null >>"$w.log" 2>&1 || { tail -n 3 "$w.log"; echo "pull of $im failed" >&2; exit 1; }
         done
-        ctl builder stop >/dev/null 2>&1
+        ctl builder stop </dev/null >/dev/null 2>&1
+        # A build that is cut (a dropped ssh session) still deletes the builder.
+        trap 'ctl builder stop </dev/null >/dev/null 2>&1; ctl builder delete </dev/null >/dev/null 2>&1; rm -rf "$w"' EXIT
+        trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 141' PIPE; trap 'exit 143' TERM
         ctl builder start --dns 1.1.1.1 </dev/null >>"$w.log" 2>&1
         (cd "$w" && ctl build --progress plain -t "$cand" .) </dev/null >>"$w.log" 2>&1
         rc=$?
         # Stopped and deleted: its cache grew to 4-11 GB per build and the mac
         # ran out of disk twice (2026-09-29, 2026-09-30); the next build
         # starts a fresh one.
-        ctl builder stop >/dev/null 2>&1; ctl builder delete >/dev/null 2>&1
+        ctl builder stop </dev/null >/dev/null 2>&1; ctl builder delete </dev/null >/dev/null 2>&1
+        trap 'rm -rf "$w"' EXIT
         printf 'builder\tstopped\n'
       else
         podman build --format docker -t "$cand" "$w" </dev/null >"$w.log" 2>&1
@@ -1195,8 +1235,8 @@ case "$NICE_DNS_OP" in
       printf 'build\t%s\tbuilt\n' "$cand"
     fi
     if [ "$plat" = macos ]; then
-      ctl image tag "$cand" "$pub" || exit 1
-      printf 'candidate\t%s\t%s\n' "$cand" "$(ctl image inspect "$pub" 2>/dev/null | tr ',' '\n' | sed -n 's/.*"digest"[[:space:]]*:[[:space:]]*"\(sha256:[0-9a-f]*\)".*/\1/p' | head -1)"
+      ctl image tag "$cand" "$pub" </dev/null || exit 1
+      printf 'candidate\t%s\t%s\n' "$cand" "$(ctl image inspect "$pub" </dev/null 2>/dev/null | tr ',' '\n' | sed -n 's/.*"digest"[[:space:]]*:[[:space:]]*"\(sha256:[0-9a-f]*\)".*/\1/p' | head -1)"
     else
       podman tag "$cand" "$pub" || exit 1
       printf 'candidate\t%s\t%s\n' "$cand" "$(podman image inspect "$pub" --format '{{.Id}}')"
@@ -1469,7 +1509,7 @@ case "$op" in
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"
