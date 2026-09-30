@@ -27,3 +27,4 @@ workload/cold	Cold workload (nonce names) is defined
 workload/warm	Warm workload is defined
 workload/idle	Idle workload is defined
 workload/wake	Wake workload is defined
+workload/restart	Restart workload (time to the first answer after a stack restart, DEC-014) is defined

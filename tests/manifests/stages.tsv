@@ -38,3 +38,16 @@ installers	integration	dns-transaction
 installers	integration	release-inputs
 installers	integration	installers-interaction
 installers	integration	installers-persistence
+qualification	unit	harness-contracts
+qualification	unit	performance-acceptance
+qualification	unit	measurement
+qualification	unit	state-policy
+qualification	integration	scheduling
+qualification-tuning	unit	performance-acceptance
+qualification-tuning	unit	measurement
+qualification-tuning	integration	route-transition
+qualification-tuning	integration	route-mount
+qualification-tuning	integration	scheduling
+qualification-tuning	integration	transport-socat
+qualification-tuning	integration	transport-haproxy
+qualification-tuning	integration	transport-interaction

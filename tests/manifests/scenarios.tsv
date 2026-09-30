@@ -164,3 +164,15 @@ OP-ADMIN-AUTH-MAC-AGREE	SEC-ADMIN-AUTH	integration	deployment-security	t_macos_l
 OP-LISTENERS	SEC-LISTENERS	integration	deployment-security	t_images_enforce_the_deployment_password	installers
 OP-LEAST-PRIV	SEC-LEAST-PRIV	integration	deployment-security	t_images_enforce_the_deployment_password	installers
 OP-OWNED-RESTORE-LIFECYCLE	SEC-OWNED-RESTORE	integration	lifecycle-transitions	t_every_transition_keeps_the_instance_state	installers
+# Sub-plan 5 Stage 1 (qualification): the frozen comparison, the restart class
+# (DEC-014), the route at start (Task 1.4 fix A) and proxy readiness (fix B).
+QU-PERF-MANIFEST	EVD-FAILURES-COUNTED	unit	performance-acceptance	t_committed_manifest_equals_fresh_derivation	qualification
+QU-PERF-FAILURES	EVD-FAILURES-COUNTED	unit	performance-acceptance	t_failures_stay_in_denominators	qualification
+QU-PERF-RESTART	variant:workload/restart	unit	performance-acceptance	t_restart_is_a_same_session_problem_class	qualification
+QU-RESTART-NOT-COLLECTED	EVD-FAILURES-COUNTED	unit	measurement	t_collect_refuses_the_restart_workload	qualification
+QU-ROUTE-SEEDED	PRIV-ROUTE-IDENTITY	integration	route-mount	t_every_entrypoint_seeds_the_route_before_unbound_starts	qualification
+QU-ROUTE-START-EXIT	PRIV-ROUTE-IDENTITY	integration	route-transition	t_start_demotes_a_persisted_onion_to_the_exit	qualification
+QU-ROUTE-START-WARM	PRIV-ROUTE-IDENTITY	integration	route-transition	t_start_keeps_the_onion_of_a_proxy_that_did_not_restart	qualification
+QU-ROUTE-START-ACTIVE-ONLY	PRIV-ROUTE-IDENTITY	integration	scheduling	t_route_start_launcher_demotes_an_onion_only_when_active	qualification
+QU-READY-STREAM-SOCAT	REC-ACK-READINESS	integration	transport-socat	t_readiness_waits_for_a_working_stream	qualification
+QU-READY-STREAM-HAPROXY	REC-ACK-READINESS	integration	transport-haproxy	t_readiness_waits_for_a_working_stream	qualification
