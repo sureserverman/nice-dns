@@ -84,5 +84,5 @@ tr_hook_after_candidate() {
 }
 
 t_0_options() {
-  [ "${NICE_DNS_OPT_PROXIES:-}" = all ] || fail "--proxies all (one representative cell per platform covers both proxies)"
+  assert_eq all "${NICE_DNS_OPT_PROXIES:-}" "--proxies all (one representative cell per platform covers both proxies)"
 }
