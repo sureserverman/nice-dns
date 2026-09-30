@@ -100,6 +100,12 @@ pa_arms() {
   return 0
 }
 
+# pa_blockwise <better blocks> <shift>: stdin values in blocks of 3; the first
+# <better blocks> blocks are lowered by <shift>, the others raised by it.
+pa_blockwise() {
+  awk -v nb="$1" -v d="$2" '{ b = int((NR - 1) / 3); print (b < nb) ? $1 - d : $1 + d }'
+}
+
 pa_cell_data() {
   # Both arms, all five workloads, clean and equal, unless
   # PA_{COLD,WARM,IDLE,WAKE,RESTART}_{B,C} (newline-separated values; the word
@@ -119,10 +125,12 @@ pa_cell_data() {
   [ "$kc" = NONE ] && kc=''
   [ "$rb" = NONE ] && rb=''
   [ "$rc" = NONE ] && rc=''
-  pa_arms cold miss 1 "${PA_COLD_BLOCK:-5}" "$cb" "$cc"
+  # 10 blocks per arm (3 samples each for cold, idle and wake): the verdicts
+  # come from a block-paired test (DEC-015), which needs at least 9 blocks.
+  pa_arms cold miss 1 "${PA_COLD_BLOCK:-3}" "$cb" "$cc"
   pa_arms warm hit 2 100 "$wb" "$wc"
-  pa_arms idle hit-after-idle 3 5 "$ib" "$ic"
-  pa_arms wake after-wake 4 5 "$kb" "$kc"
+  pa_arms idle hit-after-idle 3 3 "$ib" "$ic"
+  pa_arms wake after-wake 4 3 "$kb" "$kc"
   pa_arms restart after-restart 5 1 "$rb" "$rc"
 }
 
@@ -407,10 +415,11 @@ t_clear_improvement_passes() {
 
 t_noise_difference_is_not_improvement() {
   pa_setup linux/socat/standard
-  PA_COLD_C="$(pa_seq 30 198000 9900)" pa_cell_data
+  PA_COLD_C="$(pa_seq 30 200000 10000 | pa_blockwise 5 2000)" pa_cell_data
   pa_compare
   assert_rc 0 "$PA_RC" "noise-level candidate still passes its limits: $PA_OUT"
-  assert_eq no "$(pa_field cold improvement)" "a 1% shift is inside measured variability"
+  assert_eq "5 5" "$(pa_field cold blocks_better) $(pa_field cold blocks_worse)" "five blocks faster, five slower"
+  assert_eq no "$(pa_field cold improvement)" "blocks that disagree are variability, not an improvement"
   assert_eq none "$(pa_cell_improved)" "nothing improved"
   pa_setup linux/socat/standard
   pa_cell_data
@@ -420,19 +429,74 @@ t_noise_difference_is_not_improvement() {
 }
 
 t_improvement_needs_family_corrected_evidence() {
-  # An 80 ms shift of 30 evenly spread trials has P(gain <= 0) = 0.023: it
-  # would pass at 0.05 alone, not at 0.05/16 (every cell x problem class of a
-  # platform: 4 x cold, idle, wake, restart). A 130 ms shift has P = 0.0003
-  # and counts.
+  # Block-paired (DEC-015): 8 of 10 blocks faster by the same amount has
+  # p = 56/1024 = 0.055; it would pass at 0.05 rounded, not at 0.05/16 (every
+  # cell x problem class of a platform: 4 x cold, idle, wake, restart). 10 of
+  # 10 has p = 1/1024 and counts.
   pa_setup linux/socat/standard
-  PA_COLD_C="$(pa_seq 30 120000 10000)" pa_cell_data
+  PA_COLD_C="$(pa_seq 30 200000 10000 | pa_blockwise 8 50000)" pa_cell_data
   pa_compare
   assert_eq 0.003125 "$(pa_field cold alpha)" "per-comparison alpha: $PA_OUT"
-  assert_eq no "$(pa_field cold improvement)" "evidence at 0.023 is not enough after correction"
+  assert_eq 10 "$(pa_field cold blocks_paired)" "ten paired blocks"
+  assert_eq 0.054688 "$(pa_field cold p_block_better)" "8 of 10 equal gains: 56/1024"
+  assert_eq no "$(pa_field cold improvement)" "not enough after correction"
   pa_setup linux/socat/standard
-  PA_COLD_C="$(pa_seq 30 70000 10000)" pa_cell_data
+  PA_COLD_C="$(pa_seq 30 200000 10000 | pa_blockwise 10 50000)" pa_cell_data
   pa_compare
-  assert_eq yes "$(pa_field cold improvement)" "evidence at 0.0003 counts: $PA_OUT"
+  assert_eq 0.000977 "$(pa_field cold p_block_better)" "10 of 10: 1/1024"
+  assert_eq yes "$(pa_field cold improvement)" "counts: $PA_OUT"
+  # Samples are not the unit: the same 50 ms gain in only 5 blocks (15 samples
+  # each) is never an improvement, however small the pooled interval.
+  pa_setup linux/socat/standard
+  PA_COLD_B="$(pa_seq 30 200000 1)" PA_COLD_C="$(pa_seq 30 150000 1)" PA_COLD_BLOCK=6 pa_cell_data
+  pa_compare
+  assert_eq 5 "$(pa_field cold blocks_paired)" "five paired blocks: $PA_OUT"
+  assert_eq no "$(pa_field cold improvement)" "five blocks cannot show an improvement (2^-5 > alpha)"
+}
+
+t_block_gains_are_ranked_by_size() {
+  # Nine blocks faster and one slower: with the slower block the smallest
+  # difference p = 2/1024 and the class improved; with it the largest,
+  # p = 47/1024 (the nine equal gains share rank 5) and it did not. A count of blocks alone would not tell them apart.
+  pa_setup linux/socat/standard
+  PA_COLD_C="$(pa_seq 30 200000 10000 | awk '{ print (NR <= 27) ? $1 - 50000 : $1 + 1000 }')" pa_cell_data
+  pa_compare
+  assert_eq "9 1" "$(pa_field cold blocks_better) $(pa_field cold blocks_worse)" "nine faster, one slower: $PA_OUT"
+  assert_eq 0.001953 "$(pa_field cold p_block_better)" "the slower block ranks lowest: 2/1024"
+  assert_eq yes "$(pa_field cold improvement)" "improved"
+  pa_setup linux/socat/standard
+  PA_COLD_C="$(pa_seq 30 200000 10000 | awk '{ print (NR <= 27) ? $1 - 50000 : $1 + 900000 }')" pa_cell_data
+  pa_compare
+  assert_eq 0.045898 "$(pa_field cold p_block_better)" "the slower block ranks highest: 47/1024"
+  assert_eq no "$(pa_field cold improvement)" "one large loss outweighs the evidence"
+  # A block whose candidate lookups mostly timed out is the largest loss of all.
+  pa_setup linux/haproxy/standard
+  PA_COLD_C="$(pa_seq 27 150000 10000; printf 'TO\nTO\n'; echo 440000)" pa_cell_data
+  pa_compare
+  assert_eq 0.045898 "$(pa_field cold p_block_better)" "a timed-out block ranks above every finite gain: $PA_OUT"
+  assert_eq no "$(pa_field cold improvement)" "no improvement"
+}
+
+t_unpaired_blocks_are_refused() {
+  # 11 baseline blocks against 10: interleaved, but no block-for-block pairs.
+  pa_setup linux/socat/standard
+  PA_COLD_B="$(pa_seq 33 200000 10000)" pa_cell_data
+  pa_compare
+  assert_rc 2 "$PA_RC" "refused: $PA_OUT"
+  assert_match 'form 11 and 10 blocks' "$PA_OUT" "names the block counts"
+}
+
+t_manifest_states_the_block_paired_method() {
+  pa_setup linux/socat/standard
+  assert_match '^method	improvement	block-paired: .*DEC-015' "$(cat "$PA_M")" "the verdict method"
+  assert_match '^method	pooled_context	.*never as a verdict' "$(cat "$PA_M")" "the pooled interval is context"
+  assert_match '^method	improved_when	p_block_better < ' "$(cat "$PA_M")" "improved_when"
+  assert_match '^method	slower_when	p_block_worse < ' "$(cat "$PA_M")" "slower_when"
+  assert_match '^rule	same-session-baseline	.*a check .*unbaselined.* does not gate it' "$(cat "$PA_M")" \
+    "the rule says what a check does without the arm"
+  assert_match '^rule	restart-first-answer	.*satisfies improve-problem-class' "$(cat "$PA_M")" \
+    "the restart relaxation is named"
+  assert_match '^# .*DEC-013.*' "$(cat "$PA_M")" "the header names the relaxations"
 }
 
 t_problem_class_slowdown_fails() {
@@ -441,6 +505,25 @@ t_problem_class_slowdown_fails() {
   pa_compare
   assert_eq slower "$(pa_field wake latency)" "wake slower beyond variability: $PA_OUT"
   assert_eq fail "$(pa_verdict wake)" "a slower problem class fails"
+  # The same test as an improvement: five blocks cannot show a slowdown either.
+  pa_setup linux/socat/standard
+  PA_WAKE_B="$(pa_seq 30 900000 1)" PA_WAKE_C="$(pa_seq 30 3000000 1)" pa_cell_data
+  pa_compare
+  assert_eq 10 "$(pa_field wake blocks_paired)" "ten blocks here: $PA_OUT"
+  assert_eq slower "$(pa_field wake latency)" "ten of ten slower"
+}
+
+t_slowdown_is_judged_by_blocks() {
+  pa_setup linux/socat/standard
+  pa_arms cold miss 1 3 "$(pa_seq 30 200000 10000)" "$(pa_seq 30 200000 10000)"
+  pa_arms warm hit 2 100 "$(pa_seq 1000 3000 1)" "$(pa_seq 1000 3000 1)"
+  pa_arms idle hit-after-idle 3 3 "$(pa_seq 30 30000 1000)" "$(pa_seq 30 30000 1000)"
+  pa_arms wake after-wake 4 6 "$(pa_seq 30 900000 1)" "$(pa_seq 30 3000000 1)"
+  pa_arms restart after-restart 5 1 "$(pa_seq 10 30000000 100000)" "$(pa_seq 10 30000000 100000)"
+  pa_compare
+  assert_eq 5 "$(pa_field wake blocks_paired)" "five paired blocks: $PA_OUT"
+  assert_eq 0.000000 "$(pa_field wake pooled_p_not_worse)" "the pooled samples would call it slower"
+  assert_eq ok "$(pa_field wake latency)" "five blocks cannot show a slowdown (2^-5 > alpha)"
 }
 
 t_steady_warm_is_not_a_problem_class() {
@@ -587,6 +670,7 @@ t_check_holds_a_cell_to_its_frozen_limits() {
   assert_eq "0/30" "$(pa_field cold timeout_limit)" "the frozen limit is applied"
   assert_eq pass "$(pa_cell_verdict)" "cell"
   assert_eq none "$(pa_cell_improved)" "a check never claims an improvement"
+  assert_match '^cell	.*	unbaselined=idle,wake,restart$' "$PA_OUT" "the cell row names what it did not judge"
   assert_not_match '^arm	baseline' "$PA_OUT" "no baseline arm is read"
   pa_setup linux/socat/standard
   PA_COLD_C="$(pa_seq 29 200000 10000; printf 'TO\n')" pa_cell_data
@@ -746,9 +830,9 @@ t_restart_improvement_proves_a_platform() {
   assert_match '^platform	linux	pass	.*improved=linux/haproxy/standard:restart' "$out" "the platform passes on it"
   # Noise is not an improvement: a 1% shift of 10 restarts.
   pa_setup linux/haproxy/standard
-  PA_RESTART_C="$(pa_seq 10 29700000 99000)" pa_cell_data
+  PA_RESTART_C="$(pa_seq 10 30000000 100000 | awk '{ print (NR % 2) ? $1 - 300000 : $1 + 300000 }')" pa_cell_data
   pa_compare
-  assert_eq no "$(pa_field restart improvement)" "a 1% shift is inside variability: $PA_OUT"
+  assert_eq no "$(pa_field restart improvement)" "restarts that are faster and slower in turn are variability: $PA_OUT"
   # A slower first answer fails the cell, as for every problem class.
   pa_setup linux/haproxy/standard
   PA_RESTART_C="$(pa_seq 10 90000000 100000)" pa_cell_data
