@@ -100,7 +100,7 @@ snapshot() {
     tail -25 "${HOME}/Library/Logs/nice-dns.log" 2>/dev/null
     echo
     echo "--- tor log tail ---"
-    container exec "$TOR_CONTAINER" tail -15 /tmp/tor.log 2>/dev/null | cut -c1-160
+    container exec "$TOR_CONTAINER" tail -15 /app/data/tor.log 2>/dev/null | cut -c1-160
   } > "$f" 2>&1
   echo "$f"
 }

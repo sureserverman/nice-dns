@@ -169,6 +169,97 @@ tp_supervised() {
   tp_wait_file /app/data/control/tor-generation 60 || fail "start.sh never wrote /app/data/control/tor-generation: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
 }
 
+# Sub-plan 5 Task 1.4 (fix B). Readiness is a working stream, not a cached
+# "Bootstrapped 100%" (mac 2026-09-29: Tor reported it 2 s after start, then
+# no circuit for 2 min). The fake tor bootstraps at once; the SOCKS fixture
+# decides whether a stream works.
+
+# tp_ready_wait <seconds>: the supervisor reported readiness; TP_LOGS holds
+# the container's log.
+tp_ready_wait() {
+  local i=0 max=$(( $1 * 2 ))
+  while [ "$i" -lt "$max" ]; do
+    TP_LOGS="$(podman logs "$TP_CTR" 2>&1)"
+    case "$TP_LOGS" in *'Tor bootstrapped successfully'*) return 0 ;; esac
+    i=$((i + 1)); sleep 0.5
+  done
+  return 1
+}
+
+# tp_stalled_start <repo> <fixture mode...>: the supervisor started against a
+# fixture in that mode, and the fake tor has logged its bootstrap.
+tp_stalled_start() {
+  local repo="$1"
+  shift
+  tp_setup "$repo"
+  tp_holder
+  tp_socks_start
+  tp_socks_mode "$@"
+  tp_supervised
+  tp_wait_file /app/data/tor.log 20 'Bootstrapped 100%' || fail "the fake tor never bootstrapped: $(podman logs "$TP_CTR" 2>&1 | tail -n 10)"
+}
+
+# tp_readiness_case <repo>: no readiness while every stream is refused; ready
+# once one works.
+tp_readiness_case() {
+  tp_stalled_start "$1" reject
+  sleep 12
+  assert_not_match 'Tor bootstrapped successfully' "$(podman logs "$TP_CTR" 2>&1)" "no readiness while every stream through Tor fails, although Tor has bootstrapped"
+  assert_match '	853	reject' "$(cat "$TP_SOCKS/connects.tsv")" "the probes ran and were refused"
+  tp_socks_mode accept
+  tp_ready_wait 40 || fail "never ready: $(printf '%s\n' "$TP_LOGS" | tail -n 10)"
+  assert_match 'tor-supervisor: bootstrapped after [0-9]+ s, a stream works after [0-9]+ s \((exit|onion)\)' "$TP_LOGS" "time to the first stream, and its route, are logged"
+}
+
+# tp_readiness_onion_case <repo>: the exit resolver refused, the onion not:
+# ready through the onion (Tier-1 review: an exit-only probe would call a Tor
+# whose onion route works unready for ever).
+tp_readiness_onion_case() {
+  tp_stalled_start "$1" reject 1.1.1.1
+  tp_ready_wait 40 || fail "never ready on the onion alone: $(podman logs "$TP_CTR" 2>&1 | tail -n 10)"
+  assert_match 'a stream works after [0-9]+ s \(onion\)' "$TP_LOGS" "ready through the onion"
+  assert_match '1\.1\.1\.1	853	reject' "$(cat "$TP_SOCKS/connects.tsv")" "the exit probe was refused"
+}
+
+# tp_stop_during_stall_case <repo>: a stop while the probes hang (the fixture
+# accepts and answers after 120 s, a stalled circuit) ends within seconds,
+# without SIGKILL (Tier-1 review: a foreground 20 s probe held the trap).
+tp_stop_during_stall_case() {
+  local rc t0 t1
+  tp_stalled_start "$1" delay 120
+  sleep 4
+  t0="$(date +%s)"
+  podman stop -t 10 "$TP_CTR" >/dev/null 2>&1
+  t1="$(date +%s)"
+  rc="$(podman inspect -f '{{.State.ExitCode}}' "$TP_CTR" 2>/dev/null)"
+  assert_eq 143 "$rc" "the supervisor's own exit after cleanup, not SIGKILL (137), and nothing started after the stop"
+  [ $((t1 - t0)) -lt 8 ]
+  assert_rc 0 "$?" "stop completed within seconds while the probes hung ($((t1 - t0)) s)"
+  assert_not_match 'haproxy version|Loading success|Starting PRIMARY' "$(podman logs "$TP_CTR" 2>&1)" "no front was started after the stop"
+}
+
+# tp_torlog_case <repo>: Tor's own log is on the data volume (owner-only); a
+# respawn and a container restart both keep the previous run's (every earlier
+# stall left no trace: the log lived in /tmp and was truncated at each launch).
+tp_torlog_case() {
+  tp_setup "$1"
+  tp_supervised
+  tp_wait_file /app/data/tor.log 30 'Bootstrapped 100%' || fail "no tor log on the data volume: $(podman logs "$TP_CTR" 2>&1 | tail -n 10)"
+  tp_pm exec "$TP_CTR" stat -c %a /app/data/tor.log
+  assert_eq 600 "$TP_OUT" "the log is owner-only (it names bridges)"
+  tp_pm exec "$TP_CTR" test -e /tmp/tor.log
+  assert_nonzero "$TP_RC" "nothing is written to /tmp/tor.log any more"
+  tp_pm exec "$TP_CTR" touch /tmp/tor-restart-flag
+  tp_wait_file /app/data/control/tor-restart-ack 40 '^generation	2$' || fail "tor was not respawned: $(podman logs "$TP_CTR" 2>&1 | tail -n 10)"
+  tp_wait_file /app/data/tor.log.prev 10 'Bootstrapped 100%'
+  assert_rc 0 "$?" "the previous run's log is kept as tor.log.prev"
+  tp_pm exec "$TP_CTR" sh -c 'echo marker-of-the-run-before-the-restart >>/app/data/tor.log'
+  tp_pm restart -t 5 "$TP_CTR"
+  assert_rc 0 "$TP_RC" "the container restarts on the same data: $TP_OUT"
+  tp_wait_file /app/data/tor.log.prev 30 'marker-of-the-run-before-the-restart'
+  assert_rc 0 "$?" "a container restart keeps the run before it as tor.log.prev"
+}
+
 # tp_wait_file <path> <seconds> [ERE]: wait until the file exists in the
 # container (and, if given, has a line matching ERE).
 tp_wait_file() {

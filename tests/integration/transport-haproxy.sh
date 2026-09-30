@@ -190,6 +190,9 @@ t_restart_request_acknowledged_with_new_generation() {
   gen0="$(tp_field generation "$TP_OUT")"; pid0="$(tp_field tor_pid "$TP_OUT")"
   assert_eq 1 "$gen0" "first tor is generation 1"
   assert_match '^[1-9][0-9]*$' "$pid0" "generation file names the tor pid"
+  # haproxy starts once a stream works (Sub-plan 5 Task 1.4, fix B), a second
+  # or two after the generation file.
+  tp_wait_listen 853 20 || fail "haproxy never listened on 853: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
   hap0="$(tp_pid_of haproxy)"
   assert_match '^[1-9]' "$hap0" "haproxy runs"
   tp_request req-ack-1
@@ -326,3 +329,9 @@ t_primary_probe_measures_milliseconds() {
   [ "$t" -ge 1200 ] && [ "$t" -le 5000 ] || fail "primary probe reported t=${t}ms for a 1.5 s SOCKS grant (not milliseconds)"
   assert_match 'streak=slow/' "$line" "a 1.5 s connect is slow against a 1000 ms threshold"
 }
+
+# Sub-plan 5 Task 1.4 (fix B): readiness is a working stream; Tor's log is kept.
+t_readiness_waits_for_a_working_stream() { tp_readiness_case tor-haproxy; }
+t_tor_log_is_kept_on_the_data_volume() { tp_torlog_case tor-haproxy; }
+t_readiness_through_the_onion_alone() { tp_readiness_onion_case tor-haproxy; }
+t_stop_during_a_stall_is_prompt() { tp_stop_during_stall_case tor-haproxy; }

@@ -234,3 +234,9 @@ t_restart_control_is_private_to_the_image_user() {
   tp_wait_file /app/data/control/tor-generation 2
   assert_eq 1 "$(tp_field generation "$TP_OUT")" "tor was not restarted by the planted request"
 }
+
+# Sub-plan 5 Task 1.4 (fix B): readiness is a working stream; Tor's log is kept.
+t_readiness_waits_for_a_working_stream() { tp_readiness_case tor-socat; }
+t_tor_log_is_kept_on_the_data_volume() { tp_torlog_case tor-socat; }
+t_readiness_through_the_onion_alone() { tp_readiness_onion_case tor-socat; }
+t_stop_during_a_stall_is_prompt() { tp_stop_during_stall_case tor-socat; }
