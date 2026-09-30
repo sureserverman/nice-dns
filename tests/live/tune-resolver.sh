@@ -34,7 +34,10 @@
 . "$NICE_DNS_ROOT/tests/live/install-lifecycle.sh"
 unset -f t_1_before t_2_upgrade_from_legacy t_3_state_survives t_4_uninstall_restores t_5_final_install t_6_evidence_is_private
 
-il_dir() { printf '%s\n' "$ARTIFACT_DIR/tune-resolver/$1"; }
+# TR_GROUP: the evidence directory's name; live/tune-transport reuses this
+# cell under its own (Sub-plan 5 Task 1.4).
+TR_GROUP="${TR_GROUP:-tune-resolver}"
+il_dir() { printf '%s\n' "$ARTIFACT_DIR/$TR_GROUP/$1"; }
 IL_FIRST_STEPS=tr_cell
 TR_BASE_SHA=b85bc9b7786efc7d3bf0572875e95e214dfa1d6c
 TR_BLOCKS="${NICE_DNS_TR_BLOCKS:-10}"  # 10 restarts per arm (DEC-014)
@@ -106,6 +109,15 @@ tr_dns_settled() {
   return 1
 }
 
+# Hooks for a group that reuses this cell (live/tune-transport): after the
+# candidate install and before the arms are prepared; before and after each
+# swap to the candidate arm. No-ops here.
+tr_hook_after_install() { :; }     # <platform> <alias> <proxy>
+tr_hook_before_candidate() { :; }  # <alias> <block>
+tr_hook_after_candidate() { :; }   # <alias> <block>
+# tr_candidate_images <alias>: the candidate arm's images label.
+tr_candidate_images() { printf 'generation-of-%s\n' "$(il_sha)"; }
+
 tr_cell() {
   local plat="$1" a="$2" d proxy tag arm k first
   d="$(il_dir "$a")"
@@ -128,6 +140,7 @@ tr_cell() {
     assert_match '^(applied|unchanged)$' "$(awk -F '\t' '$1 == "result" { print $2 }' "$d/route-pin.tsv")" "$a: the candidate is pinned to $TR_ROUTE"
   fi
   printf 'candidate_route_pin\t%s\n' "${TR_ROUTE:-none}" >>"$d/cell.tsv"
+  tr_hook_after_install "$plat" "$a" "$proxy"
   il_t "$a" arm-prepare --component "tor-$proxy" --proxy-tag "$tag" --source-sha "$TR_BASE_SHA" >"$d/arms.tsv" 2>>"$d/ops.log" \
     || fail "$a: arm-prepare: $(tail -n 20 "$d/ops.log")"
   for arm in baseline candidate; do
@@ -137,14 +150,15 @@ tr_cell() {
     "$a: no baseline image is a candidate image"
   printf 'target_id\t%s\nplatform\t%s\nproxy\t%s\npihole\tstandard\nsource_rev\t%s\nimages\treconstructed-baseline-%s-%s\n' \
     "$a" "$plat" "$proxy" "$TR_BASE_SHA" "${TR_BASE_SHA:0:7}" "$tag" >"$d/identity-baseline.tsv"
-  printf 'target_id\t%s\nplatform\t%s\nproxy\t%s\npihole\tstandard\nsource_rev\t%s\nimages\tgeneration-of-%s\n' \
-    "$a" "$plat" "$proxy" "$(il_sha)" "$(il_sha)" >"$d/identity-candidate.tsv"
+  printf 'target_id\t%s\nplatform\t%s\nproxy\t%s\npihole\tstandard\nsource_rev\t%s\nimages\t%s\n' \
+    "$a" "$plat" "$proxy" "$(il_sha)" "$(tr_candidate_images "$a")" >"$d/identity-candidate.tsv"
 
   # Strict alternation: the comparator refuses a run of one arm longer than
   # one block (ceil(n/5)).
   k=1
   while [ "$k" -le "$TR_BLOCKS" ]; do
     for arm in baseline candidate; do
+      [ "$arm" != candidate ] || tr_hook_before_candidate "$a" "$k"
       il_t "$a" arm-set --component "tor-$proxy" --mode "$arm" >"$d/blocks/set-$arm-$k.tsv" 2>>"$d/ops.log" \
         || fail "$a: arm-set $arm (block $k): $(tail -n 5 "$d/ops.log")"
       tr_restart "$a" "$arm" "$k"
@@ -154,6 +168,7 @@ tr_cell() {
         il_t "$a" route-report >"$d/blocks/route-$k.tsv" 2>>"$d/ops.log" || true
         printf 'block\t%s\t%s\n' "$k" "$(awk -F '\t' '$1 == "readback" { print $2 }' "$d/blocks/route-$k.tsv")" >>"$d/candidate-routes.tsv"
         [ -z "$TR_ROUTE" ] || assert_match "^$TR_ROUTE " "$(awk -F '\t' '$1 == "readback" { print $2 }' "$d/blocks/route-$k.tsv")" "$a: block $k runs the pinned route"
+        tr_hook_after_candidate "$a" "$k"
       fi
       tr_collect "$a" "$arm" cold "$TR_COLD" "$k"
       tr_collect "$a" "$arm" warm "$TR_WARM" "$k"
@@ -175,7 +190,7 @@ tr_cell() {
   il_watch_pinned "$plat" "$d/watch-reinstall.tsv" all
   il_report "$a" after-reinstall || fail "lifecycle-report"
   il_check_deployed "$plat" "$d/after-reinstall.tsv" "$proxy"
-  printf 'tune-resolver\t%s\tmeasured\n' "$plat/$proxy/standard" >"$d/measured.tsv"
+  printf '%s\t%s\tmeasured\n' "$TR_GROUP" "$plat/$proxy/standard" >"$d/measured.tsv"
 }
 
 t_1_interleaved_comparison() {
@@ -186,7 +201,7 @@ t_1_interleaved_comparison() {
 
 t_2_evidence_is_private() {
   il_selection
-  assert_eq "" "$(grep -rlE 'cert=[A-Za-z0-9+/]{20}|(^|[^0-9A-Fa-f])[0-9A-F]{40}([^0-9A-Fa-f]|$)|PRIVATE KEY|"sid":|pwhash|BRIDGE[0-9]+=' "$ARTIFACT_DIR/tune-resolver" --include='*.tsv' 2>/dev/null)" \
+  assert_eq "" "$(grep -rlE 'cert=[A-Za-z0-9+/]{20}|(^|[^0-9A-Fa-f])[0-9A-F]{40}([^0-9A-Fa-f]|$)|PRIVATE KEY|"sid":|pwhash|BRIDGE[0-9]+=' "$ARTIFACT_DIR/$TR_GROUP" --include='*.tsv' 2>/dev/null)" \
     "no report, sample or step record holds bridge material, a session or a hash"
 }
 

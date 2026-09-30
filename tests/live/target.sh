@@ -98,6 +98,13 @@
 #   route-apply      switch Unbound to --route (an identity route) with the
 #                    installed bundle's apply_route, under the controller's
 #                    state lock, at the next generation; prints its result
+#   route-onion      Sub-plan 5 Task 1.4: leave a persisted cloudflare-onion
+#                    include at the next generation, files only, under the
+#                    controller's state lock (what the controller leaves once
+#                    it has promoted the onion). The running Unbound is not
+#                    reloaded: the include is what the next start reads, so a
+#                    restart after it shows whether the start demotes the
+#                    onion (lib/recovery.sh start_route)
 #   arm-prepare      Sub-plan 5 Task 1.3 (DEC-012): the two arms of an
 #                    interleaved comparison, as local image tags nd-arm-*.
 #                    candidate: the images the stack runs now. baseline:
@@ -180,7 +187,7 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply arm-prepare arm-set'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set'
 FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
@@ -767,7 +774,7 @@ case "$NICE_DNS_OP" in
     fi
     printf 'finished_utc\t%s\ninstaller_exit\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc"
     exit $rc ;;
-  route-report|route-apply)
+  route-report|route-apply|route-onion)
     [ "$plat" = macos ] && homebrew_path
     if [ "$plat" = macos ]; then hd="$HOME/Library/Application Support/nice-dns-health"
     else hd="${XDG_DATA_HOME:-$HOME/.local/share}/nice-dns-health"; fi
@@ -795,6 +802,27 @@ case "$NICE_DNS_OP" in
       n=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
       st=$(dig "@${RESOLVER%#*}" -p "${RESOLVER#*#}" +time=10 +tries=1 "nd-route-$n.example.com" A 2>/dev/null | awk '/status:/ { sub(/,.*/, "", $6); print $6; exit }')
       printf 'client_fresh\t%s\n' "${st:-timeout}"
+    elif [ "$NICE_DNS_OP" = route-onion ]; then
+      # shellcheck disable=SC2016
+      ND_PLATFORM="$plat" ND_ROUTES_FILE="$hd/bundles/$b/routes/providers.tsv" bash -c '
+        . "$1/lib/recovery.sh" || exit 2
+        nd_state_init || exit 2
+        tok=$(nd_state_lock) || { echo "the controller state lock is held" >&2; exit 5; }
+        d=$(nd_platform_route_dir)
+        g=0
+        _nd_route_read_desired "$d" 2>/dev/null && [ -n "$_ND_DES_GEN" ] && g=$_ND_DES_GEN
+        i=$(_nd_route_file_info "$d/forward-route.conf" 2>/dev/null | cut -f2)
+        case "$i" in ""|*[!0-9]*) ;; *) [ "$i" -gt "$g" ] && g=$i ;; esac
+        g=$((g + 1)); rc=1
+        if _nd_route_resolve cloudflare-onion >/dev/null \
+          && _nd_route_write_desired "$d" cloudflare-onion "$g" \
+          && (umask 022 && _nd_route_render cloudflare-onion "$g" "$_ND_FWD" >"$d/.forward-route.conf.staged") \
+          && chmod 0644 "$d/.forward-route.conf.staged" && mv -f "$d/.forward-route.conf.staged" "$d/forward-route.conf"; then rc=0; fi
+        nd_state_unlock "$tok"
+        [ "$rc" = 0 ] && printf "result\tapplied\nroute\tcloudflare-onion\ngeneration\t%s\n" "$g"
+        exit $rc
+      ' _ "$hd/bundles/$b" </dev/null
+      exit $?
     else
       # shellcheck disable=SC2016
       ND_PLATFORM="$plat" ND_ROUTES_FILE="$hd/bundles/$b/routes/providers.tsv" bash -c '
@@ -960,7 +988,12 @@ case "$NICE_DNS_OP" in
     t0=$(perl -MTime::HiRes=time -e 'printf "%.6f", time')
     restart_stack || exit 1
     printf 'resolver\t%s\n' "$RESOLVER"
-    if ! first_answer "$t0" 600; then
+    fa_rc=0; first_answer "$t0" 600 || fa_rc=1
+    # The proxy's own readiness line for this start (Sub-plan 5 Task 1.4, fix B:
+    # "bootstrapped after N s, a stream works after M s (exit|onion)"); empty
+    # for an image from before it.
+    printf 'proxy_ready\t%s\n' "$(ctl logs "$c" 2>&1 | grep 'a stream works after' | tail -n 1)"
+    if [ "$fa_rc" != 0 ]; then
       echo "the stack did not answer on the $a arm" >&2
       # Never leave the host on a dead arm: the candidate (the deployment
       # the installer made) comes back.
@@ -1433,7 +1466,7 @@ case "$op" in
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|install-agent|set-tunables|mark-state|route-apply|arm-prepare|arm-set)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"
