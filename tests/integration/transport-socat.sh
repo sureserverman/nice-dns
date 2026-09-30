@@ -240,3 +240,4 @@ t_readiness_waits_for_a_working_stream() { tp_readiness_case tor-socat; }
 t_tor_log_is_kept_on_the_data_volume() { tp_torlog_case tor-socat; }
 t_readiness_through_the_onion_alone() { tp_readiness_onion_case tor-socat; }
 t_stop_during_a_stall_is_prompt() { tp_stop_during_stall_case tor-socat; }
+t_restart_request_during_a_stall_is_acknowledged() { tp_restart_during_stall_case tor-socat; }

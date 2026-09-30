@@ -238,6 +238,26 @@ tp_stop_during_stall_case() {
   assert_not_match 'haproxy version|Loading success|Starting PRIMARY' "$(podman logs "$TP_CTR" 2>&1)" "no front was started after the stop"
 }
 
+# tp_restart_during_stall_case <repo>: the restart contract holds while the
+# supervisor waits for a working stream (Stage 1 gate, second pass I1: the
+# watcher started only after that wait, which can now last 5 minutes, so a
+# controller's request went unanswered exactly when Tor was stalled).
+tp_restart_during_stall_case() {
+  local ack
+  tp_stalled_start "$1" delay 120
+  sleep 3
+  tp_request req-stall-1
+  tp_wait_file /app/data/control/tor-restart-ack 40 '^request_id	req-stall-1$' || fail "a restart requested during the stall was not acknowledged: $(podman logs "$TP_CTR" 2>&1 | tail -n 15)"
+  ack="$TP_OUT"
+  assert_eq respawned "$(tp_field status "$ack")" "acknowledged as a respawn"
+  assert_eq 2 "$(tp_field generation "$ack")" "with the new generation"
+  tp_pm exec "$TP_CTR" test -e /app/data/control/tor-restart-request
+  assert_nonzero "$TP_RC" "the request was consumed once"
+  sleep 8
+  tp_wait_file /app/data/control/tor-generation 2 '^generation	2$'
+  assert_rc 0 "$?" "and it caused exactly one respawn (no late second one)"
+}
+
 # tp_torlog_case <repo>: Tor's own log is on the data volume (owner-only); a
 # respawn and a container restart both keep the previous run's (every earlier
 # stall left no trace: the log lived in /tmp and was truncated at each launch).
