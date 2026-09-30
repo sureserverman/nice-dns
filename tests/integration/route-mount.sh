@@ -265,8 +265,48 @@ t_uninstall_removes_the_directory_only_once_dns_is_back() {
       ip_install "$ep" uninstall
       assert_rc 0 "$IP_RC" "$ep: the retry succeeds: $IP_OUT"
       assert_no_path "$(rm_dir)" "$ep: and removes the route directory"
+      # Stage 1 gate (second pass I3): the uninstall removes the files it
+      # manages, never a directory's other content: the path comes from the
+      # environment and was only checked at install.
+      if [ "$plat" = linux ]; then dt_world "$ep" file; else dt_world "$ep" fresh; fi
+      rm_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: install again: $IP_OUT"
+      printf 'not ours\n' >"$(rm_dir)/keep-me.txt"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep: uninstall with a foreign file in the directory: $IP_OUT"
+      assert_file "$(rm_dir)/keep-me.txt" "$ep: a file nice-dns does not manage is kept"
+      assert_no_path "$(rm_dir)/forward-route.conf" "$ep: the include is removed"
+      assert_no_path "$(rm_dir)/desired.tsv" "$ep: and its desired record"
+      assert_match 'not empty' "$IP_OUT" "$ep: and the uninstall says the directory stays"
     ) || exit 1
   done
+}
+
+# Stage 1 gate (second pass I2): persistent-podman.sh checks and seeds the
+# route before it touches a quadlet, and writes unbound.container by rename:
+# a failure never leaves a unit with unfilled placeholders (the generator
+# would reject it at the next reboot and Unbound would have no unit).
+t_failed_route_seed_leaves_the_quadlets_alone() {
+  dt_select_platforms
+  case " $DT_PLATS " in *" linux "*) ;; *) return 0 ;; esac
+  (
+    local f d q
+    dt_world install-deb resolved
+    q="$IP_HOME/.config/containers/systemd"
+    mkdir -p "$IP_W/real" "$q"
+    for f in deb mac scripts health lib routes; do cp -R "$NICE_DNS_ROOT/$f" "$IP_W/real/"; done
+    mkdir -p "$IP_W/run/systemd/generator" && : >"$IP_W/run/systemd/generator/nice-dns-pod.service"
+    : >"$FAKE_ROOT/.systemd/NetworkManager-wait-online.unit"
+    printf 'an earlier, working unit\n' >"$q/unbound.container"
+    printf 'an earlier proxy unit\n' >"$q/tor-haproxy.container"
+    d="$(rm_dir)"
+    mkdir -p "$d" && chmod 777 "$d"
+    ip_run "$IP_W/real/deb/persistent-podman.sh" socat standard
+    assert_nonzero "$IP_RC" "a route directory others can write fails the script: $IP_OUT"
+    assert_eq "an earlier, working unit" "$(cat "$q/unbound.container")" "the installed Unbound unit is untouched"
+    assert_file "$q/tor-haproxy.container" "and so is the proxy unit"
+    assert_eq "" "$(grep -rl '__ROUTE_DIR__\|__HEALTH_ROOT__\|__VARIANT__' "$q" || true)" "no unit holds an unfilled placeholder"
+  ) || exit 1
 }
 
 t_unusable_directory_fails_the_install() {

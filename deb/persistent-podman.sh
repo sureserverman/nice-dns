@@ -77,6 +77,34 @@ for svc in tor-haproxy tor-socat unbound pi-hole; do
 done
 echo
 
+# Unbound's route directory (DEC-010) and the controller's route-start
+# launcher (Sub-plan 5 Task 1.4), settled before any quadlet is touched
+# (Stage 1 gate): a failure here leaves the installed units as they were.
+# The installer seeds the directory before this runs; run on its own, this
+# seeds a missing one (lib/recovery.sh seed_default_route keeps an existing
+# route).
+ROUTE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROUTE_DIR="$(. "$ROUTE_ROOT/lib/platform/linux.sh" && nd_platform_route_dir)"
+case "$ROUTE_DIR" in /*) ;; *) echo "ERROR: Unbound's route directory '$ROUTE_DIR' is not an absolute path" >&2; exit 1 ;; esac
+case "$ROUTE_DIR" in *[!A-Za-z0-9._/-]*)
+  echo "ERROR: Unbound's route directory '$ROUTE_DIR' cannot be mounted (only A-Z a-z 0-9 . _ / - are allowed in the path)" >&2; exit 1 ;;
+esac
+if ! ROUTE_OUT="$(ND_PLATFORM=linux bash -c '. "$1/lib/recovery.sh" && seed_default_route' _ "$ROUTE_ROOT" 2>&1)"; then
+  echo "ERROR: cannot seed Unbound's route in $ROUTE_DIR: $ROUTE_OUT" >&2
+  exit 1
+fi
+# The launcher's root is health/nice-dns-health's HEALTH_LIB_ROOT_INSTALLED; a
+# controller installed later writes it there, and until then the "-" skips it.
+# The hook is optional: a path a unit cannot carry drops it with a warning
+# rather than failing the install.
+HEALTH_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/nice-dns-health"
+ROUTE_START_HOOK=yes
+case "$HEALTH_ROOT" in
+  /*[!A-Za-z0-9._/-]*|[!/]*)
+    echo "   ! The controller's directory '$HEALTH_ROOT' cannot go into a unit (absolute, A-Z a-z 0-9 . _ / - only): Unbound starts without the route-start hook." >&2
+    ROUTE_START_HOOK=no ;;
+esac
+
 # 3) Install quadlet files
 echo "3) Installing quadlet files to $QUADLET_DIR ..."
 mkdir -p "$QUADLET_DIR"
@@ -90,45 +118,23 @@ rm -f "$QUADLET_DIR/tor-haproxy.container" "$QUADLET_DIR/tor-socat.container"
 
 cp "$SCRIPT_DIR/quadlet/nice-dns.network" "$QUADLET_DIR/"
 cp "$SCRIPT_DIR/quadlet/nice-dns.pod" "$QUADLET_DIR/"
-cp "$SCRIPT_DIR/quadlet/unbound.container" "$QUADLET_DIR/"
+# unbound.container carries placeholders: __VARIANT__ (its After= names only
+# the installed proxy; systemd warns about unknown unit names otherwise),
+# __ROUTE_DIR__ and __HEALTH_ROOT__. Rendered to a temporary file and renamed,
+# so the directory never holds a unit with an unfilled placeholder.
+if [ "$ROUTE_START_HOOK" = yes ]; then
+  sed -e "s/__VARIANT__/${VARIANT}/g" -e "s|__ROUTE_DIR__|${ROUTE_DIR}|g" -e "s|__HEALTH_ROOT__|${HEALTH_ROOT}|g" \
+    "$SCRIPT_DIR/quadlet/unbound.container" >"$QUADLET_DIR/.unbound.container.new"
+else
+  sed -e "s/__VARIANT__/${VARIANT}/g" -e "s|__ROUTE_DIR__|${ROUTE_DIR}|g" -e '/^ExecStartPre=-\/bin\/sh __HEALTH_ROOT__\/route-start$/d' \
+    "$SCRIPT_DIR/quadlet/unbound.container" >"$QUADLET_DIR/.unbound.container.new"
+fi
+mv -f "$QUADLET_DIR/.unbound.container.new" "$QUADLET_DIR/unbound.container"
 cp "$SCRIPT_DIR/quadlet/pi-hole.container" "$QUADLET_DIR/"
 # The Pi-hole image's capability set (quadlet drop-in; pi-hole-*.conf say why).
 mkdir -p "$QUADLET_DIR/pi-hole.container.d"
 cp "$SCRIPT_DIR/quadlet/pi-hole-${PIHOLE}.conf" "$QUADLET_DIR/pi-hole.container.d/50-nice-dns-caps.conf"
 cp "$SCRIPT_DIR/quadlet/tor-${VARIANT}.container" "$QUADLET_DIR/"
-
-# unbound.container ships with __VARIANT__ as a placeholder so its After=
-# names only the Tor proxy variant actually installed. systemd warns about
-# unknown unit names in After= on every daemon-reload otherwise.
-sed -i "s/__VARIANT__/${VARIANT}/g" "$QUADLET_DIR/unbound.container"
-
-# Unbound's route directory (DEC-010): the installer seeds it before this
-# runs; run on its own, this seeds a missing one (lib/recovery.sh
-# seed_default_route keeps an existing route). Its path goes into the quadlet.
-ROUTE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-ROUTE_DIR="$(. "$ROUTE_ROOT/lib/platform/linux.sh" && nd_platform_route_dir)"
-# Checked before anything is written (the installer checks it in preparation).
-case "$ROUTE_DIR" in /*) ;; *) echo "ERROR: Unbound's route directory '$ROUTE_DIR' is not an absolute path" >&2; exit 1 ;; esac
-case "$ROUTE_DIR" in *[!A-Za-z0-9._/-]*)
-  echo "ERROR: Unbound's route directory '$ROUTE_DIR' cannot be mounted (only A-Z a-z 0-9 . _ / - are allowed in the path)" >&2; exit 1 ;;
-esac
-if ! ROUTE_OUT="$(ND_PLATFORM=linux bash -c '. "$1/lib/recovery.sh" && seed_default_route' _ "$ROUTE_ROOT" 2>&1)"; then
-  echo "ERROR: cannot seed Unbound's route in $ROUTE_DIR: $ROUTE_OUT" >&2
-  exit 1
-fi
-sed -i "s|__ROUTE_DIR__|${ROUTE_DIR}|g" "$QUADLET_DIR/unbound.container"
-# The controller's route-start launcher (Sub-plan 5 Task 1.4), run before
-# Unbound starts: its root is health/nice-dns-health's HEALTH_LIB_ROOT_INSTALLED.
-# A controller installed later writes it there; until then the "-" skips it.
-HEALTH_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/nice-dns-health"
-# The hook is optional: a path a unit cannot carry drops it with a warning
-# rather than failing the install (Tier-1 review S4).
-case "$HEALTH_ROOT" in
-  /*[!A-Za-z0-9._/-]*|[!/]*)
-    echo "   ! The controller's directory '$HEALTH_ROOT' cannot go into a unit (absolute, A-Z a-z 0-9 . _ / - only): Unbound starts without the route-start hook." >&2
-    sed -i '/^ExecStartPre=-\/bin\/sh __HEALTH_ROOT__\/route-start$/d' "$QUADLET_DIR/unbound.container" ;;
-  *) sed -i "s|__HEALTH_ROOT__|${HEALTH_ROOT}|g" "$QUADLET_DIR/unbound.container" ;;
-esac
 
 echo "   ✓ Quadlet files installed."
 echo

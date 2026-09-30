@@ -474,7 +474,16 @@ nd_install_seed_route() {
 _nd_inst_state_remove() {
   local v d
   d="$(_nd_inst_route_dir)"
-  if [ -L "$d" ]; then rm -f "$d"; else rm -rf "${d:?}"; fi
+  # Only what nice-dns manages there, then the directory if that emptied it:
+  # the path comes from the environment and only the install checked it
+  # (Stage 1 gate), so nothing else under it is ever removed.
+  if [ -L "$d" ]; then
+    rm -f "$d"
+  elif [ -d "$d" ]; then
+    rm -f "${d:?}/forward-route.conf" "$d/desired.tsv" "$d/.desired.tsv.tmp" \
+      "$d/.forward-route.conf.staged" "$d/.forward-route.conf.prev" "$d/.forward-route.conf.prev.tmp" "$d/.forward-route.conf.seed"
+    rmdir "$d" 2>/dev/null || echo "  • Unbound's route directory $d is not empty; its other files are left in place."
+  fi
   if [ "$ND_INST_PLATFORM" = linux ]; then
     for v in $ND_INST_STATE_VOLUMES nice-dns-tor-haproxy nice-dns-tor-socat; do
       podman volume rm -f "$v" >/dev/null 2>&1 || true
