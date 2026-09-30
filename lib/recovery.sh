@@ -41,9 +41,10 @@
 # restart is corroborated on the host side through Unbound (the locally built
 # image) resolving over its TLS-verified route, which the proxy cannot forge
 # (DEC-006). The in-image restart keeps Tor's data (only the tor child is
-# respawned). The service restart recreates the container: until Sub-plan 4
-# mounts a volume on /app/data, Tor's data is lost with it (the Linux quadlet
-# runs --rm; the macOS stack restart likewise).
+# respawned). The service restart recreates the container; Tor's data
+# (/app/data: its state and, since Sub-plan 5, its log) is on a volume on both
+# platforms and survives it (deb/quadlet/tor-*.container,
+# mac/start-container.sh).
 #
 # The recovery functions and the journal expect the caller to hold the state
 # lock (nd_recovery_tick and the CLI's run path do); the journal's rotation is
@@ -465,10 +466,11 @@ seed_default_route() {
 # restart on a kept onion the first answer waited 56 s for the rendezvous,
 # until the controller's next tick moved to the exit.
 #
-# Fresh is the policy's own test (lib/policy.sh, the fresh-proxy rule): the
-# proxy container's generation hash (nd_generation_hash, as the proxy
-# observation records it) differs from the state's proxy_gen, or cannot be
-# read (the proxy is being recreated). So the controller's next pass drops the
+# Fresh is the policy's test (lib/policy.sh, the fresh-proxy rule), with one
+# difference: the proxy container's generation hash (nd_generation_hash, as
+# the proxy observation records it) differs from the state's proxy_gen, or,
+# here only, cannot be read (the proxy is being recreated; the policy takes an
+# unreadable generation as no evidence). So the controller's next pass drops the
 # onion from its state too and selects the exit (unchanged), then promotes the
 # onion once sustained: include and state agree. Unbound restarting alone
 # while the proxy runs on (same generation) keeps its onion: the circuits are
@@ -855,7 +857,7 @@ _nd_rec_readiness() {
 # Prints action, target, result and generation rows. Exit: 0 done; 3 the lock
 # is held by another pass; 2 a state or input error.
 nd_recovery_tick() {
-  local mode="${1:-}" obs="${2:-}" tok gen now boot t id rc=0 result=none rgen act
+  local mode="${1:-}" obs="${2:-}" tok gen now boot t id rc=0 result=none rgen act pg
   case "$mode" in active) ;; shadow) ND_STATE_DIR="$(nd_platform_state_dir)/shadow"; export ND_STATE_DIR ;; *) printf 'tick: mode must be active or shadow\n' >&2; return 2 ;; esac
   [ -r "$obs" ] || { printf 'tick: observations %s unreadable\n' "$obs" >&2; return 2; }
   nd_state_init || return 2
@@ -891,10 +893,17 @@ nd_recovery_tick() {
     fi
     # A route is recorded as selected only once apply_route succeeded (exit 0:
     # applied, or unchanged when it already ran); otherwise the previous one
-    # stays, and the next pass decides the switch again.
+    # stays, and the next pass decides the switch again. A switch that was
+    # tried and failed also keeps the previous proxy generation (BL-023): the
+    # pass that decided it on a fresh proxy (lib/policy.sh) must find the
+    # proxy fresh again, or the onion it dropped would stay in the state while
+    # the start's exit (start_route) runs, for good. Without route control
+    # (unmanaged) nothing was tried and the generation is recorded.
     if [ "$act" = switch-route ] && { [ "$mode" = shadow ] || [ "$result" = unmanaged ] || [ "$rc" -ne 0 ]; }; then
       if [ "$mode" != shadow ]; then
-        awk -F '\t' -v r="$(_nd_rec_field route "$t/state")" 'BEGIN { OFS = "\t" } $1 == "route" { $2 = r } { print }' "$t/next" >"$t/next.2" && mv "$t/next.2" "$t/next"
+        pg=""
+        if [ "$result" != unmanaged ]; then pg="$(_nd_rec_field proxy_gen "$t/state")"; [ -n "$pg" ] || pg=-; fi
+        awk -F '\t' -v r="$(_nd_rec_field route "$t/state")" -v pg="$pg" 'BEGIN { OFS = "\t" } $1 == "route" { $2 = r } pg != "" && $1 == "proxy_gen" { $2 = pg } { print }' "$t/next" >"$t/next.2" && mv "$t/next.2" "$t/next"
       fi
     fi
   fi

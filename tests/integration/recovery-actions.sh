@@ -509,6 +509,39 @@ t_tick_records_a_route_only_once_applied() {
   assert_eq cloudflare-exit "$(nd_state_load | awk -F '\t' '$1 == "route" { print $2 }')" "only an applied switch is recorded"
 }
 
+# BL-023 (Stage 1 gate, Tier-2 I4): a pass that saw a fresh proxy and whose
+# switch to the exit failed (Unbound's control socket is not up yet while its
+# start waits for the route) must not record the new proxy generation:
+# otherwise the next pass no longer sees the proxy as fresh, keeps the onion
+# in its state, and never reconciles with the exit the start put in place.
+# shellcheck disable=SC2329
+t_failed_switch_on_a_fresh_proxy_is_retried_as_fresh() {
+  local out old=aaaaaaaaaaaaaaaa new=bbbbbbbbbbbbbbbb now tok
+  ra_fake linux
+  now="$(date +%s)"
+  printf 'schema\tnice-dns-controller-state/1\nboot_id\tboot-a\nupdated\t%s\nstarted\t%s\nroute\tcloudflare-onion\noutage_since\t-\noutage_restarts\t0\nlast_action\t-\nlast_action_at\t-\nrecovery_at\t-\nproxy_gen\t%s\nstreak\tcloudflare-onion\t9\t0\t0\n' \
+    "$((now - 60))" "$((now - 7200))" "$old" >"$CASE_DIR/seed"
+  tok="$(nd_state_lock)" || fail "seed lock"
+  nd_state_commit "$tok" 0 "$CASE_DIR/seed" >/dev/null || fail "seed commit"
+  nd_state_unlock "$tok"
+  { printf 'schema\tnice-dns-observations/1\nobs\truntime\thealthy\t5\trunning: x\nobs\tproxy\thealthy\t5\tgeneration:%s\n' "$new"
+    printf 'obs\troute:cloudflare-onion\thealthy\t900\tp\nobs\troute:cloudflare-exit\thealthy\t900\tp\n'
+    printf 'obs\troute:quad9-exit\thealthy\t900\tp\nobs\troute:cloudflare-legacy\thealthy\t900\tp\n'; } >"$CASE_DIR/o"
+  mkdir -m 700 "$ND_ROUTE_DIR"
+  printf 'schema\tnice-dns-route-desired/1\nroute\tcloudflare-exit\ngeneration\t8\n' >"$ND_ROUTE_DIR/desired.tsv"
+  apply_route() { printf '%s %s\n' "$1" "$2" >>"$CASE_DIR/applied"; printf 'result\trefused\n'; return 2; }
+  out="$(nd_recovery_tick active "$CASE_DIR/o")"
+  assert_eq switch-route "$(ra_field action "$out")" "a fresh proxy: the policy drops the onion and wants the exit"
+  assert_eq cloudflare-exit "$(ra_field target "$out")" "the exit"
+  assert_eq cloudflare-onion "$(nd_state_load | awk -F '\t' '$1 == "route" { print $2 }')" "the failed switch is not recorded"
+  assert_eq "$old" "$(nd_state_load | awk -F '\t' '$1 == "proxy_gen" { print $2 }')" "nor is the proxy generation: the next pass is fresh again"
+  apply_route() { printf '%s %s\n' "$1" "$2" >>"$CASE_DIR/applied"; printf 'result\tunchanged\n'; return 0; }
+  out="$(nd_recovery_tick active "$CASE_DIR/o")"
+  assert_eq switch-route "$(ra_field action "$out")" "the next pass decides the switch again"
+  assert_eq cloudflare-exit "$(nd_state_load | awk -F '\t' '$1 == "route" { print $2 }')" "now recorded"
+  assert_eq "$new" "$(nd_state_load | awk -F '\t' '$1 == "proxy_gen" { print $2 }')" "with the generation it was decided for"
+}
+
 t_readiness_is_per_request_and_corroborated_by_unbound() {
   local now
   ra_fake linux
