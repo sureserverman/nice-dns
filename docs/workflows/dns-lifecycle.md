@@ -527,7 +527,20 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
 - The stack is rebuilt once only when Tor never bootstrapped
   (mac/start-container.sh:765-775). If the chain is unhealthy but Tor did
   bootstrap, the script exits without pinning DNS
-  (mac/start-container.sh:754-764).
+  (mac/start-container.sh:754-764). "Bootstrapped" is the image's line
+  `Tor bootstrapped successfully`, read from the container's log
+  (mac/start-container.sh:132-134). Since Sub-plan 5 Task 1.4 the proxy
+  images print it only once a SOCKS stream through Tor works, to the exit
+  resolver or the onion (tor-socat 69efd1f, tor-haproxy 0aa5063: probes in
+  the background, Tor's log kept on the data volume with the previous
+  run's), proven on images built from those commits
+  (tests/fixtures/transport.sh, integration transport-socat and
+  transport-haproxy). Before, the line followed Tor's "Bootstrapped 100%",
+  which Tor reports from cached state: on the Mac 2026-09-29 it came 2 s
+  after a start and no circuit worked for about 2 minutes. The images
+  pinned in release/images.lock (tor-socat v2.10, tor-haproxy v2.14) are
+  from before those commits: deployed behavior changes when they are
+  released and re-pinned (baseline: unverified on a deployed host).
 
 ### Platform notes
 
