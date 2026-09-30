@@ -59,13 +59,16 @@ tr_append() {
   awk -F '\t' -v OFS='\t' -v n="$(grep -vc '^#' "$2")" 'NR > 2 { $2 = n++; print }' "$1" >>"$2"
 }
 
-# tr_collect <alias> <arm> <workload> <count> <block> [pause ms]
+# tr_collect <alias> <arm> <workload> <count> <block> [pause ms] [sleep s]
+# With <sleep s> the target suspends that long first (target.sh collect
+# --after-sleep).
 tr_collect() {
-  local a="$1" arm="$2" w="$3" d f rc
+  local a="$1" arm="$2" w="$3" d f rc sl=()
   d="$(il_dir "$a")"
   f="$d/blocks/$arm-$w-$5.tsv"
+  [ -z "${7:-}" ] || sl=(--after-sleep "$7")
   RUN_ID="$RUN_ID-$arm" il_t "$a" collect --workload "$w" --count "$4" --identity "$d/identity-$arm.tsv" \
-    --timeout-ms 5000 --pause-ms "${6:-0}" >"$f" 2>>"$d/ops.log"
+    --timeout-ms 5000 --pause-ms "${6:-0}" ${sl[@]+"${sl[@]}"} >"$f" 2>>"$d/ops.log"
   rc=$?
   case "$rc" in 0|3) ;; *) fail "$a: collect $w ($arm, block $5) failed (exit $rc)" ;; esac
   assert_eq "$(($4 + 1))" "$(grep -vc '^#' "$f")" "$a: $4 $w samples ($arm, block $5)"
@@ -113,8 +116,17 @@ tr_dns_settled() {
 # candidate install and before the arms are prepared; before and after each
 # swap to the candidate arm. No-ops here.
 tr_hook_after_install() { :; }     # <platform> <alias> <proxy>
+tr_hook_before_baseline() { :; }   # <alias> <block>
 tr_hook_before_candidate() { :; }  # <alias> <block>
 tr_hook_after_candidate() { :; }   # <alias> <block>
+# TR_WORKLOADS: the classes the comparison judges. tr_block <alias> <arm>
+# <block>: one block's samples of one arm, after the swap and its restart
+# sample: cold names first (fresh), then warm.
+TR_WORKLOADS=cold,warm,restart
+tr_block() {
+  tr_collect "$1" "$2" cold "$TR_COLD" "$3"
+  tr_collect "$1" "$2" warm "$TR_WARM" "$3"
+}
 # tr_candidate_images <alias>: the candidate arm's images label.
 tr_candidate_images() { printf 'generation-of-%s\n' "$(il_sha)"; }
 
@@ -173,11 +185,11 @@ tr_cell() {
   k=1
   while [ "$k" -le "$TR_BLOCKS" ]; do
     for arm in baseline candidate; do
-      [ "$arm" != candidate ] || tr_hook_before_candidate "$a" "$k"
+      if [ "$arm" = candidate ]; then tr_hook_before_candidate "$a" "$k"; else tr_hook_before_baseline "$a" "$k"; fi
       il_t "$a" arm-set --component "tor-$proxy" --mode "$arm" >"$d/blocks/set-$arm-$k.tsv" 2>>"$d/ops.log" \
         || fail "$a: arm-set $arm (block $k): $(tail -n 5 "$d/ops.log")"
       tr_restart "$a" "$arm" "$k"
-      # A primed cached name, then the block: cold names first (fresh), then warm.
+      # A primed cached name, then the block.
       il_t "$a" collect --workload warm --count 1 --identity "$d/identity-$arm.tsv" >/dev/null 2>>"$d/ops.log" || true
       if [ "$arm" = candidate ]; then
         il_t "$a" route-report >"$d/blocks/route-$k.tsv" 2>>"$d/ops.log" || true
@@ -185,8 +197,7 @@ tr_cell() {
         [ -z "$TR_ROUTE" ] || assert_match "^$TR_ROUTE " "$(awk -F '\t' '$1 == "readback" { print $2 }' "$d/blocks/route-$k.tsv")" "$a: block $k runs the pinned route"
         tr_hook_after_candidate "$a" "$k"
       fi
-      tr_collect "$a" "$arm" cold "$TR_COLD" "$k"
-      tr_collect "$a" "$arm" warm "$TR_WARM" "$k"
+      tr_block "$a" "$arm" "$k"
     done
     k=$((k + 1))
   done
@@ -194,7 +205,7 @@ tr_cell() {
   printf 'first_sample_utc\t%s\n' "$first" >>"$d/cell.tsv"
 
   python3 "$TR_PA" compare --cell "$plat/$proxy/standard" --baseline "$d/samples-baseline.tsv" \
-    --candidate "$d/samples-candidate.tsv" --workloads cold,warm,restart >"$d/compare.tsv" 2>"$d/compare.err"
+    --candidate "$d/samples-candidate.tsv" --workloads "$TR_WORKLOADS" >"$d/compare.tsv" 2>"$d/compare.err"
   printf 'compare_exit\t%s\n' "$?" >>"$d/cell.tsv"
   [ -s "$d/compare.tsv" ] || fail "$a: the comparison was refused: $(cat "$d/compare.err")"
 

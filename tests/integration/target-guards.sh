@@ -966,3 +966,90 @@ exit 1" "$(printf '%s\n' "$ops" | sed -n '/^arm-prepare /,$p' | sed 1d)" "after 
   assert_not_match 'arm-set|resume-agents' "$ops" "nothing was quiesced or swapped yet: nothing to undo"
   assert_match '^  trap - EXIT$' "$(cat "$NICE_DNS_ROOT/tests/live/tune-resolver.sh")" "a finished cell ends without the cleanup"
 }
+
+# ─── Stage 1 gate remediation R7 (Sub-plan 5): the idle and wake classes ─────
+
+t_wake_sample_is_guarded() {
+  local b
+  tg_setup
+  RUN_ID=run-1; export RUN_ID
+  tg_identity 'pi-hole=sha256:ab'
+  tg collect lin1 --targets "$CASE_DIR/targets.env" --workload wake --count 1 --identity "$CASE_DIR/identity.tsv" --after-sleep 60
+  assert_nonzero "$TG_RC" "a sleep without a snapshot"
+  assert_match 'no restore snapshot' "$TG_OUT" "names the snapshot"
+  assert_eq 0 "$(tg_sent)" "nothing sent without a snapshot"
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  for v in 5 29 601 9999 x '60;id' ''; do
+    : >"$FAKE_LOG"
+    tg collect lin1 --targets "$CASE_DIR/targets.env" --workload wake --count 1 --identity "$CASE_DIR/identity.tsv" --after-sleep "$v"
+    assert_rc 2 "$TG_RC" "--after-sleep [$v] refused: $TG_OUT"
+    assert_eq 0 "$(tg_sent)" "nothing sent for --after-sleep [$v]"
+  done
+  : >"$FAKE_LOG"
+  tg probe lin1 --targets "$CASE_DIR/targets.env" --after-sleep 60
+  assert_rc 2 "$TG_RC" "--after-sleep on another operation refused"
+  assert_eq 0 "$(tg_sent)" "nothing sent"
+  tg collect lin1 --targets "$CASE_DIR/targets.env" --workload wake --count 1 --identity "$CASE_DIR/identity.tsv" --after-sleep 60
+  assert_match 'NICE_DNS_OP=collect NICE_DNS_WORKLOAD=wake NICE_DNS_COUNT=1 .* NICE_DNS_SLEEP_SECS=60 ' "$(cat "$FAKE_LOG")" "sent as a data word"
+  : >"$FAKE_LOG"
+  tg collect lin1 --targets "$CASE_DIR/targets.env" --workload cold --count 1 --identity "$CASE_DIR/identity.tsv"
+  assert_match ' NICE_DNS_SLEEP_SECS= ' "$(cat "$FAKE_LOG")" "a plain collect never sleeps the target"
+  b="$(tg_branch collect)"
+  assert_match 'if \[ -n "\$\{NICE_DNS_SLEEP_SECS:-\}" \]; then' "$b" "the sleep is its own step"
+  assert_match 'sudo -n rtcwake -m mem -s "\$NICE_DNS_SLEEP_SECS" </dev/null' "$b" "Linux: suspend to RAM with an alarm"
+  assert_match 'sudo -n pmset relative wake "\$NICE_DNS_SLEEP_SECS" </dev/null' "$b" "macOS: the wake is scheduled first"
+  assert_match 'pmset sleepnow </dev/null' "$b" "macOS: then the machine sleeps"
+  [ "$(printf '%s\n' "$b" | grep -n 'pmset relative wake' | head -1 | cut -d: -f1)" -lt "$(printf '%s\n' "$b" | grep -n 'pmset sleepnow' | head -1 | cut -d: -f1)" ] \
+    || fail "the wake is scheduled before the sleep"
+  assert_eq "" "$(printf '%s\n' "$b" | grep -E '(sudo|pmset|ping) ' | grep -v '</dev/null')" "no sleep command reads the script's stdin"
+}
+
+# tg_idle_wake_ops <fn> [args]: tune-idle-wake on stubs; prints the target
+# operations <fn> ran.
+tg_idle_wake_ops() {
+  (
+    ARTIFACT_DIR="$CASE_DIR/art-iw" NICE_DNS_IL_DRY_RUN=1 TG_OPS="$CASE_DIR/ops-iw" NICE_DNS_TI_GAP=0 RUN_ID=run-1
+    mkdir -p "$ARTIFACT_DIR"; : >"$TG_OPS"
+    # shellcheck source=tests/live/tune-idle-wake.sh
+    . "$NICE_DNS_ROOT/tests/live/tune-idle-wake.sh"
+    mkdir -p "$(il_dir lin1)/blocks"
+    il_t() {
+      shift; printf '%s\n' "$*" >>"$TG_OPS"
+      [ "$1" != collect ] || printf '# schema\tnice-dns-sample/1\nrun_id\tsample_id\nr\t0\n'
+    }
+    "$@" >"$CASE_DIR/iw.log" 2>&1
+    printf 'exit %s\n' "$?" >>"$TG_OPS"
+    sed -e 's/ --identity [^ ]*//' -e 's/ --timeout-ms 5000 --pause-ms 0//' "$TG_OPS"
+  )
+}
+
+t_idle_wake_block_is_gap_idle_sleep_wake() {
+  local ops
+  ops="$(tg_idle_wake_ops tr_block lin1 baseline 4)"
+  assert_eq "collect --workload idle --count 1
+collect --workload wake --count 1 --after-sleep 60
+collect --workload idle --count 1
+collect --workload wake --count 1 --after-sleep 60
+collect --workload idle --count 1
+collect --workload wake --count 1 --after-sleep 60
+exit 0" "$ops" "three idle gaps, each followed by a sleep and the wake sample: $(cat "$CASE_DIR/iw.log")"
+  assert_eq "3 3" "$(grep -c '^r	0$' "$CASE_DIR/art-iw/tune-idle-wake/lin1/blocks/baseline-idle-4-"*.tsv | awk -F: '{ n += $2 } END { print n }') $(ls "$CASE_DIR/art-iw/tune-idle-wake/lin1/blocks/" | grep -c '^baseline-wake-4-')" \
+    "one file per sample, named by block and position"
+  assert_match '^TI_GAP="\$\{NICE_DNS_TI_GAP:-305\}"' "$(cat "$NICE_DNS_ROOT/tests/live/tune-idle-wake.sh")" "the idle gap outlasts example.com's 300 s TTL by default"
+}
+
+t_idle_wake_candidate_runs_with_its_controller() {
+  # The candidate arm is the product as it runs: its schedules are started
+  # after the swap and stopped again before the baseline arm.
+  local ops
+  ops="$(tg_idle_wake_ops tr_hook_before_baseline lin1 2)"
+  assert_eq "quiesce-agents
+exit 0" "$ops" "before the baseline arm the schedules stop"
+  assert_match '^tr_hook_after_candidate\(\) \{ tt_after_candidate "\$@"; ti_resume "\$1"; \}$' "$(cat "$NICE_DNS_ROOT/tests/live/tune-idle-wake.sh")" \
+    "after the candidate swap (and tune-transport's own checks) the schedules start"
+  ops="$(tg_idle_wake_ops ti_resume lin1)"
+  assert_eq "resume-agents
+exit 0" "$ops" "resume-agents"
+  assert_match 'tr_hook_before_baseline "\$a" "\$k"' "$(sed -n '/^tr_cell() {/,/^}/p' "$NICE_DNS_ROOT/tests/live/tune-resolver.sh")" "the cell calls the hook before each baseline swap"
+  assert_match '^live	tune-idle-wake	tests/live/tune-idle-wake.sh	live$' "$(cat "$NICE_DNS_ROOT/tests/manifests/groups.tsv")" "the group is registered"
+}

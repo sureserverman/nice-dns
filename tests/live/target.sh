@@ -26,7 +26,12 @@
 #   collect          run tests/live/collect.sh on the target against its
 #                    client resolver (Pi-hole): --workload W --count N
 #                    [--timeout-ms MS] [--pause-ms MS] --identity FILE;
-#                    samples on stdout
+#                    samples on stdout. With --after-sleep SECS (30..600;
+#                    needs the run's snapshot) the target first suspends for
+#                    SECS seconds and wakes by its own alarm (Linux: sudo
+#                    rtcwake -m mem; macOS: sudo pmset relative wake, then
+#                    pmset sleepnow), and the queries start once its default
+#                    gateway answers: DEC-012's wake sample.
 #   freeze-upstream  SIGSTOP the tor process inside --component, so every
 #                    listener (Pi-hole, Unbound, the proxy) stays up while
 #                    upstream is dead; a detached remote timer thaws it after
@@ -206,10 +211,10 @@ if [ "$op" != validate ]; then
   [ $# -gt 0 ] && shift
   case "$alias_" in ''|-*) die "usage: target.sh $op ALIAS --targets FILE" ;; esac
 fi
-targets='' component='' c_workload='' c_count='' c_timeout=5000 c_pause=0 c_identity='' i_cell='' i_sha='' i_hsha='' i_route='' i_mode='' i_ptag=''
+targets='' component='' c_workload='' c_count='' c_timeout=5000 c_pause=0 c_identity='' c_sleep='' has_sleep='' i_cell='' i_sha='' i_hsha='' i_route='' i_mode='' i_ptag=''
 while [ $# -gt 0 ]; do
   case "$1" in
-    --targets|--component|--workload|--count|--timeout-ms|--pause-ms|--identity|--cell|--source-sha|--hardened-sha|--route|--mode|--proxy-tag)
+    --targets|--component|--workload|--count|--timeout-ms|--pause-ms|--identity|--after-sleep|--cell|--source-sha|--hardened-sha|--route|--mode|--proxy-tag)
       [ $# -ge 2 ] || die "option $1 needs a value"
       case "$1" in
         --targets) targets="$2" ;;
@@ -219,6 +224,7 @@ while [ $# -gt 0 ]; do
         --timeout-ms) c_timeout="$2" ;;
         --pause-ms) c_pause="$2" ;;
         --identity) c_identity="$2" ;;
+        --after-sleep) c_sleep="$2" has_sleep=1 ;;
         --cell) i_cell="$2" ;;
         --hardened-sha) i_hsha="$2" ;;
         --source-sha) i_sha="$2" ;;
@@ -231,8 +237,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$targets" ] || die "missing --targets FILE"
-if [ "$op" != collect ] && [ -n "$c_workload$c_count$c_identity" ]; then
-  die "--workload/--count/--identity are only valid for collect"
+if [ "$op" != collect ] && [ -n "$c_workload$c_count$c_identity$has_sleep" ]; then
+  die "--workload/--count/--identity/--after-sleep are only valid for collect"
+fi
+if [ -n "$has_sleep" ]; then
+  [[ "$c_sleep" =~ ^[1-9][0-9]{1,2}$ ]] && [ "$c_sleep" -ge 30 ] && [ "$c_sleep" -le 600 ] || die "--after-sleep must be 30..600 (seconds)"
 fi
 case "$op" in install-cell|uninstall-cell) ;; *) [ -z "$i_cell$i_hsha" ] || die "--cell/--hardened-sha are only valid for install-cell and uninstall-cell" ;; esac
 case "$op" in install-cell|uninstall-cell|build-proxy|install-controller|install-agent|arm-prepare) ;; *) [ -z "$i_sha" ] || die "--source-sha is only valid for install-cell, uninstall-cell, build-proxy, install-controller, install-agent and arm-prepare" ;; esac
@@ -709,6 +718,33 @@ case "$NICE_DNS_OP" in
       printf 'health\tnice-dns-health\tabsent\t-\n'
     fi ;;
   collect)
+    if [ -n "${NICE_DNS_SLEEP_SECS:-}" ]; then
+      # DEC-012's wake sample: the machine suspends, wakes by its own alarm,
+      # and the queries start as soon as its default gateway answers (up to
+      # 60 s), as a client's first lookup after a wake would.
+      if [ "$plat" = macos ]; then
+        sudo -n pmset relative wake "$NICE_DNS_SLEEP_SECS" </dev/null >&2 || { echo "cannot schedule the wake" >&2; exit 2; }
+        t=$(date +%s); pmset sleepnow </dev/null >&2
+        # Asleep and awake again when the wall clock has jumped.
+        while :; do
+          p=$(date +%s); sleep 1; n=$(date +%s)
+          [ $((n - p)) -lt 10 ] || break
+          [ $((n - t)) -lt $((NICE_DNS_SLEEP_SECS + 120)) ] || { echo "the mac did not sleep" >&2; exit 2; }
+        done
+        gw() { route -n get default 2>/dev/null | awk '$1 == "gateway:" { print $2 }'; }
+        pg() { ping -c 1 -t 1 "$1" </dev/null >/dev/null 2>&1; }
+      else
+        sudo -n rtcwake -m mem -s "$NICE_DNS_SLEEP_SECS" </dev/null >&2 || { echo "the target did not sleep" >&2; exit 2; }
+        gw() { ip route show default 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }'; }
+        pg() { ping -c 1 -W 1 "$1" </dev/null >/dev/null 2>&1; }
+      fi
+      w0=$(date +%s); i=0
+      while [ "$i" -lt 60 ]; do
+        g=$(gw); if [ -n "$g" ] && pg "$g"; then break; fi
+        i=$((i + 1)); sleep 1
+      done
+      printf 'woke\t%s\tlink_after_s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(( $(date +%s) - w0 ))" >&2
+    fi
     {
       printf 'target_id\t%s\nplatform\t%s\nproxy\t%s\n' "$NICE_DNS_ID_TARGET_ID" "$NICE_DNS_ID_PLATFORM" "$NICE_DNS_ID_PROXY"
       printf 'pihole\t%s\nsource_rev\t%s\nimages\t%s\n' "$NICE_DNS_ID_PIHOLE" "$NICE_DNS_ID_SOURCE_REV" "$NICE_DNS_ID_IMAGES"
@@ -1503,9 +1539,15 @@ case "$op" in
     remote_run "NICE_DNS_OP=watch-dns NICE_DNS_WATCH_SECS=$watch_secs"
     exit 0 ;;
   collect)
+    if [ -n "$c_sleep" ]; then
+      # Suspending the target changes it: only under the run's snapshot.
+      state_dir
+      [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
+        || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"
+    fi
     preconnect_guards
     probe_identity probe
-    remote_run "NICE_DNS_OP=collect NICE_DNS_WORKLOAD=$c_workload NICE_DNS_COUNT=$c_count NICE_DNS_TIMEOUT_MS=$c_timeout NICE_DNS_PAUSE_MS=$c_pause NICE_DNS_RUN_ID=$RUN_ID$ID_ENV"
+    remote_run "NICE_DNS_OP=collect NICE_DNS_WORKLOAD=$c_workload NICE_DNS_COUNT=$c_count NICE_DNS_TIMEOUT_MS=$c_timeout NICE_DNS_PAUSE_MS=$c_pause NICE_DNS_RUN_ID=$RUN_ID$ID_ENV NICE_DNS_SLEEP_SECS=$c_sleep"
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;

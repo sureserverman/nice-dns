@@ -32,7 +32,7 @@
 #
 # Evidence: $ARTIFACT_DIR/tune-transport/<alias>/ (private).
 
-TR_GROUP=tune-transport
+TR_GROUP="${TR_GROUP:-tune-transport}"
 # shellcheck source=tests/live/tune-resolver.sh
 . "$NICE_DNS_ROOT/tests/live/tune-resolver.sh"
 

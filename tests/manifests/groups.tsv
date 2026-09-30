@@ -47,3 +47,4 @@ live	route-apply	tests/live/route-apply.sh	live
 unit	performance-acceptance	tests/unit/performance-acceptance.sh	local
 live	tune-resolver	tests/live/tune-resolver.sh	live
 live	tune-transport	tests/live/tune-transport.sh	live
+live	tune-idle-wake	tests/live/tune-idle-wake.sh	live
