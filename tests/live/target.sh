@@ -962,7 +962,7 @@ case "$NICE_DNS_OP" in
         [ "$rc" = 0 ] || tail -n 20 "$w/build.log" >&2
         # A fresh datapath before the stack returns (lib/install.sh
         # nd_install_macos_fresh_datapath), whether or not the build worked.
-        ctl builder stop >/dev/null 2>&1; ctl system stop >/dev/null 2>&1; sleep 8
+        ctl builder stop >/dev/null 2>&1; ctl builder delete >/dev/null 2>&1; ctl system stop >/dev/null 2>&1; sleep 8
         { yes 2>/dev/null || true; } | ctl system start >/dev/null 2>&1
         i=0; until ctl system status >/dev/null 2>&1; do i=$((i + 1)); [ "$i" -lt 10 ] || break; sleep 4; done
         # 15 min: after a runtime restart the agent waits 300 s for Tor and 150 s
@@ -1181,7 +1181,10 @@ case "$NICE_DNS_OP" in
         ctl builder start --dns 1.1.1.1 </dev/null >>"$w.log" 2>&1
         (cd "$w" && ctl build --progress plain -t "$cand" .) </dev/null >>"$w.log" 2>&1
         rc=$?
-        ctl builder stop >/dev/null 2>&1
+        # Stopped and deleted: its cache grew to 4-11 GB per build and the mac
+        # ran out of disk twice (2026-09-29, 2026-09-30); the next build
+        # starts a fresh one.
+        ctl builder stop >/dev/null 2>&1; ctl builder delete >/dev/null 2>&1
         printf 'builder\tstopped\n'
       else
         podman build --format docker -t "$cand" "$w" </dev/null >"$w.log" 2>&1
