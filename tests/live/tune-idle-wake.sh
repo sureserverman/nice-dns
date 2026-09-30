@@ -38,13 +38,22 @@ TR_WORKLOADS=idle,wake,restart
 TI_GAP="${NICE_DNS_TI_GAP:-305}"
 TI_SLEEP="${NICE_DNS_TI_SLEEP:-60}"
 TI_PER_BLOCK="${NICE_DNS_TI_PER_BLOCK:-3}"
+TI_RETRY_WAIT="${NICE_DNS_TI_RETRY_WAIT:-60}"
 
 tr_block() {
-  local a="$1" arm="$2" k="$3" i=1
+  local a="$1" arm="$2" k="$3" i=1 t
   while [ "$i" -le "$TI_PER_BLOCK" ]; do
     sleep "$TI_GAP"
     tr_collect "$a" "$arm" idle 1 "$k-$i"
-    tr_collect "$a" "$arm" wake 1 "$k-$i" 0 "$TI_SLEEP"
+    # A sleep can be cut short from outside (live mac 2026-09-30: a touch of
+    # its mouse ended the sleep after 10 s and the cell with it): the wake
+    # sample is tried up to 3 times, a minute apart.
+    t=1
+    until ( tr_collect "$a" "$arm" wake 1 "$k-$i" 0 "$TI_SLEEP" ); do
+      [ "$t" -lt 3 ] || fail "$a: no wake sample ($arm, block $k-$i) in 3 tries"
+      printf 'wake_retry\t%s\t%s\t%s\n' "$arm" "$k-$i" "$t" >>"$(il_dir "$a")/cell.tsv"
+      t=$((t + 1)); sleep "$TI_RETRY_WAIT"
+    done
     i=$((i + 1))
   done
 }

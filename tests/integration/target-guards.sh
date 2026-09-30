@@ -1008,16 +1008,19 @@ t_wake_sample_is_guarded() {
 # operations <fn> ran.
 tg_idle_wake_ops() {
   (
-    ARTIFACT_DIR="$CASE_DIR/art-iw" NICE_DNS_IL_DRY_RUN=1 TG_OPS="$CASE_DIR/ops-iw" NICE_DNS_TI_GAP=0 RUN_ID=run-1
+    ARTIFACT_DIR="$CASE_DIR/art-iw" NICE_DNS_IL_DRY_RUN=1 TG_OPS="$CASE_DIR/ops-iw" NICE_DNS_TI_GAP=0 NICE_DNS_TI_RETRY_WAIT=0 RUN_ID=run-1
+    rm -rf "${ARTIFACT_DIR:?}"
     mkdir -p "$ARTIFACT_DIR"; : >"$TG_OPS"
     # shellcheck source=tests/live/tune-idle-wake.sh
     . "$NICE_DNS_ROOT/tests/live/tune-idle-wake.sh"
     mkdir -p "$(il_dir lin1)/blocks"
     il_t() {
       shift; printf '%s\n' "$*" >>"$TG_OPS"
+      # TG_WAKE_FAILS: that many wake collects are refused first (exit 2).
+      if [ "${3:-}" = wake ] && [ "$(grep -c -- '--workload wake' "$TG_OPS")" -le "${TG_WAKE_FAILS:-0}" ]; then return 2; fi
       [ "$1" != collect ] || printf '# schema\tnice-dns-sample/1\nrun_id\tsample_id\nr\t0\n'
     }
-    "$@" >"$CASE_DIR/iw.log" 2>&1
+    ( "$@" ) >"$CASE_DIR/iw.log" 2>&1
     printf 'exit %s\n' "$?" >>"$TG_OPS"
     sed -e 's/ --identity [^ ]*//' -e 's/ --timeout-ms 5000 --pause-ms 0//' "$TG_OPS"
   )
@@ -1052,4 +1055,20 @@ exit 0" "$ops" "before the baseline arm the schedules stop"
 exit 0" "$ops" "resume-agents"
   assert_match 'tr_hook_before_baseline "\$a" "\$k"' "$(sed -n '/^tr_cell() {/,/^}/p' "$NICE_DNS_ROOT/tests/live/tune-resolver.sh")" "the cell calls the hook before each baseline swap"
   assert_match '^live	tune-idle-wake	tests/live/tune-idle-wake.sh	live$' "$(cat "$NICE_DNS_ROOT/tests/manifests/groups.tsv")" "the group is registered"
+}
+
+t_wake_sample_is_retried_when_the_sleep_is_cut() {
+  local ops
+  ops="$(NICE_DNS_TI_PER_BLOCK=1 TG_WAKE_FAILS=2 tg_idle_wake_ops tr_block lin1 baseline 4)"
+  assert_eq "collect --workload idle --count 1
+collect --workload wake --count 1 --after-sleep 60
+collect --workload wake --count 1 --after-sleep 60
+collect --workload wake --count 1 --after-sleep 60
+exit 0" "$ops" "two refused sleeps, then the sample: $(cat "$CASE_DIR/iw.log")"
+  assert_eq 2 "$(grep -c '^wake_retry	baseline	4-1	' "$CASE_DIR/art-iw/tune-idle-wake/lin1/cell.tsv")" "each retry is recorded with the cell"
+  assert_eq 1 "$(ls "$CASE_DIR/art-iw/tune-idle-wake/lin1/blocks/" | grep -c '^baseline-wake-4-1')" "one wake sample"
+  assert_eq 3 "$(grep -vc '^#' "$CASE_DIR/art-iw/tune-idle-wake/lin1/samples-baseline.tsv")" "the arm holds the column line, one idle row and one wake row"
+  ops="$(NICE_DNS_TI_PER_BLOCK=1 TG_WAKE_FAILS=3 tg_idle_wake_ops tr_block lin1 baseline 4)"
+  assert_match '^exit 1$' "$ops" "three refused sleeps fail the cell"
+  assert_eq 3 "$(printf '%s\n' "$ops" | grep -c 'workload wake')" "after exactly three tries"
 }
