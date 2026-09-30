@@ -132,7 +132,9 @@ tm_stack() {
     cat "$d/anchor.unbound"
   } >"$CASE_DIR/overlay.conf"
   chmod 644 "$CASE_DIR/overlay.conf"
-  tp_run ub -v "$CASE_DIR/overlay.conf:/etc/unbound/unbound.conf:ro" -v "$d/pki/ca.pem:/fx/ca.pem:ro" \
+  # NICE_DNS_ROUTE_WAIT=0: the transitions here start Unbound before the
+  # proxy; the start's wait for the route is integration/route-transition's.
+  tp_run ub -e NICE_DNS_ROUTE_WAIT=0 -v "$CASE_DIR/overlay.conf:/etc/unbound/unbound.conf:ro" -v "$d/pki/ca.pem:/fx/ca.pem:ro" \
     -v "$ND_ROUTE_DIR:/etc/unbound/route:ro" "$UB_IMG"
   i=0
   while :; do

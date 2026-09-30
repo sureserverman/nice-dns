@@ -360,7 +360,7 @@ t_anchor_and_tor_volumes_keep_their_state() {
   TP_IMG="$UB_IMG"
   tp_holder
   for i in 1 2; do
-    tp_run "ub$i" -v "$av:/var/lib/unbound" "$UB_IMG"
+    tp_run "ub$i" -e NICE_DNS_ROUTE_WAIT=0 -v "$av:/var/lib/unbound" "$UB_IMG"
     sleep 3
     assert_eq true "$(podman inspect -f '{{.State.Running}}' "$TP_CTR" 2>/dev/null)" "run $i: Unbound accepts the volume: $(podman logs "$TP_CTR" 2>&1 | tail -n 5)"
     tp_pm exec "$TP_CTR" sh -c 'ls /var/lib/unbound/root.key && id -un'

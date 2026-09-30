@@ -89,7 +89,8 @@ ti_unbound() {
   } >"$f"
   chmod 644 "$f"
   TP_CTRS="$TP_CTRS $n"
-  tp_pm run -d --health-interval=disable --name "$n" --network "container:$TP_HOLDER" \
+  # NICE_DNS_ROUTE_WAIT=0: the cases decide when the upstream answers.
+  tp_pm run -d --health-interval=disable --name "$n" --network "container:$TP_HOLDER" -e NICE_DNS_ROUTE_WAIT=0 \
     -v "$f:/etc/unbound/unbound.conf:ro" -v "$CASE_DIR/fx/pki/ca.pem:/fx/ca.pem:ro" "$UB_IMG"
   assert_rc 0 "$TP_RC" "product Unbound started: $TP_OUT"
   while [ "$i" -lt 60 ]; do

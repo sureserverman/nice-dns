@@ -122,15 +122,35 @@ rt_overlay() {
   chmod 644 "$RT_OVERLAY"
 }
 
+# rt_unbound_run [podman run args...]: the product image on the overlay with
+# the route dir mounted read-only; created, not waited for.
+rt_unbound_run() {
+  RT_CTRS="$RT_CTRS $ND_UNBOUND_CONTAINER"
+  rt_pm run -d --name "$ND_UNBOUND_CONTAINER" --network "container:$RT_HOLDER" "$@" \
+    -v "$RT_OVERLAY:/etc/unbound/unbound.conf:ro" -v "$CASE_DIR/fx/pki/ca.pem:/fx/ca.pem:ro" \
+    -v "$ND_ROUTE_DIR:/etc/unbound/route:ro" "$UB_IMG"
+  assert_rc 0 "$RT_RC" "product Unbound created: $RT_OUT"
+}
+rt_relay_stop() { kill "$(cat "$CASE_DIR/relay/pypid")" 2>/dev/null; rm -f "$CASE_DIR/relay/ready" "$CASE_DIR/relay/pypid"; sleep 0.5; }
+rt_relay_start() {
+  local i=0
+  rt_bg "$CASE_DIR/relay" python3 "$RT_RELAY_PY" --state "$CASE_DIR/relay" --target "$(fx_port "$CASE_DIR/fx" dot-good)" --listen 853,18531,18532,18533 --max-seconds 600
+  while [ ! -f "$CASE_DIR/relay/ready" ]; do
+    i=$((i + 1)); [ "$i" -le 300 ] || fail "route stand-in did not restart: $(cat "$CASE_DIR/relay/log")"; sleep 0.05
+  done
+}
+# rt_unbound_answers: Unbound serves (its own local data; no forwarder needed).
+rt_unbound_answers() {
+  rt_ns dig @127.0.0.1 -p 5335 +time=1 +tries=1 localhost A
+  case "$RT_OUT" in *'status: NOERROR'*) return 0 ;; esac
+  return 1
+}
+
 # rt_unbound: the product image on the overlay with the route dir mounted
 # read-only; waits until it answers.
 rt_unbound() {
   local i=0
-  RT_CTRS="$RT_CTRS $ND_UNBOUND_CONTAINER"
-  rt_pm run -d --name "$ND_UNBOUND_CONTAINER" --network "container:$RT_HOLDER" \
-    -v "$RT_OVERLAY:/etc/unbound/unbound.conf:ro" -v "$CASE_DIR/fx/pki/ca.pem:/fx/ca.pem:ro" \
-    -v "$ND_ROUTE_DIR:/etc/unbound/route:ro" "$UB_IMG"
-  assert_rc 0 "$RT_RC" "product Unbound created: $RT_OUT"
+  rt_unbound_run
   while [ "$i" -lt 60 ]; do
     rt_ns dig @127.0.0.1 -p 5335 +time=1 +tries=1 localhost A
     case "$RT_OUT" in *'status: NOERROR'*) return 0 ;; esac
@@ -533,6 +553,55 @@ t_start_refuses_an_unsafe_directory() {
   assert_eq refused "$(rt_f result)" "result"
   assert_eq "$before" "$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")" "the include is untouched"
   chmod 0755 "$ND_ROUTE_DIR"
+}
+
+# Stage 1 gate remediation R2 (DEC-015): Unbound does not start forwarding
+# before its route answers. Live on Linux (2026-09-30): Unbound asked its only
+# forwarder before the proxy listened and then waited out its back-off (first
+# answer 29-46 s after a restart, with the proxy ready after 11-15 s). The
+# start now probes the active route (one authenticated query) and execs
+# Unbound once a DNS response comes back, within a bound.
+t_unbound_starts_once_its_route_answers() {
+  local i=0 up=""
+  rt_setup
+  rt_holder
+  rt_fixture
+  rt_call seed_route cloudflare-exit 1
+  rt_overlay
+  rt_relay_stop
+  rt_unbound_run
+  sleep 8
+  rt_unbound_answers
+  assert_nonzero $? "Unbound is not serving while its route does not answer"
+  assert_eq true "$(podman inspect -f '{{.State.Running}}' "$ND_UNBOUND_CONTAINER" 2>/dev/null)" "its container is waiting, not dead"
+  rt_relay_start
+  while [ "$i" -lt 40 ]; do
+    if rt_unbound_answers; then up=$i; break; fi
+    i=$((i + 1)); sleep 0.5
+  done
+  assert_ne "" "$up" "Unbound serves once the route answers"
+  assert_match 'the route answers after [0-9]+ s' "$(podman logs "$ND_UNBOUND_CONTAINER" 2>&1)" "the start logs how long it waited"
+  rt_resolves_via 18532
+}
+
+t_unbound_starts_anyway_when_the_route_never_answers() {
+  local i=0 up=""
+  rt_setup
+  rt_holder
+  rt_fixture
+  rt_call seed_route cloudflare-exit 1
+  rt_overlay
+  rt_relay_stop
+  rt_unbound_run -e NICE_DNS_ROUTE_WAIT=6
+  sleep 3
+  rt_unbound_answers
+  assert_nonzero $? "still waiting inside the bound"
+  while [ "$i" -lt 40 ]; do
+    if rt_unbound_answers; then up=$i; break; fi
+    i=$((i + 1)); sleep 0.5
+  done
+  assert_ne "" "$up" "after the bound Unbound starts as it always did"
+  assert_match 'did not answer within 6 s' "$(podman logs "$ND_UNBOUND_CONTAINER" 2>&1)" "and says so"
 }
 
 # ─────────────────────────── cases: interruption and rollback ────────────────

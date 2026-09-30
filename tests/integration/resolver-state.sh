@@ -107,7 +107,10 @@ rs_holder() {
 rs_unbound() {
   RS_CTR="$RS_PFX-ub"
   RS_CTRS="$RS_CTRS $RS_CTR"
-  rs_pm run -d --name "$RS_CTR" --network "container:$RS_HOLDER" "$@" "$RS_IMG"
+  # NICE_DNS_ROUTE_WAIT=0: these cases are about Unbound's own validation and
+  # state, often against an upstream that must not answer; the start's wait
+  # for the route (integration/route-transition covers it) would only stall them.
+  rs_pm run -d --name "$RS_CTR" --network "container:$RS_HOLDER" -e NICE_DNS_ROUTE_WAIT=0 "$@" "$RS_IMG"
   assert_rc 0 "$RS_RC" "product container created: $RS_OUT"
 }
 
@@ -151,7 +154,7 @@ rs_expect_refused() {
   shift 2
   name="$RS_PFX-bad-$(printf '%s' "$label" | tr -c 'a-z0-9' '-')"
   RS_CTRS="$RS_CTRS $name"
-  RS_OUT="$(timeout 30 podman run --name "$name" --network "container:$RS_HOLDER" "$@" "$RS_IMG" 2>&1)"
+  RS_OUT="$(timeout 30 podman run --name "$name" --network "container:$RS_HOLDER" -e NICE_DNS_ROUTE_WAIT=0 "$@" "$RS_IMG" 2>&1)"
   RS_RC=$?
   RS_OUT="$(printf '%s\n' "$RS_OUT" | grep -v -- "$RS_WARN")"
   assert_ne 124 "$RS_RC" "$label: the container must exit by itself, not run on"

@@ -30,7 +30,11 @@
 #      exactly one root forward-zone over TLS with one named forwarder and no
 #      direct fallback, and no other root forward-zone or stub-zone may exist
 #      in the main config (see check_route_policy).
-#   5. unbound-checkconf must pass. Then Unbound replaces this shell.
+#   5. unbound-checkconf must pass.
+#   6. The start waits, within NICE_DNS_ROUTE_WAIT seconds (default 240), until
+#      the active route returns a DNS response (wait_for_route), so Unbound
+#      never begins by backing off a forwarder that was not up yet. Then
+#      Unbound replaces this shell.
 # Every refusal prints "nice-dns-unbound-start: FATAL: ..." and exits 1
 # before Unbound starts: a resolver without a usable anchor is never run.
 #
@@ -233,6 +237,37 @@ probe_route() {
   return 1
 }
 
+# wait_for_route: until the active route returns a DNS response to one
+# authenticated query (probe_route; any rcode is a response), at most
+# NICE_DNS_ROUTE_WAIT seconds (default 240, under the quadlet's 300 s health
+# start period; 0: no wait). Sub-plan 5 Stage 1 gate (DEC-015): at a stack
+# start Unbound asked its only forwarder before the proxy could carry a
+# stream and then waited out its back-off, so the first answer came 29-46 s
+# after a restart with the proxy ready after 11-15 s (Linux, 2026-09-30). A
+# route that never answers ends the wait too: Unbound then starts as it
+# always did, and its health check reports.
+wait_for_route() {
+  w="${NICE_DNS_ROUTE_WAIT:-240}"
+  case "$w" in ''|*[!0-9]*) die "NICE_DNS_ROUTE_WAIT '$w' is not a number of seconds" ;; esac
+  [ "$w" -gt 0 ] || return 0
+  t0="$(cut -d. -f1 /proc/uptime 2>/dev/null)" || t0=""
+  case "$t0" in ''|*[!0-9]*) return 0 ;; esac
+  while :; do
+    # In a subshell: a refusal inside the probe (die) must not end the start.
+    out="$(NICE_DNS_PROBE_TIMEOUT=8 probe_route . 2>&1)" || true
+    el=$(( $(cut -d. -f1 /proc/uptime) - t0 ))
+    case "$out" in
+      *' rcode=-'*|'') ;;
+      *' rcode='*) echo "$ME: the route answers after $el s ($out)"; return 0 ;;
+    esac
+    if [ "$el" -ge "$w" ]; then
+      echo "$ME: the route did not answer within $w s ($out); starting Unbound anyway" >&2
+      return 0
+    fi
+    sleep 1
+  done
+}
+
 start() {
   anchor="$(unbound-checkconf -o auto-trust-anchor-file 2>&1)" \
     || die "unbound-checkconf rejected the configuration: $anchor"
@@ -289,6 +324,7 @@ start() {
   n="$(check_route_policy "$ROUTE")" || die "route include $ROUTE refused: $n"
 
   n="$(unbound-checkconf 2>&1)" || die "unbound-checkconf failed: $n"
+  wait_for_route
   exec unbound -d -p
 }
 
