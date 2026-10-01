@@ -599,7 +599,7 @@ _nd_rec_x() {
 _nd_rec_field() { awk -F '\t' -v k="$1" '$1 == k { print $2; exit }' "$2" 2>/dev/null; }
 
 _nd_rec_id_ok() {
-  case "$1" in ''|legacy|*[!A-Za-z0-9._:-]*) return 1 ;; esac
+  case "$1" in ''|legacy|suspend|*[!A-Za-z0-9._:-]*) return 1 ;; esac
   [ "${#1}" -le 64 ]
 }
 
@@ -619,7 +619,7 @@ request_recovery() {
   local comp="${1:-}" id="${2:-}" dl="${ND_RECOVERY_CMD_DEADLINE:-15}" c rc g0 p0 st g p i=0 max
   max="${ND_RECOVERY_ACK_S:-30}"
   if [ "$comp" != tor ]; then _nd_rec_out unsupported "$comp" "$id" - - "no in-image restart for component '$comp'"; return 3; fi
-  if ! _nd_rec_id_ok "$id"; then _nd_rec_out refused "$comp" "$id" - - "request id must be 1-64 of A-Za-z0-9._:- and not 'legacy'"; return 2; fi
+  if ! _nd_rec_id_ok "$id"; then _nd_rec_out refused "$comp" "$id" - - "request id must be 1-64 of A-Za-z0-9._:- and not 'legacy' or 'suspend'"; return 2; fi
   _ND_RX="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-recovery.XXXXXX")" || return 4
   c="$(nd_platform_proxy_container "$dl" "$_ND_RX")" || {
     nd_recovery_journal "$id" tor unreachable "no proxy container"; _nd_rec_out unreachable tor "$id" - - "no proxy container found"

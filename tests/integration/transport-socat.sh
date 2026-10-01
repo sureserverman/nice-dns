@@ -241,3 +241,8 @@ t_tor_log_is_kept_on_the_data_volume() { tp_torlog_case tor-socat; }
 t_readiness_through_the_onion_alone() { tp_readiness_onion_case tor-socat; }
 t_stop_during_a_stall_is_prompt() { tp_stop_during_stall_case tor-socat; }
 t_restart_request_during_a_stall_is_acknowledged() { tp_restart_during_stall_case tor-socat; }
+t_sleep_with_dead_streams_respawns_tor() { tp_suspend_respawn_case tor-socat; }
+t_sleep_with_working_streams_keeps_tor() { tp_suspend_kept_case tor-socat; }
+t_sleep_right_after_start_is_ignored() { tp_suspend_young_case tor-socat; }
+t_sleep_check_reads_the_bridges_and_is_bounded() { tp_suspend_bridges_case tor-socat; }
+t_restart_request_during_the_sleep_check_is_served() { tp_suspend_request_case tor-socat; }

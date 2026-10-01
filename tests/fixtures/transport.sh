@@ -258,6 +258,121 @@ tp_restart_during_stall_case() {
   assert_rc 0 "$?" "and it caused exactly one respawn (no late second one)"
 }
 
+# Stage 1 gate round 2: after the host sleeps, Tor in the macOS container VM
+# kept dead circuits and refused every stream for 10-20 s (mac 2026-10-01:
+# socat "socks: connect request rejected or failed"; a respawned tor carried a
+# stream about 1 s after it started). The supervisor sees the sleep as wall
+# time that passed while the uptime did not (the VM was frozen); a native
+# Linux suspend counts in /proc/uptime and is not seen (Tor recovered there).
+# These cases fake it: TOR_SUSPEND_UPTIME_FILE stands in for /proc/uptime and
+# steps back 30 s once (wall time minus uptime then grows by 35 s within one
+# 5 s check). TOR_SUSPEND_MIN_AGE=0 lets a fresh tor be judged, and
+# TOR_SUSPEND_NET_PROBE, where given, replaces tor's bridges as the addresses
+# whose TCP connect says the network is back (the test bridges 192.0.2.x have
+# no route in the namespace).
+
+# tp_suspend_start <repo> [podman run args]: the supervisor ready with the fake
+# uptime source; a steady uptime causes no respawn.
+tp_suspend_start() {
+  local repo="$1"
+  shift
+  tp_setup "$repo"
+  tp_holder
+  tp_socks_start
+  tp_socks_mode accept
+  printf '1000.00 0.00\n' >"$CASE_DIR/uptime"
+  chmod 644 "$CASE_DIR/uptime"
+  tp_supervised -e TOR_SUSPEND_UPTIME_FILE=/run/nd-uptime -v "$CASE_DIR/uptime:/run/nd-uptime:ro" "$@"
+  tp_ready_wait 40 || fail "never ready: $(printf '%s\n' "$TP_LOGS" | tail -n 10)"
+  sleep 11
+  tp_wait_file /app/data/control/tor-generation 2 '^generation	1$' || fail "a steady uptime is no sleep, yet tor was respawned"
+}
+
+# tp_suspend: the fake uptime steps back 30 s (seen within one check).
+tp_suspend() { printf '970.00 0.00\n' >"$CASE_DIR/uptime"; }
+
+tp_logs() { podman logs "$TP_CTR" 2>&1; }
+
+# tp_suspend_respawn_case <repo>: no stream within 6 s after the sleep -> one
+# respawn, acknowledged as request "suspend"; "suspend" is reserved, so a
+# controller request carrying it is rejected.
+tp_suspend_respawn_case() {
+  local ack
+  tp_suspend_start "$1" -e TOR_SUSPEND_MIN_AGE=0 -e TOR_SUSPEND_NET_PROBE=127.0.0.1:9050
+  tp_socks_mode delay 120
+  tp_suspend
+  tp_wait_file /app/data/control/tor-restart-ack 40 '^request_id	suspend$' || fail "no respawn after a sleep with dead streams: $(tp_logs | tail -n 15)"
+  ack="$TP_OUT"
+  assert_eq respawned "$(tp_field status "$ack")" "acknowledged as a respawn"
+  assert_eq 2 "$(tp_field generation "$ack")" "with the new generation"
+  assert_match 'tor-supervisor: the host slept about [0-9]+ s; waiting for one of 1 bridge address' "$(tp_logs)" "the sleep is logged"
+  assert_match 'no stream within 6 s after the sleep; respawning tor' "$(tp_logs)" "and why tor was respawned"
+  sleep 11
+  tp_wait_file /app/data/control/tor-generation 2 '^generation	2$'
+  assert_rc 0 "$?" "exactly one respawn"
+  tp_request suspend
+  tp_wait_file /app/data/control/tor-restart-rejected 15 '^request_id	invalid$' || fail "a request with the reserved id was not rejected: $(tp_logs | tail -n 5)"
+}
+
+# tp_suspend_kept_case <repo>: a stream works after the sleep -> tor is kept
+# (its circuits are warm; a respawn would cost a bootstrap).
+tp_suspend_kept_case() {
+  tp_suspend_start "$1" -e TOR_SUSPEND_MIN_AGE=0 -e TOR_SUSPEND_NET_PROBE=127.0.0.1:9050
+  tp_suspend
+  sleep 12
+  assert_match 'a stream works after the sleep; tor kept' "$(tp_logs)" "the sleep was seen and tor kept: $(tp_logs | tail -n 8)"
+  tp_wait_file /app/data/control/tor-generation 2 '^generation	1$'
+  assert_rc 0 "$?" "no respawn"
+  tp_pm exec "$TP_CTR" test -e /app/data/control/tor-restart-ack
+  assert_nonzero "$TP_RC" "and no acknowledgement written"
+}
+
+# tp_suspend_young_case <repo>: with the default minimum age (120 s), a step
+# right after the start is no sleep: tor is kept unprobed (a clock step during
+# the first bootstrap; a repeated step respawns at most once per 120 s).
+tp_suspend_young_case() {
+  tp_suspend_start "$1" -e TOR_SUSPEND_NET_PROBE=127.0.0.1:9050
+  tp_socks_mode delay 120
+  tp_suspend
+  sleep 12
+  assert_match 'tor is younger than 120 s, kept' "$(tp_logs)" "a young tor is left alone: $(tp_logs | tail -n 5)"
+  tp_wait_file /app/data/control/tor-generation 2 '^generation	1$'
+  assert_rc 0 "$?" "no respawn"
+}
+
+# tp_suspend_bridges_case <repo>: tor's own bridges are the network check
+# (read from its command line): none answers (no route), so after 30 s the
+# streams are probed anyway, and a working one keeps tor.
+tp_suspend_bridges_case() {
+  tp_suspend_start "$1" -e TOR_SUSPEND_MIN_AGE=0
+  tp_suspend
+  sleep 8
+  assert_match 'waiting for one of 3 bridge address\(es\)' "$(tp_logs)" "the three bridges were read from tor's command line: $(tp_logs | tail -n 5)"
+  tp_wait_file /app/data/control/tor-generation 1 '^generation	1$' || fail "respawned while waiting for the network"
+  sleep 36
+  assert_match 'no bridge answered within 30 s; probing streams anyway' "$(tp_logs)" "the wait is bounded: $(tp_logs | tail -n 5)"
+  assert_match 'a stream works after the sleep; tor kept' "$(tp_logs)" "and the streams decide"
+}
+
+# tp_suspend_request_case <repo>: a controller request during the check (the
+# network is not back) is served by its own respawn and acknowledgement, at
+# once, and the check makes no second one.
+tp_suspend_request_case() {
+  local ack
+  tp_suspend_start "$1" -e TOR_SUSPEND_MIN_AGE=0 -e TOR_SUSPEND_NET_PROBE=127.0.0.1:1
+  tp_suspend
+  sleep 8
+  assert_match 'waiting for one of 1 bridge address' "$(tp_logs)" "the check is waiting: $(tp_logs | tail -n 5)"
+  tp_request req-sleep-1
+  tp_wait_file /app/data/control/tor-restart-ack 15 '^request_id	req-sleep-1$' || fail "the request was not acknowledged promptly: $(tp_logs | tail -n 10)"
+  ack="$TP_OUT"
+  assert_eq 2 "$(tp_field generation "$ack")" "one respawn, the request's"
+  assert_match 'a restart was asked during the check; it serves the sleep' "$(tp_logs)" "the check gave way"
+  sleep 11
+  tp_wait_file /app/data/control/tor-generation 2 '^generation	2$'
+  assert_rc 0 "$?" "and made no second respawn"
+}
+
 # tp_torlog_case <repo>: Tor's own log is on the data volume (owner-only); a
 # respawn and a container restart both keep the previous run's (every earlier
 # stall left no trace: the log lived in /tmp and was truncated at each launch).

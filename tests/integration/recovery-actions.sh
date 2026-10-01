@@ -230,6 +230,8 @@ t_request_write_is_never_an_acknowledgement() {
       assert_rc 2 "$rc" "$plat: an unsafe request id is refused"
       out="$(request_recovery tor legacy)"; rc=$?
       assert_rc 2 "$rc" "$plat: the reserved id is refused"
+      out="$(request_recovery tor suspend)"; rc=$?
+      assert_rc 2 "$rc" "$plat: so is the image's own sleep respawn id"
     ) || exit 1
   done
 }
