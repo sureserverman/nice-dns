@@ -65,6 +65,9 @@ G = [
  ("restart-problem-class", 'PROBLEM = ("cold", "idle", "wake", "restart")', 'PROBLEM = ("cold", "idle", "wake")'),
  ("restart-budget", '"wake": 30, "restart": 10}', '"wake": 30, "restart": 9}'),
  ("restart-rule", 'add("rule\\trestart-first-answer\\tDEC-014:', 'add("rule\\trestart-first-answer\\tDEC-000:'),
+ ("one-platform-rule", '    return "\\n".join(out) + "\\n", ok and bool(improved_p)', '    return "\\n".join(out) + "\\n", ok'),
+ ("one-platform-counts", '        if imp:\n            improved_p.append(p)', '        if False:\n            improved_p.append(p)'),
+ ("dec016-rule-text", 'add("rule\\timprove-one-platform\\tDEC-016:', 'add("rule\\timprove-one-platform\\tDEC-000:'),
  ("summarize-manifest", '        if len(prov) != 1 or "manifest_sha256=%s" % m["sha256"] not in prov[0].split("\\t"):', '        if len(prov) != 1:'),
 ]
 

@@ -35,8 +35,10 @@ Verdict of a workload, first match wins:
   pass          otherwise
 A cell is fail if any workload fails, else blocked, else insufficient, else pass.
 A platform (summarize) passes only when every one of its matrix cells has a
-result and passes, and at least one cell improved a problem class (cold, idle,
+result and passes; it lists the problem classes its cells improved (cold, idle,
 wake, or restart: time to the first answer after a stack restart, DEC-014).
+The summary passes only when every platform passes and at least one of them
+improved a problem class (rule improve-one-platform, DEC-016).
 
 Refusals (exit 2, no verdicts): manifest not a fresh derivation, invalid sample
 file, arms from one run, rows of another cell, a workload row whose cache_class
@@ -256,10 +258,11 @@ def derive(bl_path):
     add("# from the frozen baseline receipt named below, tests/manifests/matrix.tsv and")
     add("# tests/manifests/workloads.tsv. Never edit by hand: check-manifest, compare and")
     add("# summarize re-derive it from the receipt and refuse any difference. It tightens the")
-    add("# receipt's rules and never drops a frozen class; its two relaxations are named in")
+    add("# receipt's rules and never drops a frozen class; its three relaxations are named in")
     add("# the rules below, each with its decision (DEC-013: warm's absolute p95 target is")
     add("# context, and a check has no warm latency gate; DEC-014: restart may satisfy the")
-    add("# improvement rule).")
+    add("# improvement rule; DEC-016: one platform carries the improvement, every platform")
+    add("# holds no regression).")
     add("# Rows (tab-separated), parsed as data by tests/reports/perf-acceptance.py:")
     add("#   provenance <key> <value>        receipt id and sha256 of its BL-TARGETS.txt")
     add("#   rule       <name> <text>        frozen rules verbatim, then this task's tightenings")
@@ -288,6 +291,10 @@ def derive(bl_path):
         "lookups right after an install, which a steady cold name no longer reproduces; it has no frozen "
         "row, so it is held to its same-session arm; an improved restart satisfies improve-problem-class, "
         "which the frozen rule's text (cold/idle/post-wake) does not name")
+    add("rule\timprove-one-platform\tDEC-016: amends improve-problem-class: at least one platform improves "
+        "a problem class beyond measured variability, and every platform passes every cell (no timeout or "
+        "failure count above its limit, no class slower beyond measured variability); a platform without "
+        "an improved class passes on that no-regression evidence alone and its summary row says so")
     add("rule\tno-problem-class-slowdown\ttightening: a cold/idle/wake/restart class whose candidate median "
         "is slower beyond measured variability fails, so one problem class is never bought with "
         "another; warm is held to the same test against its same-session arm (DEC-013)")
@@ -913,7 +920,7 @@ def summarize(m, platforms, results):
     for p in platforms:
         if p not in all_p:
             refuse("platform %s is not in the manifest" % p)
-    out, ok = [], True
+    out, ok, improved_p = [], True, []
     for p in platforms or all_p:
         cells = [c for c in m["cells"] if c.startswith(p + "/")]
         have = [c for c in cells if c in got]
@@ -927,13 +934,18 @@ def summarize(m, platforms, results):
         elif "insufficient" in vs:
             v, why = "insufficient", "a cell is below its sample budget"
         elif not imp:
-            v, why = "fail", "no problem class (cold/idle/wake/restart) improved beyond measured variability"
+            v, why = "pass", ("no regression; no problem class improved (DEC-016: another platform "
+                              "carries the improvement)")
         else:
             v, why = "pass", "-"
+        if imp:
+            improved_p.append(p)
         ok = ok and v == "pass"
         out.append("platform\t%s\t%s\tcells=%d/%d\timproved=%s\treason=%s"
                    % (p, v, len(have), len(cells), ",".join(imp) or "none", why))
-    return "\n".join(out) + "\n", ok
+    out.append("rule\timprove-one-platform\t%s\timproved_platforms=%s"
+               % ("pass" if improved_p else "fail", ",".join(improved_p) or "none"))
+    return "\n".join(out) + "\n", ok and bool(improved_p)
 
 
 # ─────────────────────────── main ───────────────────────────

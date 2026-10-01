@@ -3,10 +3,11 @@
 # from the frozen baseline receipt named below, tests/manifests/matrix.tsv and
 # tests/manifests/workloads.tsv. Never edit by hand: check-manifest, compare and
 # summarize re-derive it from the receipt and refuse any difference. It tightens the
-# receipt's rules and never drops a frozen class; its two relaxations are named in
+# receipt's rules and never drops a frozen class; its three relaxations are named in
 # the rules below, each with its decision (DEC-013: warm's absolute p95 target is
 # context, and a check has no warm latency gate; DEC-014: restart may satisfy the
-# improvement rule).
+# improvement rule; DEC-016: one platform carries the improvement, every platform
+# holds no regression).
 # Rows (tab-separated), parsed as data by tests/reports/perf-acceptance.py:
 #   provenance <key> <value>        receipt id and sha256 of its BL-TARGETS.txt
 #   rule       <name> <text>        frozen rules verbatim, then this task's tightenings
@@ -26,6 +27,7 @@ rule	security-absolute	no latency target is met by weakening TLS, DNSSEC or the 
 rule	no-failure-regression	tightening: per cell and workload, the candidate failure count (timeout, SERVFAIL, REFUSED, error) must not exceed the baseline failure rate either, so timeouts traded for fast failures never pass
 rule	same-session-baseline	a workload without a frozen row is compared with a baseline arm measured interleaved in the same session; in a comparison without that arm it is blocked; a check (DEC-012: a cell judged from its candidate samples alone) reports it unbaselined, names it on the cell row and does not gate it: its timeouts and latency are judged only on the platform's representative cell
 rule	restart-first-answer	DEC-014: the time from a stack restart to the first answered query is a problem class, one sample per arm at every arm swap; the frozen Linux cold class came from lookups right after an install, which a steady cold name no longer reproduces; it has no frozen row, so it is held to its same-session arm; an improved restart satisfies improve-problem-class, which the frozen rule's text (cold/idle/post-wake) does not name
+rule	improve-one-platform	DEC-016: amends improve-problem-class: at least one platform improves a problem class beyond measured variability, and every platform passes every cell (no timeout or failure count above its limit, no class slower beyond measured variability); a platform without an improved class passes on that no-regression evidence alone and its summary row says so
 rule	no-problem-class-slowdown	tightening: a cold/idle/wake/restart class whose candidate median is slower beyond measured variability fails, so one problem class is never bought with another; warm is held to the same test against its same-session arm (DEC-013)
 rule	platform-target	per cell, the candidate p95_all_us of a frozen problem class must not exceed its platform target; warm's target is reported as context, never gated (DEC-013: the baseline arm itself missed it on 2026-09-28)
 rule	sample-budget	an arm below its budget is insufficient, never pass

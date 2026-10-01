@@ -553,12 +553,15 @@ t_platform_needs_an_improved_problem_class() {
   printf '%s\n' "$PA_OUT" >"$CASE_DIR/r-better.tsv"
   out="$(python3 "$PA_TOOL" summarize --manifest "$PA_M" --bl-targets "$PA_BL" --platform linux \
     "$CASE_DIR"/r1.tsv "$CASE_DIR"/r2.tsv "$CASE_DIR"/r3.tsv "$CASE_DIR"/r-flat.tsv 2>&1)"
-  assert_eq 1 $? "no improved problem class: $out"
-  assert_match '^platform	linux	fail	' "$out" "platform fails without an improvement"
+  assert_eq 1 $? "no platform improved: $out"
+  assert_match '^platform	linux	pass	.*improved=none	reason=no regression; no problem class improved \(DEC-016' "$out" \
+    "a platform without an improvement passes on no regression alone, and says so (DEC-016)"
+  assert_match '^rule	improve-one-platform	fail	improved_platforms=none$' "$out" "but some platform must improve"
   out="$(python3 "$PA_TOOL" summarize --manifest "$PA_M" --bl-targets "$PA_BL" --platform linux \
     "$CASE_DIR"/r1.tsv "$CASE_DIR"/r2.tsv "$CASE_DIR"/r3.tsv "$CASE_DIR"/r-better.tsv 2>&1)"
   assert_eq 0 $? "one improved class on the platform: $out"
   assert_match '^platform	linux	pass	.*improved=linux/haproxy/standard:cold' "$out" "platform passes"
+  assert_match '^rule	improve-one-platform	pass	improved_platforms=linux$' "$out" "the platform carries the rule"
   out="$(python3 "$PA_TOOL" summarize --manifest "$PA_M" --bl-targets "$PA_BL" --platform linux \
     "$CASE_DIR"/r1.tsv "$CASE_DIR"/r2.tsv "$CASE_DIR"/r-better.tsv 2>&1)"
   assert_eq 1 $? "a missing cell is never green: $out"
@@ -742,7 +745,7 @@ t_platform_of_checks_needs_one_interleaved_improvement() {
   out="$(python3 "$PA_TOOL" summarize --manifest "$PA_M" --bl-targets "$PA_BL" --platform linux \
     "$CASE_DIR"/c1.tsv "$CASE_DIR"/c2.tsv "$CASE_DIR"/c3.tsv "$CASE_DIR"/c-check.tsv 2>&1)"
   assert_eq 1 $? "checks alone prove no improvement: $out"
-  assert_match '^platform	linux	fail	.*no problem class' "$out" "the platform fails for want of one"
+  assert_match '^rule	improve-one-platform	fail	' "$out" "the summary fails for want of one"
   out="$(python3 "$PA_TOOL" summarize --manifest "$PA_M" --bl-targets "$PA_BL" --platform linux \
     "$CASE_DIR"/c1.tsv "$CASE_DIR"/c2.tsv "$CASE_DIR"/c3.tsv "$CASE_DIR"/c-better.tsv 2>&1)"
   assert_eq 0 $? "three checks and one interleaved improvement: $out"
@@ -865,4 +868,47 @@ t_restart_without_an_answer_counts_against_the_arm() {
   assert_eq "0/10" "$(pa_field restart timeout_limit)" "the arm had none"
   assert_eq fail "$(pa_verdict restart)" "fails however fast the others were"
   assert_eq none "$(pa_cell_improved)" "and is no improvement"
+}
+
+# DEC-016: one platform carries the improvement; every platform shows no
+# regression in any class.
+t_one_platform_improves_every_platform_holds() {
+  local c out n=0
+  for c in linux/haproxy/standard linux/haproxy/hardened linux/socat/standard linux/socat/hardened \
+           macos/haproxy/hardened macos/socat/standard macos/socat/hardened; do
+    n=$((n + 1))
+    pa_setup "$c"
+    pa_cell_data
+    pa_compare
+    assert_rc 0 "$PA_RC" "$c: $PA_OUT"
+    printf '%s\n' "$PA_OUT" >"$CASE_DIR/s$n.tsv"
+  done
+  pa_setup macos/haproxy/standard
+  PA_COLD_C="$(pa_seq 30 200000 10000 | pa_blockwise 10 50000)" pa_cell_data
+  pa_compare
+  assert_eq cold "$(pa_cell_improved)" "the mac cell improved cold: $PA_OUT"
+  printf '%s\n' "$PA_OUT" >"$CASE_DIR/s-mac-better.tsv"
+  out="$(python3 "$PA_TOOL" summarize --manifest "$PA_M" --bl-targets "$PA_BL" --platform linux --platform macos \
+    "$CASE_DIR"/s?.tsv "$CASE_DIR/s-mac-better.tsv" 2>&1)"
+  assert_eq 0 $? "macos improved, linux holds: $out"
+  assert_match '^platform	linux	pass	cells=4/4	improved=none	reason=no regression' "$out" "linux passes on no regression"
+  assert_match '^platform	macos	pass	cells=4/4	improved=macos/haproxy/standard:cold	reason=-' "$out" "macos carries the improvement"
+  assert_match '^rule	improve-one-platform	pass	improved_platforms=macos$' "$out" "one platform improved"
+  # A regression anywhere still fails, whoever improved.
+  pa_setup linux/socat/standard
+  PA_WAKE_C="$(pa_seq 30 3000000 30000)" pa_cell_data
+  pa_compare
+  printf '%s\n' "$PA_OUT" >"$CASE_DIR/s3.tsv"
+  out="$(python3 "$PA_TOOL" summarize --manifest "$PA_M" --bl-targets "$PA_BL" --platform linux --platform macos \
+    "$CASE_DIR"/s?.tsv "$CASE_DIR/s-mac-better.tsv" 2>&1)"
+  assert_eq 1 $? "a slower linux class fails the summary: $out"
+  assert_match '^platform	linux	fail	' "$out" "linux fails"
+  assert_match '^rule	improve-one-platform	pass	' "$out" "although macos improved"
+}
+
+t_manifest_names_the_dec016_amendment() {
+  pa_setup linux/socat/standard
+  assert_match '^rule	improve-one-platform	DEC-016: amends improve-problem-class: at least one platform improves' "$(cat "$PA_M")" "the amendment is a rule row"
+  assert_match '^# .*DEC-016' "$(cat "$PA_M")" "the header names it"
+  assert_match '^rule	improve-problem-class	per platform, at least one previously problematic' "$(cat "$PA_M")" "the frozen rule stays verbatim"
 }
