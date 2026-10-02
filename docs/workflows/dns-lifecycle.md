@@ -561,8 +561,9 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   before that wait, so a controller restart request during it is
   acknowledged; tor-socat 4ce8bd3, tor-haproxy 853a92b: after a host sleep that froze
   the container VM, wall time minus uptime grows, and a tor older than 120 s
-  whose exit and onion streams both fail within 6 s, once a bridge accepts a
-  TCP connect, is respawned and acknowledged as request "suspend"; a native
+  is respawned once a bridge accepts a TCP connect (bounded 30 s; since
+  tor-socat d720d8c, tor-haproxy 558046a without a stream probe first), acknowledged
+  as request "suspend"; a native
   Linux suspend is not seen; measured on the Mac 2026-10-01: after a 60 s
   sleep no stream for 10-20 s, a respawned tor carried one about 1 s after
   it started), proven on images built from those commits
