@@ -264,9 +264,11 @@ tp_restart_during_stall_case() {
 # stream about 1 s after it started). The supervisor sees the sleep as wall
 # time that passed while the uptime did not (the VM was frozen); a native
 # Linux suspend counts in /proc/uptime and is not seen (Tor recovered there).
-# These cases fake it: TOR_SUSPEND_UPTIME_FILE stands in for /proc/uptime and
-# steps back 30 s once (wall time minus uptime then grows by 35 s within one
-# 5 s check). TOR_SUSPEND_MIN_AGE=0 lets a fresh tor be judged, and
+# These cases fake it: TOR_SUSPEND_UPTIME_FILE stands in for /proc/uptime,
+# advances 100 s (tor has run that long; wall time minus uptime shrinks, no
+# sleep), then steps back 25 s once (wall time minus uptime then grows by
+# about 30 s within one 5 s check; tor's age by uptime is 75 s).
+# TOR_SUSPEND_MIN_AGE=0 lets a fresh tor be judged, and
 # TOR_SUSPEND_NET_PROBE, where given, replaces tor's bridges as the addresses
 # whose TCP connect says the network is back (the test bridges 192.0.2.x have
 # no route in the namespace).
@@ -288,8 +290,13 @@ tp_suspend_start() {
   tp_wait_file /app/data/control/tor-generation 2 '^generation	1$' || fail "a steady uptime is no sleep, yet tor was respawned"
 }
 
-# tp_suspend: the fake uptime steps back 30 s (seen within one check).
-tp_suspend() { printf '970.00 0.00\n' >"$CASE_DIR/uptime"; }
+# tp_suspend: the fake uptime advances 100 s, then (after one check) steps
+# back 25 s (seen within one check).
+tp_suspend() {
+  printf '1100.00 0.00\n' >"$CASE_DIR/uptime"
+  sleep 6
+  printf '1075.00 0.00\n' >"$CASE_DIR/uptime"
+}
 
 tp_logs() { podman logs "$TP_CTR" 2>&1; }
 
@@ -338,6 +345,37 @@ tp_suspend_young_case() {
   assert_match 'tor is younger than 120 s, kept' "$(tp_logs)" "a young tor is left alone: $(tp_logs | tail -n 5)"
   tp_wait_file /app/data/control/tor-generation 2 '^generation	1$'
   assert_rc 0 "$?" "no respawn"
+}
+
+# tp_suspend_clock_step_case <repo>: Stage 1 gate round 2 (second pass): a
+# wall clock step is no running time. The fake uptime stands still while the
+# wall clock runs (at least 11 s since the start), then steps back 30 s: by
+# uptime tor has run 0 s, by the wall clock more than TOR_SUSPEND_MIN_AGE=5.
+# Tor's age is its running time, so it is left alone (a forward NTP step
+# during the first bootstrap must not respawn it with dead probes).
+tp_suspend_clock_step_case() {
+  tp_suspend_start "$1" -e TOR_SUSPEND_MIN_AGE=5 -e TOR_SUSPEND_NET_PROBE=127.0.0.1:9050
+  tp_socks_mode delay 120
+  printf '970.00 0.00\n' >"$CASE_DIR/uptime"
+  sleep 12
+  assert_match 'tor is younger than 5 s, kept' "$(tp_logs)" "a step is judged by tor's running time: $(tp_logs | tail -n 6)"
+  tp_wait_file /app/data/control/tor-generation 2 '^generation	1$'
+  assert_rc 0 "$?" "no respawn"
+}
+
+# tp_suspend_no_generation_case <repo>: Stage 1 gate round 2 (second pass): the
+# check reads tor's pid from the generation file; a missing file (before the
+# first spawn writes it) must not end the watcher (set -e): it still checks,
+# and a restart request is still served afterwards.
+tp_suspend_no_generation_case() {
+  tp_suspend_start "$1" -e TOR_SUSPEND_MIN_AGE=0
+  tp_pm exec "$TP_CTR" rm -f /app/data/control/tor-generation
+  assert_rc 0 "$TP_RC" "generation file removed: $TP_OUT"
+  tp_suspend
+  sleep 8
+  assert_match 'waiting for one of 0 bridge address' "$(tp_logs)" "the check ran without the file: $(tp_logs | tail -n 6)"
+  tp_request req-nogen-1
+  tp_wait_file /app/data/control/tor-restart-ack 50 '^request_id	req-nogen-1$' || fail "the watcher is gone: no acknowledgement: $(tp_logs | tail -n 10)"
 }
 
 # tp_suspend_bridges_case <repo>: tor's own bridges are the network check
