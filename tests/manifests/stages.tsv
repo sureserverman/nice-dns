@@ -39,6 +39,7 @@ installers	integration	release-inputs
 installers	integration	installers-interaction
 installers	integration	installers-persistence
 qualification	unit	harness-contracts
+qualification	unit	qualification-coverage
 qualification	unit	performance-acceptance
 qualification	unit	measurement
 qualification	unit	state-policy

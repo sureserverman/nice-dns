@@ -12,3 +12,4 @@ requires	installers
 scenario	QU-LATENCY	per-cell	interleaved baseline-vs-candidate latency with frozen targets
 scenario	QU-NO-DIRECT	per-cell	no ordinary query reaches a direct public resolver in any supported case
 scenario	QU-SOAK	per-cell	24 h soak with bridge refresh and sleep/network events
+scenario	QU-NETWORK-LOSS	per-cell	the upstream network removed and restored: no direct query during the loss, answers again after it without manual repair

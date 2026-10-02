@@ -239,6 +239,8 @@ t_legacy_restart_flag_acknowledged() {
   assert_eq 2 "$(tp_field generation "$TP_OUT")" "legacy restart advances the generation"
 }
 
+t_unrequested_clean_tor_exit_fails_the_container() { tp_clean_exit_case tor-haproxy; }
+
 t_unrequested_tor_exit_tears_container_down() {
   local rc
   tp_setup tor-haproxy
@@ -247,6 +249,26 @@ t_unrequested_tor_exit_tears_container_down() {
   rc="$(timeout 30 podman wait "$TP_CTR" 2>/dev/null | grep -E '^[0-9]+$' | tail -1)"
   assert_match '^[0-9]+$' "$rc" "the container exited after tor died unrequested"
   assert_ne 0 "$rc" "an unrequested tor exit is a failure exit"
+}
+
+# Sub-plan 5 Task 2.1 (FQ-PROXY-CHILD-DEATH): haproxy dying unrequested (its
+# master: -W) ends the container as tor's death does, so the runtime restarts
+# the proxy whole.
+t_unrequested_haproxy_exit_tears_container_down() {
+  local rc
+  tp_setup tor-haproxy
+  tp_holder
+  tp_socks_start
+  tp_socks_mode accept
+  tp_supervised
+  # haproxy starts only after the readiness wait (a working stream).
+  tp_ready_wait 40 || fail "never ready: $(printf '%s\n' "$TP_LOGS" | tail -n 10)"
+  tp_pm exec "$TP_CTR" pgrep -x haproxy
+  assert_rc 0 "$TP_RC" "haproxy runs before the fault"
+  tp_pm exec "$TP_CTR" pkill -o -x haproxy
+  rc="$(timeout 30 podman wait "$TP_CTR" 2>/dev/null | grep -E '^[0-9]+$' | tail -1)"
+  assert_match '^[0-9]+$' "$rc" "the container exited after haproxy died unrequested"
+  assert_ne 0 "$rc" "an unrequested haproxy exit is a failure exit"
 }
 
 t_image_healthcheck_fails_when_upstream_drops_streams() {

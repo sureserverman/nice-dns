@@ -309,3 +309,26 @@ t_outage_refresh_is_evaluated_and_rate_limited() {
     ) || exit 1
   done
 }
+
+# Sub-plan 5 Task 2.1 (FQ-BRIDGE-DISTRIBUTOR-DOWN): a fetch that cannot reach
+# the bridge distributor (Moat unreachable, no bootstrap resolver answers)
+# fails and leaves the working candidate pool as it was, byte for byte.
+t_unreachable_distributor_keeps_the_working_pool() {
+  local h="$CASE_DIR/home" b="$CASE_DIR/bin" before i out rc
+  mkdir -p "$h/.config/nice-dns" "$b"
+  for i in 1 2 3; do
+    printf 'BRIDGE%s=obfs4 192.0.2.%s:443 %s cert=AAAAtest%s iat-mode=0\n' "$i" "$i" \
+      "$(printf '%040d' "$i")" "$i"
+  done >"$h/.config/nice-dns/bridges.env"
+  chmod 600 "$h/.config/nice-dns/bridges.env"
+  before="$(sha256sum <"$h/.config/nice-dns/bridges.env")"
+  printf '#!/bin/sh\necho "curl: (7) Failed to connect to bridges.torproject.org" >&2\nexit 7\n' >"$b/curl"
+  printf '#!/bin/sh\nexit 9\n' >"$b/dig"
+  chmod 755 "$b/curl" "$b/dig"
+  out="$(HOME="$h" XDG_CONFIG_HOME="$h/.config" PATH="$b:$PATH" bash "$NICE_DNS_ROOT/scripts/fetch-bridges.sh" --force 2>&1)"
+  rc=$?
+  assert_ne 0 "$rc" "a fetch without the distributor fails: $out"
+  assert_match 'Could not reach https://bridges\.torproject\.org' "$out" "and says why"
+  assert_eq "$before" "$(sha256sum <"$h/.config/nice-dns/bridges.env")" "the working pool is unchanged"
+  assert_eq "" "$(find "$h/.config/nice-dns" -name 'bridges.env.*')" "no partial file is left"
+}

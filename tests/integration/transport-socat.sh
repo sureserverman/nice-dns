@@ -171,6 +171,8 @@ t_legacy_restart_flag_acknowledged() {
   assert_eq 2 "$(tp_field generation "$TP_OUT")" "a legacy restart advances the generation"
 }
 
+t_unrequested_clean_tor_exit_fails_the_container() { tp_clean_exit_case tor-socat; }
+
 t_unrequested_tor_exit_tears_container_down() {
   local rc
   ts_up
@@ -178,6 +180,19 @@ t_unrequested_tor_exit_tears_container_down() {
   rc="$(timeout 30 podman wait "$TP_CTR" 2>/dev/null | grep -E '^[0-9]+$' | tail -1)"
   assert_match '^[0-9]+$' "$rc" "the container exited after tor died unrequested"
   assert_ne 0 "$rc" "an unrequested tor exit is a failure exit"
+}
+
+# Sub-plan 5 Task 2.1 (FQ-PROXY-CHILD-DEATH): any child the supervisor runs,
+# not only tor, ends the container when it dies unrequested, so its runtime
+# restarts the proxy whole instead of leaving a route without a listener.
+t_unrequested_listener_exit_tears_container_down() {
+  local rc
+  ts_up
+  tp_pm exec "$TP_CTR" pkill -f 'TCP4-LISTEN:18531'
+  rc="$(timeout 30 podman wait "$TP_CTR" 2>/dev/null | grep -E '^[0-9]+$' | tail -1)"
+  assert_match '^[0-9]+$' "$rc" "the container exited after the onion route's listener died"
+  assert_ne 0 "$rc" "an unrequested listener exit is a failure exit"
+  assert_match 'a socat listener, the legacy loop or the restart watcher exited' "$(podman logs "$TP_CTR" 2>&1)" "and says which kind of child"
 }
 
 t_stop_ends_every_child_promptly() {

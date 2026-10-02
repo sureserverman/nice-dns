@@ -190,6 +190,7 @@ t_two() { assert_eq b b; }'
   # one operation covered by one of its own cases.
   printf 'TEST-OP\tsynthetic operation\n' >"$m/privacy-ops.tsv"
   printf '# variant\tmeaning\n' >"$m/variants.tsv"
+  printf '# fault\tneeds\treceipt\tmeaning\n' >"$m/faults.tsv"
   printf 'S-TEST\tTEST-OP\tunit\tga\tt_ok\tbaseline\n' >"$m/scenarios.tsv"
   printf 'require\tstage:pair\tS-TEST\tunit\tga\tt_ok\t%s\ncount\tstage:pair\t1\n' "$CASE_DIR/g.sh" >>"$m/stage-scenarios.tsv"
   HC_MANIFESTS="$m" hc_run stage pair
@@ -206,6 +207,7 @@ t_stage_with_one_empty_group_fails() {
   printf 'mixed\tunit\tga\nmixed\tunit\tge\n' >>"$m/stages.tsv"
   printf 'TEST-OP\tsynthetic operation\n' >"$m/privacy-ops.tsv"
   printf '# variant\tmeaning\n' >"$m/variants.tsv"
+  printf '# fault\tneeds\treceipt\tmeaning\n' >"$m/faults.tsv"
   printf 'S-TEST\tTEST-OP\tunit\tga\tt_ok\tbaseline\n' >"$m/scenarios.tsv"
   printf 'require\tstage:mixed\tS-TEST\tunit\tga\tt_ok\t%s\ncount\tstage:mixed\t1\n' "$CASE_DIR/g.sh" >>"$m/stage-scenarios.tsv"
   HC_MANIFESTS="$m" hc_run stage mixed
@@ -533,7 +535,8 @@ t_plan_runs_its_rows_in_order_and_fails_on_any_failure() {
   local m="$CASE_DIR/m"
   hc_manifests "$m"
   printf '# plan\tkind\tgroup\n' >"$m/plans.tsv"
-  cp "$NICE_DNS_ROOT/tests/manifests/scenarios.tsv" "$NICE_DNS_ROOT/tests/manifests/variants.tsv" "$m/"
+  cp "$NICE_DNS_ROOT/tests/manifests/scenarios.tsv" "$NICE_DNS_ROOT/tests/manifests/variants.tsv" \
+    "$NICE_DNS_ROOT/tests/manifests/faults.tsv" "$m/"
   hc_group_file "$CASE_DIR/a.sh" 't_a() { assert_eq 1 1; printf a >>"$ARTIFACT_DIR/order"; }'
   hc_group_file "$CASE_DIR/b.sh" 't_b() { assert_eq 1 "${HC_B_OK:-1}" "b"; printf b >>"$ARTIFACT_DIR/order"; }'
   printf 'unit\tpa\t%s\tlocal\nunit\tpb\t%s\tlocal\n' "$CASE_DIR/a.sh" "$CASE_DIR/b.sh" >>"$m/groups.tsv"
@@ -595,6 +598,7 @@ t_spare() { assert_eq s s; }'
   printf 'st\tunit\tga\nst\tunit\tgb\n' >>"$m/stages.tsv"
   printf 'TEST-OP\tsynthetic operation\n' >"$m/privacy-ops.tsv"
   printf '# variant\tmeaning\n' >"$m/variants.tsv"
+  printf '# fault\tneeds\treceipt\tmeaning\n' >"$m/faults.tsv"
   printf 'S-A\tTEST-OP\tunit\tga\tt_ok\ttransport\nS-B\tTEST-OP\tunit\tgb\tt_two\ttransport\n' >"$m/scenarios.tsv"
   hc_req_rows "$m"
 }
@@ -767,7 +771,7 @@ t_req_m1_empty_scenarios_refused() {
   # Round-4 evaluator M1: an empty scenarios.tsv made awk read the
   # requirement file as scenarios, so nothing was checked.
   hc_req_manifests "$CASE_DIR/m"
-  : >"$CASE_DIR/m/scenarios.tsv"; : >"$CASE_DIR/m/privacy-ops.tsv"; : >"$CASE_DIR/m/variants.tsv"
+  : >"$CASE_DIR/m/scenarios.tsv"; : >"$CASE_DIR/m/privacy-ops.tsv"; : >"$CASE_DIR/m/variants.tsv"; : >"$CASE_DIR/m/faults.tsv"
   grep -v 'gb$' "$CASE_DIR/m/stages.tsv" >"$CASE_DIR/x" && mv "$CASE_DIR/x" "$CASE_DIR/m/stages.tsv"
   hc_req_refused "empty scenario lists" 'required scenario S-A has no row'
 }

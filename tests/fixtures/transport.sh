@@ -157,7 +157,9 @@ tp_dests() {
 # tor (logs "Bootstrapped 100%" and waits; its process name is "tor").
 tp_supervised() {
   local b
-  printf '#!/bin/sh\necho "Bootstrapped 100%% (done): Done"\nwhile :; do sleep 1; done\n' >"$CASE_DIR/faketor"
+  # HUP makes the fake tor exit 0 (nothing in either image sends tor a HUP):
+  # an unrequested clean exit must still fail the container.
+  printf '#!/bin/sh\ntrap "exit 0" HUP\necho "Bootstrapped 100%% (done): Done"\nwhile :; do sleep 1; done\n' >"$CASE_DIR/faketor"
   chmod 755 "$CASE_DIR/faketor"
   [ -n "$TP_NSPID" ] || tp_holder
   [ -n "$TP_SOCKS" ] || tp_socks_start
@@ -167,6 +169,23 @@ tp_supervised() {
   done
   tp_run sup "$@" -v "$CASE_DIR/faketor:/usr/bin/tor:ro" "$TP_IMG"
   tp_wait_file /app/data/control/tor-generation 60 || fail "start.sh never wrote /app/data/control/tor-generation: $(podman logs "$TP_CTR" 2>&1 | tail -n 20)"
+}
+
+# tp_clean_exit_case <repo>: Sub-plan 5 Task 2.1 (FQ-PROXY-CHILD-DEATH): a
+# child that exits 0 unrequested (here tor, on HUP) still ends the container
+# with a failure status, or Restart=on-failure would leave the proxy down.
+tp_clean_exit_case() {
+  local rc
+  tp_setup "$1"
+  tp_holder
+  tp_socks_start
+  tp_socks_mode accept
+  tp_supervised
+  tp_ready_wait 40 || fail "never ready: $(printf '%s\n' "$TP_LOGS" | tail -n 10)"
+  tp_pm exec "$TP_CTR" pkill -HUP -x tor
+  rc="$(timeout 30 podman wait "$TP_CTR" 2>/dev/null | grep -E '^[0-9]+$' | tail -1)"
+  assert_match '^[0-9]+$' "$rc" "the container exited after tor exited unrequested"
+  assert_ne 0 "$rc" "an unrequested clean exit is still a failure exit"
 }
 
 # Sub-plan 5 Task 1.4 (fix B). Readiness is a working stream, not a cached

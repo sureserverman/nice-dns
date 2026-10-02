@@ -1,0 +1,24 @@
+# Mandatory fault and lifecycle scenarios (sub-plan 05 Task 2.1; ARCH-09),
+# parsed as data by tests/run.sh check-scenarios.
+# Columns (tab-separated): fault  needs  receipt  meaning
+#   needs:   fixture | live | fixture+live: the proof kinds the fault must
+#            carry in scenarios.tsv (fixture = a unit or integration case on
+#            the dev host; live = a live case on a real target). A fixture
+#            proves the mechanism, never the platform (ARCH-09 labels).
+#   receipt: <receipt>:<scenario> that carries the live evidence (declared in
+#            tests/manifests/<receipt>.tsv, reachable from the qualification
+#            receipt through its requires rows), or "-" when needs has no live.
+# Referenced in scenarios.tsv as fault:<id>. Never drop one silently.
+FQ-COLD-START	fixture+live	qualification:QU-LATENCY	the stack started from stopped answers its first query within the measured bound (live: a stack restart, not a host reboot)
+FQ-IDLE-RECONNECT	fixture+live	qualification:QU-LATENCY	a query after an idle period is answered over re-established connections
+FQ-WAKE	fixture+live	qualification:QU-LATENCY	after a host sleep the stack answers again without manual repair
+FQ-NETWORK-LOSS	live	qualification:QU-NETWORK-LOSS	while the upstream network is gone the stack fails closed (no direct query), and answers again once it returns, without manual repair
+FQ-BRIDGE-DISTRIBUTOR-DOWN	fixture	-	a bridge fetch that cannot reach the distributor keeps the working bridge set
+FQ-UPSTREAM-FAILURE	fixture+live	controller:CT-PRIMARY-ONLY	each provider route failing alone never hands its queries to another provider, restarts Tor or repairs the stack
+FQ-PROXY-CHILD-DEATH	fixture	-	a tor, socat or haproxy child dying unrequested ends the proxy container, so its runtime restarts it whole
+FQ-RUNTIME-WEDGE	fixture+live	controller:CT-RUNTIME-WEDGE	a wedged or missing container runtime is bounded and repaired only on evidence
+FQ-CONCURRENT-TIMERS	fixture	-	timer passes that fire together act once: one lock winner, no lost or doubled action
+FQ-STATE-CORRUPT	fixture	-	missing, malformed or half-written state is refused or recovered, never executed or trusted
+FQ-RECOVERY-ACK-FAILED	fixture+live	controller:CT-RECOVERY-ACK	a restart that is not acknowledged, refused or answered stale is never taken as done
+FQ-NO-DIRECT-CAPTURE	live	qualification:QU-NO-DIRECT	a packet capture on the target sees no IPv4 or IPv6 DNS packet (port 53 or 853) leave the host during A and AAAA queries and a bridge refresh
+FQ-BOOTSTRAP-DECLARED	fixture+live	qualification:QU-NO-DIRECT	bootstrap traffic is an inventoried exception that never carries client queries; the capture names each off-host flow it saw

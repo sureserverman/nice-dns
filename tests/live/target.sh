@@ -131,6 +131,19 @@
 #                    command to the first answer (DEC-014: `first_answer`, up
 #                    to 600 s) and the images that run, and fails unless
 #                    they are the arm's
+#   capture-dns      Sub-plan 5 Task 2.1: tcpdump on the default-route
+#                    interface of each family (ports 53 and 853) while
+#                    --count A and AAAA queries for fresh probe names go
+#                    through the client resolver and the installed
+#                    controller refreshes the bridge pool once; prints one
+#                    row per packet (a name only when it is a probe name or
+#                    the declared bootstrap name bridges.torproject.org)
+#   fault-network    drop every outbound packet to a non-private address
+#                    (Linux an nft table, macOS a pf anchor; the LAN stays),
+#                    recording each DNS destination tried; a restore lifts it
+#                    after NICE_DNS_FREEZE_MAX_SECS whatever happens here
+#   heal-network     print the DNS destinations tried, lift the fault and
+#                    cancel its restore
 #   thaw-on-request  wait (up to NICE_DNS_FREEZE_MAX_SECS) until the image
 #                    claims the controller's restart request, then SIGCONT
 #                    the frozen tor of --component: its pending TERM ends it
@@ -196,7 +209,7 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network'
 FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
@@ -237,7 +250,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$targets" ] || die "missing --targets FILE"
-if [ "$op" != collect ] && [ -n "$c_workload$c_count$c_identity$has_sleep" ]; then
+if [ "$op" = capture-dns ]; then
+  [ -z "$c_workload$c_identity$has_sleep" ] || die "--workload/--identity/--after-sleep are only valid for collect"
+  [[ "$c_count" =~ ^[1-9][0-9]?$ ]] || die "capture-dns needs --count 1..99"
+elif [ "$op" != collect ] && [ -n "$c_workload$c_count$c_identity$has_sleep" ]; then
   die "--workload/--count/--identity/--after-sleep are only valid for collect"
 fi
 if [ -n "$has_sleep" ]; then
@@ -1398,6 +1414,158 @@ case "$NICE_DNS_OP" in
     "$t" bridges-refresh </dev/null >"$o" 2>&1; rc=$?
     redact <"$o"; rm -f "$o"
     exit "$rc" ;;
+  capture-dns)
+    # Sub-plan 5 Task 2.1 (PRIV-NO-DIRECT, PRIV-BOOTSTRAP-DECLARED): tcpdump on
+    # the default-route interface of each address family, ports 53 and 853,
+    # while NICE_DNS_COUNT A and AAAA queries for fresh probe names go through
+    # the client resolver and the installed controller refreshes the bridge
+    # pool once (bridge-eval's own bootstrap lookups are the declared
+    # exception). One row per captured packet: interface, direction, peer,
+    # port, query name; a name is printed only when it is a probe name or the
+    # declared bootstrap name, any other as <other> (no query history).
+    [ "$plat" = macos ] && homebrew_path
+    if [ "$plat" = macos ]; then
+      i4=$(route -n get default 2>/dev/null | awk '/interface:/ { print $2 }')
+      i6=$(route -n get -inet6 default 2>/dev/null | awk '/interface:/ { print $2 }')
+    else
+      i4=$(ip -4 route show default 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+      i6=$(ip -6 route show default 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+    fi
+    printf 'interface\tipv4\t%s\ninterface\tipv6\t%s\n' "${i4:--}" "${i6:--}"
+    [ -n "$i4$i6" ] || { echo "no default route" >&2; exit 2; }
+    w=$(mktemp -d "${TMPDIR:-/tmp}/nd-cap.XXXXXX") || exit 1
+    trap 'for f in $ifs; do sudo -n pkill -INT -f "tcpdump -i $f -nn -U -s 0 -w $w/" 2>/dev/null; done; sleep 1; rm -rf "$w"' EXIT
+    ifs=$(printf '%s\n%s\n' "$i4" "$i6" | grep . | sort -u)
+    for f in $ifs; do
+      # The error file is the user's (its directory is); sudo covers tcpdump only.
+      { sudo -n tcpdump -i "$f" -nn -U -s 0 -w "$w/$f.pcap" 'port 53 or port 853' </dev/null; } >"$w/$f.err" 2>&1 &
+    done
+    sleep 3
+    for f in $ifs; do
+      pgrep -f "tcpdump -i $f -nn -U -s 0 -w $w/" >/dev/null || { echo "tcpdump on $f did not start: $(cat "$w/$f.err")" >&2; exit 2; }
+    done
+    # The capture's positive control: one deliberate direct query for a
+    # canary name, which the capture must see leave the host.
+    q="ndcanary$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n').example.com"
+    r=$(dig +time=3 +tries=1 @9.9.9.9 "$q" A </dev/null 2>/dev/null | sed -n 's/.*status: \([A-Z]*\),.*/\1/p' | head -n 1)
+    printf 'canary\t%s\t9.9.9.9\t%s\n' "$q" "${r:-timeout}"
+    n=0
+    while [ "$n" -lt "$NICE_DNS_COUNT" ]; do
+      n=$((n + 1))
+      for t in A AAAA; do
+        q="nd$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n').example.com"
+        r=$(dig +time=5 +tries=1 -p "${RESOLVER#*#}" "@${RESOLVER%#*}" "$q" "$t" </dev/null 2>/dev/null |
+          sed -n 's/.*status: \([A-Z]*\),.*/\1/p' | head -n 1)
+        printf 'query\t%s\t%s\t%s\n' "$t" "$q" "${r:-timeout}"
+      done
+    done
+    if t=$(health_tool); then
+      o=$("$t" bridges-refresh </dev/null 2>&1); rc=$?
+      printf 'bridges_refresh\t%s\t%s\n' "$rc" "$(printf '%s\n' "$o" | awk -F '\t' '$1 == "result" { print $2; exit }')"
+    else
+      printf 'bridges_refresh\tno-controller\n'
+    fi
+    sleep 5
+    for f in $ifs; do sudo -n pkill -INT -f "tcpdump -i $f -nn -U -s 0 -w $w/" 2>/dev/null; done
+    sleep 2
+    for f in $ifs; do
+      sudo -n tcpdump -nn -r "$w/$f.pcap" 2>/dev/null | awk -v i="$f" -F ' ' '
+        $2 != "IP" && $2 != "IP6" { next }
+        {
+          src = $3; dst = $5; sub(/:$/, "", dst)
+          sp = src; sub(/.*\./, "", sp); dp = dst; sub(/.*\./, "", dp)
+          sh = src; sub(/\.[^.]*$/, "", sh); dh = dst; sub(/\.[^.]*$/, "", dh)
+          if (dp == 53 || dp == 853) { dir = "out"; peer = dh; port = dp } else { dir = "in"; peer = sh; port = sp }
+          name = "-"
+          for (k = 6; k < NF; k++) if ($k ~ /^[A-Z]+\??$/ && $k ~ /\?$/) { name = $(k + 1); break }
+          sub(/\.$/, "", name)
+          if (name != "-" && name != "bridges.torproject.org" && name !~ /^nd(canary)?[0-9a-f]+\.example\.com$/) name = "<other>"
+          print "packet\t" i "\t" dir "\t" peer "\t" port "\t" name
+        }'
+      printf 'captured\t%s\t%s\n' "$f" "$(sudo -n tcpdump -nn -r "$w/$f.pcap" 2>/dev/null | grep -c .)"
+    done ;;
+  fault-network)
+    # Sub-plan 5 Task 2.1 (FQ-NETWORK-LOSS): every outbound packet to a
+    # non-private, non-loopback address is dropped (the LAN, and with it this
+    # session, stays up); each attempted DNS destination (ports 53 and 853)
+    # is recorded. A restore is scheduled before the fault: it lifts it after
+    # NICE_DNS_FREEZE_MAX seconds whatever happens to this session.
+    if [ "$plat" = linux ]; then
+      nft=$(command -v nft) || { echo "nft is missing" >&2; exit 2; }
+      sudo -n "$nft" list table inet nd_fault >/dev/null 2>&1 && { echo "a network fault is already in place" >&2; exit 2; }
+      sudo -n systemd-run --quiet --unit "nd-fault-restore-$$" --on-active="$NICE_DNS_FREEZE_MAX" "$nft" delete table inet nd_fault \
+        </dev/null || { echo "cannot schedule the restore" >&2; exit 2; }
+      printf '%s\n' 'table inet nd_fault {' \
+        ' set seen4 { type ipv4_addr . inet_service; flags dynamic; }' \
+        ' set seen6 { type ipv6_addr . inet_service; flags dynamic; }' \
+        ' chain out {' \
+        '  type filter hook output priority -10; policy accept;' \
+        '  oifname "lo" accept' \
+        '  ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16 } accept' \
+        '  ip6 daddr { ::1, fe80::/10, fc00::/7 } accept' \
+        '  meta nfproto ipv4 meta l4proto { tcp, udp } th dport { 53, 853 } add @seen4 { ip daddr . th dport } counter' \
+        '  meta nfproto ipv6 meta l4proto { tcp, udp } th dport { 53, 853 } add @seen6 { ip6 daddr . th dport } counter' \
+        '  counter drop' \
+        ' }' '}' | sudo -n "$nft" -f - || { sudo -n systemctl stop "nd-fault-restore-$$.timer" 2>/dev/null; echo "cannot load the fault" >&2; exit 2; }
+      printf 'restore_unit\tnd-fault-restore-%s\n' "$$"
+      if timeout 4 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null; then
+        sudo -n "$nft" delete table inet nd_fault; sudo -n systemctl stop "nd-fault-restore-$$.timer" 2>/dev/null
+        echo "the fault is not effective (1.1.1.1:443 still connects); lifted" >&2; exit 2
+      fi
+    else
+      a=com.apple/250.NiceDnsFault
+      tok=$(sudo -n pfctl -E 2>&1 | sed -n 's/^Token : //p')
+      [ -n "$tok" ] || { echo "cannot enable pf" >&2; exit 2; }
+      printf '%s\n' "$tok" >"$HOME/.nice-dns-netfault-token"
+      sudo -n ifconfig pflog0 create 2>/dev/null
+      nohup sh -c 'sleep "$1"; sudo -n pfctl -a "$2" -F all; sudo -n pfctl -X "$3"; sudo -n pkill -f "tcpdump -i pflog0 -nn -l -w $4"' \
+        nice-dns-netfault-watchdog "$NICE_DNS_FREEZE_MAX" "$a" "$tok" "$HOME/.nice-dns-netfault.pcap" </dev/null >/dev/null 2>&1 &
+      sudo -n tcpdump -i pflog0 -nn -l -w "$HOME/.nice-dns-netfault.pcap" </dev/null >/dev/null 2>&1 &
+      printf '%s\n' 'table <ndpriv> const { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16 }' \
+        'table <ndpriv6> const { ::1, fe80::/10, fc00::/7 }' \
+        'block drop out log quick inet proto { tcp, udp } to ! <ndpriv> port { 53, 853 }' \
+        'block drop out quick inet to ! <ndpriv>' \
+        'block drop out log quick inet6 proto { tcp, udp } to ! <ndpriv6> port { 53, 853 }' \
+        'block drop out quick inet6 to ! <ndpriv6>' | sudo -n pfctl -a "$a" -f - 2>/dev/null \
+        || { sudo -n pfctl -X "$tok"; echo "cannot load the fault" >&2; exit 2; }
+      if nc -z -G 4 1.1.1.1 443 </dev/null >/dev/null 2>&1; then
+        sudo -n pfctl -a "$a" -F all; sudo -n pfctl -X "$tok"; pkill -f nice-dns-netfault-watchdog
+        echo "the fault is not effective (1.1.1.1:443 still connects); lifted" >&2; exit 2
+      fi
+    fi
+    # The recording's positive control: one deliberate direct query, which
+    # the fault must drop and record (149.112.112.112 is no bootstrap resolver).
+    dig +time=2 +tries=1 @149.112.112.112 "ndcanary$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n').example.com" A </dev/null >/dev/null 2>&1
+    printf 'canary\t149.112.112.112\t53\n'
+    printf 'fault\tin-place\nstarted_utc\t%s\nrestore_after_s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$NICE_DNS_FREEZE_MAX" ;;
+  heal-network)
+    # Reports each DNS destination the fault dropped, lifts it and cancels
+    # the scheduled restore. Safe to call when nothing is in place.
+    if [ "$plat" = linux ]; then
+      nft=$(command -v nft) || { echo "nft is missing" >&2; exit 2; }
+      if sudo -n "$nft" list table inet nd_fault >/dev/null 2>&1; then
+        for s in seen4 seen6; do
+          sudo -n "$nft" list set inet nd_fault "$s" 2>/dev/null | tr -d '\n' | sed -n 's/.*elements = { \(.*\) }.*/\1/p' |
+            tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep . | awk -F ' . ' '{ print "dns_attempt\t" $1 "\t" $2 }'
+        done
+        sudo -n "$nft" delete table inet nd_fault || exit 1
+      fi
+      sudo -n systemctl stop 'nd-fault-restore-*.timer' </dev/null 2>/dev/null
+    else
+      a=com.apple/250.NiceDnsFault
+      sudo -n pkill -INT -f "tcpdump -i pflog0 -nn -l -w $HOME/.nice-dns-netfault.pcap" 2>/dev/null; sleep 1
+      if [ -f "$HOME/.nice-dns-netfault.pcap" ]; then
+        sudo -n tcpdump -nn -r "$HOME/.nice-dns-netfault.pcap" 2>/dev/null | awk '
+          { for (k = 1; k < NF; k++) if ($k == ">") { d = $(k + 1); sub(/:$/, "", d); p = d; sub(/.*\./, "", p); sub(/\.[^.]*$/, "", d);
+              if (p == 53 || p == 853) print "dns_attempt\t" d "\t" p; break } }' | sort -u
+        sudo -n rm -f "$HOME/.nice-dns-netfault.pcap"
+      fi
+      sudo -n pfctl -a "$a" -F all 2>/dev/null
+      [ -f "$HOME/.nice-dns-netfault-token" ] && sudo -n pfctl -X "$(cat "$HOME/.nice-dns-netfault-token")" 2>/dev/null
+      rm -f "$HOME/.nice-dns-netfault-token"
+      pkill -f nice-dns-netfault-watchdog 2>/dev/null
+    fi
+    printf 'fault\tlifted\nhealed_utc\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" ;;
   set-tunables)
     if [ "$plat" = macos ]; then f="$HOME/Library/Application Support/nice-dns-health/tunables.tsv"
     else f="${XDG_DATA_HOME:-$HOME/.local/share}/nice-dns-health/tunables.tsv"; fi
@@ -1551,7 +1719,7 @@ case "$op" in
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"
@@ -1563,6 +1731,8 @@ case "$op" in
       remote_run "NICE_DNS_OP=$op $INSTALL_ENV"; rc=$?
     elif [ "$op" = mark-state ]; then
       remote_run "NICE_DNS_OP=mark-state NICE_DNS_RUN_ID=$RUN_ID"; rc=$?
+    elif [ "$op" = capture-dns ]; then
+      remote_run "NICE_DNS_OP=capture-dns NICE_DNS_COUNT=$c_count"; rc=$?
     elif [ "$op" = restore ]; then
       names=''
       for c in $(awk -F '\t' '$1 == "section" { s = $2; next } s == "containers" && $2 == "running" { print $1 }' "$STATE/snapshot.tsv"); do

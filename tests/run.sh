@@ -846,15 +846,20 @@ cmd_check_contracts() {
 # ─────────────────────────── dispatch ────────────────────────────────────────
 
 # cmd_check_scenarios: scenario coverage (scenarios.tsv) against the
-# mandatory privacy operations (privacy-ops.tsv) and Stage 1 variants
-# (variants.tsv). Every operation needs a row; every variant needs an active
-# row; an active row must name a registered group and an existing t_* case;
-# a deferred row ("-" in kind, group and case) must name a later owner.
+# mandatory privacy operations (privacy-ops.tsv), Stage 1 variants
+# (variants.tsv) and fault scenarios (faults.tsv). Every operation and fault
+# needs a row; every variant needs an active row; an active row must name a
+# registered group and an existing t_* case; a deferred row ("-" in kind,
+# group and case) must name a later owner. A fault with no deferred row must
+# carry every proof kind it needs: fixture (a unit or integration case) and
+# or live (a live case); one line per fault reports its counts.
 cmd_check_scenarios() {
   local sc="$ND_MANIFESTS/scenarios.tsv" opsf="$ND_MANIFESTS/privacy-ops.tsv" varf="$ND_MANIFESTS/variants.tsv"
-  local f id cov k g c o extra rest ln=0 errs=0 active=0 deferred=0 idx
+  local faultf="$ND_MANIFESTS/faults.tsv"
+  local f id cov k g c o extra rest ln=0 errs=0 active=0 deferred=0 idx needs nfx nlv ndf
   local ids="|" known_ops="|" known_vars="|" covered="|" vcovered="|" owners=""
-  for f in "$sc" "$opsf" "$varf"; do
+  local known_faults="|" fneeds="|" ffix="|" flive="|" fdef="|"
+  for f in "$sc" "$opsf" "$varf" "$faultf"; do
     [ -f "$f" ] || { nd_err "check-scenarios: missing manifest $f"; return "$ND_FAIL"; }
   done
   if [ "$ND_G_N" -eq 0 ]; then nd_load_groups || return $?; fi
@@ -866,6 +871,13 @@ cmd_check_scenarios() {
     case "$id" in ''|'#'*) continue ;; esac
     known_vars="$known_vars$id|"
   done <"$varf"
+  while IFS="$ND_TAB" read -r id needs rest || [ -n "${id:-}" ]; do
+    case "$id" in ''|'#'*) continue ;; esac
+    case "${needs:-}" in fixture|live|fixture+live) ;; *)
+      nd_err "faults.tsv: $id needs '${needs:-}' (fixture, live or fixture+live)"; errs=$((errs + 1)); continue ;;
+    esac
+    known_faults="$known_faults$id|"; fneeds="$fneeds$id=$needs|"
+  done <"$faultf"
   # One rule for both parsers: a carriage return or leading whitespace makes a
   # row malformed (IFS read would strip a leading tab, awk would not).
   if grep -nE "$(printf '\r')|^[[:space:]]+[^[:space:]]" "$sc" >/dev/null 2>&1; then
@@ -886,6 +898,10 @@ cmd_check_scenarios() {
         case "$known_vars" in *"|${cov#variant:}|"*) ;; *)
           nd_err "scenarios.tsv:$ln: unknown variant '${cov#variant:}' (not in variants.tsv)"; errs=$((errs + 1)); continue ;;
         esac ;;
+      fault:*)
+        case "$known_faults" in *"|${cov#fault:}|"*) ;; *)
+          nd_err "scenarios.tsv:$ln: unknown fault '${cov#fault:}' (not in faults.tsv)"; errs=$((errs + 1)); continue ;;
+        esac ;;
       *)
         case "$known_ops" in *"|$cov|"*) ;; *)
           nd_err "scenarios.tsv:$ln: unknown operation '$cov' (not in privacy-ops.tsv)"; errs=$((errs + 1)); continue ;;
@@ -896,7 +912,7 @@ cmd_check_scenarios() {
     esac
     if [ "$k" = - ] && [ "$g" = - ] && [ "$c" = - ]; then
       deferred=$((deferred + 1)); owners="$owners $o:$cov"
-      case "$cov" in variant:*) ;; *) covered="$covered$cov|" ;; esac
+      case "$cov" in variant:*) ;; fault:*) fdef="$fdef${cov#fault:}|" ;; *) covered="$covered$cov|" ;; esac
       continue
     fi
     if [ "$k" = - ] || [ "$g" = - ] || [ "$c" = - ]; then
@@ -907,13 +923,30 @@ cmd_check_scenarios() {
       nd_err "scenarios.tsv:$ln: scenario $id names case $c, which $k/$g does not define"; errs=$((errs + 1)); continue
     fi
     active=$((active + 1))
-    case "$cov" in variant:*) vcovered="$vcovered${cov#variant:}|" ;; *) covered="$covered$cov|" ;; esac
+    case "$cov" in
+      variant:*) vcovered="$vcovered${cov#variant:}|" ;;
+      fault:*) if [ "$k" = live ]; then flive="$flive${cov#fault:}|"; else ffix="$ffix${cov#fault:}|"; fi ;;
+      *) covered="$covered$cov|" ;;
+    esac
   done <"$sc"
   for id in $(printf '%s' "$known_ops" | tr '|' ' '); do
     case "$covered" in *"|$id|"*) ;; *) nd_err "privacy operation $id has no scenario row (active or deferred to its owner)"; errs=$((errs + 1)) ;; esac
   done
   for id in $(printf '%s' "$known_vars" | tr '|' ' '); do
     case "$vcovered" in *"|$id|"*) ;; *) nd_err "variant $id has no active scenario (a registered case that exercises it)"; errs=$((errs + 1)) ;; esac
+  done
+  for id in $(printf '%s' "$known_faults" | tr '|' ' '); do
+    nfx="$(printf '%s' "$ffix" | tr '|' '\n' | grep -cx -- "$id")"
+    nlv="$(printf '%s' "$flive" | tr '|' '\n' | grep -cx -- "$id")"
+    ndf="$(printf '%s' "$fdef" | tr '|' '\n' | grep -cx -- "$id")"
+    needs="${fneeds#*"|$id="}"; needs="${needs%%|*}"
+    if [ $((nfx + nlv + ndf)) -eq 0 ]; then
+      nd_err "fault $id has no scenario row (active or deferred to its owner)"; errs=$((errs + 1))
+    elif [ "$ndf" -eq 0 ]; then
+      case "$needs" in *fixture*) [ "$nfx" -gt 0 ] || { nd_err "fault $id needs a fixture proof (fixture=$nfx live=$nlv)"; errs=$((errs + 1)); } ;; esac
+      case "$needs" in *live*) [ "$nlv" -gt 0 ] || { nd_err "fault $id needs a live proof (fixture=$nfx live=$nlv)"; errs=$((errs + 1)); } ;; esac
+    fi
+    printf 'fault %s needs=%s fixture=%s live=%s deferred=%s\n' "$id" "$needs" "$nfx" "$nlv" "$ndf"
   done
   printf 'scenarios: active=%s deferred=%s errors=%s\n' "$active" "$deferred" "$errs"
   for f in $owners; do printf '  deferred %s -> %s\n' "${f#*:}" "${f%%:*}"; done
