@@ -293,21 +293,20 @@ tp_suspend() { printf '970.00 0.00\n' >"$CASE_DIR/uptime"; }
 
 tp_logs() { podman logs "$TP_CTR" 2>&1; }
 
-# tp_suspend_respawn_case <repo>: a sleep -> one respawn at once, acknowledged
-# as request "suspend", while the old tor's streams hang (the fixture holds
-# them 120 s: the respawn must not wait for them); "suspend" is reserved, so a
+# tp_suspend_respawn_case <repo>: no stream within 6 s after the sleep -> one
+# respawn, acknowledged as request "suspend"; "suspend" is reserved, so a
 # controller request carrying it is rejected.
 tp_suspend_respawn_case() {
   local ack
   tp_suspend_start "$1" -e TOR_SUSPEND_MIN_AGE=0 -e TOR_SUSPEND_NET_PROBE=127.0.0.1:9050
   tp_socks_mode delay 120
   tp_suspend
-  tp_wait_file /app/data/control/tor-restart-ack 12 '^request_id	suspend$' || fail "no prompt respawn after a sleep with dead streams: $(tp_logs | tail -n 15)"
+  tp_wait_file /app/data/control/tor-restart-ack 40 '^request_id	suspend$' || fail "no respawn after a sleep with dead streams: $(tp_logs | tail -n 15)"
   ack="$TP_OUT"
   assert_eq respawned "$(tp_field status "$ack")" "acknowledged as a respawn"
   assert_eq 2 "$(tp_field generation "$ack")" "with the new generation"
   assert_match 'tor-supervisor: the host slept about [0-9]+ s; waiting for one of 1 bridge address' "$(tp_logs)" "the sleep is logged"
-  assert_match "tor's circuits do not survive a sleep; respawning tor" "$(tp_logs)" "and why tor was respawned"
+  assert_match 'no stream within 6 s after the sleep; respawning tor' "$(tp_logs)" "and why tor was respawned"
   sleep 11
   tp_wait_file /app/data/control/tor-generation 2 '^generation	2$'
   assert_rc 0 "$?" "exactly one respawn"
@@ -315,14 +314,17 @@ tp_suspend_respawn_case() {
   tp_wait_file /app/data/control/tor-restart-rejected 15 '^request_id	invalid$' || fail "a request with the reserved id was not rejected: $(tp_logs | tail -n 5)"
 }
 
-# tp_suspend_streams_case <repo>: a working stream does not keep tor: after
-# a VM freeze the old circuits are not trusted, so even with the fixture
-# answering every stream tor is respawned (no probe delays the respawn).
-tp_suspend_streams_case() {
+# tp_suspend_kept_case <repo>: a stream works after the sleep -> tor is kept
+# (its circuits are warm; a respawn would cost a bootstrap).
+tp_suspend_kept_case() {
   tp_suspend_start "$1" -e TOR_SUSPEND_MIN_AGE=0 -e TOR_SUSPEND_NET_PROBE=127.0.0.1:9050
   tp_suspend
-  tp_wait_file /app/data/control/tor-restart-ack 12 '^request_id	suspend$' || fail "no respawn: $(tp_logs | tail -n 8)"
-  assert_not_match 'a stream works after the sleep' "$(tp_logs)" "no stream was probed first"
+  sleep 12
+  assert_match 'a stream works after the sleep; tor kept' "$(tp_logs)" "the sleep was seen and tor kept: $(tp_logs | tail -n 8)"
+  tp_wait_file /app/data/control/tor-generation 2 '^generation	1$'
+  assert_rc 0 "$?" "no respawn"
+  tp_pm exec "$TP_CTR" test -e /app/data/control/tor-restart-ack
+  assert_nonzero "$TP_RC" "and no acknowledgement written"
 }
 
 # tp_suspend_young_case <repo>: with the default minimum age (120 s), a step
@@ -339,16 +341,17 @@ tp_suspend_young_case() {
 }
 
 # tp_suspend_bridges_case <repo>: tor's own bridges are the network check
-# (read from its command line): none answers (no route), so tor is respawned
-# only after the bounded 30 s wait.
+# (read from its command line): none answers (no route), so after 30 s the
+# streams are probed anyway, and a working one keeps tor.
 tp_suspend_bridges_case() {
   tp_suspend_start "$1" -e TOR_SUSPEND_MIN_AGE=0
   tp_suspend
   sleep 8
   assert_match 'waiting for one of 3 bridge address\(es\)' "$(tp_logs)" "the three bridges were read from tor's command line: $(tp_logs | tail -n 5)"
   tp_wait_file /app/data/control/tor-generation 1 '^generation	1$' || fail "respawned while waiting for the network"
-  tp_wait_file /app/data/control/tor-restart-ack 40 '^request_id	suspend$' || fail "no respawn after the bounded wait: $(tp_logs | tail -n 5)"
-  assert_match 'no bridge answered within 30 s; respawning tor anyway' "$(tp_logs)" "the wait is bounded"
+  sleep 36
+  assert_match 'no bridge answered within 30 s; probing streams anyway' "$(tp_logs)" "the wait is bounded: $(tp_logs | tail -n 5)"
+  assert_match 'a stream works after the sleep; tor kept' "$(tp_logs)" "and the streams decide"
 }
 
 # tp_suspend_request_case <repo>: a controller request during the check (the
