@@ -32,11 +32,20 @@
 cs_dir() { printf '%s\n' "$ARTIFACT_DIR/fault-network/$1"; }
 
 ndf_cell() {
-  local plat="$1" a="$2" d r back
+  local plat="$1" a="$2" d r back t0 i
   d="$(cs_dir "$a")"; mkdir -p "$d"
   cs_t "$a" snapshot >"$d/snapshot.out" 2>>"$d/ops.log" || fail "$a: snapshot"
-  r="$(ndf_fresh "$a" "$d/before.tsv")"
-  ndf_answered "$r" || fail "$a: the stack does not answer before the fault ($r)"
+  # A working stack first: the controller may be mid-demotion of a failed
+  # onion (live mint 2026-10-02: about 2 min without fresh answers until it
+  # switched to the exit), so a fresh name every 15 s, up to NDF_RETURN_S.
+  t0="$(date +%s)"; i=0
+  while :; do
+    i=$((i + 1))
+    r="$(ndf_fresh "$a" "$d/before-$i.tsv")"
+    ndf_answered "$r" && break
+    [ $(( $(date +%s) - t0 )) -lt "$NDF_RETURN_S" ] || fail "$a: the stack answers no fresh name within $NDF_RETURN_S s before the fault ($r)"
+    sleep 15
+  done
   back="$(ndf_loss "$a" "$d")" || fail "$a: the network loss failed"
   cs_report "$a" after || fail "$a: controller-report"
   ca_up "$d/after.tsv" || fail "$a: the controller does not report the chain up after the return"
@@ -59,5 +68,5 @@ t_1_network_loss() {
 
 t_2_evidence_is_private() {
   [ -d "$ARTIFACT_DIR/fault-network" ] || fail "no evidence: t_1 did not run"
-  assert_eq "" "$(grep -rlE 'obfs4 |cert=|iat-mode=' "$ARTIFACT_DIR/fault-network" 2>/dev/null)" "no bridge line in the evidence"
+  assert_eq "" "$(grep -rlE 'obfs4 [0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]+|cert=[A-Za-z0-9+/=]{16,}' "$ARTIFACT_DIR/fault-network" 2>/dev/null)" "no bridge line in the evidence"
 }

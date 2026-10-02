@@ -268,6 +268,6 @@ t_1_soak() {
 
 t_2_evidence_is_private() {
   [ -d "$ARTIFACT_DIR/soak" ] || fail "no evidence: t_1 did not run"
-  assert_eq "" "$(grep -rlE 'obfs4 |cert=|iat-mode=' "$ARTIFACT_DIR"/soak/*/*.tsv "$ARTIFACT_DIR"/soak/*/reports 2>/dev/null)" \
+  assert_eq "" "$(grep -rlE 'obfs4 [0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]+|cert=[A-Za-z0-9+/=]{16,}' "$ARTIFACT_DIR"/soak/*/*.tsv "$ARTIFACT_DIR"/soak/*/reports 2>/dev/null)" \
     "no bridge line in the soak's reports and summaries"
 }

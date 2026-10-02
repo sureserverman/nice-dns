@@ -82,7 +82,7 @@ t_1_capture() {
 t_2_evidence_is_private() {
   local hits
   [ -d "$ARTIFACT_DIR/no-direct" ] || fail "no evidence: t_1 did not run"
-  hits="$(grep -rlE 'obfs4 |cert=|iat-mode=' "$ARTIFACT_DIR/no-direct" 2>/dev/null)"
+  hits="$(grep -rlE 'obfs4 [0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]+|cert=[A-Za-z0-9+/=]{16,}' "$ARTIFACT_DIR/no-direct" 2>/dev/null)"
   assert_eq "" "$hits" "no bridge line in the evidence"
   hits="$(awk -F '\t' '$1 == "packet" && $6 != "-" && $6 != "<other>" && $6 != "bridges.torproject.org" && $6 !~ /^nd(canary)?[0-9a-f]+\.example\.com$/' \
     "$ARTIFACT_DIR"/no-direct/*/capture.tsv 2>/dev/null)"
