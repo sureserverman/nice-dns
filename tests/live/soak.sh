@@ -137,8 +137,19 @@ sk_cell() {
     || fail "$a: build-proxy: $(tail -n 10 "$d/ops.log")"
   il_t "$a" recreate-proxy --component "tor-$proxy" >"$d/recreate-proxy.tsv" 2>>"$d/ops.log" \
     || fail "$a: recreate-proxy: $(tail -n 10 "$d/ops.log")"
-  r="$(ndf_fresh "$a" "$d/route-start.tsv")"
-  ndf_answered "$r" || fail "$a: the candidate does not answer a fresh name ($r)"
+  # The recreated proxy needs its Tor bootstrap first (dry run 2026-10-02,
+  # mint: SERVFAIL right after recreate-proxy): a fresh name every 15 s, up
+  # to NDF_RETURN_S.
+  t0="$(date +%s)"; k=0
+  while :; do
+    k=$((k + 1))
+    r="$(ndf_fresh "$a" "$d/route-start-$k.tsv")"
+    ndf_answered "$r" && break
+    [ $(( $(date +%s) - t0 )) -lt "$NDF_RETURN_S" ] || fail "$a: the candidate answers no fresh name within $NDF_RETURN_S s ($r)"
+    sleep 15
+  done
+  printf 'candidate_first_answer_s\t%s\n' "$(( $(date +%s) - t0 ))" >>"$d/cell.tsv"
+  k=0
   il_report "$a" identity-start || fail "lifecycle-report"
   printf 'target_id\t%s\nplatform\t%s\nproxy\t%s\npihole\tstandard\nsource_rev\t%s\nimages\tgeneration-of-%s+proxy-%s\n' \
     "$a" "$plat" "$proxy" "$(il_sha)" "$(il_sha)" "${sha:0:12}" >"$d/identity.tsv"
