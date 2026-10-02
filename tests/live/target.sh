@@ -1528,6 +1528,12 @@ case "$NICE_DNS_OP" in
         'block drop out log quick inet6 proto { tcp, udp } to ! <ndpriv6> port { 53, 853 }' \
         'block drop out quick inet6 to ! <ndpriv6>' | sudo -n pfctl -a "$a" -f - 2>/dev/null \
         || { sudo -n pfctl -X "$tok"; echo "cannot load the fault" >&2; exit 2; }
+      # The containers reach the internet through pf's NAT (Internet
+      # Sharing), and a packet that matches an existing state skips the
+      # rules: Tor's open circuits outlived the block (mac 2026-10-02). Kill
+      # the states the container subnet holds; their next packets meet it.
+      sudo -n pfctl -k 172.31.240.248/29 </dev/null >/dev/null 2>&1
+      printf 'dnsnet_states_after_kill\t%s\n' "$(sudo -n pfctl -ss 2>/dev/null | grep -c '172\.31\.240\.')"
       if nc -z -G 4 1.1.1.1 443 </dev/null >/dev/null 2>&1; then
         sudo -n pfctl -a "$a" -F all; sudo -n pfctl -X "$tok"; pkill -f nice-dns-netfault-watchdog
         echo "the fault is not effective (1.1.1.1:443 still connects); lifted" >&2; exit 2
