@@ -124,10 +124,14 @@ rt_overlay() {
 
 # rt_unbound_run [podman run args...]: the product image on the overlay with
 # the route dir mounted read-only; created, not waited for.
+# RT_NO_CA=1 leaves the fixture CA out (an unreadable tls-cert-bundle).
 rt_unbound_run() {
+  local ca="-v $CASE_DIR/fx/pki/ca.pem:/fx/ca.pem:ro"
+  [ "${RT_NO_CA:-0}" = 1 ] && ca=""
   RT_CTRS="$RT_CTRS $ND_UNBOUND_CONTAINER"
+  # shellcheck disable=SC2086 # $ca is one -v option or nothing
   rt_pm run -d --name "$ND_UNBOUND_CONTAINER" --network "container:$RT_HOLDER" "$@" \
-    -v "$RT_OVERLAY:/etc/unbound/unbound.conf:ro" -v "$CASE_DIR/fx/pki/ca.pem:/fx/ca.pem:ro" \
+    -v "$RT_OVERLAY:/etc/unbound/unbound.conf:ro" $ca \
     -v "$ND_ROUTE_DIR:/etc/unbound/route:ro" "$UB_IMG"
   assert_rc 0 "$RT_RC" "product Unbound created: $RT_OUT"
 }
@@ -602,6 +606,52 @@ t_unbound_starts_anyway_when_the_route_never_answers() {
   done
   assert_ne "" "$up" "after the bound Unbound starts as it always did"
   assert_match 'did not answer within 6 s' "$(podman logs "$ND_UNBOUND_CONTAINER" 2>&1)" "and says so"
+}
+
+# Stage 1 gate round 2 (Tier-2): a probe that is refused (here the
+# tls-cert-bundle is unreadable) is no "not yet": the wait ends at once and
+# says why, and Unbound is started (here it then refuses the same bundle
+# itself and exits: fail-closed, as before the wait existed) instead of only
+# after the whole bound.
+t_unbound_does_not_wait_out_a_refused_probe() {
+  local i=0 logs=""
+  rt_setup
+  rt_holder
+  rt_fixture
+  rt_call seed_route cloudflare-exit 1
+  rt_overlay
+  rt_relay_stop
+  RT_NO_CA=1 rt_unbound_run -e NICE_DNS_ROUTE_WAIT=120
+  while [ "$i" -lt 40 ]; do
+    logs="$(podman logs "$ND_UNBOUND_CONTAINER" 2>&1)"
+    case "$logs" in *' unbound['*) break ;; esac
+    i=$((i + 1)); sleep 0.5
+  done
+  assert_match 'the route probe was refused .*tls-cert-bundle' "$logs" "the start names the refusal"
+  assert_match ' unbound\[' "$logs" "Unbound itself ran within 20 s, not after the 120 s bound"
+}
+
+# Stage 1 gate round 2: both reviews took the start script for PID 1, which
+# would ignore a TERM it has no handler for during the wait. It is not: the
+# base image's ENTRYPOINT is tini, which forwards the TERM (this case passed
+# before any change). It guards that a stop during the wait stays prompt.
+t_unbound_stops_promptly_while_waiting_for_its_route() {
+  local t0 el
+  rt_setup
+  rt_holder
+  rt_fixture
+  rt_call seed_route cloudflare-exit 1
+  rt_overlay
+  rt_relay_stop
+  rt_unbound_run
+  sleep 3
+  rt_unbound_answers
+  assert_nonzero $? "still waiting for the route"
+  t0="$(date +%s)"
+  podman stop -t 30 "$ND_UNBOUND_CONTAINER" >/dev/null 2>&1
+  el=$(( $(date +%s) - t0 ))
+  [ "$el" -le 12 ] || fail "a stop during the wait took $el s (stop timeout 30 s: the TERM was ignored)"
+  assert_eq 143 "$(podman inspect -f '{{.State.ExitCode}}' "$ND_UNBOUND_CONTAINER" 2>/dev/null)" "it ended on the TERM"
 }
 
 # ─────────────────────────── cases: interruption and rollback ────────────────

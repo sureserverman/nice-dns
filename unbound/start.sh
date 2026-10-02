@@ -254,8 +254,13 @@ wait_for_route() {
   case "$t0" in ''|*[!0-9]*) return 0 ;; esac
   while :; do
     # In a subshell: a refusal inside the probe (die) must not end the start.
+    # Nor is it a "not yet": waiting would only delay Unbound by the bound.
     out="$(NICE_DNS_PROBE_TIMEOUT=8 probe_route . 2>&1)" || true
     el=$(( $(cut -d. -f1 /proc/uptime) - t0 ))
+    case "$out" in
+      *forwarder=*|'') ;;
+      *) echo "$ME: the route probe was refused ($out); starting Unbound without waiting" >&2; return 0 ;;
+    esac
     case "$out" in
       *' rcode=-'*|'') ;;
       *' rcode='*) echo "$ME: the route answers after $el s ($out)"; return 0 ;;
