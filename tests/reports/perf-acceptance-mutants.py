@@ -46,6 +46,8 @@ G = [
  ("improvement-pooled", '("yes" if p_better < alpha else "no")', '("yes" if p_not_better < alpha else "no")'),
  ("slower-pooled", '"latency": "slower" if p_worse < alpha else "ok"', '"latency": "slower" if p_not_worse < alpha else "ok"'),
  ("unpaired-blocks", '    if len(runs[0]) != len(runs[1]):', '    if False:'),
+ ("judge-blocks", '            elif len(pairs) < judge:', '            elif False:'),
+ ("judge-latency", '            if len(pairs) < judge:\n                f["latency"] = "insufficient"', '            if False:\n                f["latency"] = "insufficient"'),
  ("tie-rank", '        pos[m] = k + (cnt + 1) / 2.0', '        pos[m] = k + cnt'),
  ("rank-by-size", '    ranks = [pos[abs(d)] for d in ds]', '    ranks = [1.0 for d in ds]'),
  ("failed-block-worst", 'ds = [gain(nearest_rank(pb, 50), nearest_rank(pc, 50)) for pb, pc in pairs]', 'ds = [d for d in (gain(nearest_rank(pb, 50), nearest_rank(pc, 50)) for pb, pc in pairs) if abs(d) != INF]'),

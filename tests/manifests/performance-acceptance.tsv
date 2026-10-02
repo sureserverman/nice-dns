@@ -38,7 +38,8 @@ method	pooled_context	the exact percentile bootstrap of the difference of pooled
 method	alpha_family	0.05
 method	comparisons_per_platform	16
 method	improved_when	p_block_better < alpha_family/comparisons_per_platform (one-sided, Bonferroni over every cell x problem class of a platform); with n paired blocks the smallest possible p is 2^-n, so an improvement needs at least 9 blocks
-method	slower_when	p_block_worse < alpha_family/comparisons_per_platform
+method	slower_when	p_block_worse < alpha_family/comparisons_per_platform; with fewer paired blocks than min_blocks_judged no slowdown can be shown, so the workload is insufficient, never pass (Stage 1 gate round 2: no regression must rest on evidence)
+method	min_blocks_judged	9
 method	min_blocks	5
 method	rate_interval	Wilson score 95%
 method	percentile_support	tests/reports/stats.sh: supported when attempted*(100-p)/100 >= 10, else exploratory

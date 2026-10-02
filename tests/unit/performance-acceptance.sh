@@ -339,7 +339,8 @@ t_non_interleaved_arms_are_refused() {
   pa_setup linux/socat/standard
   PA_COLD_BLOCK=6 pa_cell_data
   pa_compare
-  assert_rc 0 "$PA_RC" "blocks of ceil(30/5)=6 alternate enough: $PA_OUT"
+  assert_rc 1 "$PA_RC" "blocks of ceil(30/5)=6 alternate enough to be compared, not refused: $PA_OUT"
+  assert_match 'fewer than 9 paired blocks \(5\)' "$(pa_field cold reason)" "five blocks are compared but judge nothing"
   pa_setup linux/socat/standard
   PA_COLD_BLOCK=7 pa_cell_data
   pa_compare
@@ -492,6 +493,9 @@ t_manifest_states_the_block_paired_method() {
   assert_match '^method	pooled_context	.*never as a verdict' "$(cat "$PA_M")" "the pooled interval is context"
   assert_match '^method	improved_when	p_block_better < ' "$(cat "$PA_M")" "improved_when"
   assert_match '^method	slower_when	p_block_worse < ' "$(cat "$PA_M")" "slower_when"
+  assert_match '^method	min_blocks_judged	9$' "$(cat "$PA_M")" "the blocks a verdict needs at this alpha"
+  assert_match '^method	slower_when	.*fewer paired blocks than min_blocks_judged.*insufficient' "$(cat "$PA_M")" \
+    "below them the workload is insufficient"
   assert_match '^rule	same-session-baseline	.*a check .*unbaselined.* does not gate it' "$(cat "$PA_M")" \
     "the rule says what a check does without the arm"
   assert_match '^rule	restart-first-answer	.*satisfies improve-problem-class' "$(cat "$PA_M")" \
@@ -505,7 +509,7 @@ t_problem_class_slowdown_fails() {
   pa_compare
   assert_eq slower "$(pa_field wake latency)" "wake slower beyond variability: $PA_OUT"
   assert_eq fail "$(pa_verdict wake)" "a slower problem class fails"
-  # The same test as an improvement: five blocks cannot show a slowdown either.
+  # Ten blocks, each slower: the block-paired test sees it.
   pa_setup linux/socat/standard
   PA_WAKE_B="$(pa_seq 30 900000 1)" PA_WAKE_C="$(pa_seq 30 3000000 1)" pa_cell_data
   pa_compare
@@ -523,7 +527,12 @@ t_slowdown_is_judged_by_blocks() {
   pa_compare
   assert_eq 5 "$(pa_field wake blocks_paired)" "five paired blocks: $PA_OUT"
   assert_eq 0.000000 "$(pa_field wake pooled_p_not_worse)" "the pooled samples would call it slower"
-  assert_eq ok "$(pa_field wake latency)" "five blocks cannot show a slowdown (2^-5 > alpha)"
+  # 2^-5 > alpha: five blocks can show neither a slowdown nor a gain, so the
+  # no-regression gate has no evidence and the workload is never a pass.
+  assert_eq insufficient "$(pa_field wake latency)" "five blocks cannot show a slowdown (2^-5 > alpha)"
+  assert_eq insufficient "$(pa_verdict wake)" "a workload whose slowdown cannot be judged is not a pass"
+  assert_match 'fewer than 9 paired blocks' "$(pa_field wake reason)" "and says why"
+  assert_eq insufficient "$(pa_cell_verdict)" "nor is its cell"
 }
 
 t_steady_warm_is_not_a_problem_class() {

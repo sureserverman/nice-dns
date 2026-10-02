@@ -320,7 +320,11 @@ def derive(bl_path):
     add("method\timproved_when\tp_block_better < alpha_family/comparisons_per_platform "
         "(one-sided, Bonferroni over every cell x problem class of a platform); with n paired "
         "blocks the smallest possible p is 2^-n, so an improvement needs at least 9 blocks")
-    add("method\tslower_when\tp_block_worse < alpha_family/comparisons_per_platform")
+    add("method\tslower_when\tp_block_worse < alpha_family/comparisons_per_platform; with "
+        "fewer paired blocks than min_blocks_judged no slowdown can be shown, so the workload is "
+        "insufficient, never pass (Stage 1 gate round 2: no regression must rest on evidence)")
+    add("method\tmin_blocks_judged\t%d" % blocks_to_judge(
+        float(ALPHA_FAMILY) / next(iter(per_platform.values()))))
     add("method\tmin_blocks\t%d" % MIN_BLOCKS)
     add("method\trate_interval\tWilson score 95%")
     add("method\tpercentile_support\ttests/reports/stats.sh: supported when "
@@ -505,6 +509,12 @@ def paired_blocks(w, b, c):
         refuse("workload %s: the arms form %d and %d blocks; a block-paired test needs equal "
                "counts" % (w, len(runs[0]), len(runs[1])))
     return list(zip(runs[0], runs[1]))
+
+
+def blocks_to_judge(alpha):
+    """The fewest paired blocks whose smallest possible p (2^-n, every block
+    one way) is below alpha: fewer can show neither a gain nor a slowdown."""
+    return int(math.floor(math.log2(1.0 / alpha))) + 1
 
 
 def signed_rank(ds):
@@ -764,10 +774,17 @@ def compare(m, cell, base, cand, scope=None):
             else:
                 f.update({"p95_target": "n/a", "target": "n/a"})
             f.update({"blocks_base": str(blocks[0]), "blocks_cand": str(blocks[1])})
+            judge = blocks_to_judge(alpha)
+            if len(pairs) < judge:
+                f["latency"] = "insufficient"
             if len(b) < budget or len(c) < budget:
                 verdict = "insufficient"
                 reason.append("arm below the budget of %d (baseline %d, candidate %d)"
                               % (budget, len(b), len(c)))
+            elif len(pairs) < judge:
+                verdict = "insufficient"
+                reason.append("fewer than %d paired blocks (%d): neither a slowdown nor an "
+                              "improvement can be shown at alpha %.6f" % (judge, len(pairs), alpha))
             else:
                 failed = [k for k in ("timeout", "failure", "target") if f[k] == "fail"]
                 # Every workload is held to the arm measured alongside it: the
