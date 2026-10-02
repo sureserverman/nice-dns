@@ -158,7 +158,10 @@
 #                    /usr/local/sbin/start-container.sh with this checkout's
 #                    `git archive` of --source-sha (sudo -n: the disposable
 #                    Mac's sudo asks for no credential; nothing prompts). A cell
-#                    installed from origin/main otherwise keeps its old agent
+#                    installed from origin/main otherwise keeps its old agent.
+#                    Its root helper start-container-root.sh too, then the
+#                    helper's post (the pin the agent makes), so its host-side
+#                    state applies at once (Sub-plan 5 Task 2.1)
 #   set-tunables     --mode fast writes the installed controller's
 #                    tunables.tsv (30 s startup allowance, grace and cooldown:
 #                    the live gate's extra configurations, user decision
@@ -1587,10 +1590,17 @@ case "$NICE_DNS_OP" in
     [ -s "${ND_SOURCE_TGZ:-}" ] || { echo "install-agent without the nice-dns source archive" >&2; exit 2; }
     w=$(mktemp -d "$HOME/.nice-dns-harness-agent.XXXXXX") || exit 1
     trap 'rm -rf "$w"' EXIT
-    tar -xzf "$ND_SOURCE_TGZ" -C "$w" mac/start-container.sh || exit 1
+    tar -xzf "$ND_SOURCE_TGZ" -C "$w" mac/start-container.sh mac/start-container-root.sh || exit 1
     rm -f "$ND_SOURCE_TGZ"
     sudo -n install -m 755 "$w/mac/start-container.sh" /usr/local/sbin/start-container.sh || exit 1
-    printf 'agent\t%s\n' "$(shasum -a 256 /usr/local/sbin/start-container.sh | cut -d' ' -f1)" ;;
+    sudo -n install -m 755 "$w/mac/start-container-root.sh" /usr/local/sbin/start-container-root.sh || exit 1
+    printf 'agent\t%s\n' "$(shasum -a 256 /usr/local/sbin/start-container.sh | cut -d' ' -f1)"
+    printf 'root_helper\t%s\n' "$(shasum -a 256 /usr/local/sbin/start-container-root.sh | cut -d' ' -f1)"
+    # The pin as the agent makes it (the sudoers rule allows post), so the
+    # helper's host-side state (Sub-plan 5 Task 2.1: the scoped-DNS block)
+    # is in place now rather than at the next stack rebuild.
+    sudo -n /usr/local/sbin/start-container-root.sh post </dev/null >&2 || exit 1
+    printf 'post\tdone\n' ;;
   hold-bridge-refresh)
     if [ "$plat" = macos ]; then st="$HOME/Library/Application Support/nice-dns/controller"
     else st="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/controller"; fi
