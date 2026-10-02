@@ -255,6 +255,22 @@ case "$me" in
     fi
     case "$*" in "is-active --quiet NetworkManager") [ -f "$FAKE/nm_active" ] || exit 3 ;; esac
     exit 0 ;;
+  pfctl)
+    # The anchor's rules are kept in $FAKE/pf.rules; pf starts disabled.
+    case "$*" in
+      "-s info") echo "Status: Disabled" ;;
+      -E) echo "Token : 4242" ;;
+      *"-f -") cat >"$FAKE/pf.rules" ;;
+    esac
+    exit 0 ;;
+  route)
+    # The container bridge the stack's address routes through ($FAKE/bridge,
+    # default bridge100; an empty file: no route).
+    if [ "$*" = "-n get 172.31.240.250" ]; then
+      if [ -f "$FAKE/bridge" ]; then b="$(cat "$FAKE/bridge")"; else b=bridge100; fi
+      [ -z "$b" ] || echo "  interface: $b"
+    fi
+    exit 0 ;;
   networksetup)
     if [ -n "${FAKE_ROOT:-}" ]; then
       # Services in $FAKE_ROOT/.netsvc/list; DNS servers in .netsvc/dns/<name>.
@@ -318,7 +334,7 @@ STUB
   if [ "$plat" = linux ]; then
     for s in podman crun; do ln -s fakecmd "$b/$s"; done
   else
-    for s in container brew softwareupdate sw_vers networksetup launchctl ifconfig dscacheutil killall; do ln -s fakecmd "$b/$s"; done
+    for s in container brew softwareupdate sw_vers networksetup launchctl ifconfig dscacheutil killall pfctl route; do ln -s fakecmd "$b/$s"; done
   fi
   for s in $IP_TOOLS; do [ -e "$b/$s" ] || ln -s "$(type -P "$s")" "$b/$s"; done
 }

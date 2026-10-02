@@ -5,7 +5,8 @@
 #                stack coming up. No-op if Mullvad isn't present.
 # repair-dnsnet: unload the stuck Apple vmnet helper for dnsnet and restart
 #                InternetSharing so a repaired dnsnet definition can be used.
-# post:          pin macOS system DNS to the pi-hole container IP and
+# post:          pin macOS system DNS to the pi-hole container IP, keep
+#                scoped DNS on the container bridge (block_scoped_dns) and
 #                re-bootstrap Mullvad if we took it down.
 #
 # Installer verbs (Sub-plan 4 Task 1.2; ARCH-06, WF-DNS-003). They run under
@@ -17,7 +18,8 @@
 # check:         exit 3 when another owner changed a recorded service's DNS
 #                servers after nice-dns pinned them; an install refuses then.
 # restore:       give each pinned service back its recorded servers
-#                (uninstall); a service another owner changed is left alone.
+#                (uninstall); a service another owner changed is left alone;
+#                lifts the scoped-DNS block.
 # status:        print pinned (every service at the pi-hole) or unpinned.
 # discard:       drop an unused record: a first install that failed before its
 #                pin (refused once any service carries the pin).
@@ -41,6 +43,9 @@ fi
 
 MULLVAD_PLIST="$R/Library/LaunchDaemons/net.mullvad.daemon.plist"
 PIHOLE_IP=172.31.240.250
+DNSNET_SUBNET=172.31.240.248/29
+PF_ANCHOR=com.apple/260.nice-dns-scoped
+PF_TOKEN="$R/var/db/nice-dns/pf-token"
 DNSNET_LABEL=com.apple.container.container-network-vmnet.dnsnet
 RECEIPT_DIR="$R/var/db/nice-dns/dns-owned"
 RECEIPT="$RECEIPT_DIR/receipt.tsv"
@@ -59,6 +64,46 @@ set_local_dns() {
   services | while read -r svc; do
     networksetup -setdnsservers "$svc" "$PIHOLE_IP" 2>/dev/null || true
   done
+}
+
+# block_scoped_dns: every network service carrying the pin gets its own
+# scoped resolver, and a query scoped to Wi-Fi or Ethernet must leave through
+# that interface: to the LAN gateway, in cleartext, for an address only the
+# container bridge reaches (Sub-plan 5 Task 2.1, live on the mac 2026-10-02:
+# networkserviceproxy through mDNSResponder, about 5 a minute). pf passes DNS
+# to the stack's subnet on its bridge and drops it on every other interface;
+# then the states such queries hold are killed, since a packet that matches a
+# state skips the rules. Without a bridge to the stack nothing is loaded: a
+# block could cut the stack off. A failure here never fails the pin.
+block_scoped_dns() {
+  local br tok
+  br="$(route -n get "$PIHOLE_IP" 2>/dev/null | awk '/interface:/ { print $2; exit }')"
+  case "$br" in
+    bridge[0-9]*) ;;
+    *) echo "no container bridge to $PIHOLE_IP (${br:-none}); scoped DNS is not blocked" >&2; return 0 ;;
+  esac
+  if ! pfctl -s info 2>/dev/null | grep -q 'Status: Enabled'; then
+    tok="$(pfctl -E 2>&1 | sed -n 's/^Token : //p')"
+    if [[ -n $tok ]]; then
+      mkdir -p "$(dirname "$PF_TOKEN")" && printf '%s\n' "$tok" >"$PF_TOKEN"
+    fi
+  fi
+  if ! printf 'pass out quick on %s proto { udp, tcp } to %s port { 53, 853 }\nblock drop out quick proto { udp, tcp } to %s port { 53, 853 }\n' \
+      "$br" "$DNSNET_SUBNET" "$DNSNET_SUBNET" | pfctl -a "$PF_ANCHOR" -f - 2>/dev/null; then
+    echo "could not load $PF_ANCHOR; scoped DNS is not blocked" >&2
+    return 0
+  fi
+  pfctl -k 0.0.0.0/0 -k "$DNSNET_SUBNET" >/dev/null 2>&1 || true
+}
+
+# unblock_scoped_dns: the inverse (uninstall); releases the pf reference
+# block_scoped_dns took, if it took one.
+unblock_scoped_dns() {
+  pfctl -a "$PF_ANCHOR" -F all >/dev/null 2>&1 || true
+  if [[ -s $PF_TOKEN ]]; then
+    pfctl -X "$(cat "$PF_TOKEN")" >/dev/null 2>&1 || true
+  fi
+  rm -f "$PF_TOKEN"
 }
 
 # flush_dns_cache: after the host resolver changes, drop what macOS cached
@@ -191,6 +236,7 @@ cmd_restore() {
       failed=1
     fi
   done < <(services)
+  unblock_scoped_dns
   # A partial restore changed some services too.
   flush_dns_cache
   if (( failed )); then
@@ -229,6 +275,7 @@ case "${1:-}" in
       launchctl bootstrap system "$MULLVAD_PLIST" 2>/dev/null || true
     fi
     set_local_dns
+    block_scoped_dns
     flush_dns_cache
     ;;
   snapshot) cmd_snapshot ;;

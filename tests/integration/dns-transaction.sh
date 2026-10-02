@@ -85,6 +85,47 @@ t_helper_flushes_the_macos_cache_after_each_change() {
   ) || exit 1
 }
 
+# Sub-plan 5 Task 2.1 (PRIV-NO-DIRECT; live no-direct on the mac,
+# 2026-10-02): every network service carrying the pin gets its own scoped
+# resolver, and a query scoped to Wi-Fi or Ethernet leaves through it, to the
+# LAN gateway in cleartext, for an address only the container bridge reaches.
+# post makes pf pass DNS to the stack's subnet on its bridge and drop it
+# elsewhere, then kills the states such queries hold (a packet that matches a
+# state skips the rules); restore lifts it. Without a bridge to the stack it
+# loads nothing (a block could then cut the stack off) and says so.
+t_helper_blocks_scoped_dns_off_the_container_bridge() {
+  dt_select_platforms
+  case " $DT_PLATS " in *" macos "*) ;; *) echo "macos not selected (--platforms)"; return 0 ;; esac
+  (
+    local load kill set
+    dt_world "$(dt_ep_of macos)" fresh
+    dt_helper macos snapshot
+    : >"$FAKE_LOG"
+    dt_helper macos post
+    assert_rc 0 "$DT_RC" "post: $DT_OUT"
+    assert_eq "$(printf 'pass out quick on bridge100 proto { udp, tcp } to 172.31.240.248/29 port { 53, 853 }\nblock drop out quick proto { udp, tcp } to 172.31.240.248/29 port { 53, 853 }')" \
+      "$(cat "$FAKE/pf.rules" 2>/dev/null)" "DNS to the stack passes on its bridge only"
+    load="$(ip_first "$FAKE_LOG" '^pfctl -a com\.apple/260\.nice-dns-scoped -f -$')"
+    kill="$(ip_first "$FAKE_LOG" '^pfctl -k 0\.0\.0\.0/0 -k 172\.31\.240\.248/29$')"
+    set="$(ip_last "$FAKE_LOG" '^networksetup -setdnsservers ')"
+    assert_ne "" "$load" "the anchor is loaded: $(cat "$FAKE_LOG")"
+    assert_ne "" "$kill" "the states toward the stack are killed"
+    assert_eq 1 "$((kill > load && load > set))" "after the pin: pin, load, then kill"
+    assert_ne "" "$(ip_first "$FAKE_LOG" '^pfctl -E$')" "pf is enabled when it is off"
+    : >"$FAKE_LOG"
+    dt_helper macos restore
+    assert_rc 0 "$DT_RC" "restore: $DT_OUT"
+    assert_ne "" "$(ip_first "$FAKE_LOG" '^pfctl -a com\.apple/260\.nice-dns-scoped -F all$')" "restore lifts the anchor"
+    assert_ne "" "$(ip_first "$FAKE_LOG" '^pfctl -X 4242$')" "and releases its pf reference"
+    rm -f "$FAKE/pf.rules"; : >"$FAKE/bridge"; : >"$FAKE_LOG"
+    dt_helper macos post
+    assert_rc 0 "$DT_RC" "post without a bridge still pins: $DT_OUT"
+    assert_ne "" "$(ip_last "$FAKE_LOG" '^networksetup -setdnsservers ')" "the pin is made"
+    assert_eq "" "$(ip_first "$FAKE_LOG" '^pfctl -a ')" "no block is loaded without the bridge"
+    assert_match 'no container bridge' "$DT_OUT" "and it says so"
+  ) || exit 1
+}
+
 t_helper_refuses_external_changes() {
   local plat
   dt_select_platforms
