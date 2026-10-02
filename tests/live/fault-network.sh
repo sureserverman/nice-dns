@@ -26,56 +26,18 @@
 # shellcheck source=tests/live/controller-lib.sh
 . "$NICE_DNS_ROOT/tests/live/controller-lib.sh"
 
+# shellcheck source=tests/live/fault-lib.sh
+. "$NICE_DNS_ROOT/tests/live/fault-lib.sh"
+
 cs_dir() { printf '%s\n' "$ARTIFACT_DIR/fault-network/$1"; }
 
-NDF_LOSS_S="${NDF_LOSS_S:-120}"
-NDF_RETURN_S="${NDF_RETURN_S:-420}"
-NDF_BOOT_RESOLVERS="1.1.1.1 9.9.9.9 8.8.8.8"
-
-# ndf_fresh <alias> <name>: route-report into <dir>/<name>.tsv; prints the
-# rcode of its fresh name through Pi-hole.
-ndf_fresh() {
-  local f
-  f="$(cs_dir "$1")/$2.tsv"
-  cs_t "$1" route-report >"$f" 2>>"$(cs_dir "$1")/ops.log" || true
-  awk -F '\t' '$1 == "section" { on = ($2 == "route"); next } on && $1 == "client_fresh" { print $2; exit }' "$f"
-}
-
-ndf_answered() { case "$1" in NOERROR|NXDOMAIN) return 0 ;; esac; return 1; }
-
 ndf_cell() {
-  local plat="$1" a="$2" d r t0 i bad back=""
+  local plat="$1" a="$2" d r back
   d="$(cs_dir "$a")"; mkdir -p "$d"
   cs_t "$a" snapshot >"$d/snapshot.out" 2>>"$d/ops.log" || fail "$a: snapshot"
-  r="$(ndf_fresh "$a" before)"
+  r="$(ndf_fresh "$a" "$d/before.tsv")"
   ndf_answered "$r" || fail "$a: the stack does not answer before the fault ($r)"
-  trap 'cs_t "'"$a"'" heal-network >>"'"$d"'/heal-trap.tsv" 2>>"'"$d"'/ops.log"' EXIT
-  NICE_DNS_FREEZE_MAX_SECS=600 cs_t "$a" fault-network >"$d/fault.tsv" 2>>"$d/ops.log" || fail "$a: fault-network: $(tail -n 3 "$d/ops.log")"
-  assert_match '^fault	in-place$' "$(grep '^fault	' "$d/fault.tsv")" "$a: the fault is in place"
-  t0="$(date +%s)"; i=0
-  while [ $(( $(date +%s) - t0 )) -lt "$NDF_LOSS_S" ]; do
-    sleep 25; i=$((i + 1))
-    r="$(ndf_fresh "$a" "loss-$i")"
-    ! ndf_answered "$r" || fail "$a: a fresh name resolved $(( $(date +%s) - t0 )) s into the loss: something reached a resolver around the fault"
-  done
-  cs_t "$a" heal-network >"$d/heal.tsv" 2>>"$d/ops.log" || fail "$a: heal-network"
-  trap - EXIT
-  assert_match '^fault	lifted$' "$(grep '^fault	' "$d/heal.tsv")" "$a: the fault is lifted"
-  # The positive control: the canary the fault sent at its start was dropped
-  # and recorded, so an empty list below means no attempt, not a blind spot.
-  assert_eq 1 "$(awk -F '\t' '$1 == "dns_attempt" && $2 == "149.112.112.112" && $3 == 53' "$d/heal.tsv" | grep -c .)" \
-    "$a: the fault recorded its own canary query"
-  bad="$(awk -F '\t' -v boot="$NDF_BOOT_RESOLVERS" 'BEGIN { n = split(boot, b, " "); for (i = 1; i <= n; i++) ok[b[i]] = 1; ok["149.112.112.112"] = 1 }
-    $1 == "dns_attempt" && !($2 in ok && $3 == 53)' "$d/heal.tsv")"
-  assert_eq "" "$bad" "$a: during the loss no DNS was tried but the declared bootstrap lookups"
-  t0="$(date +%s)"; i=0
-  while [ $(( $(date +%s) - t0 )) -lt "$NDF_RETURN_S" ]; do
-    i=$((i + 1))
-    r="$(ndf_fresh "$a" "return-$i")"
-    if ndf_answered "$r"; then back="$(( $(date +%s) - t0 ))"; break; fi
-    sleep 15
-  done
-  [ -n "$back" ] || fail "$a: no fresh name resolved within $NDF_RETURN_S s after the network returned"
+  back="$(ndf_loss "$a" "$d")" || fail "$a: the network loss failed"
   cs_report "$a" after || fail "$a: controller-report"
   ca_up "$d/after.tsv" || fail "$a: the controller does not report the chain up after the return"
   {

@@ -51,3 +51,4 @@ live	tune-idle-wake	tests/live/tune-idle-wake.sh	live
 unit	qualification-coverage	tests/unit/qualification-coverage.sh	local
 live	no-direct	tests/live/no-direct.sh	live
 live	fault-network	tests/live/fault-network.sh	live
+live	soak	tests/live/soak.sh	live
