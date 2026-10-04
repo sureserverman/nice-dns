@@ -1055,18 +1055,50 @@ _nd_br_drop() {
     !(toupper($3) in bad)' "$1" >"$1.q" && mv -f "$1.q" "$1"
 }
 
-# _nd_br_running_weak <weak list> <bridges file>: 0 when the running Tor is
-# configured with a weak bridge the file no longer holds.
+# _nd_br_listed <tor state file>: the fingerprints the running Tor is
+# configured with.
+_nd_br_listed() {
+  awk '$1 == "Guard" && $2 == "in=bridges" && / listed=1( |$)/ {
+    for (i = 3; i <= NF; i++) if ($i ~ /^rsa_id=/) { v = $i; sub(/^rsa_id=/, "", v); print toupper(v) } }' "$1" 2>/dev/null
+}
+
+# _nd_br_remember <weak list>: the judgement outlives Tor's state, which the
+# macOS agent deletes whenever the bridge set changes (mac/start-container.sh
+# prune_guard_state) and Tor prunes for unlisted bridges after about 20 days.
+# bridges.weak (state directory, 0600, fingerprints only) keeps each weak
+# bridge for ND_BRIDGE_WEAK_DAYS (30) from its last judgement. Prints the
+# weak list plus the remembered ones ("FP<TAB>0<TAB>remembered").
+_nd_br_remember() {
+  local f now days live
+  f="$(nd_platform_state_dir)/bridges.weak"; now="$(date +%s)"
+  days="${ND_BRIDGE_WEAK_DAYS:-30}"; case "$days" in ''|*[!0-9]*) days=30 ;; esac
+  live="$(printf '%s\n' "$1" | cut -f1 | tr '\n' ' ')"
+  {
+    printf '%s\n' "$1" | awk -F '\t' -v n="$now" 'NF >= 3 { printf "%s\t%s\t%s\n", $1, n, $3 }'
+    awk -F '\t' -v n="$now" -v keep=$((days * 86400)) -v live="$live" '
+      BEGIN { k = split(live, x, " "); for (i = 1; i <= k; i++) l[x[i]] = 1 }
+      NF >= 3 && length($1) == 40 && $1 !~ /[^0-9A-F]/ && $2 !~ /[^0-9]/ && n - $2 < keep && !($1 in l)' "$f" 2>/dev/null
+  } | (umask 077 && cat >"$f.new.$$") && mv -f "$f.new.$$" "$f"
+  printf '%s\n' "$1" | awk 'NF >= 3'
+  awk -F '\t' -v live="$live" '
+    BEGIN { k = split(live, x, " "); for (i = 1; i <= k; i++) l[x[i]] = 1 }
+    !($1 in l) { printf "%s\t0\tremembered\n", $1 }' "$f" 2>/dev/null
+}
+
+# _nd_br_running_weak <weak list> <listed fingerprints> <bridges file>: 0
+# when the running Tor is configured with a weak bridge the file no longer
+# holds.
 _nd_br_running_weak() {
   local f
-  for f in $(printf '%s\n' "$1" | awk -F '\t' '$2 == 1 { print $1 }'); do
-    awk -v f="$f" 'toupper($3) == f { found = 1 } END { exit !found }' "$2" || return 0
+  for f in $(printf '%s\n' "$1" | cut -f1); do
+    printf '%s\n' "$2" | grep -qxF "$f" || continue
+    awk -v f="$f" 'toupper($3) == f { found = 1 } END { exit !found }' "$3" || return 0
   done
   return 1
 }
 
 nd_bridges_refresh() {
-  local v="${1:-}" d base cand rc t out weak="" dropped=0 n0 adopted=-
+  local v="${1:-}" d base cand rc t out weak="" listed="" dropped=0 n0 adopted=-
   case "$v" in haproxy|socat) ;; *) printf 'result\trefused\ndetail\tvariant must be haproxy or socat\n'; return 2 ;; esac
   d="$(nd_platform_bridge_dir)"
   if ! _nd_br_mutex_take; then
@@ -1077,8 +1109,11 @@ nd_bridges_refresh() {
   cand=".bridges.env.candidate.$$"
   t="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-bridges.XXXXXX")" || { _nd_br_mutex_drop; return 2; }
   nd_platform_bridge_eval "$v" "$cand" "${ND_BRIDGE_EVAL_S:-300}" "$t"; rc=$?
-  [ "$rc" -eq 0 ] && _nd_br_tor_state "$t" && weak="$(_nd_br_weak "$t/tor-state")"
+  if [ "$rc" -eq 0 ] && _nd_br_tor_state "$t"; then
+    weak="$(_nd_br_weak "$t/tor-state")"; listed="$(_nd_br_listed "$t/tor-state")"
+  fi
   rm -rf "${t:?}"
+  [ "$rc" -eq 0 ] && weak="$(_nd_br_remember "$weak")"
   if [ "$rc" -eq 0 ] && [ -n "$weak" ]; then
     n0="$(_nd_br_norm "$d/$cand" | wc -l | tr -d ' ')"
     _nd_br_drop "$d/$cand" "$weak"
@@ -1103,7 +1138,7 @@ nd_bridges_refresh() {
   # recreates the proxy (user decision 2026-10-04: one fail-closed gap at most
   # per refresh). The pending marker bounds it: once the proxy has read the
   # set, a stale listed=1 in the state file restarts nothing.
-  if [ "$rc" -eq 0 ] && _nd_br_running_weak "$weak" "$d/bridges.env" && _nd_br_pending; then
+  if [ "$rc" -eq 0 ] && _nd_br_running_weak "$weak" "$listed" "$d/bridges.env" && _nd_br_pending; then
     nd_recovery_journal "br-$(date +%s)" bridges adopting "the running proxy uses a bridge the new set leaves out; the service restart adopts the set"
     if nd_recovery_restart_service "br-$(date +%s)-svc" >/dev/null; then
       rm -f "$(nd_platform_state_dir)/bridges.pending"; adopted=restarted

@@ -449,3 +449,59 @@ t_unreadable_tor_state_changes_nothing() {
     ) || exit 1
   done
 }
+
+# macOS deletes Tor's state whenever the bridge set changes
+# (mac/start-container.sh prune_guard_state), and Tor prunes unlisted
+# bridges after about 20 days, so the controller keeps its own memory of
+# weak bridges (bridges.weak in its state directory, ND_BRIDGE_WEAK_DAYS,
+# default 30).
+t_weak_bridge_stays_out_after_the_tor_state_is_wiped() {
+  local plat out
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      bl_set "$BL_LIVE" 5
+      bl_set "$CASE_DIR/cand" 7 9
+      printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+      bl_soak_state
+      : >"$FAKE/restart_changes"
+      out="$(nd_bridges_refresh haproxy)"
+      assert_eq restarted "$(bl_get adopted "$out")" "$plat: first refresh adopts: $out"
+      assert_eq "" "$(find "$ND_STATE_DIR" -name bridges.weak -perm -0004)" "$plat: the memory is private"
+      assert_not_match 'cert=|192\.0\.' "$(cat "$ND_STATE_DIR/bridges.weak" 2>/dev/null)" "$plat: the memory holds fingerprints only"
+      # The recreate wiped Tor's state: the new Tor knows only its 5 bridges,
+      # none judged yet. The next evaluation offers bridge 2 again.
+      { bl_guard 1 1 0 0; bl_guard 3 1 0 0; bl_guard 4 1 0 0; bl_guard 5 1 0 0; bl_guard 7 1 0 0; } >"$FAKE/ctl/state"
+      bl_set "$CASE_DIR/cand" 7 8
+      printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+      rm -f "$FAKE/restart_changes"; : >"$FAKE_LOG"
+      out="$(nd_bridges_refresh haproxy)"
+      assert_eq changed "$(bl_get result "$out")" "$plat: second refresh applies: $out"
+      assert_not_match "$(bl_fp 2)" "$(cat "$BL_LIVE")" "$plat: the remembered 80% bridge stays out"
+      assert_not_match "$(bl_fp 6)" "$(cat "$BL_LIVE")" "$plat: so does the remembered unconfigured one"
+      assert_eq 5 "$(grep -cE '^BRIDGE[0-9]+=obfs4 192\.0\.8\.' "$BL_LIVE")" "$plat: 7 offered, 2 remembered out"
+      assert_eq - "$(bl_get adopted "$out")" "$plat: the running Tor does not use them, so no restart"
+      assert_eq "" "$(bl_restarts)" "$plat: nothing restarted"
+    ) || exit 1
+  done
+}
+
+t_weak_memory_expires() {
+  local plat out old
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      bl_set "$BL_LIVE" 5
+      bl_set "$CASE_DIR/cand" 7 9
+      printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+      old=$(( $(date +%s) - 31 * 86400 ))
+      (umask 077 && printf '%s\t%s\t56/70\n%s\t%s\t30/44\n' "$(bl_fp 2)" "$old" "$(bl_fp 6)" "$(date +%s)" >"$ND_STATE_DIR/bridges.weak")
+      rm -f "$FAKE/ctl/state"
+      out="$(nd_bridges_refresh haproxy)"
+      assert_eq changed "$(bl_get result "$out")" "$plat: applied: $out"
+      assert_match "$(bl_fp 2)" "$(cat "$BL_LIVE")" "$plat: a bridge judged 31 days ago is offered again"
+      assert_not_match "$(bl_fp 6)" "$(cat "$BL_LIVE")" "$plat: a fresh judgement still holds without Tor state"
+      assert_not_match "$(bl_fp 2)" "$(cat "$ND_STATE_DIR/bridges.weak")" "$plat: the expired entry is pruned"
+    ) || exit 1
+  done
+}
