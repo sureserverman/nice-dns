@@ -269,7 +269,16 @@ t_boot_selection_is_skipped_when_a_usable_set_exists() {
   assert_rc 0 "$rc" "two bridges: the boot selection runs"
   bl_set "$h/.config/nice-dns/bridges.env" 3
   sh -c "$(printf '%s' "$cond" | sed "s#%h#$h#g")"; rc=$?
-  assert_rc 1 "$rc" "a usable set: skipped (ExecCondition exit 1), out of startup's critical path"
+  # systemd skips the unit only when ExecCondition exits 1-254 AND that status
+  # is not a clean exit of the unit: SuccessExitStatus= also covers
+  # ExecCondition, so a skip status listed there runs the unit anyway (live on
+  # mint 2026-10-05: exit 1 under SuccessExitStatus=0 1 reselected bridges at
+  # every install and boot).
+  local ok
+  ok="$(grep '^SuccessExitStatus=' "$NICE_DNS_ROOT/deb/persistent-podman.sh" | sed 's/^SuccessExitStatus=//')"
+  assert_ne 0 "$rc" "a usable set: the condition does not pass"
+  [ "$rc" -ge 1 ] && [ "$rc" -le 254 ]; assert_rc 0 $? "a usable set: the skip status $rc is one systemd skips on (1-254)"
+  assert_not_match "(^| )$rc( |\$)" "$ok" "a usable set: the skip status $rc is not a clean exit of the unit (SuccessExitStatus=$ok)"
 }
 
 # The patterns are literal installer text on purpose.
