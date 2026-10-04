@@ -212,3 +212,7 @@ QF-ACK-LIVE	fault:FQ-RECOVERY-ACK-FAILED	live	controller-active	t_1_cells	qualif
 QF-NO-DIRECT-CAPTURE	fault:FQ-NO-DIRECT-CAPTURE	live	no-direct	t_1_capture	qualification
 QF-BOOTSTRAP-FIXTURE	fault:FQ-BOOTSTRAP-DECLARED	integration	installers-interaction	t_bootstrap_use_is_declared	qualification
 QF-BOOTSTRAP-LIVE	fault:FQ-BOOTSTRAP-DECLARED	live	no-direct	t_1_capture	qualification
+QF-BRIDGE-WEAK-RUNNING	fault:FQ-BRIDGE-WEAK	integration	bridge-lifecycle	t_weak_running_bridge_is_dropped_and_the_proxy_recreated	qualification
+QF-BRIDGE-WEAK-IDLE	fault:FQ-BRIDGE-WEAK	integration	bridge-lifecycle	t_weak_bridge_not_running_is_filtered_without_restart	qualification
+QF-BRIDGE-WEAK-FLOOR	fault:FQ-BRIDGE-WEAK	integration	bridge-lifecycle	t_filter_never_leaves_fewer_than_three_bridges	qualification
+QF-BRIDGE-WEAK-NOSTATE	fault:FQ-BRIDGE-WEAK	integration	bridge-lifecycle	t_unreadable_tor_state_changes_nothing	qualification

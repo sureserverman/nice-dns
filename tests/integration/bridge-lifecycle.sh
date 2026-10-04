@@ -332,3 +332,120 @@ t_unreachable_distributor_keeps_the_working_pool() {
   assert_eq "$before" "$(sha256sum <"$h/.config/nice-dns/bridges.env")" "the working pool is unchanged"
   assert_eq "" "$(find "$h/.config/nice-dns" -name 'bridges.env.*')" "no partial file is left"
 }
+
+# Stream quality (Sub-plan 5, Task 2.2; the mac soak 20261002T205552Z-cbc82d85
+# failed on bridges that bootstrap but carry onion streams badly). The running
+# proxy's Tor state (/app/data/tor/state; the fake serves $FAKE/ctl/state)
+# carries per-bridge path-bias use counters; listed=1 marks a bridge the
+# running Tor is configured with.
+bl_fp() { printf '%040d' "$1" | tr '0' 'A'; }
+
+# bl_guard <i> <listed> <attempts> <successes>: one Guard line as Tor writes it.
+bl_guard() {
+  printf 'Guard in=bridges rsa_id=%s bridge_addr=192.0.2.%s:443 sampled_on=2026-09-22T05:19:40 sampled_by=0.4.9.13 listed=%s confirmed_on=2026-09-22T05:19:40 confirmed_idx=%s pb_use_attempts=%s pb_use_successes=%s pb_circ_attempts=99.000000 pb_circ_successes=98.000000\n' \
+    "$(bl_fp "$1")" "$1" "$2" "$1" "$3" "$4"
+}
+
+# The state of the mac soak, in shape: bridge 2 at 80% after 70 uses (running),
+# bridge 3 at 93% (kept), bridge 4 below the 20-use minimum (kept, not judged),
+# bridge 6 weak but no longer configured; a default-guard line is ignored.
+bl_soak_state() {
+  {
+    printf '# Tor state file last generated on 2026-10-03 21:05:41 local time\nTorVersion Tor 0.4.9.13\n'
+    bl_guard 2 1 70.500000 56.500000
+    bl_guard 3 1 69.500000 64.500000
+    bl_guard 4 1 15.000000 9.000000
+    bl_guard 6 0 44.000000 30.000000
+    printf 'Guard in=default rsa_id=%s sampled_on=2026-09-22T05:19:40 listed=1 pb_use_attempts=50.000000 pb_use_successes=1.000000\n' "$(bl_fp 8)"
+    bl_guard 1 1 20.000000 20.000000
+    bl_guard 5 1 0.000000 0.000000
+  } >"$FAKE/ctl/state"
+}
+
+t_weak_running_bridge_is_dropped_and_the_proxy_recreated() {
+  local plat out
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      bl_set "$BL_LIVE" 5
+      bl_set "$CASE_DIR/cand" 7 9
+      printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+      bl_soak_state
+      : >"$FAKE/restart_changes"
+      out="$(nd_bridges_refresh haproxy)"
+      assert_eq changed "$(bl_get result "$out")" "$plat: the filtered set is applied: $out"
+      assert_eq 5 "$(grep -cE '^BRIDGE[0-9]+=obfs4 192\.0\.9\.' "$BL_LIVE")" "$plat: 7 evaluated minus the 2 weak ones"
+      assert_not_match "$(bl_fp 2)" "$(cat "$BL_LIVE")" "$plat: the 80% bridge is gone"
+      assert_not_match "$(bl_fp 6)" "$(cat "$BL_LIVE")" "$plat: the weak unconfigured bridge is not re-added"
+      assert_match "$(bl_fp 3)" "$(cat "$BL_LIVE")" "$plat: 93% stays"
+      assert_match "$(bl_fp 4)" "$(cat "$BL_LIVE")" "$plat: under 20 uses is not judged"
+      assert_eq 2 "$(bl_get dropped "$out")" "$plat: the output counts the dropped bridges"
+      assert_eq restarted "$(bl_get adopted "$out")" "$plat: the running proxy used a dropped bridge, so it is recreated"
+      if [ "$plat" = macos ]; then
+        assert_match '^launchctl kickstart -k ' "$(cat "$FAKE_LOG")" "$plat: through the service restart"
+      else
+        assert_match '^systemctl --user restart tor-haproxy.service$' "$(cat "$FAKE_LOG")" "$plat: through the service restart"
+      fi
+      assert_no_path "$ND_STATE_DIR/bridges.pending" "$plat: adopted, nothing waits"
+      assert_match 'bridges	weak' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: the journal names the weak bridges"
+      assert_not_match 'cert=' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: the journal carries no bridge secrets"
+    ) || exit 1
+  done
+}
+
+t_weak_bridge_not_running_is_filtered_without_restart() {
+  local plat out
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      bl_set "$BL_LIVE" 5
+      bl_set "$CASE_DIR/cand" 7 9
+      printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+      { bl_guard 6 0 44.000000 30.000000; bl_guard 3 1 69.500000 64.500000; } >"$FAKE/ctl/state"
+      : >"$FAKE/restart_changes"
+      out="$(nd_bridges_refresh haproxy)"
+      assert_eq changed "$(bl_get result "$out")" "$plat: applied: $out"
+      assert_eq 6 "$(grep -cE '^BRIDGE[0-9]+=obfs4 192\.0\.9\.' "$BL_LIVE")" "$plat: only the weak one is left out"
+      assert_eq 1 "$(bl_get dropped "$out")" "$plat: one dropped"
+      assert_eq - "$(bl_get adopted "$out")" "$plat: the running proxy does not use it"
+      assert_eq "" "$(bl_restarts)" "$plat: no restart"
+      assert_file "$ND_STATE_DIR/bridges.pending" "$plat: adopted at the next start as before"
+    ) || exit 1
+  done
+}
+
+t_filter_never_leaves_fewer_than_three_bridges() {
+  local plat out before
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      bl_set "$BL_LIVE" 5; before="$(cat "$BL_LIVE")"
+      bl_set "$CASE_DIR/cand" 4 9
+      printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+      { bl_guard 1 1 40 10; bl_guard 2 1 40 10; bl_guard 3 1 40 35; } >"$FAKE/ctl/state"
+      : >"$FAKE/restart_changes"
+      out="$(nd_bridges_refresh haproxy)"
+      assert_eq not-applied "$(bl_get result "$out")" "$plat: 2 left after the filter is not applied: $out"
+      assert_eq "$before" "$(cat "$BL_LIVE")" "$plat: the last good set stays"
+      assert_eq "" "$(bl_restarts)" "$plat: nothing restarted"
+    ) || exit 1
+  done
+}
+
+t_unreadable_tor_state_changes_nothing() {
+  local plat out
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      bl_set "$BL_LIVE" 5
+      bl_set "$CASE_DIR/cand" 7 9
+      printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+      rm -f "$FAKE/ctl/state"
+      out="$(nd_bridges_refresh haproxy)"
+      assert_eq changed "$(bl_get result "$out")" "$plat: refresh as before: $out"
+      assert_eq 7 "$(grep -cE '^BRIDGE[0-9]+=obfs4 192\.0\.9\.' "$BL_LIVE")" "$plat: nothing filtered without counters"
+      assert_eq 0 "$(bl_get dropped "$out")" "$plat: none dropped"
+      assert_eq "" "$(bl_restarts)" "$plat: no restart"
+    ) || exit 1
+  done
+}

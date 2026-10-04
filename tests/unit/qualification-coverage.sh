@@ -54,7 +54,7 @@ t_every_fault_carries_its_needed_proofs() {
     assert_match "^fault $f needs=$(qc_field "$f" 2 | sed 's/+/[+]/') fixture=[0-9]+ live=[0-9]+ deferred=0\$" \
       "$(printf '%s\n' "$QC_OUT" | grep "^fault $f ")" "$f: its proofs are all active"
   done
-  assert_eq 13 "$n" "thirteen mandatory faults (faults.tsv)"
+  assert_eq 14 "$n" "fourteen mandatory faults (faults.tsv; FQ-BRIDGE-WEAK added in Task 2.2)"
   assert_eq "" "$(printf '%s\n' "$QC_OUT" | grep '^  deferred fault:')" "no fault is left to a later owner"
 }
 

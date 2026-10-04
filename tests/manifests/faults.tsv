@@ -14,6 +14,7 @@ FQ-IDLE-RECONNECT	fixture+live	qualification:QU-LATENCY	a query after an idle pe
 FQ-WAKE	fixture+live	qualification:QU-LATENCY	after a host sleep the stack answers again without manual repair
 FQ-NETWORK-LOSS	live	qualification:QU-NETWORK-LOSS	while the upstream network is gone the stack fails closed (no direct query), and answers again once it returns, without manual repair
 FQ-BRIDGE-DISTRIBUTOR-DOWN	fixture	-	a bridge fetch that cannot reach the distributor keeps the working bridge set
+FQ-BRIDGE-WEAK	fixture	-	a bridge that bootstraps but carries streams badly (below 90% after 20 uses) is left out of the refreshed set and, when the running proxy uses it, adopted through the service restart
 FQ-UPSTREAM-FAILURE	fixture+live	controller:CT-PRIMARY-ONLY	each provider route failing alone never hands its queries to another provider, restarts Tor or repairs the stack
 FQ-PROXY-CHILD-DEATH	fixture	-	a tor, socat or haproxy child dying unrequested ends the proxy container, so its runtime restarts it whole
 FQ-RUNTIME-WEDGE	fixture+live	controller:CT-RUNTIME-WEDGE	a wedged or missing container runtime is bounded and repaired only on evidence

@@ -1013,8 +1013,60 @@ _nd_br_mutex_drop() {
   case "$(readlink "$m" 2>/dev/null)" in "nd-lock:$$:"*) rm -f "${m:?}" ;; esac
 }
 
+# Stream quality. bridge-eval judges a bridge by its obfs4 handshake; a bridge
+# can pass that and still carry streams badly (the mac soak of 2026-10-02:
+# 80% stream success, onion streams stalled for minutes; Tor only drops a
+# timed-out rend stream, never its circuit). The running Tor keeps per-bridge
+# path-bias use counters in its state file; Tor itself judges them after 20
+# uses (DFLT_PATH_BIAS_MIN_USE) and only logs. Below ND_BRIDGE_MIN_USE_PCT
+# (90, user decision 2026-10-04) a bridge is left out of every refresh while
+# its counters stay low. listed=1 marks a bridge the running Tor is
+# configured with.
+
+# _nd_br_weak <tor state file>: "FINGERPRINT<TAB>listed<TAB>successes/uses"
+# for each judged bridge below the bar.
+_nd_br_weak() {
+  awk -v min="${ND_BRIDGE_MIN_USE:-20}" -v pct="${ND_BRIDGE_MIN_USE_PCT:-90}" '
+    $1 == "Guard" && $2 == "in=bridges" {
+      fp = ""; l = 0; a = 0; s = 0
+      for (i = 3; i <= NF; i++) {
+        k = $i; sub(/=.*/, "", k); v = $i; sub(/^[^=]*=/, "", v)
+        if (k == "rsa_id") fp = toupper(v)
+        else if (k == "listed") l = v + 0
+        else if (k == "pb_use_attempts") a = v + 0
+        else if (k == "pb_use_successes") s = v + 0
+      }
+      if (length(fp) == 40 && fp !~ /[^0-9A-F]/ && a >= min && s * 100 < pct * a)
+        printf "%s\t%d\t%d/%d\n", fp, l, s, a
+    }' "$1" 2>/dev/null
+}
+
+# _nd_br_tor_state <tmp>: the running proxy's Tor state into <tmp>/tor-state.
+_nd_br_tor_state() {
+  local c dl="${ND_RECOVERY_CMD_DEADLINE:-15}"
+  c="$(nd_platform_proxy_container "$dl" "$1")" || return 1
+  nd_bounded "$dl" "$1/tor-state" "$1/tor-state.err" nd_platform_proxy_exec "$c" cat /app/data/tor/state
+}
+
+# _nd_br_drop <bridges file> <weak list>: leave the weak fingerprints out, in place.
+_nd_br_drop() {
+  awk -v w="$(printf '%s\n' "$2" | cut -f1 | tr '\n' ' ')" '
+    BEGIN { n = split(w, x, " "); for (i = 1; i <= n; i++) bad[x[i]] = 1 }
+    !(toupper($3) in bad)' "$1" >"$1.q" && mv -f "$1.q" "$1"
+}
+
+# _nd_br_running_weak <weak list> <bridges file>: 0 when the running Tor is
+# configured with a weak bridge the file no longer holds.
+_nd_br_running_weak() {
+  local f
+  for f in $(printf '%s\n' "$1" | awk -F '\t' '$2 == 1 { print $1 }'); do
+    awk -v f="$f" 'toupper($3) == f { found = 1 } END { exit !found }' "$2" || return 0
+  done
+  return 1
+}
+
 nd_bridges_refresh() {
-  local v="${1:-}" d base cand rc t out
+  local v="${1:-}" d base cand rc t out weak="" dropped=0 n0 adopted=-
   case "$v" in haproxy|socat) ;; *) printf 'result\trefused\ndetail\tvariant must be haproxy or socat\n'; return 2 ;; esac
   d="$(nd_platform_bridge_dir)"
   if ! _nd_br_mutex_take; then
@@ -1025,7 +1077,14 @@ nd_bridges_refresh() {
   cand=".bridges.env.candidate.$$"
   t="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-bridges.XXXXXX")" || { _nd_br_mutex_drop; return 2; }
   nd_platform_bridge_eval "$v" "$cand" "${ND_BRIDGE_EVAL_S:-300}" "$t"; rc=$?
+  [ "$rc" -eq 0 ] && _nd_br_tor_state "$t" && weak="$(_nd_br_weak "$t/tor-state")"
   rm -rf "${t:?}"
+  if [ "$rc" -eq 0 ] && [ -n "$weak" ]; then
+    n0="$(_nd_br_norm "$d/$cand" | wc -l | tr -d ' ')"
+    _nd_br_drop "$d/$cand" "$weak"
+    dropped=$((n0 - $(_nd_br_norm "$d/$cand" | wc -l | tr -d ' ')))
+    nd_recovery_journal "br-$(date +%s)" bridges weak "below ${ND_BRIDGE_MIN_USE_PCT:-90}% stream success after ${ND_BRIDGE_MIN_USE:-20} uses, left out: $(printf '%s\n' "$weak" | awk -F '\t' '{ printf "%s%s %s%s", (NR > 1 ? ", " : ""), substr($1, 1, 12), $3, ($2 == 1 ? " (running)" : "") }')"
+  fi
   if [ "$rc" -ne 0 ]; then
     rm -f "${d:?}/$cand"
     _nd_br_mutex_drop
@@ -1039,7 +1098,20 @@ nd_bridges_refresh() {
   out="$(nd_bridges_apply "$d/$cand" "$base")"; rc=$?
   rm -f "${d:?}/$cand"
   _nd_br_mutex_drop
-  printf '%s\n' "$out"
+  # The proxy reads bridges.env only when it starts. A running weak bridge
+  # the new set leaves out is adopted now, through the service restart that
+  # recreates the proxy (user decision 2026-10-04: one fail-closed gap at most
+  # per refresh). The pending marker bounds it: once the proxy has read the
+  # set, a stale listed=1 in the state file restarts nothing.
+  if [ "$rc" -eq 0 ] && _nd_br_running_weak "$weak" "$d/bridges.env" && _nd_br_pending; then
+    nd_recovery_journal "br-$(date +%s)" bridges adopting "the running proxy uses a bridge the new set leaves out; the service restart adopts the set"
+    if nd_recovery_restart_service "br-$(date +%s)-svc" >/dev/null; then
+      rm -f "$(nd_platform_state_dir)/bridges.pending"; adopted=restarted
+    else
+      adopted=failed
+    fi
+  fi
+  printf '%s\ndropped\t%s\nadopted\t%s\n' "$out" "$dropped" "$adopted"
   return "$rc"
 }
 
