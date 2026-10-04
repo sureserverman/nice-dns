@@ -35,6 +35,8 @@ ci_env() {
   unset CONTAINER_BIN ND_PROXY_CONTAINER ND_TOR_VARIANT
   printf 'nameserver 127.0.0.1\n' >"$ND_RESOLV_CONF"
   # shellcheck source=lib/recovery.sh
+  # The controller's shell options (health/nice-dns-health:27).
+  set -uo pipefail
   . "$NICE_DNS_ROOT/lib/recovery.sh" || fail "cannot source lib/recovery.sh"
   assert_eq "$1" "$(nd_platform_name)" "the $1 adapter is loaded"
   nd_state_init || fail "state init"

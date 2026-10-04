@@ -49,6 +49,8 @@
 . "$NICE_DNS_ROOT/tests/fixtures/pihole-image.sh"
 # shellcheck source=tests/fixtures/fixture.sh
 . "$NICE_DNS_ROOT/tests/fixtures/fixture.sh"
+# The controller's shell options (health/nice-dns-health:27).
+set -uo pipefail
 # shellcheck source=lib/recovery.sh
 ND_PLATFORM=linux . "$NICE_DNS_ROOT/lib/recovery.sh"
 

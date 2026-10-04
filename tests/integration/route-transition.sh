@@ -26,6 +26,8 @@
 . "$NICE_DNS_ROOT/tests/fixtures/fixture.sh"
 # shellcheck source=tests/fixtures/unbound-image.sh
 . "$NICE_DNS_ROOT/tests/fixtures/unbound-image.sh"
+# The controller's shell options (health/nice-dns-health:27).
+set -uo pipefail
 # shellcheck source=lib/recovery.sh
 ND_PLATFORM=linux . "$NICE_DNS_ROOT/lib/recovery.sh"
 

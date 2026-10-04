@@ -137,6 +137,8 @@ ra_fake() {
     fail "ra_fake $1: this shell already loaded the $(nd_platform_name) adapter; run each platform in its own subshell"
   fi
   # shellcheck source=lib/recovery.sh
+  # The controller's shell options (health/nice-dns-health:27).
+  set -uo pipefail
   . "$NICE_DNS_ROOT/lib/recovery.sh" || fail "cannot source lib/recovery.sh"
   assert_eq "$1" "$(nd_platform_name)" "the $1 adapter is the one loaded"
   nd_state_init || fail "state init"
@@ -172,7 +174,7 @@ t_image_restart_request_is_acknowledged_with_new_generation() {
     tp_setup "tor-$p"
     tp_supervised
     out="$(ND_PLATFORM=linux ND_PROXY_CONTAINER="$TP_CTR" ND_STATE_DIR="$CASE_DIR/state-$p" ND_BOOT_ID=boot-a TMPDIR="$CASE_DIR" \
-      bash -c '. "$1/lib/recovery.sh" && nd_state_init && request_recovery tor "ra-img-1"' _ "$NICE_DNS_ROOT" 2>&1)"
+      bash -c 'set -uo pipefail; . "$1/lib/recovery.sh" && nd_state_init && request_recovery tor "ra-img-1"' _ "$NICE_DNS_ROOT" 2>&1)"
     assert_rc 0 $? "$p: the image acknowledges the controller's request: $out"
     assert_eq acknowledged "$(ra_field result "$out")" "$p: result"
     assert_eq 1 "$(ra_field generation_before "$out")" "$p: generation before"
@@ -190,10 +192,14 @@ t_image_silence_is_not_acknowledged() {
     tp_setup "tor-$p"
     tp_supervised
     # Freeze the container right after the request is written: the image
-    # cannot answer, so no acknowledgement may be reported.
+    # cannot answer, so no acknowledgement may be reported. The checkpoint is
+    # called with its step name only (lib/recovery.sh:646), so the container
+    # comes from the script's $2; "$2" inside the function was empty, nothing
+    # was paused, and the case passed only when the image was slow (flaky
+    # until 2026-10-04).
     out="$(ND_PLATFORM=linux ND_PROXY_CONTAINER="$TP_CTR" ND_STATE_DIR="$CASE_DIR/state-$p" ND_BOOT_ID=boot-a TMPDIR="$CASE_DIR" \
-      ND_RECOVERY_ACK_S=4 ND_RECOVERY_CMD_DEADLINE=5 bash -c '. "$1/lib/recovery.sh" && nd_state_init \
-        && nd_recovery_checkpoint() { podman pause "$2" >/dev/null 2>&1; } && request_recovery tor "ra-img-2"' _ "$NICE_DNS_ROOT" "$TP_CTR" 2>&1)"
+      ND_RECOVERY_ACK_S=4 ND_RECOVERY_CMD_DEADLINE=5 bash -c 'set -uo pipefail; . "$1/lib/recovery.sh" && nd_state_init \
+        && ctr="$2" && nd_recovery_checkpoint() { podman pause "$ctr" >/dev/null; } && request_recovery tor "ra-img-2"' _ "$NICE_DNS_ROOT" "$TP_CTR" 2>&1)"
     assert_rc 1 $? "$p: a frozen image is not acknowledged: $out"
     assert_eq not-acknowledged "$(ra_field result "$out")" "$p: result"
     assert_not_match 'acknowledged$' "$(ND_STATE_DIR="$CASE_DIR/state-$p" ra_journal | grep -v not-acknowledged)" "$p: nothing in the journal claims an acknowledgement"
@@ -587,7 +593,7 @@ t_two_processes_racing_one_tick_wins() {
   ra_obs "$CASE_DIR/o" unhealthy
   echo new >"$FAKE/ack"; echo 2 >"$FAKE/slow"
   for a in 1 2; do
-    bash -c '. "$1/lib/recovery.sh" && nd_recovery_tick active "$2"' _ "$NICE_DNS_ROOT" "$CASE_DIR/o" >"$CASE_DIR/tick.$a" 2>&1 &
+    bash -c 'set -uo pipefail; . "$1/lib/recovery.sh" && nd_recovery_tick active "$2"' _ "$NICE_DNS_ROOT" "$CASE_DIR/o" >"$CASE_DIR/tick.$a" 2>&1 &
     sleep 1
   done
   wait

@@ -23,6 +23,8 @@ sp_env() {
 
 sp_libs() {
   sp_env
+  # The controller's shell options (health/nice-dns-health:27).
+  set -uo pipefail
   # shellcheck source=lib/state.sh
   . "$SP_STATE" || fail "cannot source lib/state.sh"
   # shellcheck source=lib/policy.sh
@@ -568,7 +570,7 @@ t_bash32_runs_state_and_policy() {
   mkdir -p "$w"
   sp_obs "$w/o" healthy unhealthy unhealthy unhealthy unhealthy
   cat >"$w/inner.sh" <<'INNER'
-set -u
+set -uo pipefail
 case "$BASH_VERSION" in 3.2.*) ;; *) echo "not bash 3.2: $BASH_VERSION"; exit 90 ;; esac
 ND_STATE_DIR=/tmp/st ND_BOOT_ID=b32 ND_PLATFORM=linux ND_ROUTES_FILE=/src/routes/providers.tsv
 export ND_STATE_DIR ND_BOOT_ID ND_PLATFORM ND_ROUTES_FILE

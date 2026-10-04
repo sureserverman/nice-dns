@@ -1073,16 +1073,23 @@ _nd_br_remember() {
   f="$(nd_platform_state_dir)/bridges.weak"; now="$(date +%s)"
   days="${ND_BRIDGE_WEAK_DAYS:-30}"; case "$days" in ''|*[!0-9]*) days=30 ;; esac
   live="$(printf '%s\n' "$1" | cut -f1 | tr '\n' ' ')"
-  {
+  # The controller runs under pipefail (health/nice-dns-health:27): reading a
+  # missing file would fail the whole write, so the first one never landed.
+  if ! {
     printf '%s\n' "$1" | awk -F '\t' -v n="$now" 'NF >= 3 { printf "%s\t%s\t%s\n", $1, n, $3 }'
-    awk -F '\t' -v n="$now" -v keep=$((days * 86400)) -v live="$live" '
-      BEGIN { k = split(live, x, " "); for (i = 1; i <= k; i++) l[x[i]] = 1 }
-      NF >= 3 && length($1) == 40 && $1 !~ /[^0-9A-F]/ && $2 !~ /[^0-9]/ && n - $2 < keep && !($1 in l)' "$f" 2>/dev/null
-  } | (umask 077 && cat >"$f.new.$$") && mv -f "$f.new.$$" "$f"
+    if [ -f "$f" ]; then
+      awk -F '\t' -v n="$now" -v keep=$((days * 86400)) -v live="$live" '
+        BEGIN { k = split(live, x, " "); for (i = 1; i <= k; i++) l[x[i]] = 1 }
+        NF >= 3 && length($1) == 40 && $1 !~ /[^0-9A-F]/ && $2 !~ /[^0-9]/ && n - $2 < keep && !($1 in l)' "$f"
+    fi
+  } | (umask 077 && cat >"$f.new.$$") || ! mv -f "$f.new.$$" "$f"; then
+    rm -f "${f:?}.new.$$"
+  fi
   printf '%s\n' "$1" | awk 'NF >= 3'
+  [ -f "$f" ] || return 0
   awk -F '\t' -v live="$live" '
     BEGIN { k = split(live, x, " "); for (i = 1; i <= k; i++) l[x[i]] = 1 }
-    !($1 in l) { printf "%s\t0\tremembered\n", $1 }' "$f" 2>/dev/null
+    !($1 in l) { printf "%s\t0\tremembered\n", $1 }' "$f"
 }
 
 # _nd_br_running_weak <weak list> <listed fingerprints> <bridges file>: 0

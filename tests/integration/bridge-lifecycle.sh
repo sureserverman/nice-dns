@@ -51,6 +51,10 @@ bl_env() {
   if [ "$1" = macos ]; then export FAKE_UNAME=Darwin; else export FAKE_UNAME=Linux; fi
   unset CONTAINER_BIN ND_PROXY_CONTAINER
   mkdir -p "$ND_BRIDGE_CONFIG_DIR"
+  # The controller's own shell options (health/nice-dns-health:27): without
+  # them a pipeline that fails only under pipefail passed here and failed on
+  # mint (bridges.weak never written, 2026-10-04).
+  set -uo pipefail
   # shellcheck source=lib/recovery.sh
   . "$NICE_DNS_ROOT/lib/recovery.sh" || fail "cannot source lib/recovery.sh"
   assert_eq "$1" "$(nd_platform_name)" "the $1 adapter is loaded"
