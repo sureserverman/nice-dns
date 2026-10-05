@@ -54,6 +54,7 @@ SK_TICK="${NICE_DNS_SOAK_TICK:-300}"
 SK_WAKE_S=300
 SK_GAP_S=180
 SK_PA="$NICE_DNS_ROOT/tests/reports/perf-acceptance.py"
+SK_SV="$NICE_DNS_ROOT/tests/reports/soak-verdict.py"
 
 sk_proxy() { if [ "$1" = linux ]; then echo haproxy; else echo socat; fi; }
 
@@ -216,11 +217,18 @@ with open(src) as f, open(out, "w") as o:
             o.write(l)
 PY
   python3 "$SK_PA" check --cell "$plat/$proxy/standard" --candidate "$steady" >"$d/check.tsv" 2>"$d/check.err"
+  # The soak's own stability rule (tests/reports/soak-verdict.py; user
+  # decisions 2026-10-04): timeouts and failures each at most 1 in 100, p95
+  # recorded, never gated. It gates every window with enough steady samples,
+  # short ones included (until 2026-10-04 a NICE_DNS_SOAK_SECS window never
+  # gated); a full-length soak must also have enough.
+  python3 "$SK_SV" "$d/check.tsv" >"$d/verdict.tsv" 2>"$d/verdict.err" || fail "$a: soak verdict refused: $(cat "$d/verdict.err")"
   for c in cold warm; do
-    r="$(awk -F '\t' -v w="$c" '$1 == "workload" && $3 == w { print $4; exit }' "$d/check.tsv")"
-    printf 'steady_%s\t%s\n' "$c" "$r" >>"$d/cell.tsv"
-    if [ -z "${NICE_DNS_SOAK_SECS:-}" ]; then
-      assert_eq pass "$r" "$a: steady $c meets the frozen limits ($(awk -F '\t' -v w="$c" '$1 == "workload" && $3 == w' "$d/check.tsv" | grep -oE 'timeouts_cand=[^	]*|reason=[^	]*' | tr '\n' ' '))"
+    r="$(awk -F '\t' -v w="$c" '$1 == "workload" && $2 == w { print $3; exit }' "$d/verdict.tsv")"
+    v="$(awk -F '\t' -v w="$c" '$1 == "workload" && $2 == w { print $4 "\t" $5 "\t" $6; exit }' "$d/verdict.tsv")"
+    printf 'steady_%s\t%s\t%s\n' "$c" "${r:-missing}" "$v" >>"$d/cell.tsv"
+    if [ "$r" != insufficient ] || [ -z "${NICE_DNS_SOAK_SECS:-}" ]; then
+      assert_eq pass "$r" "$a: steady $c meets the soak rule ($(awk -F '\t' -v w="$c" '$1 == "workload" && $2 == w { print $4, $5, $7 }' "$d/verdict.tsv"))"
     fi
   done
 
