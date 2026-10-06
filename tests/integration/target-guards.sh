@@ -1072,3 +1072,29 @@ exit 0" "$ops" "two refused sleeps, then the sample: $(cat "$CASE_DIR/iw.log")"
   assert_match '^exit 1$' "$ops" "three refused sleeps fail the cell"
   assert_eq 3 "$(printf '%s\n' "$ops" | grep -c 'workload wake')" "after exactly three tries"
 }
+
+# An operation is named in three places: OPS (the accepted names), the
+# local dispatch that forwards it to the target, and the remote script's
+# handler. prune-generations was once added to the last two only and every
+# call died "unknown operation" (live dry run 2026-10-06): every forwarded
+# or handled name must be accepted, and every accepted one handled.
+t_every_operation_is_named_in_all_three_places() {
+  local f="$NICE_DNS_ROOT/tests/live/target.sh" ops fwd remote o
+  ops=" $(sed -n "s/^OPS='\\(.*\\)'\$/\\1/p" "$f") "
+  assert_ne "  " "$ops" "OPS is found"
+  fwd="$(grep -E '^  sever-upstream\|' "$f" | sed 's/)$//' | tr '|' ' ' | sed 's/^ *//')"
+  assert_ne "" "$fwd" "the forwarding dispatch is found"
+  for o in $fwd; do
+    case "$ops" in *" $o "*) ;; *) _nd_afail "$o is forwarded to the target but not in OPS" ;; esac
+    _nd_tick
+  done
+  # The handlers: case labels inside remote_script's here-document only
+  # (cat <<'SH' ... SH), not the local dispatch, which lists every name.
+  remote="$(awk '/^remote_script\(\)/ { fn = 1 } fn && /<<.SH.$/ { on = 1; next } on && /^SH$/ { exit }
+    on && /^  [a-z][a-z-]*(\|[a-z-]+)*\)/ { sub(/\).*/, ""); gsub(/\|/, " "); print }' "$f" | tr ' ' '\n' | LC_ALL=C sort -u)"
+  assert_ne "" "$remote" "the remote handlers are found"
+  for o in $fwd; do
+    printf '%s\n' "$remote" | grep -qxF "$o" || _nd_afail "$o is forwarded but no handler names it"
+    _nd_tick
+  done
+}

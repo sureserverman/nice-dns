@@ -174,6 +174,11 @@
 #                    (bridges.last = now), so an outage in the next hour does
 #                    not re-evaluate bridges (test-only: keeps the in-image
 #                    restart path deterministic)
+#   prune-generations
+#                    macOS: delete the images of generations older than the
+#                    newest two, dangling images and the builder cache, so
+#                    an install and a proxy build have room (BL-024); keeps
+#                    vminit and everything a container uses. Linux: no-op
 #   controller-report
 #                    read-only: the controller's install receipt, tick lines,
 #                    state and journals (active and shadow), the bridge set's
@@ -212,7 +217,7 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network'
 FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
