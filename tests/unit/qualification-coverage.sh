@@ -141,5 +141,5 @@ t_a_qualification_receipt_missing_a_scenario_fails() {
     assert_nonzero $? "a qualification receipt without one $sc row"
     assert_match "$sc" "$QC_RV_OUT" "the failure names $sc"
   done
-  assert_eq 4 "$n" "every qualification scenario exercised"
+  assert_eq 3 "$n" "every qualification scenario exercised"
 }

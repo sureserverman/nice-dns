@@ -297,12 +297,42 @@ t_entrypoints_requirement() {
 
 t_receipt_manifests_are_consistent() {
   local m out
-  for m in baseline transport controller installers qualification; do
+  for m in baseline transport controller installers soak qualification; do
     assert_file "$RV_MAN/$m.tsv" "receipt manifest $m"
   done
   out="$(bash "$RV" manifests 2>&1)"
   assert_rc 0 $? "manifest check: $out"
-  assert_match 'qualification requires baseline,transport,controller,installers' "$out" "dependency chain reported"
+  assert_match 'qualification requires baseline,transport,controller,installers,soak' "$out" "dependency chain reported"
+}
+
+# A manifest's `platforms all` row: the receipt itself must hold an observed
+# cell on every platform, also when it is only verified as a link (no
+# --require-* options reach a linked receipt). The soak receipt carries one
+# representative cell per platform (user decision 2026-10-06).
+t_platform_rule_holds_without_options() {
+  rv_build soak "$CASE_DIR/s" rep
+  rv "$CASE_DIR/s/receipt.tsv"
+  assert_rc 0 "$RV_RC" "one representative cell per platform: $RV_OUT"
+  rv_edit "$CASE_DIR/s/receipt.tsv" '$1 == "cell" && $2 == "macos" { next } $1 == "scenario" && $3 ~ /^macos\// { next } { print }'
+  rv "$CASE_DIR/s/receipt.tsv"
+  assert_nonzero "$RV_RC" "a soak receipt without a macOS cell"
+  assert_match 'no observed macos cell' "$RV_OUT" "names the missing platform"
+  rv_build qualification "$CASE_DIR/q"
+  rv_edit "$CASE_DIR/q/dep-soak/receipt.tsv" '$1 == "cell" && $2 == "linux" { next } $1 == "scenario" && $3 ~ /^linux\// { next } { print }'
+  awk -F '\t' -v OFS='\t' -v h="$(rv_sha "$CASE_DIR/q/dep-soak/receipt.tsv")" '$1 == "requires" && $2 == "soak" { $4 = h } { print }' \
+    "$CASE_DIR/q/receipt.tsv" >"$CASE_DIR/q/r.new" && mv "$CASE_DIR/q/r.new" "$CASE_DIR/q/receipt.tsv"
+  rv "$CASE_DIR/q/receipt.tsv" --require-matrix all
+  assert_nonzero "$RV_RC" "a qualification receipt linking a soak receipt without Linux"
+  assert_match 'no observed linux cell' "$RV_OUT" "the link names the missing platform"
+}
+
+t_platform_rule_is_a_known_manifest_row() {
+  local m="$CASE_DIR/man" out
+  cp -R "$RV_MAN" "$m"
+  printf 'platforms\tsome\n' >>"$m/soak.tsv"
+  out="$(NICE_DNS_TEST_MANIFESTS="$m" bash "$RV" manifests 2>&1)"
+  assert_nonzero $? "a platforms row other than all"
+  assert_match "soak.tsv: platforms row" "$out" "names it"
 }
 
 t_runner_receipt_command_verifies_latest_receipt() {

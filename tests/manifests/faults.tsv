@@ -9,9 +9,9 @@
 #            tests/manifests/<receipt>.tsv, reachable from the qualification
 #            receipt through its requires rows), or "-" when needs has no live.
 # Referenced in scenarios.tsv as fault:<id>. Never drop one silently.
-FQ-COLD-START	fixture+live	qualification:QU-LATENCY	the stack started from stopped answers its first query within the measured bound (live: a stack restart, not a host reboot)
-FQ-IDLE-RECONNECT	fixture+live	qualification:QU-LATENCY	a query after an idle period is answered over re-established connections
-FQ-WAKE	fixture+live	qualification:QU-LATENCY	after a host sleep the stack answers again without manual repair
+FQ-COLD-START	fixture+live	qualification:QU-COLD-START	the stack started from stopped answers its first query within the measured bound (live: a stack restart, not a host reboot)
+FQ-IDLE-RECONNECT	fixture+live	soak:QU-LATENCY	a query after an idle period is answered over re-established connections
+FQ-WAKE	fixture+live	soak:QU-SOAK	after a host sleep the stack answers again without manual repair
 FQ-NETWORK-LOSS	live	qualification:QU-NETWORK-LOSS	while the upstream network is gone the stack fails closed (no direct query), and answers again once it returns, without manual repair
 FQ-BRIDGE-DISTRIBUTOR-DOWN	fixture	-	a bridge fetch that cannot reach the distributor keeps the working bridge set
 FQ-BRIDGE-WEAK	fixture	-	a bridge that bootstraps but carries streams badly (below 90% after 20 uses) is left out of the refreshed set and, when the running proxy uses it, adopted through the service restart

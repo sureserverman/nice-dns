@@ -39,6 +39,8 @@
 #            DEC-009. At most once per cell, never this receipt's own run)
 # Scenario ids, scopes and required links come from tests/manifests/NAME.tsv;
 # anything undeclared fails. Content, not only structure, is checked:
+#   - manifest `platforms all`: the receipt has an observed cell on every
+#     platform, whatever options it is checked with;
 #   - manifest `minimum SCENARIO N`: its artifact is a nice-dns-sample/1 file
 #     with at least N sample rows;
 #   - manifest `content SCENARIO ERE`: its artifact has a line matching ERE;
@@ -61,7 +63,7 @@ SIB="${NICE_DNS_SIBLINGS_DIR:-$(cd "$V_ROOT/.." && pwd -P)}"
 SCHEMA='nice-dns-receipt/1'
 REPOS='nice-dns tor-haproxy tor-socat hardened-unbound pi-hole-hardened'
 ARCH_REPOS='tor-haproxy tor-socat hardened-unbound pi-hole-hardened'
-RECEIPTS='baseline transport controller installers qualification'
+RECEIPTS='baseline transport controller installers soak qualification'
 ENTRYPOINTS='install-deb.sh install-deb-hardened.sh install-mac.sh install-mac-hardened.sh'
 TAB="$(printf '\t')"
 
@@ -121,6 +123,8 @@ cmd_manifests() {
           [ -n "${b:-}" ] && [ -z "${c:-}" ] || err "$m.tsv: minimum row needs scenario, count"
           case "$b" in ''|*[!0-9]*) err "$m.tsv: minimum for $a is not a count" ;; esac ;;
         content) ;;   # checked below from the raw row: its pattern may hold tabs
+        platforms)
+          [ "$a" = all ] && [ -z "${b:-}" ] || err "$m.tsv: platforms row must be 'platforms<TAB>all'" ;;
         *) err "$m.tsv: unknown row type '$kind'" ;;
       esac
     done <"$MAN/$m.tsv"
@@ -206,6 +210,10 @@ cmd_check() {
   check_contents "$f" "$d" "$name"
   check_entrypoints "$f" "$req_entry"
   check_requirements "$f" "$req_matrix" "$req_platforms" "$req_proxies" "$req_pp"
+  # A manifest `platforms all` holds also when this receipt is only verified
+  # as a link, which passes no --require-* options (the soak receipt: one
+  # representative cell per platform, sub-plan 05).
+  if [ -n "$(manifest_rows "$name" platforms)" ]; then check_requirements "$f" none all '' ''; fi
   check_limits "$f"
   check_reuse "$f"
   finish "$f" "$cells" "$scen" "$name"

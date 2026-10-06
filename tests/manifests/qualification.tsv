@@ -9,7 +9,11 @@ requires	baseline
 requires	transport
 requires	controller
 requires	installers
-scenario	QU-LATENCY	per-cell	interleaved baseline-vs-candidate latency with frozen targets
+requires	soak
+# Amended 2026-10-06 (user decisions "Representative soak", "Per platform"):
+# the soak and its latency moved to the linked soak receipt, one
+# representative cell per platform. Was: QU-LATENCY and QU-SOAK per-cell here
+# (an interleaved latency comparison and a 24 h soak on each of eight cells).
+scenario	QU-COLD-START	per-cell	the cell installed and started from stopped answers its first query within the bound, without manual repair
 scenario	QU-NO-DIRECT	per-cell	no ordinary query reaches a direct public resolver in any supported case
-scenario	QU-SOAK	per-cell	24 h soak with bridge refresh and sleep/network events
 scenario	QU-NETWORK-LOSS	per-cell	the upstream network removed and restored: no direct query during the loss, answers again after it without manual repair

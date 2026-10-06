@@ -1,0 +1,21 @@
+# Receipt manifest: soak. Parsed as data by tests/reports/verify.sh (never sourced).
+# Rows (tab-separated):
+#   platforms  all                         every platform has an observed cell
+#   scenario  <id>  per-cell|global  <meaning>
+#   minimum   <id>  <n>                    its artifact holds at least n samples
+#   content   <id>  <ERE>                  its artifact has a matching line
+# The representative 24 h soak, one cell per platform (sub-plan 05 Task 2.2;
+# user decisions 2026-10-06 "Representative soak" and "Per platform": the
+# soak and its latency stand for their platform; the other cells are covered
+# by the qualification receipt's per-cell checks). Written from a verified
+# soak run by live/soak-receipt (--reuse-verified-soak), at that run's own
+# identity.
+platforms	all
+scenario	QU-SOAK	per-cell	24 h on the frozen candidate with daily bridge refresh and sleep/network events: steady timeouts and failures at most 1 in 100, every event recovered, no manual repair
+scenario	QU-LATENCY	per-cell	the soak's steady cold and warm samples, latency recorded (p95 never gated), idle reconnect every 5 min
+minimum	QU-LATENCY	2000
+content	QU-SOAK	^result=pass$
+content	QU-SOAK	^steady_cold=pass$
+content	QU-SOAK	^steady_warm=pass$
+content	QU-SOAK	^manual_repair=none$
+content	QU-SOAK	^hours=24$
