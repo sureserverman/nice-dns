@@ -176,7 +176,8 @@
 #                    restart path deterministic)
 #   prune-generations
 #                    macOS: delete the images of generations older than the
-#                    newest two, dangling images and the builder cache, so
+#                    newest one (whose pre- tags are its rollback), dangling
+#                    images and the builder cache, so
 #                    an install and a proxy build have room (BL-024); keeps
 #                    vminit and everything a container uses. Linux: no-op
 #   controller-report
@@ -1610,9 +1611,11 @@ case "$NICE_DNS_OP" in
     # A macOS install keeps every generation's images (and a pre-<gen>
     # rollback tag), and builds leave the builder's cache: the eight-cell
     # dry run of 2026-10-06 stopped at 17 GiB free after one hardened
-    # install (BL-024). Keeps the newest two generations (the running one
-    # and its rollback), every image a container uses, vminit and the
-    # candidate proxies; deletes the older generations' tags by name, then
+    # install (BL-024). Keeps the newest generation and its pre-<gen> tags
+    # (lib/install.sh:647: the images it replaced, its rollback), every image
+    # a container uses, vminit and the candidate proxies; deletes every older
+    # generation's tags by name (keeping two still left 18 GiB, live dry run
+    # 20261006T074514Z-6a0e481e: each generation carries a pre- copy), then
     # dangling images only (never prune --all: it takes vminit), then the
     # builder and its cache. Linux has room: nothing to do.
     if [ "$plat" != macos ]; then printf 'pruned\t0\nreason\tnot-needed\n'; exit 0; fi
@@ -1620,7 +1623,7 @@ case "$NICE_DNS_OP" in
     k0=$(df -k "$HOME" | awk 'NR == 2 { print $4 }')
     used=$(ctl list --all 2>/dev/null | awk 'NR > 1 { print $2 }' | LC_ALL=C sort -u)
     gens=$(ctl image ls | awk 'NR > 1 { t = $2; sub(/^pre-/, "", t); if (t ~ /^[0-9]+T[0-9]+Z-[a-z0-9]+$/) print t }' | LC_ALL=C sort -u)
-    keep=$(printf '%s\n' "$gens" | tail -n 2)
+    keep=$(printf '%s\n' "$gens" | tail -n 1)
     n=0
     for ref in $(ctl image ls | awk 'NR > 1 { print $1 ":" $2 }'); do
       t=${ref##*:}; t=${t#pre-}
