@@ -1,8 +1,9 @@
 # `nice-dns-health`
 
-Periodic health-check for the nice-dns DNS chain. Runs every 30 minutes
-via systemd-user timer (Linux) or LaunchAgent (macOS); on failure, dumps
-all the diagnostic info needed to pinpoint the culprit.
+Health controller for the nice-dns DNS chain. Runs every minute via a
+systemd-user timer (Linux) or a LaunchAgent (macOS), refreshes the Tor
+bridges once a day, and on failure dumps the diagnostic info needed to
+pinpoint the culprit.
 
 ## Install / uninstall
 
@@ -40,6 +41,7 @@ nice-dns-health observe    # print the observations as TSV (read-only)
 nice-dns-health logs       # cat the rolling log
 nice-dns-health failures              # list recent failure dumps
 nice-dns-health failures --last       # print the most recent dump
+nice-dns-health bridges-refresh       # the daily bridge refresh, now
 ```
 
 ## Logs
@@ -77,6 +79,32 @@ when no route answered and at least one failed. When a later run still sees
 it after the 300 s grace (`NICE_DNS_RESTART_GRACE_SECS`), that run triggers
 the Tor restart described in the script.
 
+## Bridge refresh
+
+Once a day (Linux `OnCalendar=daily`; macOS at 04:17), and at most once an
+hour during an outage, the controller re-evaluates the Tor bridge pool with
+the proxy image's `bridge-eval` and writes the result to
+`~/.config/nice-dns/bridges.env`:
+
+- A bridge can pass `bridge-eval` (its obfs4 handshake works) and still
+  carry streams badly. The controller reads the running Tor's own per-bridge
+  counters and leaves out every bridge with at least 20 stream uses and
+  under 90% success. It remembers such a bridge for 30 days
+  (`bridges.weak` in its state directory, fingerprints only), because Tor's
+  counters do not survive every restart (macOS drops Tor's state when the
+  bridge set changes).
+- Fewer than 3 bridges left after that: nothing changes, the last good set
+  stays.
+- A changed set is normally used at the proxy's next start. When the running
+  proxy still uses a bridge the new set leaves out, the refresh restarts
+  the proxy at once (macOS: the stack) so the bad bridge stops carrying
+  queries. DNS fails closed for that gap: 14 to 17 s in the live tests on
+  Linux, no query leaves the machine meanwhile. At most one such restart per
+  refresh.
+
+The journal (`recovery.tsv` in the state directory) records each refresh,
+the bridges left out (by a 12-character fingerprint prefix) and any restart.
+
 ## What a failure dump contains
 
 - Per-check verdict (`OK` / `FAIL` / `???` for indeterminate, with reason)
@@ -98,8 +126,10 @@ log records the path so you can find it weeks later.
 
 ## Schedule semantics
 
-- **Linux**: `OnBootSec=2min` for first fire after boot, then
-  `OnUnitActiveSec=30min`. `Persistent=true` makes systemd run a missed
-  check at most once after a long downtime (avoiding a stampede).
-- **macOS**: `StartInterval=1800` plus `RunAtLoad=true` for an immediate
-  first check on install/login.
+- **Linux**: `OnCalendar=minutely` (`AccuracySec=5s`, `Persistent=true`) for
+  the checks, `OnCalendar=daily` (`Persistent=true`) for the bridge refresh.
+  Calendar timers fire after a suspend, where `OnUnitActiveSec` would pause.
+- **macOS**: an empty `StartCalendarInterval` (every minute) plus
+  `RunAtLoad=true` for the checks, `StartCalendarInterval` at 04:17 for the
+  bridge refresh. launchd starts a calendar job on wake; `StartInterval`
+  would miss the intervals spent asleep.

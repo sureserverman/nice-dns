@@ -102,6 +102,21 @@ over localhost:
 macOS drives Apple's `container` runtime from a login-triggered LaunchAgent and
 keeps Pi-hole reachable at `172.31.240.250`.
 
+## Updates and rollback
+
+Re-running the installer builds a new generation of the stack next to the
+running one and switches over only when it answers. If the install fails,
+the previous generation comes back on its own. Its images stay on the
+machine for that until the install after next.
+
+To go back to an earlier version on purpose, run that version's installer:
+the second argument is the git branch to install from
+(`... install-deb.sh haproxy <branch>`).
+
+A small controller (`nice-dns-health`) checks the chain every minute and
+refreshes the Tor bridges once a day, leaving out bridges that carry
+queries badly. See [health/README.md](health/README.md).
+
 ## Uninstall
 
 ```bash
