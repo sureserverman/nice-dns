@@ -185,8 +185,10 @@ def main(argv):
       "(636 ms) was measured on the exit route; the onion route runs 1.5-2.4 s.")
     w("- QU-LATENCY means the latency was recorded on the soak's samples; it is not a latency pass.")
     w("- A timeout count is judged on the point estimate; the interval shows where its upper bound lies.")
-    w("- Linux showed no latency class improved beyond measured variability (DEC-016); the improvement "
-      "claim rests on macOS (Stage 1 comparisons).")
+    w("- Two different comparisons, not to be merged: Stage 1's interleaved, same-session runs found no "
+      "Linux class improved beyond measured variability (DEC-016) and a macOS cold gain measured after a "
+      "restart, on the exit route. This table compares a soak with the frozen baseline, different days "
+      "and route mixes: read each row for what it shows, including a slower macOS steady-state cold.")
     w("")
     w("| Cell | Workload | Before n | Before p50 | Before p95 | Before timeouts (95% CI) | After n | After p50 | After p95 | After timeouts (95% CI) |")
     w("|---|---|---|---|---|---|---|---|---|---|")

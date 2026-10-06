@@ -46,7 +46,7 @@ t_report_covers_every_cell_and_fault() {
     "fixture and actual host side by side, the soak receipt named"
   assert_match 'adopted on 2026-10-04, after the first 24 h soak failed the frozen limits' "$RI_OUT" "the soak rule's history is stated"
   assert_match 'QU-LATENCY means the latency was recorded .* it is not a latency pass' "$RI_OUT" "QU-LATENCY is not read as a latency pass"
-  assert_match 'Linux showed no latency class improved' "$RI_OUT" "the missing Linux improvement is stated (DEC-016)"
+  assert_match "Two different comparisons, not to be merged: Stage 1's interleaved" "$RI_OUT" "the two latency comparisons are told apart (DEC-016)"
 }
 
 t_unverified_chain_is_never_reported() {

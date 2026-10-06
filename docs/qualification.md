@@ -123,8 +123,14 @@ qualify what was soaked; any product fix would need a new 24 h soak):
 
 Also:
 
-- Linux showed no latency class improved beyond measured variability
-  (DEC-016); the latency gain rests on macOS.
+- Latency, two comparisons that disagree and are both stated:
+  - Stage 1's interleaved, same-session runs: Linux showed no class
+    improved beyond measured variability (DEC-016); macOS cold improved
+    after a restart, measured on the exit route.
+  - The 24 h soak against the frozen baseline (different days, the onion
+    route about 93% of the time): Linux cold p50 2934 -> 492 ms and
+    timeouts 7/30 -> 4/864; macOS steady-state cold p50 297 -> 406 ms and
+    p95 636 ms -> 1.8 s, slower (BL-035). Warm is unchanged on both.
 - Onion stalls of about a minute are not failed over: the controller probes
   once a minute (backlog BL-027). They are the soak's remaining timeouts.
 - The restart that adopts a filtered bridge set was proven live on Linux
