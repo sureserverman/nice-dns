@@ -47,6 +47,7 @@ t_report_covers_every_cell_and_fault() {
   assert_match 'adopted on 2026-10-04, after the first 24 h soak failed the frozen limits' "$RI_OUT" "the soak rule's history is stated"
   assert_match 'QU-LATENCY means the latency was recorded .* it is not a latency pass' "$RI_OUT" "QU-LATENCY is not read as a latency pass"
   assert_match "Two different comparisons, not to be merged: Stage 1's interleaved" "$RI_OUT" "the two latency comparisons are told apart (DEC-016)"
+  assert_match "Each receipt's limits are as recorded at its own commit" "$RI_OUT" "linked limits are dated, not presented as current"
 }
 
 t_unverified_chain_is_never_reported() {

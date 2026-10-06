@@ -233,11 +233,16 @@ def main(argv):
 
     w("## Limits and reuse")
     w("")
+    w("Each receipt's limits are as recorded at its own commit; a later sub-plan may have lifted them "
+      "(docs/qualification.md, \"Limits lifted by this sub-plan\").")
+    w("")
     any_row = False
     for name, r in rs.items():
+        at = next((x[2] for x in r["rows"] if x[0] == "product" and x[1] == "nice-dns"),
+                  next((x[2] for x in r["rows"] if x[0] == "source" and x[1] == "nice-dns"), "?"))
         for x in r["rows"]:
             if x[0] == "limit":
-                w("- **%s** limit `%s` (%s, %s): %s" % (name, x[1], x[2], x[3], x[4]))
+                w("- **%s** (run `%s`, nice-dns `%s`) limit `%s` (%s, %s): %s" % (name, r["run_id"], at[:7], x[1], x[2], x[3], x[4]))
                 any_row = True
             elif x[0] == "reuse":
                 w("- **%s** reuses cell %s from run `%s` at nice-dns `%s` (DEC-009)" % (name, x[1], x[2], x[3]))

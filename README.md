@@ -20,6 +20,8 @@ Your ISP sees encrypted Tor traffic — nothing else.
 ## Install
 
 Run as a **regular user** (no `sudo`). macOS needs macOS 26+ on Apple silicon and [Homebrew](https://brew.sh/).
+Debian 12 and Whonix 17 are not supported: their `mawk` is too old for the
+patterns the controller and installer use.
 
 ```bash
 # Debian / Ubuntu

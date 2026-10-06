@@ -97,10 +97,11 @@ the proxy image's `bridge-eval` and writes the result to
   stays.
 - A changed set is normally used at the proxy's next start. When the running
   proxy still uses a bridge the new set leaves out, the refresh restarts
-  the proxy at once (macOS: the stack) so the bad bridge stops carrying
-  queries. DNS fails closed for that gap: 14 to 17 s in the live tests on
-  Linux, no query leaves the machine meanwhile. At most one such restart per
-  refresh.
+  the proxy at once so the bad bridge stops carrying queries. On Linux that
+  is the proxy alone (Unbound only `Wants=` it, so it keeps running); on
+  macOS the whole stack is rebuilt. DNS fails closed for that gap: 14 to
+  17 s in the live tests on Linux, no query leaves the machine meanwhile.
+  At most one such restart per refresh.
 
 The journal (`recovery.tsv` in the state directory) records each refresh,
 the bridges left out (by a 12-character fingerprint prefix) and any restart.

@@ -67,7 +67,8 @@ Installs and the controller:
 - **Bridges are judged by stream success.** The daily refresh leaves out a
   bridge with at least 20 uses and under 90% success, remembers it for 30
   days, and restarts the proxy once when the running one still uses it (DNS
-  fails closed for about 15 s on Linux). See `health/README.md`.
+  fails closed for about 15 s on Linux). On macOS the restart rebuilds the
+  whole stack, not only the proxy. See `health/README.md`.
 - **Linux boot bridge selection really skips** when a usable set exists. Its
   skip status used to count as success, so every install and boot re-picked
   bridges over the controller's set.
@@ -107,13 +108,37 @@ Proxy images (the unreleased commits):
 - **The controller alone:** `health/nice-dns-health install` from the
   previous checkout installs that version's bundle in place.
 
+## Platforms
+
+Debian 12 and Whonix 17 are not supported (user decision 2026-10-06): their
+mawk (1.3.4 20200120) has no regex intervals, which the controller's state
+check, its observation check, the release-lock reader and the tunables
+reader use. Qualified: Linux Mint 22.3 (Ubuntu 24.04 base) and macOS 26.
+
+## Limits lifted by this sub-plan
+
+The receipt chain links receipts from earlier sub-plans, and their limit
+rows are what was true at their own commit. Three no longer hold:
+
+- `route-mount` (installers receipt) and `route-apply` (controller
+  receipt): every deployment now mounts and seeds `/etc/unbound/route`
+  (DEC-010, Task 1.2); live `route-apply` passed on both platforms (runs
+  `20260928T184518Z-477abaa6`, `20260928T185705Z-7040c4bf`).
+- `ready-corroboration` (controller receipt): the Unbound image has a
+  `probe-route`, used for restart readiness (DEC-006, Stage 1).
+
 ## Known limits
 
 Found by the Stage 2 gate reviews and deferred (user decision 2026-10-06:
 qualify what was soaked; any product fix would need a new 24 h soak):
 
 - The restart that adopts a filtered bridge set takes no state lock, so it
-  can overlap a restart the minutely tick decides (BL-030).
+  can overlap a restart the minutely tick decides (BL-030), and on macOS it
+  rebuilds the whole stack (BL-038).
+- Rolling the controller back to a bundle from before this sub-plan fails
+  on the new `proxy_gen` state key (BL-036).
+- macOS: a slow Tor at login can be read as a bad bridge set and trigger a
+  rebuild (BL-037).
 - An outage might make a healthy bridge look weak and keep it out for 30
   days; plausible, not observed (BL-031).
 - macOS: the root helper's `post` can stop early when the machine is
