@@ -442,6 +442,13 @@ require	plan:transport	QU-ROUTE-START-WARM	integration	route-transition	t_start_
 require	plan:transport	QU-READY-STREAM-SOCAT	integration	transport-socat	t_readiness_waits_for_a_working_stream	tests/integration/transport-socat.sh
 require	plan:transport	QU-READY-STREAM-HAPROXY	integration	transport-haproxy	t_readiness_waits_for_a_working_stream	tests/integration/transport-haproxy.sh
 require	plan:controller	QU-ROUTE-START-ACTIVE-ONLY	integration	scheduling	t_route_start_launcher_demotes_an_onion_only_when_active	tests/integration/scheduling.sh
+# plan:qualification (sub-plan 05 Stage 2 gate). No owner row: scenarios owned by
+# qualification that ran in Stage 1 and Task 2.1 live groups (tune-transport,
+# tune-idle-wake, controller-active, controller-wake, no-direct, fault-network)
+# are not re-run here. Their per-cell faults are re-proven by
+# live/qualification-cells and live/soak-receipt; the controller faults by the
+# linked controller receipt.
+count	plan:qualification	118
 require	plan:qualification	S1-OUT-OK	unit	measurement	t_collect_records_every_attempt_with_identity	tests/unit/measurement-tests.sh
 require	plan:qualification	S1-OUT-NXDOMAIN	unit	measurement	t_collect_servfail_is_failure_and_nxdomain_is_answer	tests/unit/measurement-tests.sh
 require	plan:qualification	S1-OUT-SERVFAIL	unit	measurement	t_collect_servfail_is_failure_and_nxdomain_is_answer	tests/unit/measurement-tests.sh
@@ -465,10 +472,13 @@ require	plan:qualification	OP-ROUTE-IDENTITY-HAPROXY-LEGACY	integration	transpor
 require	plan:qualification	OP-ROUTE-IDENTITY-SOCAT	integration	transport-socat	t_route_never_switches_provider_when_its_provider_fails	tests/integration/transport-socat.sh
 require	plan:qualification	OP-ROUTE-IDENTITY-SOCAT-MAP	integration	transport-socat	t_each_route_reaches_only_its_provider	tests/integration/transport-socat.sh
 require	plan:qualification	OP-ROUTE-IDENTITY-SOCAT-LEGACY	integration	transport-socat	t_legacy_853_fails_over_within_cloudflare_only	tests/integration/transport-socat.sh
+require	plan:qualification	OP-NO-HOST-PUBLIC	integration	installers-interaction	t_no_step_points_the_host_at_public_dns	tests/integration/installers-interaction.sh
+require	plan:qualification	OP-BOOTSTRAP	integration	installers-interaction	t_bootstrap_use_is_declared	tests/integration/installers-interaction.sh
 require	plan:qualification	OP-NO-HISTORY-NAMES	unit	measurement	t_collect_refuses_names_outside_workloads	tests/unit/measurement-tests.sh
 require	plan:qualification	OP-NO-HISTORY-WORKLOADS	unit	measurement	t_default_workloads_are_controlled_names	tests/unit/measurement-tests.sh
 require	plan:qualification	OP-ACK-HAPROXY-PRIVATE	integration	transport-haproxy	t_restart_control_is_private_to_the_image_user	tests/integration/transport-haproxy.sh
 require	plan:qualification	OP-ACK-SOCAT-PRIVATE	integration	transport-socat	t_restart_control_is_private_to_the_image_user	tests/integration/transport-socat.sh
+require	plan:qualification	OP-OWNED-RESTORE	integration	installers-interaction	t_lifecycle_restores_exactly_what_it_owns	tests/integration/installers-interaction.sh
 require	plan:qualification	OP-ACK-READINESS	integration	recovery-actions	t_tick_active_records_request_acknowledgement_then_readiness	tests/integration/recovery-actions.sh
 require	plan:qualification	OP-ACK-HAPROXY-IMAGE	integration	transport-haproxy	t_restart_request_acknowledged_with_new_generation	tests/integration/transport-haproxy.sh
 require	plan:qualification	OP-ACK-HAPROXY-REJECT	integration	transport-haproxy	t_invalid_restart_request_rejected	tests/integration/transport-haproxy.sh
@@ -546,6 +556,7 @@ require	plan:qualification	QF-STATE-CRASH	unit	state-policy	t_state_crash_mid_co
 require	plan:qualification	QF-STATE-DESIRED	integration	route-transition	t_start_refuses_a_malformed_desired	tests/integration/route-transition.sh
 require	plan:qualification	QF-ACK-WRITE	integration	recovery-actions	t_request_write_is_never_an_acknowledgement	tests/integration/recovery-actions.sh
 require	plan:qualification	QF-ACK-SILENCE	integration	recovery-actions	t_image_silence_is_not_acknowledged	tests/integration/recovery-actions.sh
+require	plan:qualification	QF-BOOTSTRAP-FIXTURE	integration	installers-interaction	t_bootstrap_use_is_declared	tests/integration/installers-interaction.sh
 require	plan:qualification	QF-BRIDGE-WEAK-RUNNING	integration	bridge-lifecycle	t_weak_running_bridge_is_dropped_and_the_proxy_recreated	tests/integration/bridge-lifecycle.sh
 require	plan:qualification	QF-BRIDGE-WEAK-IDLE	integration	bridge-lifecycle	t_weak_bridge_not_running_is_filtered_without_restart	tests/integration/bridge-lifecycle.sh
 require	plan:qualification	QF-BRIDGE-WEAK-FLOOR	integration	bridge-lifecycle	t_filter_never_leaves_fewer_than_three_bridges	tests/integration/bridge-lifecycle.sh
@@ -555,3 +566,4 @@ require	plan:qualification	QF-NO-DIRECT-CELLS	live	qualification-cells	t_1_cells
 require	plan:qualification	QF-NETWORK-LOSS-CELLS	live	qualification-cells	t_1_cells	tests/live/qualification-cells.sh
 require	plan:qualification	QF-WAKE-SOAK	live	soak-receipt	t_1_soak_receipt	tests/live/soak-receipt.sh
 require	plan:qualification	QF-IDLE-RECONNECT-SOAK	live	soak-receipt	t_1_soak_receipt	tests/live/soak-receipt.sh
+require	plan:qualification	QG-RECEIPT-ALL-CELLS	live	qualification-receipt	t_1_qualification_receipt	tests/live/qualification-receipt.sh

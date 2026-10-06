@@ -221,3 +221,4 @@ QF-NO-DIRECT-CELLS	fault:FQ-NO-DIRECT-CAPTURE	live	qualification-cells	t_1_cells
 QF-NETWORK-LOSS-CELLS	fault:FQ-NETWORK-LOSS	live	qualification-cells	t_1_cells	qualification
 QF-WAKE-SOAK	fault:FQ-WAKE	live	soak-receipt	t_1_soak_receipt	qualification
 QF-IDLE-RECONNECT-SOAK	fault:FQ-IDLE-RECONNECT	live	soak-receipt	t_1_soak_receipt	qualification
+QG-RECEIPT-ALL-CELLS	EVD-FAILURES-COUNTED	live	qualification-receipt	t_1_qualification_receipt	qualification

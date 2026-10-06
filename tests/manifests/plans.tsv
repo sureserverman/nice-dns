@@ -45,6 +45,7 @@ qualification	integration	transport-socat
 qualification	integration	transport-haproxy
 qualification	integration	transport-interaction
 qualification	integration	installers-persistence
+qualification	integration	installers-interaction
 qualification	live	soak-receipt
 qualification	live	qualification-cells
 qualification	live	qualification-receipt
