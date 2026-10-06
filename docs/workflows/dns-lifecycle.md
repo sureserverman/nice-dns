@@ -6,7 +6,7 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the
 - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)
   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.
 - Baseline source: this repository at commit
-  `aa6b7e96544b2908e87f84f76b9e72cdd72db4fa`. Citations are `path:line` at that commit.
+  `efba2d4d6a0f20ea8ffd92f0d1448866ab53e213`. Citations are `path:line` at that commit.
   The eight-cell baseline receipt measured b85bc9b. The document was first
   written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,
   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02
@@ -346,7 +346,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
 
 - Since Sub-plan 3 Task 2.1, both platform installers end by installing the
   controller, and fail when it does not install (deb/persistent-podman.sh:355,
-  mac/persist.sh:43-44).
+  mac/persist.sh:58-59).
   - `install` builds a versioned bundle, then checks that the new bundle
     loads (health/nice-dns-health:742). Only then does it replace the
     schedule (health/nice-dns-health:728-810).
@@ -639,7 +639,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
 - Only the two root helpers write host DNS: `deb/custom-dns-deb` on Linux
   and `mac/start-container-root.sh` on macOS. They write the pin or the
   state recorded before nice-dns, nothing else
-  (deb/custom-dns-deb:119, mac/start-container-root.sh:63).
+  (deb/custom-dns-deb:119, mac/start-container-root.sh:69).
   No installer code names resolv.conf or network-service DNS, and the
   helpers name no public resolver; a static case checks both
   (tests/integration/dns-transaction.sh) [PRIV-NO-HOST-PUBLIC].
@@ -648,12 +648,12 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   (lib/install.sh:596-628): Linux compares
   /etc/resolv.conf against the pin (deb/custom-dns-deb:143-152);
   macOS compares every service the record knows
-  (mac/start-container-root.sh:195-214). A service added after
+  (mac/start-container-root.sh:201-220). A service added after
   the install is not a refusal.
 - The record is taken once, before the first interruption, in a root-only
   directory, 0600, and kept across reinstalls, so it stays the state before
   nice-dns (deb/custom-dns-deb:154-196,
-  mac/start-container-root.sh:159-193). Linux records
+  mac/start-container-root.sh:165-199). Linux records
   resolv.conf (symlink target, file copy and mode, or missing),
   systemd-resolved's enabled and active state and the ipv6 sysctls; macOS
   records each service's servers. An install from before records is
@@ -693,7 +693,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   lib/install.sh:2074-2099; `mac/persist.sh` loads the
   start-container agent, whose first run pins every service, only after the
   controller installed and its installed copy passed its self-check
-  (mac/persist.sh:43-66). The pin is
+  (mac/persist.sh:58-81). The pin is
   then verified (lib/install.sh:901-904).
 - Any failure after the interruption began, including Ctrl-C, rolls back
   (lib/install.sh:921-933, lib/install.sh:935-998):
@@ -709,7 +709,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   gives back the recorded DNS state
   (lib/install.sh:1604-1654,
   lib/install.sh:2104-2113;
-  deb/custom-dns-deb:205-294, mac/start-container-root.sh:216-249).
+  deb/custom-dns-deb:205-294, mac/start-container-root.sh:222-255).
   The Linux helper puts resolv.conf back first and whole (a new file or
   link renamed over it) while `dns=none` still holds NetworkManager off it;
   if that fails, nothing else changes, the host stays pinned and the record
@@ -720,8 +720,8 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   On macOS every change of the host resolver, the pin (`post`) and a
   restore (complete or not), ends with a flush of the system DNS cache:
   getaddrinfo otherwise kept failing names for about 80 s after the stack
-  answered them again (mac/start-container-root.sh:113-116,
-  mac/start-container-root.sh:273-280). Since Sub-plan 5 Task 2.1 the pin
+  answered them again (mac/start-container-root.sh:119-122,
+  mac/start-container-root.sh:279-286). Since Sub-plan 5 Task 2.1 the pin
   also keeps scoped DNS on the container bridge: every pinned service gets
   its own scoped resolver, and a query scoped to Wi-Fi or Ethernet left
   through that interface, in cleartext to the LAN gateway, for an address
@@ -730,7 +730,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   drop it on every other interface, then kills the states toward the subnet
   (a packet that matches a state skips the rules); without a bridge to the
   stack it loads nothing; a restore lifts the anchor
-  (mac/start-container-root.sh:69-107) [PRIV-NO-DIRECT].
+  (mac/start-container-root.sh:75-113) [PRIV-NO-DIRECT].
   A setting another owner changed is left alone. A `legacy` record restores
   the distribution default: the systemd-resolved stub on Linux, `Empty`
   (DHCP) for each pinned macOS service. The recorded legacy profile pins get
@@ -771,7 +771,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   nothing; Linux pinned without a readiness check; macOS pinned before the
   controller installed.
 - The macOS helper boots out and re-bootstraps Mullvad on the agent's
-  `pre`/`post` (mac/start-container-root.sh:262-266). That is VPN state the
+  `pre`/`post` (mac/start-container-root.sh:268-272). That is VPN state the
   installer does not own (ARCH-06); the installer itself never calls `pre`.
 - Unbound remote control is a Unix socket at `/run/unbound/control.sock`
   with no keys and no network listener (unbound/etc/unbound.conf:166-169).
@@ -854,8 +854,8 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   (deb/persistent-podman.sh:51-52). The resolver pin is a system oneshot
   (deb/custom-dns-deb.service:6-9).
 - macOS: persistence comes from the start-container LaunchAgent installed by
-  `mac/persist.sh` (mac/persist.sh:60-75) and helpers in `/usr/local/sbin`
-  (mac/persist.sh:24-36). It requires macOS 26+ on arm64
+  `mac/persist.sh` (mac/persist.sh:75-90) and helpers in `/usr/local/sbin`
+  (mac/persist.sh:39-51). It requires macOS 26+ on arm64
   (mac/check-runtime.sh:18-31).
 - The four entrypoints stay public (ARCH-01). The target moves their shared
   lifecycle into `lib/install.sh` behind them.
@@ -980,7 +980,7 @@ Sources: ARCH-07, design "Bridge lifecycle".
   the probe container exists (lib/platform/macos.sh:265-309).
   - `mac/persist.sh` no longer installs the legacy `org.nice-dns.bridge-eval`
     agent. It retires that agent after the controller installs
-    (mac/persist.sh:79).
+    (mac/persist.sh:94).
   - Before that, the legacy agent had `RunAtLoad` and `StartInterval` 86400
     (mac/org.nice-dns.bridge-eval.plist:17-19) and wrote `bridges.env`
     directly. It ran on `dnsnet`, and only
