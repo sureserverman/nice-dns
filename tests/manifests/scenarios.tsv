@@ -216,3 +216,8 @@ QF-BRIDGE-WEAK-RUNNING	fault:FQ-BRIDGE-WEAK	integration	bridge-lifecycle	t_weak_
 QF-BRIDGE-WEAK-IDLE	fault:FQ-BRIDGE-WEAK	integration	bridge-lifecycle	t_weak_bridge_not_running_is_filtered_without_restart	qualification
 QF-BRIDGE-WEAK-FLOOR	fault:FQ-BRIDGE-WEAK	integration	bridge-lifecycle	t_filter_never_leaves_fewer_than_three_bridges	qualification
 QF-BRIDGE-WEAK-NOSTATE	fault:FQ-BRIDGE-WEAK	integration	bridge-lifecycle	t_unreadable_tor_state_changes_nothing	qualification
+QF-COLD-START-CELLS	fault:FQ-COLD-START	live	qualification-cells	t_1_cells	qualification
+QF-NO-DIRECT-CELLS	fault:FQ-NO-DIRECT-CAPTURE	live	qualification-cells	t_1_cells	qualification
+QF-NETWORK-LOSS-CELLS	fault:FQ-NETWORK-LOSS	live	qualification-cells	t_1_cells	qualification
+QF-WAKE-SOAK	fault:FQ-WAKE	live	soak-receipt	t_1_soak_receipt	qualification
+QF-IDLE-RECONNECT-SOAK	fault:FQ-IDLE-RECONNECT	live	soak-receipt	t_1_soak_receipt	qualification

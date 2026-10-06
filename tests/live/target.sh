@@ -1601,6 +1601,35 @@ case "$NICE_DNS_OP" in
     # is in place now rather than at the next stack rebuild.
     sudo -n /usr/local/sbin/start-container-root.sh post </dev/null >&2 || exit 1
     printf 'post\tdone\n' ;;
+  prune-generations)
+    # A macOS install keeps every generation's images (and a pre-<gen>
+    # rollback tag), and builds leave the builder's cache: the eight-cell
+    # dry run of 2026-10-06 stopped at 17 GiB free after one hardened
+    # install (BL-024). Keeps the newest two generations (the running one
+    # and its rollback), every image a container uses, vminit and the
+    # candidate proxies; deletes the older generations' tags by name, then
+    # dangling images only (never prune --all: it takes vminit), then the
+    # builder and its cache. Linux has room: nothing to do.
+    if [ "$plat" != macos ]; then printf 'pruned\t0\nreason\tnot-needed\n'; exit 0; fi
+    homebrew_path
+    k0=$(df -k "$HOME" | awk 'NR == 2 { print $4 }')
+    used=$(ctl list --all 2>/dev/null | awk 'NR > 1 { print $2 }' | LC_ALL=C sort -u)
+    gens=$(ctl image ls | awk 'NR > 1 { t = $2; sub(/^pre-/, "", t); if (t ~ /^[0-9]+T[0-9]+Z-[a-z0-9]+$/) print t }' | LC_ALL=C sort -u)
+    keep=$(printf '%s\n' "$gens" | tail -n 2)
+    n=0
+    for ref in $(ctl image ls | awk 'NR > 1 { print $1 ":" $2 }'); do
+      t=${ref##*:}; t=${t#pre-}
+      printf '%s\n' "$gens" | grep -qxF "$t" || continue
+      printf '%s\n' "$keep" | grep -qxF "$t" && continue
+      printf '%s\n' "$used" | grep -qE "(^|/)$(printf '%s' "$ref" | sed 's/[.[\*^$/]/\\&/g')\$" && continue
+      if ctl image delete "$ref" >/dev/null 2>&1; then n=$((n + 1)); fi
+    done
+    ctl image prune >/dev/null 2>&1 || true
+    ctl builder stop >/dev/null 2>&1 || true
+    ctl builder delete >/dev/null 2>&1 || true
+    ctl image ls | grep -q '^ghcr.io/apple/containerization/vminit ' || { echo "vminit is gone after the prune" >&2; exit 1; }
+    k1=$(df -k "$HOME" | awk 'NR == 2 { print $4 }')
+    printf 'pruned\t%s\nkept_generations\t%s\nfree_gib_before\t%s\nfree_gib_after\t%s\n' "$n" "$(printf '%s' "$keep" | tr '\n' ' ')" "$((k0 / 1048576))" "$((k1 / 1048576))" ;;
   hold-bridge-refresh)
     if [ "$plat" = macos ]; then st="$HOME/Library/Application Support/nice-dns/controller"
     else st="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/controller"; fi
@@ -1735,7 +1764,7 @@ case "$op" in
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"

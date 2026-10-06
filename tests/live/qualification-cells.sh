@@ -65,6 +65,9 @@ qc_cell() {
     [ "$ph" = standard ] || printf 'hardened_sha\t%s\n' "$(qc_sha pi-hole-hardened)"
   } >"$d/cell.tsv"
   il_t "$a" snapshot >>"$d/ops.log" 2>&1 || fail "$a $QC_KEY: snapshot"
+  # Room for the install and the proxy build (macOS: older generations and
+  # the builder cache go; the running one and its rollback stay).
+  il_t "$a" prune-generations >"$d/prune.tsv" 2>>"$d/ops.log" || fail "$a $QC_KEY: prune-generations: $(tail -n 3 "$d/ops.log")"
   il_install "$a" candidate install "$ph" || fail "$a $QC_KEY: the install failed: $(tail -n 20 "$d/install-candidate.log")"
   il_watch_pinned "$plat" "$d/watch-candidate.tsv" all
   psha="$(qc_sha "tor-$proxy")"
