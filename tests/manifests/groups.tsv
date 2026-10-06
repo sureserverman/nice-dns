@@ -50,8 +50,10 @@ live	tune-transport	tests/live/tune-transport.sh	live
 live	tune-idle-wake	tests/live/tune-idle-wake.sh	live
 unit	qualification-coverage	tests/unit/qualification-coverage.sh	local
 unit	soak-verdict	tests/unit/soak-verdict.sh	local
+unit	report-integrity	tests/unit/report-integrity.sh	local
 live	no-direct	tests/live/no-direct.sh	live
 live	fault-network	tests/live/fault-network.sh	live
 live	soak	tests/live/soak.sh	live
 live	soak-receipt	tests/live/soak-receipt.sh	live
 live	qualification-cells	tests/live/qualification-cells.sh	live
+live	qualification-receipt	tests/live/qualification-receipt.sh	live
