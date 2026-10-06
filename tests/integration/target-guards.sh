@@ -1098,3 +1098,19 @@ t_every_operation_is_named_in_all_three_places() {
     _nd_tick
   done
 }
+
+# capture-dns names the query of each packet from tcpdump's text: the
+# question type ends in "?" (A?, AAAA?, HTTPS?, and unknown ones printed
+# as Type65?). A type with a digit or lower case once left the name "-",
+# and a "-" to a bootstrap resolver passes as bootstrap traffic: a probe
+# name asked as TYPE65 would have escaped the no-direct judgement (Stage 2
+# gate review). The awk program is taken from target.sh itself.
+t_capture_names_every_question_type() {
+  local f="$NICE_DNS_ROOT/tests/live/target.sh" prog out q
+  prog="$(awk -v start="awk -v i=\"\$f\" -F ' ' '" 'index($0, start) { on = 1; next } on && $0 == "        }\x27" { print "        }"; exit } on' "$f")"
+  assert_match 'name = "-"' "$prog" "the parser is found in target.sh"
+  for q in 'A?' 'AAAA?' 'HTTPS?' 'Type65?' 'TYPE65?' 'SVCB?' 'NSEC3PARAM?'; do
+    out="$(printf '12:00:00.000000 IP 192.168.1.5.40000 > 1.1.1.1.53: 4242+ [1au] %s nd0123abcd.example.com. (52)\n' "$q" | awk -v i=en0 -F ' ' "$prog")"
+    assert_eq "packet	en0	out	1.1.1.1	53	nd0123abcd.example.com" "$out" "$q: the probe name is read"
+  done
+}

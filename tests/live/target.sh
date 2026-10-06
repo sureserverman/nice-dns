@@ -1486,7 +1486,9 @@ case "$NICE_DNS_OP" in
           sh = src; sub(/\.[^.]*$/, "", sh); dh = dst; sub(/\.[^.]*$/, "", dh)
           if (dp == 53 || dp == 853) { dir = "out"; peer = dh; port = dp } else { dir = "in"; peer = sh; port = sp }
           name = "-"
-          for (k = 6; k < NF; k++) if ($k ~ /^[A-Z]+\??$/ && $k ~ /\?$/) { name = $(k + 1); break }
+          # The question type ends in "?": A?, HTTPS?, or an unknown one as
+          # Type65? (letters and digits, either case).
+          for (k = 6; k < NF; k++) if ($k ~ /^[A-Za-z0-9]+\?$/) { name = $(k + 1); break }
           sub(/\.$/, "", name)
           if (name != "-" && name != "bridges.torproject.org" && name !~ /^nd(canary)?[0-9a-f]+\.example\.com$/) name = "<other>"
           print "packet\t" i "\t" dir "\t" peer "\t" port "\t" name
