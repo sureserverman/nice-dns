@@ -128,7 +128,8 @@ t_malformed_lock_is_refused() {
   for ep in $IP_EPS; do
     (
       ri_env "$ep"
-      sed -i 's/sha256:973e5082/sha256:ZZ3e5082/' "$IP_TREE/release/images.lock"
+      sed -i '/^image\tproxy-haproxy\t/ s/sha256:[0-9a-f][0-9a-f]/sha256:ZZ/' "$IP_TREE/release/images.lock"
+      assert_match 'sha256:ZZ' "$(cat "$IP_TREE/release/images.lock")" "$ep: the lock really carries the malformed digest"
       ip_install "$ep"
       ri_refused "$ep" "a malformed digest"
     ) || exit 1
@@ -199,17 +200,18 @@ t_hardened_needs_its_sibling() {
 # The refresh script: registry digests and platforms, signatures, and a
 # lock rewritten only with --write.
 t_refresh_script_checks_and_writes() {
-  local w="$CASE_DIR/refresh" b out rc
+  local w="$CASE_DIR/refresh" b out rc st
   b="$w/bin"; mkdir -p "$b" "$w/fake"
   export FAKE="$w/fake" FAKE_LOG="$w/fake/calls.log"
   : >"$FAKE_LOG"
   cp "$RI_LOCK" "$w/images.lock"
+  st="$(awk -F '\t' '$1 == "image" && $2 == "proxy-socat" { print $4 }' "$RI_LOCK")"
   cat >"$b/curl" <<'STUB'
 #!/bin/sh
 printf 'curl %s\n' "$*" >>"$FAKE_LOG"
 case "$*" in
   *auth.docker.io*) echo '{"token":"t"}' ;;
-  *registry-1.docker.io/v2/sureserver/tor-socat/manifests/v2.10*) printf 'HTTP/2 200\r\ndocker-content-digest: sha256:%064d\r\n\r\n' 7 ;;
+  *registry-1.docker.io/v2/sureserver/tor-socat/manifests/*) printf 'HTTP/2 200\r\ndocker-content-digest: sha256:%064d\r\n\r\n' 7 ;;
   *registry-1.docker.io/v2/*/manifests/*)
     r="$(printf '%s' "$*" | sed -E 's|.*/v2/(.+)/manifests/.*|\1|')"
     d="$(awk -F '\t' -v r="docker.io/$r" '$1 == "image" && $3 == r { print $5 }' "$LOCK")"
@@ -235,7 +237,7 @@ STUB
   assert_match 'cosign verify .*tor-socat@sha256:0{63}7$' "$(cat "$FAKE_LOG")" "the moved image's signature is checked on the new digest"
   out="$(LOCK="$w/images.lock" PATH="$b:$PATH" bash "$NICE_DNS_ROOT/scripts/update-images-lock.sh" --lock "$w/images.lock" --write 2>&1)"; rc=$?
   assert_rc 0 "$rc" "--write: $out"
-  assert_match "$(printf 'image\tproxy-socat\tdocker.io/sureserver/tor-socat\tv2.10\tsha256:')0{63}7" "$(cat "$w/images.lock")" "--write records the new digest"
+  assert_match "$(printf 'image\tproxy-socat\tdocker.io/sureserver/tor-socat\t%s\tsha256:' "$st")0{63}7" "$(cat "$w/images.lock")" "--write records the new digest"
   assert_eq "$(grep -v 'proxy-socat' "$RI_LOCK")" "$(grep -v 'proxy-socat' "$w/images.lock")" "and nothing else"
   : >"$FAKE/cosign_fail"
   cp "$RI_LOCK" "$w/images.lock"

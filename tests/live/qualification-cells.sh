@@ -41,6 +41,9 @@ cs_dir() { printf '%s\n' "$(il_dir "$1")${QC_PHASE:+/$QC_PHASE}"; }
 # qc_cells <platform>: its four cells, the soak's representative cell last.
 # NICE_DNS_QC_CELLS (proxy/pihole,...) keeps only those, for a dry run; the
 # gate runs all of them (the receipt then holds every cell or fails).
+# NICE_DNS_QC_PROXY=released skips the candidate build: each cell keeps the
+# proxy its install pulled from release/images.lock (the release check in
+# docs/qualification.md, "Release order").
 qc_cells() {
   local c
   for c in $(if [ "$1" = linux ]; then echo socat/standard socat/hardened haproxy/hardened haproxy/standard
@@ -70,12 +73,20 @@ qc_cell() {
   il_t "$a" prune-generations >"$d/prune.tsv" 2>>"$d/ops.log" || fail "$a $QC_KEY: prune-generations: $(tail -n 3 "$d/ops.log")"
   il_install "$a" candidate install "$ph" || fail "$a $QC_KEY: the install failed: $(tail -n 20 "$d/install-candidate.log")"
   il_watch_pinned "$plat" "$d/watch-candidate.tsv" all
-  psha="$(qc_sha "tor-$proxy")"
-  printf 'proxy_sha\t%s\n' "$psha" >>"$d/cell.tsv"
-  il_t "$a" build-proxy --component "tor-$proxy" --source-sha "$psha" >"$d/build-proxy.tsv" 2>>"$d/ops.log" \
-    || fail "$a $QC_KEY: build-proxy: $(tail -n 10 "$d/ops.log")"
-  il_t "$a" recreate-proxy --component "tor-$proxy" >"$d/recreate-proxy.tsv" 2>>"$d/ops.log" \
-    || fail "$a $QC_KEY: recreate-proxy: $(tail -n 10 "$d/ops.log")"
+  if [ "${NICE_DNS_QC_PROXY:-candidate}" = released ]; then
+    # A release check: the proxy stays the one the install pulled by the
+    # digest release/images.lock pins; its source is the lock's.
+    psha="$(awk -F '\t' -v r="proxy-$proxy" '$1 == "image" && $2 == r { sub(/.*@/, "", $7); print $7 }' "$NICE_DNS_ROOT/release/images.lock")"
+    [ -n "$psha" ] || fail "$a $QC_KEY: no proxy-$proxy row in release/images.lock"
+    printf 'proxy_sha\t%s\nproxy_image\treleased\n' "$psha" >>"$d/cell.tsv"
+  else
+    psha="$(qc_sha "tor-$proxy")"
+    printf 'proxy_sha\t%s\n' "$psha" >>"$d/cell.tsv"
+    il_t "$a" build-proxy --component "tor-$proxy" --source-sha "$psha" >"$d/build-proxy.tsv" 2>>"$d/ops.log" \
+      || fail "$a $QC_KEY: build-proxy: $(tail -n 10 "$d/ops.log")"
+    il_t "$a" recreate-proxy --component "tor-$proxy" >"$d/recreate-proxy.tsv" 2>>"$d/ops.log" \
+      || fail "$a $QC_KEY: recreate-proxy: $(tail -n 10 "$d/ops.log")"
+  fi
   # QU-COLD-START: the stack, just installed and its proxy just started,
   # answers a fresh name (a fresh name every 15 s, up to NDF_RETURN_S).
   t0="$(date +%s)"; k=0
