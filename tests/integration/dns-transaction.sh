@@ -381,6 +381,20 @@ t_agent_sudo_rule_excludes_installer_verbs() {
   assert_eq '__USERNAME__ ALL=(root) NOPASSWD: /usr/local/sbin/start-container-root.sh pre, /usr/local/sbin/start-container-root.sh repair-dnsnet, /usr/local/sbin/start-container-root.sh post' "$rule" "the NOPASSWD rule names exactly pre, repair-dnsnet and post"
 }
 
+# macOS sudo keeps the caller's PATH (no secure_path; live on the mac,
+# 2026-10-06), so through that rule a planted binary ran as root. The helper
+# names its shell and, as root, resolves tools from the system directories
+# before its first command.
+t_root_helper_ignores_the_callers_path() {
+  local f="$NICE_DNS_ROOT/mac/start-container-root.sh" set first
+  assert_eq '#!/bin/bash' "$(head -n 1 "$f")" "the helper's shell is not looked up on PATH"
+  set="$(grep -n '^  PATH=/usr/bin:/bin:/usr/sbin:/sbin$' "$f" | cut -d: -f1)"
+  first="$(grep -n '^MULLVAD_PLIST=' "$f" | cut -d: -f1)"
+  assert_ne "" "$set" "a root run sets a system-only PATH"
+  assert_eq 1 "$(( ${set:-99999} < ${first:-0} ))" "the PATH is set (line $set) before anything runs (line $first)"
+  assert_match 'export PATH' "$(sed -n "${set:-1},$((${set:-1} + 1))p" "$f")" "and exported to what the helper runs"
+}
+
 # persist.sh (the real one) loads the start-container agent, whose first run
 # pins DNS, only after the controller installed and its installed copy passed
 # its self-check.

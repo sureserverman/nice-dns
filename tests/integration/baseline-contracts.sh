@@ -45,7 +45,7 @@ t_each_privacy_op_without_scenario_fails() {
     assert_nonzero "$BC_RC" "removing every scenario for $op must fail"
     assert_match "$op" "$BC_OUT" "refusal names $op"
   done
-  assert_eq 19 "$n" "all 19 mandatory operations were exercised"
+  assert_eq 22 "$n" "all 22 mandatory operations were exercised"
 }
 
 t_each_variant_without_active_scenario_fails() {

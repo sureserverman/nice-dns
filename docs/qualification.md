@@ -54,10 +54,17 @@ The candidate ran the proxy builds above, not the images
 
 1. Release tor-haproxy and tor-socat from those commits (their CI builds the
    multi-arch images).
-2. Re-pin `release/images.lock` to the new digests with
-   `scripts/update-images-lock.sh --write`, and check the new entries name
-   those commits.
-3. Then merge nice-dns. An install from `main` before step 2 would run the
+2. Re-pin `release/images.lock` to the new tags. `update-images-lock.sh
+   --write` refreshes only the digest of the tag a row already names, so first
+   set each proxy row's `tag`, `version` and `source` commit by hand
+   (docs/release-inputs.md), then run `scripts/update-images-lock.sh --write`
+   and check the new digests and commits.
+3. Check the released images on each platform before the merge: the
+   candidate cells ran proxies built on the targets from these commits, not
+   the CI builds the lock now pins. An install from the re-pinned lock with a
+   cold start and a no-direct check per platform is enough (the
+   `live/qualification-cells` checks).
+4. Then merge nice-dns. An install from `main` before step 2 would run the
    old proxies, which lack the readiness and restart fixes below.
 
 ## Behavior changes
@@ -102,11 +109,19 @@ Proxy images (the unreleased commits):
 - **A failed install** restores the previous generation by itself.
 - **Back to the previous nice-dns** after a release: run the previous
   version's installer (its branch as the second argument). The generation it
-  replaces keeps its images until the install after next.
+  replaces keeps its images until the install after next. Then delete the
+  controller's state file (below).
 - **Back to the previous proxies:** re-pin `release/images.lock` to the
   `v2.14` / `v2.10` digests and reinstall.
 - **The controller alone:** `health/nice-dns-health install` from the
-  previous checkout installs that version's bundle in place.
+  previous checkout installs that version's bundle in place. Then delete the
+  controller's state file (below).
+- **The controller's state file after any rollback:** a controller from
+  before this release refuses the `proxy_gen` key this one writes, and does
+  nothing until the file is gone (BL-036). Delete
+  `~/.local/state/nice-dns/controller/state.tsv` (Linux) or
+  `~/Library/Application Support/nice-dns/controller/state.tsv` (macOS); a
+  controller with no state file starts from its defaults.
 
 ## Platforms
 
@@ -151,7 +166,9 @@ Also:
 - Latency, two comparisons that disagree and are both stated:
   - Stage 1's interleaved, same-session runs: Linux showed no class
     improved beyond measured variability (DEC-016); macOS cold improved
-    after a restart, measured on the exit route.
+    after a restart, measured on the exit route (p50 320 -> 103 ms, 10 of
+    10 blocks better; run `20261001T074919Z-32225d7a` at nice-dns 50a1c90,
+    `tune-transport/*/compare.tsv`). No receipt pins this run.
   - The 24 h soak against the frozen baseline (different days, the onion
     route about 93% of the time): Linux cold p50 2934 -> 492 ms and
     timeouts 7/30 -> 4/864; macOS steady-state cold p50 297 -> 406 ms and

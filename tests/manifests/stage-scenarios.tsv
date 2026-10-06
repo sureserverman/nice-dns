@@ -140,7 +140,7 @@ require	stage:transport-images	OP-ACK-HAPROXY-IMAGE	integration	transport-haprox
 require	stage:transport-images	OP-ACK-HAPROXY-REJECT	integration	transport-haproxy	t_invalid_restart_request_rejected	tests/integration/transport-haproxy.sh
 require	stage:transport-images	OP-ACK-SOCAT-IMAGE	integration	transport-socat	t_restart_request_acknowledged_with_new_generation	tests/integration/transport-socat.sh
 require	stage:transport-images	OP-ACK-SOCAT-REJECT	integration	transport-socat	t_invalid_restart_request_rejected	tests/integration/transport-socat.sh
-count	stage:transport-images	47
+count	stage:transport-images	60
 require	stage:transport	OP-TLS-NAME	integration	transport-interaction	t_haproxy_routes_carry_authenticated_tls	tests/integration/transport-interaction.sh
 require	stage:transport	OP-TLS-NAME-SOCAT	integration	transport-interaction	t_socat_routes_carry_authenticated_tls	tests/integration/transport-interaction.sh
 require	stage:transport	OP-TLS-WRONGNAME	integration	transport-interaction	t_haproxy_route_tls_rejects_bad_certificates	tests/integration/transport-interaction.sh
@@ -188,12 +188,12 @@ require	stage:transport	OP-ACK-SOCAT-IMAGE	integration	transport-socat	t_restart
 require	stage:transport	OP-ACK-SOCAT-REJECT	integration	transport-socat	t_invalid_restart_request_rejected	tests/integration/transport-socat.sh
 require	stage:transport	OP-FAILURES-EMPTY	unit	harness-contracts	t_zero_case_group_rejected	tests/unit/harness-contracts.sh
 require	stage:transport	OP-FAILURES-CELL	unit	harness-contracts	t_matrix_each_single_cell_deletion_fails	tests/unit/harness-contracts.sh
-count	stage:transport	49
+count	stage:transport	62
 # plan:transport (Sub-plan 2 Stage 2 gate) owns the transport completeness
 # check: stage:transport is the Stage 1 bounded regression (Stage 1 groups,
 # near its 5-minute budget) and keeps its explicit require rows; Stage 2
 # groups run only in plan:transport (plan Preflight amendment, 2026-09-24).
-count	plan:transport	88
+count	plan:transport	103
 owner	plan:transport	transport
 require	plan:transport	OP-TLS-NAME	integration	transport-interaction	t_haproxy_routes_carry_authenticated_tls	tests/integration/transport-interaction.sh
 require	plan:transport	OP-TLS-NAME-SOCAT	integration	transport-interaction	t_socat_routes_carry_authenticated_tls	tests/integration/transport-interaction.sh
@@ -293,7 +293,16 @@ require	stage:controller-core	OP-CHAIN-CACHE-NOT-UPSTREAM	integration	controller
 require	stage:controller-core	OP-CHAIN-ACK-READY	integration	controller-interaction	t_observed_outage_restart_is_acknowledged_then_ready	tests/integration/controller-interaction.sh
 require	stage:controller-core	OP-CHAIN-UNKNOWN-NO-ACTION	integration	controller-interaction	t_unanswerable_probes_never_act	tests/integration/controller-interaction.sh
 require	stage:controller-core	OP-READY-CORROBORATED	integration	recovery-actions	t_readiness_is_per_request_and_corroborated_by_unbound	tests/integration/recovery-actions.sh
-count	stage:controller-core	14
+require	stage:controller-core	QF-ACK-SILENCE	integration	recovery-actions	t_image_silence_is_not_acknowledged	tests/integration/recovery-actions.sh
+require	stage:controller-core	QF-ACK-WRITE	integration	recovery-actions	t_request_write_is_never_an_acknowledgement	tests/integration/recovery-actions.sh
+require	stage:controller-core	QF-STATE-CRASH	unit	state-policy	t_state_crash_mid_commit_keeps_last_generation	tests/unit/state-policy.sh
+require	stage:controller-core	QF-STATE-MALFORMED	unit	state-policy	t_state_rejects_malformed_and_never_executes_it	tests/unit/state-policy.sh
+require	stage:controller-core	QF-TIMERS-LOCK	unit	state-policy	t_state_overlapping_actors_one_lock_winner	tests/unit/state-policy.sh
+require	stage:controller-core	QF-TIMERS-TICK	integration	recovery-actions	t_two_processes_racing_one_tick_wins	tests/integration/recovery-actions.sh
+require	stage:controller-core	QF-UPSTREAM-CONTROLLER	integration	controller-interaction	t_observed_onion_failure_switches_route_not_tor	tests/integration/controller-interaction.sh
+require	stage:controller-core	QF-WEDGE-BOUNDED	integration	recovery-actions	t_hung_runtime_is_bounded_and_cleaned	tests/integration/recovery-actions.sh
+require	stage:controller-core	QF-WEDGE-EVIDENCE	unit	state-policy	t_policy_runtime_faults_are_repaired_only_on_evidence	tests/unit/state-policy.sh
+count	stage:controller-core	23
 require	stage:controller	OP-FAILURES-EMPTY	unit	harness-contracts	t_zero_case_group_rejected	tests/unit/harness-contracts.sh
 require	stage:controller	OP-FAILURES-CELL	unit	harness-contracts	t_matrix_each_single_cell_deletion_fails	tests/unit/harness-contracts.sh
 require	stage:controller	OP-CACHE-NOT-UPSTREAM	unit	observations	t_local_cache_healthy_while_every_route_unhealthy_stays_separate	tests/unit/observations.sh
@@ -310,7 +319,16 @@ require	stage:controller	OP-CHAIN-CACHE-NOT-UPSTREAM	integration	controller-inte
 require	stage:controller	OP-CHAIN-ACK-READY	integration	controller-interaction	t_observed_outage_restart_is_acknowledged_then_ready	tests/integration/controller-interaction.sh
 require	stage:controller	OP-CHAIN-UNKNOWN-NO-ACTION	integration	controller-interaction	t_unanswerable_probes_never_act	tests/integration/controller-interaction.sh
 require	stage:controller	OP-READY-CORROBORATED	integration	recovery-actions	t_readiness_is_per_request_and_corroborated_by_unbound	tests/integration/recovery-actions.sh
-count	stage:controller	16
+require	stage:controller	QF-ACK-SILENCE	integration	recovery-actions	t_image_silence_is_not_acknowledged	tests/integration/recovery-actions.sh
+require	stage:controller	QF-ACK-WRITE	integration	recovery-actions	t_request_write_is_never_an_acknowledgement	tests/integration/recovery-actions.sh
+require	stage:controller	QF-STATE-CRASH	unit	state-policy	t_state_crash_mid_commit_keeps_last_generation	tests/unit/state-policy.sh
+require	stage:controller	QF-STATE-MALFORMED	unit	state-policy	t_state_rejects_malformed_and_never_executes_it	tests/unit/state-policy.sh
+require	stage:controller	QF-TIMERS-LOCK	unit	state-policy	t_state_overlapping_actors_one_lock_winner	tests/unit/state-policy.sh
+require	stage:controller	QF-TIMERS-TICK	integration	recovery-actions	t_two_processes_racing_one_tick_wins	tests/integration/recovery-actions.sh
+require	stage:controller	QF-UPSTREAM-CONTROLLER	integration	controller-interaction	t_observed_onion_failure_switches_route_not_tor	tests/integration/controller-interaction.sh
+require	stage:controller	QF-WEDGE-BOUNDED	integration	recovery-actions	t_hung_runtime_is_bounded_and_cleaned	tests/integration/recovery-actions.sh
+require	stage:controller	QF-WEDGE-EVIDENCE	unit	state-policy	t_policy_runtime_faults_are_repaired_only_on_evidence	tests/unit/state-policy.sh
+count	stage:controller	25
 require	plan:controller	OP-CACHE-NOT-UPSTREAM	unit	observations	t_local_cache_healthy_while_every_route_unhealthy_stays_separate	tests/unit/observations.sh
 require	plan:controller	OP-OBSERVE-ROUTE-TLS-NAME	unit	observations	t_probe_uses_each_route_port_and_tls_name	tests/unit/observations.sh
 require	plan:controller	OP-OBSERVE-EVERY-ROUTE	unit	observations	t_one_record_per_route_in_table	tests/unit/observations.sh
@@ -328,18 +346,20 @@ require	plan:controller	OP-READY-CORROBORATED	integration	recovery-actions	t_rea
 require	plan:controller	OP-LIVE-CACHE-NOT-UPSTREAM	live	controller-shadow	t_4_whole_outage	tests/live/controller-shadow.sh
 require	plan:controller	OP-LIVE-EVIDENCE-PRIVATE	live	controller-shadow	t_5_evidence_is_private	tests/live/controller-shadow.sh
 require	plan:controller	OP-LIVE-ACK-READINESS	live	controller-active	t_1_cells	tests/live/controller-active.sh
-count	plan:controller	18
+count	plan:controller	36
 owner	plan:controller	controller
 require	stage:installers-transaction	OP-NO-HOST-PUBLIC	integration	installers-interaction	t_no_step_points_the_host_at_public_dns	tests/integration/installers-interaction.sh
 require	stage:installers-transaction	OP-BOOTSTRAP	integration	installers-interaction	t_bootstrap_use_is_declared	tests/integration/installers-interaction.sh
 require	stage:installers-transaction	OP-OWNED-RESTORE	integration	installers-interaction	t_lifecycle_restores_exactly_what_it_owns	tests/integration/installers-interaction.sh
-count	stage:installers-transaction	3
+require	stage:installers-transaction	QF-BOOTSTRAP-FIXTURE	integration	installers-interaction	t_bootstrap_use_is_declared	tests/integration/installers-interaction.sh
+count	stage:installers-transaction	4
 require	stage:installers	OP-NO-HOST-PUBLIC	integration	installers-interaction	t_no_step_points_the_host_at_public_dns	tests/integration/installers-interaction.sh
 require	stage:installers	OP-BOOTSTRAP	integration	installers-interaction	t_bootstrap_use_is_declared	tests/integration/installers-interaction.sh
 require	stage:installers	OP-OWNED-RESTORE	integration	installers-interaction	t_lifecycle_restores_exactly_what_it_owns	tests/integration/installers-interaction.sh
 require	stage:installers	OP-FAILURES-EMPTY	unit	harness-contracts	t_zero_case_group_rejected	tests/unit/harness-contracts.sh
 require	stage:installers	OP-FAILURES-CELL	unit	harness-contracts	t_matrix_each_single_cell_deletion_fails	tests/unit/harness-contracts.sh
-count	stage:installers	5
+require	stage:installers	QF-BOOTSTRAP-FIXTURE	integration	installers-interaction	t_bootstrap_use_is_declared	tests/integration/installers-interaction.sh
+count	stage:installers	6
 require	plan:installers	OP-ADMIN-AUTH-HARDENED-DEFAULT	integration	deployment-security	t_hardened_image_never_serves_an_open_admin	tests/integration/deployment-security.sh
 require	plan:installers	OP-ADMIN-AUTH-IMAGES	integration	deployment-security	t_images_enforce_the_deployment_password	tests/integration/deployment-security.sh
 require	plan:installers	OP-ADMIN-AUTH-KEPT	integration	deployment-security	t_reinstall_keeps_the_credential	tests/integration/deployment-security.sh
@@ -354,14 +374,41 @@ require	plan:installers	OP-LISTENERS	integration	deployment-security	t_images_en
 require	plan:installers	OP-NO-HOST-PUBLIC	integration	installers-interaction	t_no_step_points_the_host_at_public_dns	tests/integration/installers-interaction.sh
 require	plan:installers	OP-OWNED-RESTORE	integration	installers-interaction	t_lifecycle_restores_exactly_what_it_owns	tests/integration/installers-interaction.sh
 require	plan:installers	OP-OWNED-RESTORE-LIFECYCLE	integration	lifecycle-transitions	t_every_transition_keeps_the_instance_state	tests/integration/lifecycle-transitions.sh
-count	plan:installers	14
+require	plan:installers	QF-BOOTSTRAP-FIXTURE	integration	installers-interaction	t_bootstrap_use_is_declared	tests/integration/installers-interaction.sh
+count	plan:installers	15
 owner	plan:installers	installers
 require	stage:baseline-contracts	QU-RESTART-NOT-COLLECTED	unit	measurement	t_collect_refuses_the_restart_workload	tests/unit/measurement-tests.sh
 require	stage:baseline	QU-RESTART-NOT-COLLECTED	unit	measurement	t_collect_refuses_the_restart_workload	tests/unit/measurement-tests.sh
 require	stage:transport-images	QU-READY-STREAM-SOCAT	integration	transport-socat	t_readiness_waits_for_a_working_stream	tests/integration/transport-socat.sh
 require	stage:transport-images	QU-READY-STREAM-HAPROXY	integration	transport-haproxy	t_readiness_waits_for_a_working_stream	tests/integration/transport-haproxy.sh
+require	stage:transport-images	QF-CHILD-CLEAN-HAPROXY	integration	transport-haproxy	t_unrequested_clean_tor_exit_fails_the_container	tests/integration/transport-haproxy.sh
+require	stage:transport-images	QF-CHILD-CLEAN-SOCAT	integration	transport-socat	t_unrequested_clean_tor_exit_fails_the_container	tests/integration/transport-socat.sh
+require	stage:transport-images	QF-CHILD-HAPROXY	integration	transport-haproxy	t_unrequested_haproxy_exit_tears_container_down	tests/integration/transport-haproxy.sh
+require	stage:transport-images	QF-CHILD-LISTENER	integration	transport-socat	t_unrequested_listener_exit_tears_container_down	tests/integration/transport-socat.sh
+require	stage:transport-images	QF-CHILD-TOR-HAPROXY	integration	transport-haproxy	t_unrequested_tor_exit_tears_container_down	tests/integration/transport-haproxy.sh
+require	stage:transport-images	QF-CHILD-TOR-SOCAT	integration	transport-socat	t_unrequested_tor_exit_tears_container_down	tests/integration/transport-socat.sh
+require	stage:transport-images	QF-COLD-START-STREAM	integration	transport-socat	t_readiness_waits_for_a_working_stream	tests/integration/transport-socat.sh
+require	stage:transport-images	QF-IDLE-HAPROXY	integration	transport-haproxy	t_route_carries_slow_answers_and_idle_reuse	tests/integration/transport-haproxy.sh
+require	stage:transport-images	QF-IDLE-SOCAT	integration	transport-socat	t_route_carries_slow_answers_and_idle_reuse	tests/integration/transport-socat.sh
+require	stage:transport-images	QF-UPSTREAM-HAPROXY	integration	transport-haproxy	t_route_never_switches_provider_when_its_provider_fails	tests/integration/transport-haproxy.sh
+require	stage:transport-images	QF-UPSTREAM-SOCAT	integration	transport-socat	t_route_never_switches_provider_when_its_provider_fails	tests/integration/transport-socat.sh
+require	stage:transport-images	QF-WAKE-HAPROXY	integration	transport-haproxy	t_sleep_with_dead_streams_respawns_tor	tests/integration/transport-haproxy.sh
+require	stage:transport-images	QF-WAKE-SOCAT	integration	transport-socat	t_sleep_with_dead_streams_respawns_tor	tests/integration/transport-socat.sh
 require	stage:transport	QU-READY-STREAM-SOCAT	integration	transport-socat	t_readiness_waits_for_a_working_stream	tests/integration/transport-socat.sh
 require	stage:transport	QU-READY-STREAM-HAPROXY	integration	transport-haproxy	t_readiness_waits_for_a_working_stream	tests/integration/transport-haproxy.sh
+require	stage:transport	QF-CHILD-CLEAN-HAPROXY	integration	transport-haproxy	t_unrequested_clean_tor_exit_fails_the_container	tests/integration/transport-haproxy.sh
+require	stage:transport	QF-CHILD-CLEAN-SOCAT	integration	transport-socat	t_unrequested_clean_tor_exit_fails_the_container	tests/integration/transport-socat.sh
+require	stage:transport	QF-CHILD-HAPROXY	integration	transport-haproxy	t_unrequested_haproxy_exit_tears_container_down	tests/integration/transport-haproxy.sh
+require	stage:transport	QF-CHILD-LISTENER	integration	transport-socat	t_unrequested_listener_exit_tears_container_down	tests/integration/transport-socat.sh
+require	stage:transport	QF-CHILD-TOR-HAPROXY	integration	transport-haproxy	t_unrequested_tor_exit_tears_container_down	tests/integration/transport-haproxy.sh
+require	stage:transport	QF-CHILD-TOR-SOCAT	integration	transport-socat	t_unrequested_tor_exit_tears_container_down	tests/integration/transport-socat.sh
+require	stage:transport	QF-COLD-START-STREAM	integration	transport-socat	t_readiness_waits_for_a_working_stream	tests/integration/transport-socat.sh
+require	stage:transport	QF-IDLE-HAPROXY	integration	transport-haproxy	t_route_carries_slow_answers_and_idle_reuse	tests/integration/transport-haproxy.sh
+require	stage:transport	QF-IDLE-SOCAT	integration	transport-socat	t_route_carries_slow_answers_and_idle_reuse	tests/integration/transport-socat.sh
+require	stage:transport	QF-UPSTREAM-HAPROXY	integration	transport-haproxy	t_route_never_switches_provider_when_its_provider_fails	tests/integration/transport-haproxy.sh
+require	stage:transport	QF-UPSTREAM-SOCAT	integration	transport-socat	t_route_never_switches_provider_when_its_provider_fails	tests/integration/transport-socat.sh
+require	stage:transport	QF-WAKE-HAPROXY	integration	transport-haproxy	t_sleep_with_dead_streams_respawns_tor	tests/integration/transport-haproxy.sh
+require	stage:transport	QF-WAKE-SOCAT	integration	transport-socat	t_sleep_with_dead_streams_respawns_tor	tests/integration/transport-socat.sh
 require	stage:qualification	S1-OUT-OK	unit	measurement	t_collect_records_every_attempt_with_identity	tests/unit/measurement-tests.sh
 require	stage:qualification	S1-OUT-NXDOMAIN	unit	measurement	t_collect_servfail_is_failure_and_nxdomain_is_answer	tests/unit/measurement-tests.sh
 require	stage:qualification	S1-OUT-SERVFAIL	unit	measurement	t_collect_servfail_is_failure_and_nxdomain_is_answer	tests/unit/measurement-tests.sh
@@ -384,7 +431,11 @@ require	stage:qualification	QU-PERF-FAILURES	unit	performance-acceptance	t_failu
 require	stage:qualification	QU-PERF-RESTART	unit	performance-acceptance	t_restart_is_a_same_session_problem_class	tests/unit/performance-acceptance.sh
 require	stage:qualification	QU-RESTART-NOT-COLLECTED	unit	measurement	t_collect_refuses_the_restart_workload	tests/unit/measurement-tests.sh
 require	stage:qualification	QU-ROUTE-START-ACTIVE-ONLY	integration	scheduling	t_route_start_launcher_demotes_an_onion_only_when_active	tests/integration/scheduling.sh
-count	stage:qualification	22
+require	stage:qualification	QF-STATE-CRASH	unit	state-policy	t_state_crash_mid_commit_keeps_last_generation	tests/unit/state-policy.sh
+require	stage:qualification	QF-STATE-MALFORMED	unit	state-policy	t_state_rejects_malformed_and_never_executes_it	tests/unit/state-policy.sh
+require	stage:qualification	QF-TIMERS-LOCK	unit	state-policy	t_state_overlapping_actors_one_lock_winner	tests/unit/state-policy.sh
+require	stage:qualification	QF-WEDGE-EVIDENCE	unit	state-policy	t_policy_runtime_faults_are_repaired_only_on_evidence	tests/unit/state-policy.sh
+count	stage:qualification	26
 require	stage:qualification-tuning	S1-OUT-OK	unit	measurement	t_collect_records_every_attempt_with_identity	tests/unit/measurement-tests.sh
 require	stage:qualification-tuning	S1-OUT-NXDOMAIN	unit	measurement	t_collect_servfail_is_failure_and_nxdomain_is_answer	tests/unit/measurement-tests.sh
 require	stage:qualification-tuning	S1-OUT-SERVFAIL	unit	measurement	t_collect_servfail_is_failure_and_nxdomain_is_answer	tests/unit/measurement-tests.sh
@@ -436,12 +487,60 @@ require	stage:qualification-tuning	QU-ROUTE-START-WARM	integration	route-transit
 require	stage:qualification-tuning	QU-ROUTE-START-ACTIVE-ONLY	integration	scheduling	t_route_start_launcher_demotes_an_onion_only_when_active	tests/integration/scheduling.sh
 require	stage:qualification-tuning	QU-READY-STREAM-SOCAT	integration	transport-socat	t_readiness_waits_for_a_working_stream	tests/integration/transport-socat.sh
 require	stage:qualification-tuning	QU-READY-STREAM-HAPROXY	integration	transport-haproxy	t_readiness_waits_for_a_working_stream	tests/integration/transport-haproxy.sh
-count	stage:qualification-tuning	51
+require	stage:qualification-tuning	QF-CHILD-CLEAN-HAPROXY	integration	transport-haproxy	t_unrequested_clean_tor_exit_fails_the_container	tests/integration/transport-haproxy.sh
+require	stage:qualification-tuning	QF-CHILD-CLEAN-SOCAT	integration	transport-socat	t_unrequested_clean_tor_exit_fails_the_container	tests/integration/transport-socat.sh
+require	stage:qualification-tuning	QF-CHILD-HAPROXY	integration	transport-haproxy	t_unrequested_haproxy_exit_tears_container_down	tests/integration/transport-haproxy.sh
+require	stage:qualification-tuning	QF-CHILD-LISTENER	integration	transport-socat	t_unrequested_listener_exit_tears_container_down	tests/integration/transport-socat.sh
+require	stage:qualification-tuning	QF-CHILD-TOR-HAPROXY	integration	transport-haproxy	t_unrequested_tor_exit_tears_container_down	tests/integration/transport-haproxy.sh
+require	stage:qualification-tuning	QF-CHILD-TOR-SOCAT	integration	transport-socat	t_unrequested_tor_exit_tears_container_down	tests/integration/transport-socat.sh
+require	stage:qualification-tuning	QF-COLD-START-ROUTE	integration	route-transition	t_unbound_starts_once_its_route_answers	tests/integration/route-transition.sh
+require	stage:qualification-tuning	QF-COLD-START-STREAM	integration	transport-socat	t_readiness_waits_for_a_working_stream	tests/integration/transport-socat.sh
+require	stage:qualification-tuning	QF-IDLE-HAPROXY	integration	transport-haproxy	t_route_carries_slow_answers_and_idle_reuse	tests/integration/transport-haproxy.sh
+require	stage:qualification-tuning	QF-IDLE-SOCAT	integration	transport-socat	t_route_carries_slow_answers_and_idle_reuse	tests/integration/transport-socat.sh
+require	stage:qualification-tuning	QF-STATE-DESIRED	integration	route-transition	t_start_refuses_a_malformed_desired	tests/integration/route-transition.sh
+require	stage:qualification-tuning	QF-UPSTREAM-HAPROXY	integration	transport-haproxy	t_route_never_switches_provider_when_its_provider_fails	tests/integration/transport-haproxy.sh
+require	stage:qualification-tuning	QF-UPSTREAM-SOCAT	integration	transport-socat	t_route_never_switches_provider_when_its_provider_fails	tests/integration/transport-socat.sh
+require	stage:qualification-tuning	QF-WAKE-HAPROXY	integration	transport-haproxy	t_sleep_with_dead_streams_respawns_tor	tests/integration/transport-haproxy.sh
+require	stage:qualification-tuning	QF-WAKE-SOCAT	integration	transport-socat	t_sleep_with_dead_streams_respawns_tor	tests/integration/transport-socat.sh
+count	stage:qualification-tuning	66
 require	plan:transport	QU-ROUTE-START-EXIT	integration	route-transition	t_start_demotes_a_persisted_onion_to_the_exit	tests/integration/route-transition.sh
 require	plan:transport	QU-ROUTE-START-WARM	integration	route-transition	t_start_keeps_the_onion_of_a_proxy_that_did_not_restart	tests/integration/route-transition.sh
 require	plan:transport	QU-READY-STREAM-SOCAT	integration	transport-socat	t_readiness_waits_for_a_working_stream	tests/integration/transport-socat.sh
 require	plan:transport	QU-READY-STREAM-HAPROXY	integration	transport-haproxy	t_readiness_waits_for_a_working_stream	tests/integration/transport-haproxy.sh
+require	plan:transport	QF-CHILD-CLEAN-HAPROXY	integration	transport-haproxy	t_unrequested_clean_tor_exit_fails_the_container	tests/integration/transport-haproxy.sh
+require	plan:transport	QF-CHILD-CLEAN-SOCAT	integration	transport-socat	t_unrequested_clean_tor_exit_fails_the_container	tests/integration/transport-socat.sh
+require	plan:transport	QF-CHILD-HAPROXY	integration	transport-haproxy	t_unrequested_haproxy_exit_tears_container_down	tests/integration/transport-haproxy.sh
+require	plan:transport	QF-CHILD-LISTENER	integration	transport-socat	t_unrequested_listener_exit_tears_container_down	tests/integration/transport-socat.sh
+require	plan:transport	QF-CHILD-TOR-HAPROXY	integration	transport-haproxy	t_unrequested_tor_exit_tears_container_down	tests/integration/transport-haproxy.sh
+require	plan:transport	QF-CHILD-TOR-SOCAT	integration	transport-socat	t_unrequested_tor_exit_tears_container_down	tests/integration/transport-socat.sh
+require	plan:transport	QF-COLD-START-ROUTE	integration	route-transition	t_unbound_starts_once_its_route_answers	tests/integration/route-transition.sh
+require	plan:transport	QF-COLD-START-STREAM	integration	transport-socat	t_readiness_waits_for_a_working_stream	tests/integration/transport-socat.sh
+require	plan:transport	QF-IDLE-HAPROXY	integration	transport-haproxy	t_route_carries_slow_answers_and_idle_reuse	tests/integration/transport-haproxy.sh
+require	plan:transport	QF-IDLE-SOCAT	integration	transport-socat	t_route_carries_slow_answers_and_idle_reuse	tests/integration/transport-socat.sh
+require	plan:transport	QF-STATE-DESIRED	integration	route-transition	t_start_refuses_a_malformed_desired	tests/integration/route-transition.sh
+require	plan:transport	QF-UPSTREAM-HAPROXY	integration	transport-haproxy	t_route_never_switches_provider_when_its_provider_fails	tests/integration/transport-haproxy.sh
+require	plan:transport	QF-UPSTREAM-SOCAT	integration	transport-socat	t_route_never_switches_provider_when_its_provider_fails	tests/integration/transport-socat.sh
+require	plan:transport	QF-WAKE-HAPROXY	integration	transport-haproxy	t_sleep_with_dead_streams_respawns_tor	tests/integration/transport-haproxy.sh
+require	plan:transport	QF-WAKE-SOCAT	integration	transport-socat	t_sleep_with_dead_streams_respawns_tor	tests/integration/transport-socat.sh
 require	plan:controller	QU-ROUTE-START-ACTIVE-ONLY	integration	scheduling	t_route_start_launcher_demotes_an_onion_only_when_active	tests/integration/scheduling.sh
+require	plan:controller	QF-ACK-LIVE	live	controller-active	t_1_cells	tests/live/controller-active.sh
+require	plan:controller	QF-ACK-SILENCE	integration	recovery-actions	t_image_silence_is_not_acknowledged	tests/integration/recovery-actions.sh
+require	plan:controller	QF-ACK-WRITE	integration	recovery-actions	t_request_write_is_never_an_acknowledgement	tests/integration/recovery-actions.sh
+require	plan:controller	QF-BRIDGE-DISTRIBUTOR	integration	bridge-lifecycle	t_unreachable_distributor_keeps_the_working_pool	tests/integration/bridge-lifecycle.sh
+require	plan:controller	QF-BRIDGE-WEAK-FLOOR	integration	bridge-lifecycle	t_filter_never_leaves_fewer_than_three_bridges	tests/integration/bridge-lifecycle.sh
+require	plan:controller	QF-BRIDGE-WEAK-IDLE	integration	bridge-lifecycle	t_weak_bridge_not_running_is_filtered_without_restart	tests/integration/bridge-lifecycle.sh
+require	plan:controller	QF-BRIDGE-WEAK-NOSTATE	integration	bridge-lifecycle	t_unreadable_tor_state_changes_nothing	tests/integration/bridge-lifecycle.sh
+require	plan:controller	QF-BRIDGE-WEAK-RUNNING	integration	bridge-lifecycle	t_weak_running_bridge_is_dropped_and_the_proxy_recreated	tests/integration/bridge-lifecycle.sh
+require	plan:controller	QF-STATE-CRASH	unit	state-policy	t_state_crash_mid_commit_keeps_last_generation	tests/unit/state-policy.sh
+require	plan:controller	QF-STATE-MALFORMED	unit	state-policy	t_state_rejects_malformed_and_never_executes_it	tests/unit/state-policy.sh
+require	plan:controller	QF-TIMERS-LOCK	unit	state-policy	t_state_overlapping_actors_one_lock_winner	tests/unit/state-policy.sh
+require	plan:controller	QF-TIMERS-TICK	integration	recovery-actions	t_two_processes_racing_one_tick_wins	tests/integration/recovery-actions.sh
+require	plan:controller	QF-UPSTREAM-CONTROLLER	integration	controller-interaction	t_observed_onion_failure_switches_route_not_tor	tests/integration/controller-interaction.sh
+require	plan:controller	QF-UPSTREAM-LIVE	live	controller-active	t_1_cells	tests/live/controller-active.sh
+require	plan:controller	QF-WAKE-CONTROLLER	live	controller-wake	t_1_wake	tests/live/controller-wake.sh
+require	plan:controller	QF-WEDGE-BOUNDED	integration	recovery-actions	t_hung_runtime_is_bounded_and_cleaned	tests/integration/recovery-actions.sh
+require	plan:controller	QF-WEDGE-EVIDENCE	unit	state-policy	t_policy_runtime_faults_are_repaired_only_on_evidence	tests/unit/state-policy.sh
+require	plan:controller	QF-WEDGE-LIVE	live	controller-active	t_1_cells	tests/live/controller-active.sh
 # plan:qualification (sub-plan 05 Stage 2 gate). No owner row: scenarios owned by
 # qualification that ran in Stage 1 and Task 2.1 live groups (tune-transport,
 # tune-idle-wake, controller-active, controller-wake, no-direct, fault-network)

@@ -13,10 +13,25 @@ esac
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
+# The rule below runs /usr/local/sbin/start-container-root.sh as root without
+# a password: a directory on that path this user can write would let the user
+# swap the helper and run anything as root. ND_PERSIST_ROOT is for the fixture
+# tests only.
+for d in "${ND_PERSIST_ROOT:-}/usr/local" "${ND_PERSIST_ROOT:-}/usr/local/sbin"; do
+  [ -e "$d" ] || [ -L "$d" ] || continue
+  if [ -L "$d" ] || [ -z "$(find "$d" -maxdepth 0 -user root ! -perm -g+w ! -perm -o+w)" ]; then
+    echo "$d must be a directory owned by root and writable by no one else: the agent's passwordless rule would let this user replace its root helper. Fix its owner and mode (sudo chown root:wheel; sudo chmod 755) and re-run." >&2
+    exit 1
+  fi
+done
+
 # -- sudoers: allow the LaunchAgent to run only the pre/post helper --
 tmp_sudoers="$(mktemp)"
 trap 'rm -f "$tmp_sudoers"' EXIT
 sed "s/__USERNAME__/$(whoami)/" "$HERE/start-container.sudoers" > "$tmp_sudoers"
+# Checked before it goes live: a rule sudo cannot parse breaks sudo for
+# everyone.
+sudo visudo -cf "$tmp_sudoers"
 sudo install -m 440 "$tmp_sudoers" /etc/sudoers.d/start-container
 sudo visudo -cf /etc/sudoers.d/start-container
 

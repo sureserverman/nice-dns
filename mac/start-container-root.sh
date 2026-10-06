@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Privileged pre/post helper for mac/start-container.sh.
 #
 # pre:           tear down Mullvad (if installed) so it doesn't fight the
@@ -39,6 +39,12 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
     echo "run as root" >&2
     exit 1
   fi
+else
+  # The LaunchAgent reaches this script through a NOPASSWD rule, and macOS
+  # sudo keeps the caller's PATH (no secure_path): a root run resolves its
+  # tools from the system directories only, and the shebang names its shell.
+  PATH=/usr/bin:/bin:/usr/sbin:/sbin
+  export PATH
 fi
 
 MULLVAD_PLIST="$R/Library/LaunchDaemons/net.mullvad.daemon.plist"
