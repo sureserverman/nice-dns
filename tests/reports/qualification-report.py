@@ -176,6 +176,18 @@ def main(argv):
       "every sample, a timeout counted at its elapsed time. The workloads share a cache class, not a "
       "session: before and after were measured on different days." % (rs["baseline"]["run_id"], rs["soak"]["run_id"]))
     w("")
+    w("How to read it (stated, not computed):")
+    w("")
+    w("- The soak's acceptance rule (timeouts and failures each at most 1 in 100 of the steady samples, "
+      "p95 recorded and never gated) was adopted on 2026-10-04, after the first 24 h soak failed the "
+      "frozen limits (macOS 39/864 cold timeouts, traced to weak Tor bridges and fixed). Under the "
+      "frozen per-cell limits a single onion-route timeout fails macOS (0/30), and its frozen cold p95 "
+      "(636 ms) was measured on the exit route; the onion route runs 1.5-2.4 s.")
+    w("- QU-LATENCY means the latency was recorded on the soak's samples; it is not a latency pass.")
+    w("- A timeout count is judged on the point estimate; the interval shows where its upper bound lies.")
+    w("- Linux showed no latency class improved beyond measured variability (DEC-016); the improvement "
+      "claim rests on macOS (Stage 1 comparisons).")
+    w("")
     w("| Cell | Workload | Before n | Before p50 | Before p95 | Before timeouts (95% CI) | After n | After p50 | After p95 | After timeouts (95% CI) |")
     w("|---|---|---|---|---|---|---|---|---|---|")
     for key in sorted(soakcells):

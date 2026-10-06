@@ -109,6 +109,22 @@ Proxy images (the unreleased commits):
 
 ## Known limits
 
+Found by the Stage 2 gate reviews and deferred (user decision 2026-10-06:
+qualify what was soaked; any product fix would need a new 24 h soak):
+
+- The restart that adopts a filtered bridge set takes no state lock, so it
+  can overlap a restart the minutely tick decides (BL-030).
+- An outage might make a healthy bridge look weak and keep it out for 30
+  days; plausible, not observed (BL-031).
+- macOS: the root helper's `post` can stop early when the machine is
+  offline, before the scoped-DNS pf anchor is in place, and the agent's fast
+  path does not reassert the anchor, so a pf flush with the stack up
+  reopens the scoped leak until the next rebuild (BL-032, BL-033).
+
+Also:
+
+- Linux showed no latency class improved beyond measured variability
+  (DEC-016); the latency gain rests on macOS.
 - Onion stalls of about a minute are not failed over: the controller probes
   once a minute (backlog BL-027). They are the soak's remaining timeouts.
 - The restart that adopts a filtered bridge set was proven live on Linux
