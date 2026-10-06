@@ -53,3 +53,4 @@ unit	soak-verdict	tests/unit/soak-verdict.sh	local
 live	no-direct	tests/live/no-direct.sh	live
 live	fault-network	tests/live/fault-network.sh	live
 live	soak	tests/live/soak.sh	live
+live	soak-receipt	tests/live/soak-receipt.sh	live
