@@ -936,7 +936,7 @@ Sources: ARCH-07, design "Bridge lifecycle".
     - `bridges.env` is replaced only if it still holds the set the
       evaluation started from, so a slow run never overwrites a newer one;
     - a changed set is written atomically (0600, `.prev` kept) and restarts
-      nothing.
+      nothing itself (the refresh around it may, below).
   - Since Sub-plan 5 Task 2.2, nd_bridges_refresh first reads the running
     proxy's Tor state (`/app/data/tor/state`) and leaves out of the
     candidate every bridge with at least 20 uses and under 90% stream
