@@ -25,6 +25,8 @@
 #   requires NAME PATH SHA256                        (linked receipt, verified
 #            recursively)
 #   cell     PLATFORM PROXY PIHOLE TARGET IMAGE_GEN observed|blocked|failed
+#            (IMAGE_GEN: key=value, or the soak label
+#            generation-of-<sha40>+proxy-<sha12>)
 #            (a failed cell is recorded, never dropped, and never verifies)
 #   scenario ID CELL|- pass|fail|blocked ARTIFACT SHA256 IMAGE_GEN|-
 #   aggregate PATH SHA256 SAMPLES                     (must equal stats.sh
@@ -279,7 +281,13 @@ check_cells() {
     case "$seen" in *"|$key|"*) err "$f: cell $key listed twice" ;; esac
     seen="$seen$key|"
     [ -n "$t" ] && [ "$t" != - ] || err "$f: cell $key has no target identity"
-    case "$g" in *=*) ;; *) err "$f: cell $key has no image generation" ;; esac
+    # key=value generations (installs), or the soak harness's exact label
+    # generation-of-<nice-dns sha40>+proxy-<proxy sha12> (tests/live/soak.sh).
+    case "$g" in
+      *=*) ;;
+      *) printf '%s\n' "$g" | grep -Eq '^generation-of-[0-9a-f]{40}[+]proxy-[0-9a-f]{12}$' \
+           || err "$f: cell $key has no image generation" ;;
+    esac
     case "$s" in
       observed) n=$((n + 1)) ;;
       blocked) ;;

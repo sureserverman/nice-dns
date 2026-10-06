@@ -78,8 +78,15 @@ rv_build() {
   while IFS='	' read -r p x h; do
     case "$p" in ''|'#'*) continue ;; esac
     if [ "$cells" = rep ] && [ "$x/$h" != haproxy/standard ]; then continue; fi
-    printf 'cell\t%s\t%s\t%s\ttarget-%s\tpihole=sha256:%s1;unbound=sha256:%s2;proxy=sha256:%s3\tobserved\n' \
-      "$p" "$x" "$h" "$p" "$p$x$h" "$p$x$h" "$p$x$h" >>"$r"
+    if [ -n "${RV_SOAK_GEN:-}" ]; then
+      # The soak harness's identity label (tests/live/soak.sh): the nice-dns
+      # source commit and the candidate proxy build.
+      printf 'cell\t%s\t%s\t%s\ttarget-%s\tgeneration-of-%s+proxy-%s\tobserved\n' \
+        "$p" "$x" "$h" "$p" "$(git -C "$RV_SIB/nice-dns" rev-parse HEAD)" "$(printf '%s' "$p$x$h" | sha256sum | cut -c1-12)" >>"$r"
+    else
+      printf 'cell\t%s\t%s\t%s\ttarget-%s\tpihole=sha256:%s1;unbound=sha256:%s2;proxy=sha256:%s3\tobserved\n' \
+        "$p" "$x" "$h" "$p" "$p$x$h" "$p$x$h" "$p$x$h" >>"$r"
+    fi
   done <"$RV_MAN/matrix.tsv"
   while IFS='	' read -r a sc scope _; do
     [ "$a" = scenario ] || continue
@@ -324,6 +331,24 @@ t_platform_rule_holds_without_options() {
   rv "$CASE_DIR/q/receipt.tsv" --require-matrix all
   assert_nonzero "$RV_RC" "a qualification receipt linking a soak receipt without Linux"
   assert_match 'no observed linux cell' "$RV_OUT" "the link names the missing platform"
+}
+
+# The soak harness labels its samples' image generation
+# generation-of-<nice-dns sha40>+proxy-<proxy sha12>: an exact identity
+# without '='. Accepted in that form only.
+t_soak_generation_label_is_an_identity() {
+  RV_SOAK_GEN=1 rv_build soak "$CASE_DIR/s" rep
+  rv "$CASE_DIR/s/receipt.tsv"
+  assert_rc 0 "$RV_RC" "the soak label verifies: $RV_OUT"
+  local head bad
+  head="$(git -C "$RV_SIB/nice-dns" rev-parse HEAD)"
+  for bad in 'generation-of-abc+proxy-0123456789ab' 'generation-of-zz' "generation-of-$head+proxy-" 'nonsense'; do
+    rm -rf "$CASE_DIR/s"; RV_SOAK_GEN=1 rv_build soak "$CASE_DIR/s" rep
+    rv_edit "$CASE_DIR/s/receipt.tsv" '$1 == "cell" && $2 == "linux" { $6 = "'"$bad"'" } { print }'
+    rv "$CASE_DIR/s/receipt.tsv"
+    assert_nonzero "$RV_RC" "cell generation '$bad'"
+    assert_match 'linux/haproxy/standard has no image generation' "$RV_OUT" "'$bad' is not an identity"
+  done
 }
 
 t_platform_rule_is_a_known_manifest_row() {
