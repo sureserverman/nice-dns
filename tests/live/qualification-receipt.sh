@@ -13,15 +13,31 @@
 #                    after the return, no manual repair
 #
 # A cell whose checks did not all finish stays in the receipt as failed, and
-# the receipt then never verifies. QR_CELLS_DIR overrides the evidence
-# directory (a dry run's), for a rehearsal outside the plan.
+# the receipt then never verifies.
+#
+# Identity (Stage 2 gate reviews): every cell must have run this nice-dns
+# HEAD and the sibling HEADs the receipt records (cell.tsv source_sha,
+# proxy_sha, hardened_sha); the soak link is exactly the receipt
+# live/soak-receipt verified in this run ($ARTIFACT_DIR/soak-receipt.tsv);
+# the other links are the newest receipts of each name whose sources are
+# all clean and which verify (a test run on a dirty tree can write one as a
+# side effect). nice-dns itself must be clean.
+# QR_REHEARSAL=1 with QR_CELLS_DIR (a dry run's evidence) rehearses the
+# assembly: the receipt is written under the case directory, never under
+# receipts/, and links the newest verified soak receipt.
 
 QR_SIBS="${NICE_DNS_SIBLINGS_DIR:-$(dirname "$NICE_DNS_ROOT")}"
 
 qr_get() { awk -F '\t' -v k="$1" '$1 == k { print $2; exit }' "$2" 2>/dev/null; }
+# qr_newest <root> <name>: the newest receipt of <name> with every source
+# row clean that verifies on its own.
 qr_newest() {
-  local root="$1" n="$2" t
-  for t in "$root"/receipts/"$n"/*/receipt.tsv; do [ -f "$t" ] && printf '%s\n' "$t"; done | LC_ALL=C sort | tail -1
+  local root="$1" n="$2" t c
+  for t in $(for c in "$root"/receipts/"$n"/*/receipt.tsv; do [ -f "$c" ] && printf '%s\n' "$c"; done | LC_ALL=C sort -r); do
+    awk -F '\t' '$1 == "source" && $4 != "clean" { d = 1 } END { exit d }' "$t" || continue
+    bash "$NICE_DNS_ROOT/tests/reports/verify.sh" check "$t" >/dev/null 2>&1 || continue
+    printf '%s\n' "$t"; return 0
+  done
 }
 qr_clean() { GIT_OPTIONAL_LOCKS=0 git -C "$1" status --porcelain | grep -v '^?? bridge-eval/bridge-eval$'; }
 
@@ -38,9 +54,15 @@ qr_scenario() {
 t_1_qualification_receipt() {
   local root out r cells d key plat proxy ph alias gen st repo cd n t v sr
   root="$(dirname "$(dirname "$ARTIFACT_DIR")")"
-  cells="${QR_CELLS_DIR:-$ARTIFACT_DIR/qualification-cells}"
+  if [ "${QR_REHEARSAL:-}" = 1 ]; then
+    cells="${QR_CELLS_DIR:?QR_REHEARSAL needs QR_CELLS_DIR}"; out="$CASE_DIR/rehearsal"
+  else
+    [ -z "${QR_CELLS_DIR:-}" ] || fail "QR_CELLS_DIR is for a rehearsal (QR_REHEARSAL=1) only"
+    cells="$ARTIFACT_DIR/qualification-cells"; out="$root/receipts/qualification/$RUN_ID"
+  fi
   [ -d "$cells" ] || fail "no qualification-cells evidence at $cells"
-  out="$root/receipts/qualification/$RUN_ID"; r="$out/receipt.tsv"
+  [ -z "$(qr_clean "$NICE_DNS_ROOT")" ] || fail "nice-dns is not committed: the receipt names HEAD"
+  r="$out/receipt.tsv"
   [ ! -e "$out" ] || fail "this run already has a qualification receipt at $out"
   mkdir -p "$out/cells" || fail "cannot create $out"
   {
@@ -60,8 +82,13 @@ t_1_qualification_receipt() {
     printf 'product\tnice-dns\t%s\n' "$(git -C "$NICE_DNS_ROOT" rev-parse HEAD)"
     printf 'product\tpi-hole-hardened\t%s\n' "$(git -C "$QR_SIBS/pi-hole-hardened" rev-parse HEAD)"
     for n in baseline transport controller installers soak; do
-      t="$(qr_newest "$root" "$n")"
-      [ -n "$t" ] || fail "no $n receipt to link"
+      if [ "$n" = soak ] && [ "${QR_REHEARSAL:-}" != 1 ]; then
+        t="$(cat "$ARTIFACT_DIR/soak-receipt.tsv" 2>/dev/null)"
+        [ -f "$t" ] || fail "no soak receipt from this run's live/soak-receipt"
+      else
+        t="$(qr_newest "$root" "$n")"
+      fi
+      [ -n "$t" ] || fail "no clean, verifying $n receipt to link"
       printf 'requires\t%s\t%s\t%s\n' "$n" "$t" "$(sha256sum "$t" | cut -d' ' -f1)"
     done
     printf 'limit\tlatency-per-platform\t-\tscope=sub-plan-5\tthe 24 h soak and latency are judged on one representative cell per platform (the linked soak receipt; user decisions 2026-10-06); the other cells are checked for cold start, no direct query and network loss, not for latency\n'
@@ -81,6 +108,16 @@ t_1_qualification_receipt() {
     fi
     alias="$(basename "$(dirname "$d")")"
     gen="$(qr_get generation "$d/cell.tsv")"
+    # The cell ran what this receipt names.
+    [ "$(qr_get source_sha "$d/cell.tsv")" = "$(git -C "$NICE_DNS_ROOT" rev-parse HEAD)" ] \
+      || fail "$key ran nice-dns $(qr_get source_sha "$d/cell.tsv"), not HEAD"
+    [ "$(qr_get proxy_sha "$d/cell.tsv")" = "$(git -C "$QR_SIBS/tor-$proxy" rev-parse HEAD)" ] \
+      || fail "$key ran tor-$proxy $(qr_get proxy_sha "$d/cell.tsv"), not its HEAD"
+    if [ "$ph" = hardened ]; then
+      [ "$(qr_get hardened_sha "$d/cell.tsv")" = "$(git -C "$QR_SIBS/pi-hole-hardened" rev-parse HEAD)" ] \
+        || fail "$key ran pi-hole-hardened $(qr_get hardened_sha "$d/cell.tsv"), not its HEAD"
+    fi
+    _nd_tick
     printf 'cell\t%s\t%s\t%s\t%s\t%s\tobserved\n' "$plat" "$proxy" "$ph" "$alias" "$gen" >>"$r"
     st=fail; [ "$(qr_get cold_start "$d/cold-start.tsv")" = pass ] && [ "$(qr_get manual_repair "$d/cold-start.tsv")" = none ] && st=pass
     qr_scenario "$r" "$out" QU-COLD-START "$key" "$gen" "$d/cold-start.tsv" "$st"

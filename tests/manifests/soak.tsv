@@ -19,3 +19,4 @@ content	QU-SOAK	^steady_cold=pass$
 content	QU-SOAK	^steady_warm=pass$
 content	QU-SOAK	^manual_repair=none$
 content	QU-SOAK	^hours=24$
+content	QU-SOAK	^idle_reconnect=pass$
