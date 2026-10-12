@@ -31,7 +31,7 @@ curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install
 curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac.sh -o install-mac.sh && bash install-mac.sh
 ```
 
-Re-running the installer tears down the existing stack and recreates it cleanly.
+Re-running the installer prepares the new images first, then replaces the running stack, and puts the previous one back if anything fails. Tor state, the Pi-hole lists and the admin password are kept; only `uninstall` removes them.
 
 **Mullvad VPN (Linux).** The installer reads Mullvad's DNS setting, records
 it, and ends with `mullvad dns set custom 127.0.0.1`: with any other setting
