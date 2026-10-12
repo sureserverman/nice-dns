@@ -77,6 +77,11 @@ fi
 if [ -s "$FAKE/sigint" ] && printf '%s\n' "$l" | grep -Eq -f "$FAKE/sigint"; then
   echo "$me: injected interrupt" >&2; kill -INT "$PPID"; exit 1
 fi
+# A Ctrl-C as a terminal sends it: to the installer and to this call, which
+# dies of it ($FAKE/sigint_group). Bash then exits by the signal itself.
+if [ -s "$FAKE/sigint_group" ] && printf '%s\n' "$l" | grep -Eq -f "$FAKE/sigint_group"; then
+  echo "$me: injected group interrupt" >&2; kill -INT "$PPID"; trap - INT; kill -INT $$; exit 1
+fi
 store="$FAKE/images"; touch "$store"
 # unbound_start <how>: the route include Unbound reads when it starts
 # ($FAKE/unbound-starts; Sub-plan 5 Task 1.2): its marker, or route-absent.
@@ -216,6 +221,11 @@ case "$me" in
   uname) case "${1:-}" in -m) echo "$FAKE_ARCH" ;; *) echo "$FAKE_UNAME" ;; esac; exit 0 ;;
   crun) echo "crun version 1.19.1"; exit 0 ;;
   dig)
+    # The Mullvad step's probe (+time=5) can be made to time out alone
+    # ($FAKE/dig_fail_probe: a stack slow through Tor), and a local stub
+    # resolver at 127.0.0.53 can answer ($FAKE/stub_answers).
+    case " $* " in *" +time=5 "*) [ -f "$FAKE/dig_fail_probe" ] && { echo ';; connection timed out'; exit 9; } ;; esac
+    case "$1" in @127.0.0.53) if [ -f "$FAKE/stub_answers" ]; then echo 104.16.132.229; exit 0; fi; echo ';; connection refused'; exit 9 ;; esac
     # In a world the chain answers only while the stack is up ($FAKE/dns_up).
     if [ -n "${FAKE_ROOT:-}" ] && [ ! -f "$FAKE/dns_up" ]; then
       echo ';; connection timed out; no servers could be reached'; exit 9
@@ -230,6 +240,8 @@ case "$me" in
           if [ -f "$FAKE/never_ready" ]; then rm -f "$FAKE/never_ready"
           elif [ ! -f "$FAKE/rollback_never_ready" ]; then : >"$FAKE/dns_up"; fi ;;
       esac
+      # The pod runs while the stack is up.
+      case "$2 $*" in "is-active "*nice-dns-pod.service*) [ -f "$FAKE/dns_up" ] || exit 3 ;; esac
       [ -f "$FAKE/fail_user_$2" ] && exit 1
       exit 0
     fi
@@ -334,6 +346,7 @@ case "$me" in
         [ -f "$FAKE/mullvad_unreadable" ] && { echo "Error: Management RPC server or client error" >&2; exit 1; }
         cat "$st"; exit 0 ;;
       "dns set")
+        all="$*"
         case "$3" in
           custom) shift 3; { echo "Custom DNS: yes"; echo "Servers:"; for a in "$@"; do echo "$a"; done; } >"$st" ;;
           default)
@@ -347,9 +360,27 @@ case "$me" in
             } >"$st" ;;
           *) exit 2 ;;
         esac
+        # Connected ($FAKE/mullvad_connected, in a world), Mullvad writes its
+        # tunnel servers into resolv.conf: custom 127.0.0.1 -> 127.0.0.1,
+        # anything else -> its tunnel resolver. $FAKE/mullvad_settle holds how
+        # many sleeps pass before a custom 127.0.0.1 write lands.
+        if [ -n "${FAKE_ROOT:-}" ] && [ -f "$FAKE/mullvad_connected" ]; then
+          rf="$FAKE_ROOT/etc/resolv.conf"; rm -f "$rf"
+          if [ "$all" = "dns set custom 127.0.0.1" ] && [ -s "$FAKE/mullvad_settle" ]; then
+            printf 'nameserver 10.64.0.1\n' >"$rf"; cp "$FAKE/mullvad_settle" "$FAKE/mullvad_pending"
+          elif [ "$all" = "dns set custom 127.0.0.1" ]; then printf 'nameserver 127.0.0.1\n' >"$rf"
+          else printf 'nameserver 10.64.0.1\n' >"$rf"; fi
+        fi
         echo "Updated DNS settings"; exit 0 ;;
     esac
     exit 2 ;;
+  sleep)
+    if [ -s "$FAKE/mullvad_pending" ]; then
+      n=$(($(cat "$FAKE/mullvad_pending") - 1))
+      if [ "$n" -le 0 ]; then rm -f "$FAKE/mullvad_pending" "$FAKE_ROOT/etc/resolv.conf"; printf 'nameserver 127.0.0.1\n' >"$FAKE_ROOT/etc/resolv.conf"
+      else echo "$n" >"$FAKE/mullvad_pending"; fi
+    fi
+    exit 0 ;;
 esac
 exit 0
 STUB

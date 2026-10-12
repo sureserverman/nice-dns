@@ -33,6 +33,13 @@ curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install
 
 Re-running the installer tears down the existing stack and recreates it cleanly.
 
+**Mullvad VPN (Linux).** The installer reads Mullvad's DNS setting, records
+it, and ends with `mullvad dns set custom 127.0.0.1`: with any other setting
+a connected Mullvad overwrites the resolver pin. If Mullvad's custom DNS is
+already `127.0.0.1`, Mullvad is connected and nice-dns is not running, the host has no DNS, so the
+fetch above fails: run `mullvad dns set default` first. A failed install, and
+the uninstall, put the recorded setting back.
+
 ### Arguments
 
 ```
@@ -126,7 +133,7 @@ curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install
 curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac.sh -o install-mac.sh && bash install-mac.sh uninstall
 ```
 
-Removes quadlets/LaunchAgent, pods, containers, images, the network, and restores system DNS. Shared system tweaks (PPA pin, sysctl, AppArmor, Homebrew packages, Rosetta) are left in place.
+Removes quadlets/LaunchAgent, pods, containers, images, the network, and restores system DNS. On Linux it also gives Mullvad back the DNS setting it had before nice-dns, unless that setting was changed since. Shared system tweaks (PPA pin, sysctl, AppArmor, Homebrew packages, Rosetta) are left in place.
 
 ## License
 

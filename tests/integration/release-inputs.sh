@@ -48,22 +48,31 @@ t_lock_is_well_formed() {
 # A public resolver written into the product bypasses the host's resolver,
 # and a VPN that confines DNS (Mullvad custom DNS) refuses it (BL-047,
 # measured 2026-10-11). So each one is declared in release/bootstrap.tsv: a
-# code line matches a `literal` row (the same path, the row's anchored ERE);
-# a comment line names a declared row ("literal <id>") and mentions only the
-# resolvers that row's lines carry. Every hit counts, comment or not, and a
-# row no line matches is stale. The scan is of the checkout under test
-# ($NICE_DNS_ROOT: run a copy's tests/run.sh to scan the copy).
+# line matches a `literal` row (the same path, the row's anchored ERE), or,
+# for a comment line, names a declared row ("literal <id>") and mentions only
+# the resolvers that row's lines carry. Every hit counts, comment or not, and
+# a row no line matches is stale. The scan covers every file the product
+# ships (all but .git, .claude, tests, docs, proof and Markdown) for the
+# well-known public resolvers, IPv4 and IPv6 (RI_PUBLIC_RESOLVERS); it is of
+# the checkout under test ($NICE_DNS_ROOT: run a copy's tests/run.sh to scan
+# the copy). A resolver outside that list, or one built at run time, is not
+# seen.
+RI_PUBLIC_V4='1\.1\.1\.1|1\.0\.0\.1|8\.8\.8\.8|8\.8\.4\.4|9\.9\.9\.(9|10|11)|149\.112\.112\.(112|10|11)|208\.67\.22[02]\.22[02]|94\.140\.1[45]\.1[45]|4\.2\.2\.[1-6]|8\.26\.56\.26|8\.20\.247\.20|84\.200\.(69\.80|70\.40)|64\.6\.6[45]\.6|185\.228\.16[89]\.9|76\.76\.(2|10)\.0'
+RI_PUBLIC_RESOLVERS="(^|[^0-9.])($RI_PUBLIC_V4)([^0-9.]|\$)|2606:4700:4700:|2001:4860:4860:|2620:fe::|2620:119:(35|53)::|2a10:50c0::|2001:1608:10:25:"
+
 t_every_public_resolver_literal_is_declared() {
   local root="$NICE_DNS_ROOT" hits bad
   assert_eq "$(printf 'schema\tnice-dns-bootstrap/1')" "$(head -n 1 "$root/release/bootstrap.tsv")" "the inventory's schema"
-  hits="$(cd "$root" && grep -rnIE -- '\b(1\.1\.1\.1|1\.0\.0\.1|9\.9\.9\.9|8\.8\.8\.8)\b' lib deb scripts mac release install-*.sh)"
+  hits="$(cd "$root" && find . \( -path ./.git -o -path ./.claude -o -path ./tests -o -path ./docs -o -path ./proof \) -prune \
+    -o -type f ! -name '*.md' -print | sed 's|^\./||' | sort | xargs grep -nIE -- "$RI_PUBLIC_RESOLVERS")"
   assert_ne "" "$hits" "the scan finds the declared literals"
-  bad="$(printf '%s\n' "$hits" | awk -F '\t' '
+  bad="$(printf '%s\n' "$hits" | RI_PUB="^($RI_PUBLIC_V4)\$" awk -F '\t' '
+    BEGIN { pub = ENVIRON["RI_PUB"] }
     function ips(s, set,   n, t, i, k) {
       n = split(s, t, /[^0-9.]+/); k = 0
       for (i = 1; i <= n; i++) {
         sub(/\.+$/, "", t[i]); sub(/^\.+/, "", t[i])
-        if (t[i] ~ /^(1\.1\.1\.1|1\.0\.0\.1|9\.9\.9\.9|8\.8\.8\.8)$/) { set[t[i]] = 1; k++ }
+        if (t[i] ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && t[i] ~ pub) { set[t[i]] = 1; k++ }
       }
       return k
     }
@@ -81,13 +90,14 @@ t_every_public_resolver_literal_is_declared() {
       line = $0
       p = line; sub(/:.*/, "", p); rest = substr(line, length(p) + 2)
       ln = rest; sub(/:.*/, "", ln); text = substr(rest, length(ln) + 2)
-      if (text ~ /^[ \t]*#/) { nc++; cwhere[nc] = p ":" ln; ctext[nc] = text; next }
       ok = 0
       for (i = 1; i <= n; i++) if (rpath[i] == p && text ~ rere[i]) {
         ok = 1; used[i] = 1
         split("", s); ips(text, s); for (a in s) carries[rid[i] SUBSEP a] = 1
       }
-      if (!ok) print p ":" ln ": undeclared: " text
+      if (ok) next
+      if (text ~ /^[ \t]*#/) { nc++; cwhere[nc] = p ":" ln; ctext[nc] = text; next }
+      print p ":" ln ": undeclared: " text
     }
     END {
       for (c = 1; c <= nc; c++) {

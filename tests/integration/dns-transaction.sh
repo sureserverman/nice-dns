@@ -751,15 +751,17 @@ t_a_profile_that_cannot_be_reset_fails_the_restore() {
 # Mullvad VPN, connected, writes its own servers into /etc/resolv.conf and
 # overwrites a pin within milliseconds unless its setting is custom 127.0.0.1
 # (measured 2026-10-12, Mullvad 2026.3). The Linux installer records the
-# setting it finds, switches to Mullvad's default DNS when a loopback-only
-# custom setting has nothing answering yet, sets custom 127.0.0.1 after the
-# pin, and puts the recorded setting back on a rollback or an uninstall.
+# setting it finds, switches to Mullvad's default DNS only when no nice-dns
+# stack runs and none of a loopback-only custom setting's servers answers,
+# sets custom 127.0.0.1 after the pin, and puts a recorded setting back on a
+# rollback, a failed preparation or an uninstall.
 
 # dt_mullvad <setting>: Mullvad on the host, its setting as `mullvad dns get`
 # prints it: "custom <ip>..." or "default [<block>...]" (ads, malware, ...).
 dt_mullvad() {
   local m="$1" k v
   ln -sf fakecmd "$IP_BIN/mullvad"
+  # shellcheck disable=SC2086  # the setting's words
   set -- $1
   shift
   if [ "$m" = "${m#custom}" ]; then
@@ -777,8 +779,9 @@ dt_mullvad() {
 dt_mullvad_calls() { grep -E '^mullvad ' "$FAKE_LOG" || true; }
 dt_mullvad_now() { tr '\n' ' ' <"$FAKE/mullvad_dns" | sed 's/ $//'; }
 # dt_newest_gen: the generation the last install allocated (activated or not).
-dt_newest_gen() { ls -1 "$IP_STATE/generations" | sort | tail -n 1; }
+dt_newest_gen() { find "$IP_STATE/generations" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tail -n 1; }
 dt_mullvad_receipt() { cat "$IP_STATE/generations/$(dt_newest_gen)/mullvad-dns.tsv" 2>/dev/null; }
+dt_mv_rows() { printf 'schema\tnice-dns-mullvad-dns/1'; printf '\n%s' "$@" | tr '|' '\t'; }
 
 dt_linux_eps() {
   local ep out=""
@@ -792,14 +795,16 @@ t_mullvad_setting_is_recorded_switched_and_set_to_loopback() {
   for ep in $(dt_linux_eps); do
     (
       local sw pre pin set
-      # A first install with Mullvad's custom DNS at 127.0.0.1 and nothing
-      # answering there: the host has no DNS until Mullvad's default is used.
+      # A first install with Mullvad's custom DNS at 127.0.0.1, nothing
+      # answering there and no stack: the host has no DNS until Mullvad's
+      # default is used. custom 127.0.0.1 with no earlier record is nice-dns's
+      # own address: the setting from before nice-dns stands as the default.
       dt_world "$ep" resolved
       dt_mullvad "custom 127.0.0.1"
       ip_install "$ep"
       assert_rc 0 "$IP_RC" "$ep: the install succeeds: $IP_OUT"
       assert_eq "$(printf 'mullvad dns get\nmullvad dns set default\nmullvad dns set custom 127.0.0.1')" "$(dt_mullvad_calls)" "$ep: the exact Mullvad calls"
-      assert_eq "$(printf 'schema\tnice-dns-mullvad-dns/1\nbefore_install\tcustom\t127.0.0.1\nbefore_nicedns\tcustom\t127.0.0.1\nswitched\tdefault')" \
+      assert_eq "$(dt_mv_rows 'before_install|custom|127.0.0.1' 'before_nicedns|default' 'switched|default')" \
         "$(dt_mullvad_receipt)" "$ep: the receipt"
       assert_eq 600 "$(ip_mode "$IP_STATE/generations/$(dt_newest_gen)/mullvad-dns.tsv")" "$ep: the receipt is 0600"
       sw="$(ip_first "$FAKE_LOG" '^mullvad dns set default$')"
@@ -813,22 +818,40 @@ $(cat -n "$FAKE_LOG")"
       dt_pinned || fail "$ep: pinned at the end: $(dt_dns_state)"
     ) || exit 1
     (
-      # Default DNS with content blocking before nice-dns: no switch (the host
-      # resolves), and a reinstall carries the setting from before nice-dns.
+      # Default DNS with content blocking before nice-dns, Mullvad connected
+      # and slow to write custom 127.0.0.1 (two sleeps): no switch, the pin
+      # check waits for Mullvad's write, and a reinstall carries the setting
+      # from before nice-dns.
       dt_world "$ep" resolved
       dt_mullvad "default ads malware"
+      : >"$FAKE/mullvad_connected"; echo 2 >"$FAKE/mullvad_settle"
       ip_install "$ep"
       assert_rc 0 "$IP_RC" "$ep: first install: $IP_OUT"
       assert_eq "$(printf 'mullvad dns get\nmullvad dns set custom 127.0.0.1')" "$(dt_mullvad_calls)" "$ep: no switch when Mullvad's DNS answers"
-      assert_eq "$(printf 'schema\tnice-dns-mullvad-dns/1\nbefore_install\tdefault\tads\tmalware\nbefore_nicedns\tdefault\tads\tmalware')" \
+      assert_eq "$(dt_mv_rows 'before_install|default|ads|malware' 'before_nicedns|default|ads|malware')" \
         "$(dt_mullvad_receipt)" "$ep: the first receipt"
+      dt_pinned || fail "$ep: pinned once Mullvad's write settled: $(dt_dns_state)"
+      rm -f "$FAKE/mullvad_settle"
       : >"$FAKE_LOG"
       printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' >"$FAKE/git_head"
+      # A stack slow through Tor fails the probe, but it runs: no switch.
+      : >"$FAKE/dig_fail_probe"
       ip_install "$ep"
       assert_rc 0 "$IP_RC" "$ep: reinstall: $IP_OUT"
-      assert_eq "$(printf 'mullvad dns get\nmullvad dns set custom 127.0.0.1')" "$(dt_mullvad_calls)" "$ep: the reinstall's calls (the stack answers: no switch)"
-      assert_eq "$(printf 'schema\tnice-dns-mullvad-dns/1\nbefore_install\tcustom\t127.0.0.1\nbefore_nicedns\tdefault\tads\tmalware')" \
+      assert_eq "$(printf 'mullvad dns get\nmullvad dns set custom 127.0.0.1')" "$(dt_mullvad_calls)" "$ep: the reinstall's calls (a stack runs: no switch)"
+      assert_eq "$(dt_mv_rows 'before_install|custom|127.0.0.1' 'before_nicedns|default|ads|malware')" \
         "$(dt_mullvad_receipt)" "$ep: the reinstall carries the setting from before nice-dns"
+    ) || exit 1
+    (
+      # The owner's own loopback resolver (a stub at 127.0.0.53) answers: no
+      # switch, and it is the setting from before nice-dns.
+      dt_world "$ep" resolved
+      dt_mullvad "custom 127.0.0.53"; : >"$FAKE/stub_answers"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: install: $IP_OUT"
+      assert_eq "$(printf 'mullvad dns get\nmullvad dns set custom 127.0.0.1')" "$(dt_mullvad_calls)" "$ep: the owner's answering stub is not switched"
+      assert_eq "$(dt_mv_rows 'before_install|custom|127.0.0.53' 'before_nicedns|custom|127.0.0.53')" \
+        "$(dt_mullvad_receipt)" "$ep: the receipt keeps the owner's resolver"
     ) || exit 1
   done
 }
@@ -847,18 +870,27 @@ t_failed_activation_restores_the_recorded_mullvad_setting() {
       assert_eq "Custom DNS: yes Servers: 127.0.0.1" "$(dt_mullvad_now)" "$ep/never_ready: Mullvad is as recorded"
       assert_eq "$dns0" "$(dt_dns_state)" "$ep/never_ready: host DNS as before"
     ) || exit 1
-    (
-      local dns0
-      # Fails in preparation, after the switch: nothing is interrupted, and
-      # the setting still goes back.
-      dt_world "$ep" resolved; dt_mullvad "custom 127.0.0.1"; dns0="$(dt_dns_state)"
-      printf '%s\n' '^podman build ' >"$FAKE/fail"
-      ip_install "$ep"
-      assert_nonzero "$IP_RC" "$ep/build: fails: $IP_OUT"
-      assert_eq "$(printf 'mullvad dns get\nmullvad dns set default\nmullvad dns set custom 127.0.0.1')" "$(dt_mullvad_calls)" "$ep/build: switched, then put back"
-      assert_eq "Custom DNS: yes Servers: 127.0.0.1" "$(dt_mullvad_now)" "$ep/build: Mullvad is as recorded"
-      assert_eq "$dns0" "$(dt_dns_state)" "$ep/build: host DNS as before"
-    ) || exit 1
+    local inj
+    for inj in '^podman build ' 'sigint:^podman build ' 'sigint_group:^podman build ' '^mullvad dns set default$'; do
+      (
+        local dns0
+        # Fails in preparation (a build, a Ctrl-C during a build, or the
+        # switch itself): nothing is interrupted, and the setting goes back.
+        dt_world "$ep" resolved; dt_mullvad "custom 127.0.0.1"; dns0="$(dt_dns_state)"
+        case "$inj" in
+          sigint:*) printf '%s\n' "${inj#sigint:}" >"$FAKE/sigint" ;;
+          sigint_group:*) printf '%s\n' "${inj#sigint_group:}" >"$FAKE/sigint_group" ;;
+          *) printf '%s\n' "$inj" >"$FAKE/fail" ;;
+        esac
+        ip_install "$ep"
+        assert_nonzero "$IP_RC" "$ep/$inj: fails: $IP_OUT"
+        rm -f "$FAKE/fail" "$FAKE/sigint" "$FAKE/sigint_group"
+        assert_eq "$(printf 'mullvad dns get\nmullvad dns set default\nmullvad dns set custom 127.0.0.1')" "$(dt_mullvad_calls)" "$ep/$inj: switched (or tried to), then put back"
+        assert_eq "Custom DNS: yes Servers: 127.0.0.1" "$(dt_mullvad_now)" "$ep/$inj: Mullvad is as recorded"
+        assert_eq "$dns0" "$(dt_dns_state)" "$ep/$inj: host DNS as before"
+        assert_eq "" "$(ip_lines "$FAKE_LOG" "$IP_DISRUPTIVE")" "$ep/$inj: nothing was interrupted"
+      ) || exit 1
+    done
     (
       local dns0 dep0
       # A reinstall whose `set custom 127.0.0.1` fails after the pin: the
@@ -876,6 +908,20 @@ t_failed_activation_restores_the_recorded_mullvad_setting() {
       assert_eq "$dns0" "$(dt_dns_state)" "$ep/set: host DNS as before"
       assert_eq "$dep0" "$(dt_deploy_state)" "$ep/set: the previous deployment is back"
     ) || exit 1
+    (
+      local checks
+      # Mullvad, connected, never writes custom 127.0.0.1 back: the pin check
+      # gives up after ND_INST_PIN_SETTLE_TRIES (5) checks and rolls back.
+      dt_world "$ep" resolved; dt_mullvad "default ads"
+      : >"$FAKE/mullvad_connected"; echo 99 >"$FAKE/mullvad_settle"
+      ip_install "$ep"
+      assert_nonzero "$IP_RC" "$ep/settle: fails: $IP_OUT"
+      assert_match 'not pinned after the pin' "$IP_OUT" "$ep/settle: and says why"
+      checks="$(sed -n "$(ip_first "$FAKE_LOG" '^mullvad dns set custom 127\.0\.0\.1$'),\$p" "$FAKE_LOG" | grep -cE 'custom-dns-deb status$')"
+      assert_eq 5 "$checks" "$ep/settle: five checks, then the rollback:
+$(cat -n "$FAKE_LOG")"
+      assert_eq "$(printf 'mullvad dns get\nmullvad dns set custom 127.0.0.1\nmullvad dns set default --block-ads')" "$(dt_mullvad_calls)" "$ep/settle: Mullvad gets the setting this install found"
+    ) || exit 1
   done
 }
 
@@ -891,19 +937,70 @@ t_uninstall_restores_the_recorded_mullvad_setting() {
       : >"$FAKE_LOG"
       ip_install "$ep" uninstall
       assert_rc 0 "$IP_RC" "$ep: uninstall: $IP_OUT"
-      assert_eq "mullvad dns set default --block-ads --block-malware" "$(dt_mullvad_calls)" "$ep: the uninstall puts back the setting from before nice-dns"
+      assert_eq "$(printf 'mullvad dns get\nmullvad dns set default --block-ads --block-malware')" "$(dt_mullvad_calls)" "$ep: the uninstall puts back the setting from before nice-dns"
       assert_eq "$dns0" "$(dt_dns_state)" "$ep: host DNS as before"
-      assert_match 'Mullvad' "$IP_OUT" "$ep: and says so"
+      assert_match "Mullvad's DNS setting is back to: default ads malware" "$IP_OUT" "$ep: and says so"
     ) || exit 1
     (
-      # A recorded loopback-only setting is put back as recorded, with a
-      # warning: nothing answers at 127.0.0.1 once nice-dns is gone.
+      # custom 127.0.0.1 found at the first install stands for Mullvad's
+      # default: the uninstall never leaves Mullvad pointing at a removed stack.
       dt_world "$ep" resolved; dt_mullvad "custom 127.0.0.1"
       dt_installed "$ep"
       ip_install "$ep" uninstall
-      assert_rc 0 "$IP_RC" "$ep: uninstall: $IP_OUT"
-      assert_eq "mullvad dns set custom 127.0.0.1" "$(dt_mullvad_calls)" "$ep: the recorded setting, as recorded"
-      assert_match 'mullvad dns set default' "$IP_OUT" "$ep: with the way out"
+      assert_rc 0 "$IP_RC" "$ep/loopback: uninstall: $IP_OUT"
+      assert_eq "$(printf 'mullvad dns get\nmullvad dns set default')" "$(dt_mullvad_calls)" "$ep/loopback: Mullvad's default"
+    ) || exit 1
+    (
+      # The owner changed the setting since the install: left as it is.
+      dt_world "$ep" resolved; dt_mullvad "default ads"
+      dt_installed "$ep"
+      dt_mullvad "default trackers"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep/changed: uninstall: $IP_OUT"
+      assert_eq "mullvad dns get" "$(dt_mullvad_calls)" "$ep/changed: no Mullvad change"
+      assert_match 'changed since the install' "$IP_OUT" "$ep/changed: and says so"
+    ) || exit 1
+    (
+      # An install from before records (no receipt) with Mullvad at custom
+      # 127.0.0.1: Mullvad's default.
+      dt_world "$ep" resolved
+      dt_installed "$ep"
+      dt_mullvad "custom 127.0.0.1"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep/legacy: uninstall: $IP_OUT"
+      assert_eq "$(printf 'mullvad dns get\nmullvad dns set default')" "$(dt_mullvad_calls)" "$ep/legacy: Mullvad's default"
+    ) || exit 1
+    (
+      # The daemon is down: the uninstall says so and fails, keeping the
+      # record for a retry.
+      dt_world "$ep" resolved; dt_mullvad "default ads"
+      dt_installed "$ep"
+      : >"$FAKE/mullvad_unreadable"
+      ip_install "$ep" uninstall
+      assert_nonzero "$IP_RC" "$ep/daemon-down: the uninstall fails: $IP_OUT"
+      assert_match 'mullvad-daemon' "$IP_OUT" "$ep/daemon-down: and says why"
+      assert_eq "mullvad dns get" "$(dt_mullvad_calls)" "$ep/daemon-down: no change"
+      assert_file "$IP_STATE/current" "$ep/daemon-down: the state is kept for a retry"
+    ) || exit 1
+  done
+}
+
+# Connected, Mullvad rewrites the pin when its setting changes: the
+# ownership check refuses a reinstall then, and names Mullvad's way back.
+t_mullvad_rewrite_refusal_names_the_way_back() {
+  local ep
+  for ep in $(dt_linux_eps); do
+    (
+      dt_world "$ep" resolved; dt_mullvad "default ads"
+      dt_installed "$ep"
+      : >"$FAKE/mullvad_connected"
+      env FAKE_ROOT="$FAKE_ROOT" FAKE="$FAKE" FAKE_LOG="$FAKE_LOG" "$IP_BIN/mullvad" dns set default --block-ads >/dev/null
+      : >"$FAKE_LOG"
+      ip_install "$ep"
+      assert_nonzero "$IP_RC" "$ep: refuses: $IP_OUT"
+      assert_match "mullvad dns set custom 127.0.0.1" "$IP_OUT" "$ep: names Mullvad's way back"
+      assert_eq "" "$(dt_mullvad_calls)" "$ep: no Mullvad call"
+      ip_assert_untouched "$ep"
     ) || exit 1
   done
 }
@@ -929,13 +1026,14 @@ t_no_mullvad_means_no_mullvad_calls() {
 t_unreadable_mullvad_setting_refuses_before_any_change() {
   local ep how
   for ep in $(dt_linux_eps); do
-    for how in daemon-down malformed; do
+    for how in daemon-down malformed bad-server; do
       (
         local dns0
         dt_world "$ep" resolved; dt_mullvad "custom 127.0.0.1"; dns0="$(dt_dns_state)"
         case "$how" in
           daemon-down) : >"$FAKE/mullvad_unreadable" ;;
           malformed) printf 'Custom DNS: maybe\n' >"$FAKE/mullvad_dns" ;;
+          bad-server) printf 'Custom DNS: yes\nServers:\nabc\n' >"$FAKE/mullvad_dns" ;;
         esac
         ip_install "$ep"
         assert_nonzero "$IP_RC" "$ep/$how: refuses: $IP_OUT"
