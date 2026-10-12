@@ -980,6 +980,12 @@ _nd_inst_rollback() {
     # the unused record when nothing was pinned.
     if [ "$ND_INST_PINNED" = 1 ]; then _nd_inst_dns_helper restore || dns_ok=0; else _nd_inst_dns_helper discard || dns_ok=0; fi
   fi
+  # A reinstall that reached the profile step gives back what that step
+  # changed (a first install's restore above already did; DEC-020).
+  if [ "$ND_INST_HAD_DEPLOY" = 1 ] && [ "${ND_INST_V6_PROFILES:-0}" = 1 ]; then
+    sudo "$ND_INST_ROOT/usr/bin/custom-dns-deb" ipv6-profiles-undo ||
+      echo "! A NetworkManager profile's IPv6 method was not given back (see above); run 'sudo custom-dns-deb ipv6-profiles-undo' once NetworkManager answers." >&2
+  fi
   # Mullvad's DNS setting as this install found it (Linux, BL-048).
   if [ "${ND_INST_MULLVAD_CHANGED:-0}" = 1 ]; then
     _nd_inst_mullvad_restore "$ND_INST_STATE/generations/$ND_INST_GEN/mullvad-dns.tsv" before_install || dns_ok=0
@@ -1614,6 +1620,7 @@ EOF
   # disk therefore gets ipv6.method disabled, its method recorded by the
   # helper for the uninstall (deb/custom-dns-deb ipv6-profiles; DEC-020). The
   # hook stays for profiles made later and other types.
+  ND_INST_V6_PROFILES=1
   sudo "$R/usr/bin/custom-dns-deb" ipv6-profiles || true
 
   # sysctl-only on purpose. The kernel cmdline flag ipv6.disable=1 (shipped by

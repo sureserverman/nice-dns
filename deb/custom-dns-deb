@@ -17,6 +17,8 @@
 #                          before its pin (refused once the pin is in place).
 #   custom-dns-deb ipv6-profiles  turn IPv6 off in each Ethernet and Wi-Fi
 #                          profile on disk, recording its method (install).
+#   custom-dns-deb ipv6-profiles-undo  give back what the last ipv6-profiles
+#                          run changed (a reinstall's rollback).
 #
 # Only these are owned: /etc/resolv.conf, systemd-resolved's enabled and
 # active state, the ipv6 sysctl runtime values (all, default, lo, and each
@@ -62,6 +64,10 @@ OWNED_FILES=(
 SYSCTL_KEYS="net.ipv6.conf.all.disable_ipv6 net.ipv6.conf.default.disable_ipv6 net.ipv6.conf.lo.disable_ipv6"
 IPV6_DEVICES="$RECEIPT_DIR/ipv6-devices.tsv"
 IPV6_PROFILES="$RECEIPT_DIR/ipv6-profiles.tsv"
+# This install run's profile changes (uuid, method before) and the record
+# as it was before the run, for a reinstall's rollback (ipv6-profiles-undo).
+IPV6_PROFILES_RUN="$RECEIPT_DIR/ipv6-profiles.run"
+IPV6_PROFILES_PREV="$RECEIPT_DIR/ipv6-profiles.prev"
 
 # restore_ipv6_devices: each recorded device gets its value from before
 # nice-dns (its first row) back; a device that is gone is skipped. With a
@@ -116,11 +122,41 @@ nm_pinned_profiles() {
   return 0
 }
 
+# nm_answers: NetworkManager's CLI is absent, or NetworkManager answers.
+# Where a profile is read to record it or give it back, a CLI that is there
+# but gets no answer must not read as "no such profile" (Stage 3 gate class
+# sweep, 2026-10-12: an uninstall with NetworkManager down read every legacy
+# pin as changed since and dropped the record, leaving the pins).
+nm_answers() {
+  ! command -v nmcli >/dev/null 2>&1 || nmcli -t -f UUID con show >/dev/null 2>&1
+}
+
+# nm_profile_devices <uuid>: the devices a profile is active on, one per
+# line (a bond or team lists several), each a valid interface name that
+# cannot be read as an option.
+nm_profile_devices() {
+  local dev d
+  dev="$(nmcli -g GENERAL.DEVICES con show "$1" 2>/dev/null || true)"
+  IFS=, read -ra d <<<"$dev"
+  for dev in "${d[@]}"; do
+    [[ $dev =~ ^[A-Za-z0-9_.:][A-Za-z0-9_.:-]{0,14}$ ]] && printf '%s\n' "$dev"
+  done
+  return 0
+}
+
+# NM_UUID_ERE: a profile UUID as the helper accepts it (letters, digits and
+# '-', never a leading '-', which nmcli would read as an option).
+NM_UUID_ERE='^[A-Za-z0-9][A-Za-z0-9-]{0,63}$'
+
 # nm_unpin_legacy <uuid...>: each profile still pinned as recorded goes back
 # to automatic DNS and is reapplied on its device; one changed since by
 # another owner is left alone. Exit 1 when a profile could not be reset.
 nm_unpin_legacy() {
-  local u dev d still rc=0
+  local u d still rc=0
+  if ! command -v nmcli >/dev/null 2>&1 || ! nm_answers; then
+    echo "custom-dns-deb: NetworkManager did not answer (or nmcli is missing); the legacy profile pins cannot be reset" >&2
+    return 1
+  fi
   still="$(nm_pinned_profiles)"
   for u in "$@"; do
     if ! printf '%s\n' "$still" | grep -Fxq "$u"; then
@@ -129,11 +165,9 @@ nm_unpin_legacy() {
     fi
     if nmcli con mod "$u" ipv4.dns "" ipv4.ignore-auto-dns no >/dev/null 2>&1; then
       echo "custom-dns-deb: NetworkManager profile $u uses automatic DNS again"
-      dev="$(nmcli -g GENERAL.DEVICES con show "$u" 2>/dev/null || true)"
-      # A bond or team lists several devices.
-      for d in ${dev//,/ }; do
+      while IFS= read -r d; do
         nmcli dev reapply "$d" >/dev/null 2>&1 || echo "custom-dns-deb: could not reapply $d; reconnect it to use the new DNS" >&2
-      done
+      done < <(nm_profile_devices "$u")
     else
       echo "custom-dns-deb: could not reset NetworkManager profile $u to automatic DNS" >&2
       rc=1
@@ -160,64 +194,140 @@ nm_v6_candidates() {
 }
 
 # cmd_ipv6_profiles: each candidate profile whose ipv6.method lets
-# NetworkManager turn IPv6 on (anything but disabled or ignore) is recorded
-# (the first method seen, in ipv6-profiles.tsv beside the record), set to
-# disabled and reapplied on its device. The dispatcher hook alone leaves a
-# window: NetworkManager sends pre-up only after it set up IP, and the NIC
-# sent MLD and a duplicate-address check from :: at every activation (Stage 3
-# gate capture, 2026-10-12). Only with the record in place, so the restore
-# can give every change back. A profile that cannot be changed is named and
-# left as it is; the hook still covers its device, and a profile made later.
+# NetworkManager turn IPv6 on (auto, dhcp, manual, link-local or shared;
+# disabled and ignore never do, an unknown method is left alone) is recorded
+# in ipv6-profiles.tsv beside the record, set to disabled and reapplied on
+# its device. The dispatcher hook alone leaves a window: NetworkManager sends
+# pre-up only after it set up IP, and the NIC sent MLD and a duplicate-address
+# check from :: at every activation (Stage 3 gate capture, 2026-10-12). Only
+# with the record in place, so the restore can give every change back. The
+# record holds the method the owner last set: the one found at the first
+# install, or one the owner set since (a reinstall finds it, not disabled).
+# A profile that cannot be changed is named and left as it is; the hook
+# still covers its device, and a profile made later.
 cmd_ipv6_profiles() {
-  local u m dev d
+  local u m rec d
   if ! receipt_ok; then
     echo "custom-dns-deb: no record of the state before nice-dns; no NetworkManager profile is changed" >&2
     return 0
   fi
-  [[ ! -L $IPV6_PROFILES ]] || return 0
+  [[ ! -L $IPV6_PROFILES && ! -L $IPV6_PROFILES_RUN && ! -L $IPV6_PROFILES_PREV ]] || return 0
+  command -v nmcli >/dev/null 2>&1 || return 0
+  if ! nmcli -t -f UUID con show >/dev/null 2>&1; then
+    echo "custom-dns-deb: NetworkManager did not answer; no profile's IPv6 is changed (the dispatcher hook still covers every device)" >&2
+    return 0
+  fi
+  # This run starts its own undo list, and keeps the record as it was.
+  ( umask 077
+    rm -f "$IPV6_PROFILES_RUN" "$IPV6_PROFILES_PREV"
+    : >"$IPV6_PROFILES_RUN"
+    if [[ -f $IPV6_PROFILES ]]; then cp -p "$IPV6_PROFILES" "$IPV6_PROFILES_PREV"; fi ) 2>/dev/null || {
+    echo "custom-dns-deb: could not start this run's profile record; no profile's IPv6 is changed" >&2; return 0; }
   while IFS= read -r u; do
-    [[ $u =~ ^[A-Za-z0-9-]{1,64}$ ]] || continue
+    [[ $u =~ $NM_UUID_ERE ]] || continue
     m="$(nmcli -g ipv6.method con show "$u" 2>/dev/null || true)"
     case "$m" in auto|dhcp|manual|link-local|shared) ;; *) continue ;; esac
-    if ! awk -F '\t' -v u="$u" '$1 == u { f = 1 } END { exit !f }' "$IPV6_PROFILES" 2>/dev/null; then
-      if ! ( umask 077; printf '%s\t%s\n' "$u" "$m" >>"$IPV6_PROFILES" ) 2>/dev/null; then
-        echo "custom-dns-deb: could not record NetworkManager profile $u; leaving it as it is" >&2
-        continue
-      fi
+    rec="$(awk -F '\t' -v u="$u" '$1 == u { print $2; exit }' "$IPV6_PROFILES" 2>/dev/null || true)"
+    if [[ $rec != "$m" ]] && ! ipv6_profiles_set_row "$u" "$m"; then
+      echo "custom-dns-deb: could not record NetworkManager profile $u; leaving it as it is" >&2
+      continue
     fi
     if nmcli con mod "$u" ipv6.method disabled >/dev/null 2>&1; then
-      dev="$(nmcli -g GENERAL.DEVICES con show "$u" 2>/dev/null || true)"
-      # A bond or team lists several devices.
-      for d in ${dev//,/ }; do
+      ( umask 077; printf '%s\t%s\n' "$u" "$m" >>"$IPV6_PROFILES_RUN" ) 2>/dev/null || true
+      while IFS= read -r d; do
         nmcli dev reapply "$d" >/dev/null 2>&1 || echo "custom-dns-deb: could not reapply $d; it takes ipv6.method disabled at its next activation" >&2
-      done
+      done < <(nm_profile_devices "$u")
     else
-      echo "custom-dns-deb: could not set ipv6.method disabled in NetworkManager profile $u; the dispatcher hook still covers its device" >&2
+      # Nothing changed: the record goes back to what it held for it.
+      ipv6_profiles_set_row "$u" "$rec" || true
+      echo "custom-dns-deb: could not set ipv6.method disabled in NetworkManager profile $u (a static manual profile with addresses may refuse it); the dispatcher hook still covers its device" >&2
     fi
   done < <(nm_v6_candidates)
   return 0
 }
 
-# restore_ipv6_profiles: each recorded profile still disabled gets its method
-# back (the first row) and is reapplied; one another owner changed since, or
-# one that is gone, is left alone. Exit 1 when a profile could not be reset.
-restore_ipv6_profiles() {
-  local u m now dev d rc=0
-  [[ -f $IPV6_PROFILES && ! -L $IPV6_PROFILES ]] || return 0
+# ipv6_profiles_set_row <uuid> <method|"">: the record's row for a profile is
+# replaced by "<uuid> <method>", or dropped when the method is empty.
+ipv6_profiles_set_row() {
+  ( umask 077
+    { awk -F '\t' -v u="$1" '$1 != u' "$IPV6_PROFILES" 2>/dev/null || true
+      [[ -z $2 ]] || printf '%s\t%s\n' "$1" "$2"; } >"$IPV6_PROFILES.new" &&
+      mv -f "$IPV6_PROFILES.new" "$IPV6_PROFILES" ) 2>/dev/null && return 0
+  rm -f "$IPV6_PROFILES.new"
+  return 1
+}
+
+# cmd_ipv6_profiles_undo: a reinstall that rolls back gives back what its own
+# ipv6-profiles run changed: each profile it disabled that still reads
+# disabled gets its method from before the run, and the record is what it
+# was before the run. A profile the previous deployment had disabled stays
+# so. Exit 1 when a profile cannot be reset (the run's list is then kept).
+cmd_ipv6_profiles_undo() {
+  local u m now st d rc=0
+  [[ -f $IPV6_PROFILES_RUN && ! -L $IPV6_PROFILES_RUN ]] || return 0
   while IFS=$'\t' read -r u m; do
-    [[ $u =~ ^[A-Za-z0-9-]{1,64}$ ]] || continue
+    [[ $u =~ $NM_UUID_ERE ]] || continue
     case "$m" in auto|dhcp|manual|link-local|shared) ;; *) continue ;; esac
-    now="$(nmcli -g ipv6.method con show "$u" 2>/dev/null)" || continue
+    if now="$(nmcli -g ipv6.method con show "$u" 2>/dev/null)"; then st=0; else st=$?; fi
+    if (( st == 10 )); then continue
+    elif (( st != 0 )); then
+      echo "custom-dns-deb: could not read NetworkManager profile $u (nmcli exit $st; is NetworkManager running?)" >&2
+      rc=1; continue
+    fi
+    [[ $now == disabled ]] || continue
+    if nmcli con mod "$u" ipv6.method "$m" >/dev/null 2>&1; then
+      echo "custom-dns-deb: NetworkManager profile $u has ipv6.method $m again"
+      while IFS= read -r d; do nmcli dev reapply "$d" >/dev/null 2>&1 || true; done < <(nm_profile_devices "$u")
+    else
+      echo "custom-dns-deb: could not set NetworkManager profile $u back to ipv6.method $m" >&2
+      rc=1
+    fi
+  done < <(awk -F '\t' '!seen[$1]++' "$IPV6_PROFILES_RUN")
+  (( rc == 0 )) || return 1
+  if [[ -f $IPV6_PROFILES_PREV && ! -L $IPV6_PROFILES_PREV ]]; then
+    mv -f "$IPV6_PROFILES_PREV" "$IPV6_PROFILES"
+  else
+    rm -f "$IPV6_PROFILES"
+  fi
+  rm -f "$IPV6_PROFILES_RUN"
+}
+
+# restore_ipv6_profiles: each recorded profile still disabled gets its
+# recorded method back and is reapplied. One that still has that method (its
+# change failed) needs nothing; one another owner changed since is left
+# alone and named; one that no longer exists (nmcli exit 10) is skipped.
+# Exit 1, and the caller keeps the record, when a profile cannot be read or
+# reset (NetworkManager stopped, nmcli missing, a malformed row).
+restore_ipv6_profiles() {
+  local u m now st d rc=0
+  [[ -f $IPV6_PROFILES && ! -L $IPV6_PROFILES ]] || return 0
+  if ! command -v nmcli >/dev/null 2>&1; then
+    echo "custom-dns-deb: the IPv6 methods of NetworkManager profiles cannot be given back: nmcli is missing" >&2
+    return 1
+  fi
+  while IFS=$'\t' read -r u m; do
+    if [[ ! $u =~ $NM_UUID_ERE ]] || ! case "$m" in auto|dhcp|manual|link-local|shared) true ;; *) false ;; esac; then
+      echo "custom-dns-deb: a malformed row in $IPV6_PROFILES is skipped" >&2
+      rc=1; continue
+    fi
+    if now="$(nmcli -g ipv6.method con show "$u" 2>/dev/null)"; then st=0; else st=$?; fi
+    if (( st == 10 )); then
+      echo "custom-dns-deb: NetworkManager profile $u no longer exists; nothing to give back"
+      continue
+    elif (( st != 0 )); then
+      echo "custom-dns-deb: could not read NetworkManager profile $u (nmcli exit $st; is NetworkManager running?)" >&2
+      rc=1; continue
+    fi
+    [[ $now != "$m" ]] || continue
     if [[ $now != disabled ]]; then
       echo "custom-dns-deb: NetworkManager profile $u changed since the record (ipv6.method $now); leaving it as it is" >&2
       continue
     fi
     if nmcli con mod "$u" ipv6.method "$m" >/dev/null 2>&1; then
       echo "custom-dns-deb: NetworkManager profile $u has ipv6.method $m again"
-      dev="$(nmcli -g GENERAL.DEVICES con show "$u" 2>/dev/null || true)"
-      for d in ${dev//,/ }; do
+      while IFS= read -r d; do
         nmcli dev reapply "$d" >/dev/null 2>&1 || echo "custom-dns-deb: could not reapply $d; reconnect it to use IPv6 again" >&2
-      done
+      done < <(nm_profile_devices "$u")
     else
       echo "custom-dns-deb: could not set NetworkManager profile $u back to ipv6.method $m" >&2
       rc=1
@@ -274,6 +384,10 @@ cmd_snapshot() {
   # An install from before records: the pin is already there, so the state
   # before nice-dns is unknown.
   if (( legacy_mark )) && pinned; then origin=legacy; else origin=fresh; fi
+  if [[ $origin == legacy ]] && ! nm_answers; then
+    echo "custom-dns-deb: NetworkManager did not answer, so the profiles an older installer pinned cannot be recorded; start it and run the install again" >&2
+    return 1
+  fi
   tmp="$(mktemp "$RECEIPT_DIR/.receipt.XXXXXX")"
   {
     printf 'schema\t%s\n' "$SCHEMA"
@@ -390,22 +504,24 @@ cmd_restore() {
   #    while a stale pin is still in place.
   local pins="" nm_ok=1
   if [[ $origin == legacy ]]; then
-    if receipt_ok; then pins="$(awk -F '\t' '$1 == "nm_pin" { print $2 }' "$RECEIPT")"; else pins="$(nm_pinned_profiles)"; fi
+    if receipt_ok; then
+      pins="$(awk -F '\t' '$1 == "nm_pin" { print $2 }' "$RECEIPT")"
+    elif nm_answers; then
+      pins="$(nm_pinned_profiles)"
+    else
+      echo "custom-dns-deb: NetworkManager did not answer; the profiles an older installer pinned cannot be found" >&2
+      nm_ok=0
+    fi
     # shellcheck disable=SC2086  # UUIDs, one word each
     if [[ -n $pins ]]; then nm_unpin_legacy $pins || nm_ok=0; fi
   fi
   if (( nm )) && systemctl is-active --quiet NetworkManager 2>/dev/null; then
     systemctl reload NetworkManager >/dev/null 2>&1 || true
   fi
-  if (( ! v6_ok )); then
-    echo "custom-dns-deb: a NetworkManager profile still has IPv6 disabled (see above); the record is kept: fix it and run the restore again" >&2
-    exit 1
-  fi
-  if (( ! nm_ok )); then
-    echo "custom-dns-deb: a NetworkManager profile still points at 127.0.0.1 (see above); the record is kept: fix it and run the restore again" >&2
-    exit 1
-  fi
-  rm -f "${RECEIPT_DIR:?}/receipt.tsv" "${RECEIPT_DIR:?}/resolv.conf.orig" "${RECEIPT_DIR:?}/ipv6-devices.tsv" "${RECEIPT_DIR:?}/ipv6-profiles.tsv"
+  (( v6_ok )) || echo "custom-dns-deb: a NetworkManager profile's IPv6 method was not given back (see above); the record is kept: fix it and run the restore again" >&2
+  (( nm_ok )) || echo "custom-dns-deb: a NetworkManager profile still points at 127.0.0.1 (see above); the record is kept: fix it and run the restore again" >&2
+  (( v6_ok && nm_ok )) || exit 1
+  rm -f "${RECEIPT_DIR:?}/receipt.tsv" "${RECEIPT_DIR:?}/resolv.conf.orig" "${RECEIPT_DIR:?}/ipv6-devices.tsv" "${RECEIPT_DIR:?}/ipv6-profiles.tsv" "${RECEIPT_DIR:?}/ipv6-profiles.run" "${RECEIPT_DIR:?}/ipv6-profiles.prev"
   rmdir "$RECEIPT_DIR" 2>/dev/null || true
   echo "custom-dns-deb: restored the resolver state from before nice-dns ($origin)"
 }
@@ -416,7 +532,7 @@ cmd_discard() {
     echo "custom-dns-deb: the resolver is pinned; use restore, not discard" >&2
     return 1
   fi
-  rm -f "${RECEIPT_DIR:?}/receipt.tsv" "${RECEIPT_DIR:?}/resolv.conf.orig" "${RECEIPT_DIR:?}/ipv6-devices.tsv" "${RECEIPT_DIR:?}/ipv6-profiles.tsv"
+  rm -f "${RECEIPT_DIR:?}/receipt.tsv" "${RECEIPT_DIR:?}/resolv.conf.orig" "${RECEIPT_DIR:?}/ipv6-devices.tsv" "${RECEIPT_DIR:?}/ipv6-profiles.tsv" "${RECEIPT_DIR:?}/ipv6-profiles.run" "${RECEIPT_DIR:?}/ipv6-profiles.prev"
   rmdir "$RECEIPT_DIR" 2>/dev/null || true
 }
 
@@ -428,5 +544,6 @@ case "${1:-pin}" in
   snapshot) cmd_snapshot ;;
   restore) cmd_restore ;;
   ipv6-profiles) cmd_ipv6_profiles ;;
-  *) echo "usage: custom-dns-deb [pin|check|snapshot|restore|status|discard|ipv6-profiles]" >&2; exit 2 ;;
+  ipv6-profiles-undo) cmd_ipv6_profiles_undo ;;
+  *) echo "usage: custom-dns-deb [pin|check|snapshot|restore|status|discard|ipv6-profiles|ipv6-profiles-undo]" >&2; exit 2 ;;
 esac

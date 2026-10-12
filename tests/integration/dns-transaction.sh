@@ -720,6 +720,37 @@ t_legacy_profile_pins_get_automatic_dns_back() {
     assert_match 'changed since the record' "$IP_OUT" "and says so"
   ) || exit 1
   (
+    # NetworkManager does not answer at the uninstall: the pins are not read
+    # as "changed since" and dropped; the restore fails and keeps the record,
+    # and a retry resets them (Stage 3 gate class sweep, 2026-10-12).
+    dt_world install-deb legacy
+    dt_nm_profile wifi-1 127.0.0.1 yes wlp1
+    ip_install install-deb socat
+    assert_rc 0 "$IP_RC" "nm-down: install: $IP_OUT"
+    printf '%s\n' '^nmcli -t -f UUID con show$' >"$FAKE/fail"
+    ip_install install-deb uninstall
+    rm -f "$FAKE/fail"
+    assert_nonzero "$IP_RC" "nm-down: the uninstall fails: $IP_OUT"
+    assert_match 'NetworkManager did not answer' "$IP_OUT" "nm-down: and says why"
+    assert_eq 'wifi-1 dns=127.0.0.1 ignore=yes' "$(dt_nm_state)" "nm-down: the pin is still there"
+    assert_match "$(printf 'nm_pin\twifi-1')" "$(cat "$(dt_receipt linux)" 2>/dev/null)" "nm-down: and the record keeps it"
+    ip_install install-deb uninstall
+    assert_rc 0 "$IP_RC" "nm-down: the retry: $IP_OUT"
+    assert_eq 'wifi-1 dns= ignore=no' "$(dt_nm_state)" "nm-down: the retry resets the pin"
+  ) || exit 1
+  (
+    # NetworkManager does not answer when a legacy host's record is taken:
+    # the pins could not be listed, so the snapshot refuses.
+    dt_world install-deb legacy
+    dt_nm_profile wifi-1 127.0.0.1 yes wlp1
+    printf '%s\n' '^nmcli -t -f UUID con show$' >"$FAKE/fail"
+    dt_helper linux snapshot
+    rm -f "$FAKE/fail"
+    assert_nonzero "$DT_RC" "nm-down snapshot: refuses: $DT_OUT"
+    assert_match 'NetworkManager did not answer' "$DT_OUT" "nm-down snapshot: and says why"
+    assert_eq "" "$(cat "$(dt_receipt linux)" 2>/dev/null)" "nm-down snapshot: no record is written"
+  ) || exit 1
+  (
     dt_world install-deb legacy
     dt_nm_profile wifi-1 127.0.0.1 yes wlp1
     dt_helper linux restore
@@ -1242,13 +1273,83 @@ t_ipv6_profiles_are_disabled_and_given_back() {
       rm -f "$FAKE/fail"
       assert_rc 0 "$IP_RC" "$ep/changed: install: $IP_OUT"
       assert_eq dhcp "$(cat "$FAKE_ROOT/.nm/wifi-2/ipv6")" "$ep/changed: the failed profile keeps its method"
-      assert_match 'wifi-2' "$IP_OUT" "$ep/changed: and the install says which"
+      assert_match 'could not set ipv6\.method disabled in NetworkManager profile wifi-2' "$IP_OUT" "$ep/changed: and the install says which"
       printf 'manual\n' >"$FAKE_ROOT/.nm/eth-1/ipv6"
       ip_install "$ep" uninstall
       assert_rc 0 "$IP_RC" "$ep/changed: uninstall: $IP_OUT"
       assert_eq manual "$(cat "$FAKE_ROOT/.nm/eth-1/ipv6")" "$ep/changed: a method changed since is left alone"
       assert_eq dhcp "$(cat "$FAKE_ROOT/.nm/wifi-2/ipv6")" "$ep/changed: the unchanged one too"
       assert_match 'eth-1.*changed since' "$IP_OUT" "$ep/changed: and the uninstall says so"
+      assert_not_match 'wifi-2.*changed since' "$IP_OUT" "$ep/changed: a profile whose change failed is not reported as changed"
+    ) || exit 1
+    (
+      # The owner sets another method after the install; a reinstall
+      # records it, so the uninstall gives back the owner's latest setting.
+      dt_world "$ep" resolved; dt_nm_v6_world
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/owner: install: $IP_OUT"
+      printf 'manual\n' >"$FAKE_ROOT/.nm/wifi-2/ipv6"
+      printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' >"$FAKE/git_head"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/owner: reinstall: $IP_OUT"
+      assert_eq disabled "$(cat "$FAKE_ROOT/.nm/wifi-2/ipv6")" "$ep/owner: disabled again"
+      assert_eq "$(printf 'eth-1\tauto\nwifi-2\tmanual')" "$(dt_ipv6_prof_rec)" "$ep/owner: the record holds the owner's new method"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep/owner: uninstall: $IP_OUT"
+      assert_eq manual "$(cat "$FAKE_ROOT/.nm/wifi-2/ipv6")" "$ep/owner: the owner's method is back"
+    ) || exit 1
+    (
+      # NetworkManager does not answer at the uninstall: the profile is not
+      # skipped in silence; the restore fails and keeps the record, and a
+      # retry gives it back. A profile that is gone needs nothing.
+      dt_world "$ep" resolved; dt_nm_v6_world
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/nm-down: install: $IP_OUT"
+      printf '%s\n' '^nmcli -g ipv6\.method con show eth-1$' >"$FAKE/fail"
+      ip_install "$ep" uninstall
+      rm -f "$FAKE/fail"
+      assert_nonzero "$IP_RC" "$ep/nm-down: the uninstall fails: $IP_OUT"
+      assert_match 'could not read NetworkManager profile eth-1' "$IP_OUT" "$ep/nm-down: and names the profile"
+      assert_eq "$(printf 'eth-1\tauto\nwifi-2\tdhcp')" "$(dt_ipv6_prof_rec)" "$ep/nm-down: the record is kept"
+      rm -rf "$FAKE_ROOT/.nm/wifi-2"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep/nm-down: the retry: $IP_OUT"
+      assert_eq auto "$(cat "$FAKE_ROOT/.nm/eth-1/ipv6")" "$ep/nm-down: the profile is given back"
+      assert_match 'wifi-2 no longer exists' "$IP_OUT" "$ep/nm-down: a profile that is gone is named, not an error"
+      assert_eq "" "$(dt_ipv6_prof_rec)" "$ep/nm-down: the record is gone"
+    ) || exit 1
+    (
+      local rec0
+      # A reinstall over a deployment from before this change (profiles as
+      # the owner set them, no profile record) fails after the pin: the
+      # rollback gives back what its profile step changed, and the record is
+      # what it was.
+      dt_world "$ep" resolved; dt_nm_v6_world
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/re-rollback: install: $IP_OUT"
+      printf 'auto\n' >"$FAKE_ROOT/.nm/eth-1/ipv6"; printf 'dhcp\n' >"$FAKE_ROOT/.nm/wifi-2/ipv6"
+      rm -f "$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-profiles.tsv"
+      dt_mullvad "default"
+      printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' >"$FAKE/git_head"
+      printf '%s\n' '^mullvad dns set custom 127\.0\.0\.1$' >"$FAKE/fail"
+      ip_install "$ep"
+      rm -f "$FAKE/fail"
+      assert_nonzero "$IP_RC" "$ep/re-rollback: fails: $IP_OUT"
+      assert_eq "$(printf 'eth-1 auto\next-5 auto\nign-6 ignore\nlo-3 auto\nvpn-7 auto\nwg-4 auto\nwifi-2 dhcp')" "$(dt_nm_v6_state)" "$ep/re-rollback: every profile as the previous deployment had it"
+      assert_eq "" "$(dt_ipv6_prof_rec)" "$ep/re-rollback: and no profile record"
+      # A reinstall over this change's own deployment rolls back to it: the
+      # profiles it had disabled stay disabled, its record as it was.
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/re-rollback: reinstall: $IP_OUT"
+      rec0="$(dt_ipv6_prof_rec)"
+      dt_mullvad "default"
+      printf 'cccccccccccccccccccccccccccccccccccccccc\n' >"$FAKE/git_head"
+      printf '%s\n' '^mullvad dns set custom 127\.0\.0\.1$' >"$FAKE/fail"
+      ip_install "$ep"
+      rm -f "$FAKE/fail"
+      assert_nonzero "$IP_RC" "$ep/re-rollback 2: fails: $IP_OUT"
+      assert_eq disabled "$(cat "$FAKE_ROOT/.nm/eth-1/ipv6")" "$ep/re-rollback 2: the previous deployment's disabled profile stays so"
+      assert_eq "$rec0" "$(dt_ipv6_prof_rec)" "$ep/re-rollback 2: and its record is kept"
     ) || exit 1
     (
       # A first install that fails after the pin gives the profiles back.
@@ -1260,6 +1361,45 @@ t_ipv6_profiles_are_disabled_and_given_back() {
       assert_eq "$(printf 'eth-1 auto\next-5 auto\nign-6 ignore\nlo-3 auto\nvpn-7 auto\nwg-4 auto\nwifi-2 dhcp')" "$(dt_nm_v6_state)" "$ep/rollback: every profile as it was"
     ) || exit 1
   done
+  (
+    # nmcli -t escapes ':' in a file name as '\:'; a profile listed after
+    # the last candidate is not one (the loop must still end well).
+    dt_world install-deb resolved
+    dt_nm_v6 odd-8 802-3-ethernet auto enp8s0 '/etc/NetworkManager/system-connections/a\:b.nmconnection'
+    dt_nm_v6 zz-9 vpn auto tun9
+    dt_helper linux snapshot
+    dt_helper linux ipv6-profiles
+    assert_rc 0 "$DT_RC" "escaped name: $DT_OUT"
+    assert_eq "$(printf 'odd-8 disabled\nzz-9 auto')" "$(dt_nm_v6_state)" "escaped name: the profile on disk is changed, the VPN after it is not"
+  ) || exit 1
+  (
+    # The undo cannot read a profile it changed (NetworkManager not
+    # answering): it fails and keeps its list and the record; a retry works.
+    dt_world install-deb resolved; dt_nm_v6_world
+    dt_helper linux snapshot
+    dt_helper linux ipv6-profiles
+    assert_eq disabled "$(cat "$FAKE_ROOT/.nm/eth-1/ipv6")" "undo: eth-1 was disabled by the run"
+    printf '%s\n' '^nmcli -g ipv6\.method con show eth-1$' >"$FAKE/fail"
+    dt_helper linux ipv6-profiles-undo
+    rm -f "$FAKE/fail"
+    assert_nonzero "$DT_RC" "undo: fails: $DT_OUT"
+    assert_match 'could not read NetworkManager profile eth-1' "$DT_OUT" "undo: and names the profile"
+    assert_eq disabled "$(cat "$FAKE_ROOT/.nm/eth-1/ipv6")" "undo: eth-1 is not given up on"
+    assert_file "$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-profiles.run" "undo: the run's list is kept"
+    dt_helper linux ipv6-profiles-undo
+    assert_rc 0 "$DT_RC" "undo retry: $DT_OUT"
+    assert_eq "$(printf 'eth-1 auto\next-5 auto\nign-6 ignore\nlo-3 auto\nvpn-7 auto\nwg-4 auto\nwifi-2 dhcp')" "$(dt_nm_v6_state)" "undo retry: every profile as before the run"
+    assert_eq "" "$(dt_ipv6_prof_rec)" "undo retry: and no profile record"
+  ) || exit 1
+  (
+    # A profile id with a leading '-' would read as an nmcli option: skipped.
+    dt_world install-deb resolved
+    dt_nm_v6 -x 802-3-ethernet auto enp9s0
+    dt_helper linux snapshot
+    dt_helper linux ipv6-profiles
+    assert_rc 0 "$DT_RC" "leading dash: $DT_OUT"
+    assert_not_match 'nmcli con mod -x' "$(cat "$FAKE_LOG")" "leading dash: not modified"
+  ) || exit 1
   (
     # Without the record (no snapshot), the helper changes no profile.
     dt_world install-deb resolved; dt_nm_v6_world
