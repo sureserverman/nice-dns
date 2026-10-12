@@ -1608,6 +1608,13 @@ EOF
       sudo "$hook" "$d" up || true
     done
   fi
+  # The hook alone leaves a window: NetworkManager sends pre-up only after it
+  # set up IP, so each activation sent MLD and a duplicate-address check from
+  # :: (Stage 3 gate capture, 2026-10-12). Each Ethernet and Wi-Fi profile on
+  # disk therefore gets ipv6.method disabled, its method recorded by the
+  # helper for the uninstall (deb/custom-dns-deb ipv6-profiles; DEC-020). The
+  # hook stays for profiles made later and other types.
+  sudo "$R/usr/bin/custom-dns-deb" ipv6-profiles || true
 
   # sysctl-only on purpose. The kernel cmdline flag ipv6.disable=1 (shipped by
   # earlier versions as a grub.d drop-in) removes AF_INET6 entirely, so any

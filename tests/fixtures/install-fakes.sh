@@ -317,10 +317,22 @@ case "$me" in
   nmcli)
     # With profiles in $FAKE_ROOT/.nm/<uuid>/{dns,ignore,device} (a test made
     # them), the connection-profile calls the DNS helper makes are stateful.
+    # Optional per profile: type (default generic), ipv6 (its ipv6.method,
+    # default auto) and file (default a keyfile under /etc), as nmcli 1.46
+    # prints them.
     if [ -n "${FAKE_ROOT:-}" ] && [ -d "$FAKE_ROOT/.nm" ]; then
       nm="$FAKE_ROOT/.nm"
       case "$*" in
         "-t -f UUID con show") ls "$nm"; exit 0 ;;
+        "-t -f UUID,TYPE,FILENAME con show")
+          for p in "$nm"/*; do
+            u="${p##*/}"
+            printf '%s:%s:%s\n' "$u" "$(cat "$p/type" 2>/dev/null || echo generic)" \
+              "$(cat "$p/file" 2>/dev/null || echo "/etc/NetworkManager/system-connections/$u.nmconnection")"
+          done
+          exit 0 ;;
+        "-g ipv6.method con show "*) u="${*##* }"; [ -d "$nm/$u" ] || exit 10; cat "$nm/$u/ipv6" 2>/dev/null || echo auto; exit 0 ;;
+        "con mod "*" ipv6.method "*) u="$3"; [ -d "$nm/$u" ] || exit 10; printf '%s\n' "$5" >"$nm/$u/ipv6"; exit 0 ;;
         "-g ipv4.dns,ipv4.ignore-auto-dns con show "*) u="${*##* }"; [ -d "$nm/$u" ] || exit 10; cat "$nm/$u/dns" "$nm/$u/ignore"; exit 0 ;;
         "-g GENERAL.DEVICES con show "*) u="${*##* }"; cat "$nm/$u/device" 2>/dev/null; exit 0 ;;
         "con mod "*" ipv4.dns  ipv4.ignore-auto-dns no") u="$3"; [ -d "$nm/$u" ] || exit 10; : >"$nm/$u/dns"; printf 'no\n' >"$nm/$u/ignore"; exit 0 ;;
@@ -617,6 +629,7 @@ dt_dns_state() {
   for k in systemd-resolved.enabled systemd-resolved.active; do printf '%s %s\n' "$k" "$(cat "$r/.systemd/$k" 2>/dev/null)"; done
   for k in all default lo; do printf 'sysctl %s %s\n' "$k" "$(cat "$r/.sysctl/net.ipv6.conf.$k.disable_ipv6" 2>/dev/null)"; done
   for f in "$r"/proc/sys/net/ipv6/conf/*/disable_ipv6; do [ -f "$f" ] && printf 'device %s %s\n' "$(basename "$(dirname "$f")")" "$(cat "$f")"; done
+  for f in "$r"/.nm/*/; do [ -d "$f" ] && printf 'profile %s ipv6 %s\n' "$(basename "$f")" "$(cat "$f/ipv6" 2>/dev/null || echo auto)"; done
   for f in etc/NetworkManager/conf.d/90-nice-dns.conf etc/NetworkManager/dispatcher.d/90-nice-dns-pin \
            etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6 etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6 \
            etc/systemd/system/custom-dns-deb.service etc/sysctl.d/99-nice-dns-disable-ipv6.conf \

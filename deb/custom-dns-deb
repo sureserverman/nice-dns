@@ -15,6 +15,8 @@
 #   custom-dns-deb status  print pinned or unpinned.
 #   custom-dns-deb discard drop an unused record: a first install that failed
 #                          before its pin (refused once the pin is in place).
+#   custom-dns-deb ipv6-profiles  turn IPv6 off in each Ethernet and Wi-Fi
+#                          profile on disk, recording its method (install).
 #
 # Only these are owned: /etc/resolv.conf, systemd-resolved's enabled and
 # active state, the ipv6 sysctl runtime values (all, default, lo, and each
@@ -23,8 +25,10 @@
 # an older installer set up (origin legacy), also the NetworkManager
 # connection profiles it pinned: ipv4 DNS exactly
 # 127.0.0.1 with automatic DNS ignored (user decision 2026-09-28, after mint
-# was left without DNS by an uninstall that kept them). VPN and other network
-# configuration are never touched.
+# was left without DNS by an uninstall that kept them); and the ipv6.method
+# of each Ethernet and Wi-Fi profile ipv6-profiles disabled, as recorded in
+# ipv6-profiles.tsv beside the record (user decision 2026-10-12, DEC-020).
+# VPN and other network configuration are never touched.
 # The record lives in a root-only directory; it is data, never sourced.
 #
 # ND_DNS_TEST_ROOT prefixes every path for the fixture tests. It is honoured
@@ -57,6 +61,7 @@ OWNED_FILES=(
 )
 SYSCTL_KEYS="net.ipv6.conf.all.disable_ipv6 net.ipv6.conf.default.disable_ipv6 net.ipv6.conf.lo.disable_ipv6"
 IPV6_DEVICES="$RECEIPT_DIR/ipv6-devices.tsv"
+IPV6_PROFILES="$RECEIPT_DIR/ipv6-profiles.tsv"
 
 # restore_ipv6_devices: each recorded device gets its value from before
 # nice-dns (its first row) back; a device that is gone is skipped. With a
@@ -134,6 +139,90 @@ nm_unpin_legacy() {
       rc=1
     fi
   done
+  return "$rc"
+}
+
+# nm_v6_candidates: UUIDs of the connection profiles whose IPv6 nice-dns turns
+# off: Ethernet and Wi-Fi profiles stored on disk (a keyfile under /etc, or
+# one netplan generated). NetworkManager's in-memory external profiles, other
+# types (Mullvad's WireGuard, VPNs, bridges) and loopback (nmcli refuses
+# ipv6.method there) are left alone. Nothing when NetworkManager's CLI is
+# absent.
+nm_v6_candidates() {
+  command -v nmcli >/dev/null 2>&1 || return 0
+  local u t f
+  # As in nm_pinned_profiles, no statement may end non-zero.
+  { nmcli -t -f UUID,TYPE,FILENAME con show 2>/dev/null || true; } | while IFS=: read -r u t f; do
+    case "$t" in 802-3-ethernet|802-11-wireless) ;; *) continue ;; esac
+    case "${f//\\:/:}" in /etc/NetworkManager/system-connections/*|*/netplan-*) printf '%s\n' "$u" ;; esac
+  done
+  return 0
+}
+
+# cmd_ipv6_profiles: each candidate profile whose ipv6.method lets
+# NetworkManager turn IPv6 on (anything but disabled or ignore) is recorded
+# (the first method seen, in ipv6-profiles.tsv beside the record), set to
+# disabled and reapplied on its device. The dispatcher hook alone leaves a
+# window: NetworkManager sends pre-up only after it set up IP, and the NIC
+# sent MLD and a duplicate-address check from :: at every activation (Stage 3
+# gate capture, 2026-10-12). Only with the record in place, so the restore
+# can give every change back. A profile that cannot be changed is named and
+# left as it is; the hook still covers its device, and a profile made later.
+cmd_ipv6_profiles() {
+  local u m dev d
+  if ! receipt_ok; then
+    echo "custom-dns-deb: no record of the state before nice-dns; no NetworkManager profile is changed" >&2
+    return 0
+  fi
+  [[ ! -L $IPV6_PROFILES ]] || return 0
+  while IFS= read -r u; do
+    [[ $u =~ ^[A-Za-z0-9-]{1,64}$ ]] || continue
+    m="$(nmcli -g ipv6.method con show "$u" 2>/dev/null || true)"
+    case "$m" in auto|dhcp|manual|link-local|shared) ;; *) continue ;; esac
+    if ! awk -F '\t' -v u="$u" '$1 == u { f = 1 } END { exit !f }' "$IPV6_PROFILES" 2>/dev/null; then
+      if ! ( umask 077; printf '%s\t%s\n' "$u" "$m" >>"$IPV6_PROFILES" ) 2>/dev/null; then
+        echo "custom-dns-deb: could not record NetworkManager profile $u; leaving it as it is" >&2
+        continue
+      fi
+    fi
+    if nmcli con mod "$u" ipv6.method disabled >/dev/null 2>&1; then
+      dev="$(nmcli -g GENERAL.DEVICES con show "$u" 2>/dev/null || true)"
+      # A bond or team lists several devices.
+      for d in ${dev//,/ }; do
+        nmcli dev reapply "$d" >/dev/null 2>&1 || echo "custom-dns-deb: could not reapply $d; it takes ipv6.method disabled at its next activation" >&2
+      done
+    else
+      echo "custom-dns-deb: could not set ipv6.method disabled in NetworkManager profile $u; the dispatcher hook still covers its device" >&2
+    fi
+  done < <(nm_v6_candidates)
+  return 0
+}
+
+# restore_ipv6_profiles: each recorded profile still disabled gets its method
+# back (the first row) and is reapplied; one another owner changed since, or
+# one that is gone, is left alone. Exit 1 when a profile could not be reset.
+restore_ipv6_profiles() {
+  local u m now dev d rc=0
+  [[ -f $IPV6_PROFILES && ! -L $IPV6_PROFILES ]] || return 0
+  while IFS=$'\t' read -r u m; do
+    [[ $u =~ ^[A-Za-z0-9-]{1,64}$ ]] || continue
+    case "$m" in auto|dhcp|manual|link-local|shared) ;; *) continue ;; esac
+    now="$(nmcli -g ipv6.method con show "$u" 2>/dev/null)" || continue
+    if [[ $now != disabled ]]; then
+      echo "custom-dns-deb: NetworkManager profile $u changed since the record (ipv6.method $now); leaving it as it is" >&2
+      continue
+    fi
+    if nmcli con mod "$u" ipv6.method "$m" >/dev/null 2>&1; then
+      echo "custom-dns-deb: NetworkManager profile $u has ipv6.method $m again"
+      dev="$(nmcli -g GENERAL.DEVICES con show "$u" 2>/dev/null || true)"
+      for d in ${dev//,/ }; do
+        nmcli dev reapply "$d" >/dev/null 2>&1 || echo "custom-dns-deb: could not reapply $d; reconnect it to use IPv6 again" >&2
+      done
+    else
+      echo "custom-dns-deb: could not set NetworkManager profile $u back to ipv6.method $m" >&2
+      rc=1
+    fi
+  done < <(awk -F '\t' '!seen[$1]++' "$IPV6_PROFILES")
   return "$rc"
 }
 
@@ -291,6 +380,8 @@ cmd_restore() {
       systemctl enable --now systemd-resolved >/dev/null 2>&1 || true
     fi
   fi
+  local v6_ok=1
+  restore_ipv6_profiles || v6_ok=0
   restore_ipv6_devices
   # 4) An older installer's profile pins (legacy only): from the record, or,
   #    with no record at all, as found now (an install from before records,
@@ -306,11 +397,15 @@ cmd_restore() {
   if (( nm )) && systemctl is-active --quiet NetworkManager 2>/dev/null; then
     systemctl reload NetworkManager >/dev/null 2>&1 || true
   fi
+  if (( ! v6_ok )); then
+    echo "custom-dns-deb: a NetworkManager profile still has IPv6 disabled (see above); the record is kept: fix it and run the restore again" >&2
+    exit 1
+  fi
   if (( ! nm_ok )); then
     echo "custom-dns-deb: a NetworkManager profile still points at 127.0.0.1 (see above); the record is kept: fix it and run the restore again" >&2
     exit 1
   fi
-  rm -f "${RECEIPT_DIR:?}/receipt.tsv" "${RECEIPT_DIR:?}/resolv.conf.orig" "${RECEIPT_DIR:?}/ipv6-devices.tsv"
+  rm -f "${RECEIPT_DIR:?}/receipt.tsv" "${RECEIPT_DIR:?}/resolv.conf.orig" "${RECEIPT_DIR:?}/ipv6-devices.tsv" "${RECEIPT_DIR:?}/ipv6-profiles.tsv"
   rmdir "$RECEIPT_DIR" 2>/dev/null || true
   echo "custom-dns-deb: restored the resolver state from before nice-dns ($origin)"
 }
@@ -321,7 +416,7 @@ cmd_discard() {
     echo "custom-dns-deb: the resolver is pinned; use restore, not discard" >&2
     return 1
   fi
-  rm -f "${RECEIPT_DIR:?}/receipt.tsv" "${RECEIPT_DIR:?}/resolv.conf.orig" "${RECEIPT_DIR:?}/ipv6-devices.tsv"
+  rm -f "${RECEIPT_DIR:?}/receipt.tsv" "${RECEIPT_DIR:?}/resolv.conf.orig" "${RECEIPT_DIR:?}/ipv6-devices.tsv" "${RECEIPT_DIR:?}/ipv6-profiles.tsv"
   rmdir "$RECEIPT_DIR" 2>/dev/null || true
 }
 
@@ -332,5 +427,6 @@ case "${1:-pin}" in
   check) cmd_check ;;
   snapshot) cmd_snapshot ;;
   restore) cmd_restore ;;
-  *) echo "usage: custom-dns-deb [pin|check|snapshot|restore|status|discard]" >&2; exit 2 ;;
+  ipv6-profiles) cmd_ipv6_profiles ;;
+  *) echo "usage: custom-dns-deb [pin|check|snapshot|restore|status|discard|ipv6-profiles]" >&2; exit 2 ;;
 esac

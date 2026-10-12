@@ -1177,6 +1177,98 @@ t_ipv6_hook_ignores_the_mullvad_tunnel() {
   ) || exit 1
 }
 
+# The hook leaves a window: NetworkManager sends pre-up only after it set up
+# IP, so the NIC sent MLD and a duplicate-address check from :: at every
+# activation (Stage 3 gate capture, 2026-10-12: 5 frames over a boot, a
+# `nmcli connection up` and a NetworkManager restart). So an install also sets
+# ipv6.method disabled on each Ethernet and Wi-Fi profile stored on disk
+# (keyfile or netplan), recording the method it found once; the uninstall puts
+# back each one still disabled (user decision 2026-10-12, DEC-020 amended).
+# Other types (Mullvad's WireGuard, VPNs, bridges, loopback, which nmcli
+# refuses) and NetworkManager's in-memory external profiles are left alone.
+dt_nm_v6() { # <uuid> <type> <method> <device> [file]
+  dt_nm_profile "$1" '' no "$4"
+  printf '%s\n' "$2" >"$FAKE_ROOT/.nm/$1/type"; printf '%s\n' "$3" >"$FAKE_ROOT/.nm/$1/ipv6"
+  [ -z "${5:-}" ] || printf '%s\n' "$5" >"$FAKE_ROOT/.nm/$1/file"
+}
+dt_nm_v6_state() { local p; for p in "$FAKE_ROOT"/.nm/*; do printf '%s %s\n' "${p##*/}" "$(cat "$p/ipv6" 2>/dev/null || echo auto)"; done; }
+dt_nm_v6_world() {
+  dt_nm_v6 eth-1 802-3-ethernet auto enp1s0
+  dt_nm_v6 wifi-2 802-11-wireless dhcp wlp1 /run/NetworkManager/system-connections/netplan-NM-wifi-2-Home.nmconnection
+  dt_nm_v6 lo-3 loopback auto lo /run/NetworkManager/system-connections/lo.nmconnection
+  dt_nm_v6 wg-4 wireguard auto wg0-mullvad /run/NetworkManager/system-connections/wg0-mullvad.nmconnection
+  dt_nm_v6 ext-5 802-3-ethernet auto enp2s0 /run/NetworkManager/system-connections/enp2s0.nmconnection
+  dt_nm_v6 ign-6 802-3-ethernet ignore enp3s0
+  dt_nm_v6 vpn-7 vpn auto tun0
+}
+dt_ipv6_prof_rec() { cat "$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-profiles.tsv" 2>/dev/null; }
+
+t_ipv6_profiles_are_disabled_and_given_back() {
+  local ep
+  ip_select
+  for ep in $IP_EPS; do
+    [ "$(ip_platform "$ep")" = linux ] || continue
+    (
+      local before
+      dt_world "$ep" resolved; dt_nm_v6_world; before="$(dt_dns_state)"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: install: $IP_OUT"
+      assert_eq "$(printf 'eth-1 disabled\next-5 auto\nign-6 ignore\nlo-3 auto\nvpn-7 auto\nwg-4 auto\nwifi-2 disabled')" "$(dt_nm_v6_state)" \
+        "$ep: the Ethernet and Wi-Fi profiles on disk lose IPv6; external, ignore, loopback, VPN and Mullvad's are untouched"
+      assert_eq "$(printf 'eth-1\tauto\nwifi-2\tdhcp')" "$(dt_ipv6_prof_rec)" "$ep: the methods they had are recorded"
+      assert_eq 600 "$(ip_mode "$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-profiles.tsv")" "$ep: the record is 0600"
+      assert_match '^nmcli dev reapply enp1s0$' "$(cat "$FAKE_LOG")" "$ep: the changed profile is reapplied on its device"
+      assert_not_match 'nmcli con mod (lo-3|wg-4|ext-5|ign-6|vpn-7) ' "$(cat "$FAKE_LOG")" "$ep: no other profile is modified"
+      # A reinstall: the owner turned eth-1 back to auto; it is disabled
+      # again, and the record keeps the first method.
+      printf 'auto\n' >"$FAKE_ROOT/.nm/eth-1/ipv6"
+      printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' >"$FAKE/git_head"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: reinstall: $IP_OUT"
+      assert_eq disabled "$(cat "$FAKE_ROOT/.nm/eth-1/ipv6")" "$ep: disabled again"
+      assert_eq "$(printf 'eth-1\tauto\nwifi-2\tdhcp')" "$(dt_ipv6_prof_rec)" "$ep: the record is the first one"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep: uninstall: $IP_OUT"
+      assert_eq "$before" "$(dt_dns_state)" "$ep: every profile, switch and file is back"
+      assert_eq "" "$(dt_ipv6_prof_rec)" "$ep: the record is gone"
+    ) || exit 1
+    (
+      # A profile another owner changed since is left as it is; a profile
+      # whose change failed is left as it was, and the install still works
+      # (the hook remains the fallback).
+      dt_world "$ep" resolved; dt_nm_v6_world
+      printf '%s\n' '^nmcli con mod wifi-2 ipv6\.method disabled$' >"$FAKE/fail"
+      ip_install "$ep"
+      rm -f "$FAKE/fail"
+      assert_rc 0 "$IP_RC" "$ep/changed: install: $IP_OUT"
+      assert_eq dhcp "$(cat "$FAKE_ROOT/.nm/wifi-2/ipv6")" "$ep/changed: the failed profile keeps its method"
+      assert_match 'wifi-2' "$IP_OUT" "$ep/changed: and the install says which"
+      printf 'manual\n' >"$FAKE_ROOT/.nm/eth-1/ipv6"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep/changed: uninstall: $IP_OUT"
+      assert_eq manual "$(cat "$FAKE_ROOT/.nm/eth-1/ipv6")" "$ep/changed: a method changed since is left alone"
+      assert_eq dhcp "$(cat "$FAKE_ROOT/.nm/wifi-2/ipv6")" "$ep/changed: the unchanged one too"
+      assert_match 'eth-1.*changed since' "$IP_OUT" "$ep/changed: and the uninstall says so"
+    ) || exit 1
+    (
+      # A first install that fails after the pin gives the profiles back.
+      dt_world "$ep" resolved; dt_nm_v6_world; dt_mullvad "default"
+      printf '%s\n' '^mullvad dns set custom 127\.0\.0\.1$' >"$FAKE/fail"
+      ip_install "$ep"
+      rm -f "$FAKE/fail"
+      assert_nonzero "$IP_RC" "$ep/rollback: fails: $IP_OUT"
+      assert_eq "$(printf 'eth-1 auto\next-5 auto\nign-6 ignore\nlo-3 auto\nvpn-7 auto\nwg-4 auto\nwifi-2 dhcp')" "$(dt_nm_v6_state)" "$ep/rollback: every profile as it was"
+    ) || exit 1
+  done
+  (
+    # Without the record (no snapshot), the helper changes no profile.
+    dt_world install-deb resolved; dt_nm_v6_world
+    dt_helper linux ipv6-profiles
+    assert_rc 0 "$DT_RC" "no record: $DT_OUT"
+    assert_eq auto "$(cat "$FAKE_ROOT/.nm/eth-1/ipv6")" "no record: nothing is changed"
+  ) || exit 1
+}
+
 # ipv6.disable=1 on the kernel command line removes AF_INET6, and Mullvad's
 # userspace WireGuard then cannot bind and blocks the host on every boot
 # (incident 2026-07-10). No install path may write it; comments may name it.
