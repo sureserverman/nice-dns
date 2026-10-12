@@ -171,3 +171,72 @@ nd_platform_bridge_eval() {
     -v "$d:/pool" --entrypoint /bin/bridge-eval "docker.io/sureserver/tor-$1:latest" \
     -pool /pool/bridge-pool.tsv -out "/pool/$2" -count 7 -window 150 -grace 20
 }
+
+# ─── Install drift (BL-045) ────────────────────────────────────────────────
+# Reads files only; never re-renders or restarts anything.
+#
+#   ND_INSTALL_STATE_DIR   the installer's state (default
+#                          $XDG_STATE_HOME/nice-dns-install, lib/install.sh)
+#   ND_QUADLET_DIR         the installed quadlets (default
+#                          $XDG_CONFIG_HOME/containers/systemd)
+
+nd_platform_install_state_dir() {
+  printf '%s\n' "${ND_INSTALL_STATE_DIR:-${XDG_STATE_HOME:-${HOME:?HOME is unset}/.local/state}/nice-dns-install}"
+}
+
+nd_platform_quadlet_dir() {
+  printf '%s\n' "${ND_QUADLET_DIR:-${XDG_CONFIG_HOME:-${HOME:?HOME is unset}/.config}/containers/systemd}"
+}
+
+# nd_platform_install_generation: the generation `current` names when it is a
+# well-formed id with its manifest; status 1 (nothing printed) otherwise.
+nd_platform_install_generation() {
+  local sd g=""
+  sd="$(nd_platform_install_state_dir)"
+  [ -f "$sd/current" ] && [ ! -L "$sd/current" ] || return 1
+  IFS= read -r g <"$sd/current" || true
+  printf '%s\n' "$g" | grep -Eq '^[0-9]{8}T[0-9]{6}Z-([0-9a-f]{12}|nogit0000000)$' || return 1
+  [ -f "$sd/generations/$g/prepare.tsv" ] && [ ! -L "$sd/generations/$g/prepare.tsv" ] || return 1
+  printf '%s\n' "$g"
+}
+
+# nd_platform_dns_publishes: "file<TAB>host<TAB>value" for each PublishPort of
+# host port 53 in the installed quadlets (host empty: every address).
+nd_platform_dns_publishes() {
+  local q f
+  q="$(nd_platform_quadlet_dir)"
+  for f in "$q"/*.pod "$q"/*.container; do
+    [ -f "$f" ] || continue
+    awk -v f="${f##*/}" '
+      /^[[:space:]]*PublishPort[[:space:]]*=/ {
+        v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v)
+        p = v; sub(/\/.*/, "", p)
+        host = ""; hp = ""
+        if (substr(p, 1, 1) == "[") {
+          i = index(p, "]"); host = substr(p, 2, i - 2); rest = substr(p, i + 2)
+          n = split(rest, a, ":"); if (n >= 2) hp = a[1]
+        } else {
+          n = split(p, a, ":")
+          if (n == 3) { host = a[1]; hp = a[2] } else if (n == 2) hp = a[1]
+        }
+        if (hp == "53") print f "\t" host "\t" v
+      }' "$f"
+  done
+}
+
+# nd_platform_install_drift <deadline> <tmp>: "verdict<TAB>reason" for the
+# installed deployment: unhealthy (install-security-drift) when no generation
+# is recorded (an install from before generations, which is never upgraded
+# in place) or a quadlet publishes host port 53 off loopback (an open
+# resolver for the network; installs before 57db2a3 published 0.0.0.0:53).
+nd_platform_install_drift() {
+  local g bad
+  g="$(nd_platform_install_generation)" || {
+    printf 'unhealthy\tinstall-security-drift: no install generation is recorded (an install from before generations; reinstall)\n'; return 0; }
+  bad="$(nd_platform_dns_publishes | awk -F '\t' '
+    $2 !~ /^(127\.[0-9.]+|::1|localhost)$/ { printf "%s%s (%s %s)", s, ($2 == "" ? "every address" : $2), $1, $3; s = ", " }')"
+  if [ -n "$bad" ]; then
+    printf 'unhealthy\tinstall-security-drift: :53 is published on %s\n' "$bad"; return 0
+  fi
+  printf 'healthy\tgeneration %s; :53 on loopback only\n' "$g"
+}

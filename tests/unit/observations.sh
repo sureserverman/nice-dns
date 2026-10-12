@@ -50,6 +50,8 @@ ob_setup() {
   export ND_RESOLV_CONF="$CASE_DIR/resolv.conf" ND_CONTAINER_FALLBACK="$CASE_DIR/no-such-dir/container"
   printf '# written by custom-dns-deb\nnameserver 127.0.0.1\n' >"$ND_RESOLV_CONF"
   ob_platform "${1:-linux}"
+  # A healthy host has an installed generation (install-drift, BL-045).
+  ob_install_state
 }
 
 ob_platform() {
@@ -445,7 +447,7 @@ t_observations_query_only_controlled_names() {
 # ─────────────────────────── output format ───────────────────────────────────
 
 t_observe_output_is_valid_tsv_with_one_line_reasons() {
-  local plat
+  local plat drift
   ob_setup linux
   for plat in $(ob_platforms); do
     ob_platform "$plat"
@@ -464,8 +466,9 @@ t_observe_output_is_valid_tsv_with_one_line_reasons() {
     else
       assert_match 'runtime-down: .*failed to connect' "$(ob_reason runtime)" "$plat: the runtime's error is the reason"
     fi
-    assert_eq "runtime proxy dns-owner local-service filtering local-cache route:cloudflare-onion route:cloudflare-exit route:quad9-exit route:cloudflare-legacy " \
-      "$(printf '%s\n' "$OB_OUT" | awk -F '\t' '$1 == "obs" { print $2 }' | tr '\n' ' ')" "$plat: the documented names, in order"
+    if [ "$plat" = linux ]; then drift="install-drift "; else drift=""; fi
+    assert_eq "runtime proxy dns-owner ${drift}local-service filtering local-cache route:cloudflare-onion route:cloudflare-exit route:quad9-exit route:cloudflare-legacy " \
+      "$(printf '%s\n' "$OB_OUT" | awk -F '\t' '$1 == "obs" { print $2 }' | tr '\n' ' ')" "$plat: the documented names, in order (install-drift on Linux only)"
   done
 }
 
@@ -682,6 +685,11 @@ echo "left=$(ps | grep -c "[s]leep $v")"
 mkdir -p /tmp/tree /tmp/home && cp -R /src/health /src/lib /src/routes /tmp/tree/ && chmod -R go-w /tmp/tree
 HOME=/tmp/home XDG_STATE_HOME=/tmp/home/state XDG_DATA_HOME=/tmp/home/share XDG_CONFIG_HOME=/tmp/home/config
 export HOME XDG_STATE_HOME XDG_DATA_HOME XDG_CONFIG_HOME
+# An installed generation (install-drift, BL-045): a healthy Linux host.
+g=20261012T120000Z-0123456789ab
+mkdir -p "$XDG_STATE_HOME/nice-dns-install/generations/$g"
+echo "$g" >"$XDG_STATE_HOME/nice-dns-install/current"
+printf 'schema\tnice-dns-install-prepare/1\n' >"$XDG_STATE_HOME/nice-dns-install/generations/$g/prepare.tsv"
 for plat in linux macos; do
   if [ "$plat" = macos ]; then echo 172.31.240.250 >/work/fake/addr; FAKE_UNAME=Darwin; log=$HOME/Library/Logs/nice-dns-health/health.log
   else echo 127.0.0.1 >/work/fake/addr; FAKE_UNAME=Linux; log=$XDG_STATE_HOME/nice-dns-health/health.log; fi
@@ -810,4 +818,50 @@ t_proxy_generation_without_a_hash_tool_is_indeterminate() {
     ob_observe
     ob_expect proxy indeterminate '^unknown: no sha256sum or shasum' "$plat: no hash tool"
   done
+}
+
+# ─────────────────────────── install drift (BL-045) ──────────────────────────
+#
+# install-drift (Linux; files only): unhealthy "install-security-drift" when
+# no install generation is recorded (an install from before generations) or
+# an installed quadlet publishes host port 53 off loopback (an install from
+# before 57db2a3 published 0.0.0.0:53, an open resolver for the LAN).
+
+t_a_wildcard_53_publish_is_security_drift() {
+  local pub
+  ob_setup linux
+  ob_install_state
+  ob_observe
+  ob_expect install-drift healthy "generation $OB_GEN"
+  printf '%s\n' "$OB_OUT" | bash -c '. "$1" && nd_health_validate' _ "$OB_HEALTH" || fail "valid with install-drift: $OB_OUT"
+  for pub in 53:53/udp 0.0.0.0:53:53/tcp 192.168.1.5:53:53 '[::]:53:53/udp'; do
+    ob_install_state 127.0.0.1:53:53/tcp "$pub"
+    ob_observe
+    ob_expect install-drift unhealthy 'install-security-drift: :53 is published on' "$pub is security drift"
+  done
+  for pub in '[::1]:53:53/udp' 'localhost:53:53' 127.0.0.53:53:53 0.0.0.0:8880:80 53/udp; do
+    ob_install_state 127.0.0.1:53:53/tcp "$pub"
+    ob_observe
+    ob_expect install-drift healthy "" "$pub is not security drift"
+  done
+}
+
+t_a_missing_generation_is_security_drift() {
+  ob_setup linux
+  ob_install_state
+  rm -f "$XDG_STATE_HOME/nice-dns-install/current"
+  ob_observe
+  ob_expect install-drift unhealthy 'install-security-drift: no install generation is recorded'
+  printf 'not-a-generation\n' >"$XDG_STATE_HOME/nice-dns-install/current"
+  ob_observe
+  ob_expect install-drift unhealthy 'install-security-drift: no install generation is recorded' "a malformed current is not a generation"
+  ob_install_state
+  rm -f "$XDG_STATE_HOME/nice-dns-install/generations/$OB_GEN/prepare.tsv"
+  ob_observe
+  ob_expect install-drift unhealthy 'install-security-drift: no install generation is recorded' "a generation without its manifest"
+  # macOS has no install-drift observation; the set is still valid.
+  ob_platform macos
+  ob_observe
+  assert_eq "" "$(ob_verdict install-drift)" "no install-drift record on macOS"
+  printf '%s\n' "$OB_OUT" | bash -c '. "$1" && nd_health_validate' _ "$OB_HEALTH" || fail "macOS set valid without install-drift"
 }

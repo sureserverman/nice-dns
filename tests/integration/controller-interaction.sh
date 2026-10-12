@@ -192,3 +192,99 @@ t_shadow_pass_observes_and_decides_but_never_acts() {
     ) || exit 1
   done
 }
+
+# ─────────────────────────── install drift (BL-045) ──────────────────────────
+#
+# The installed generation is reported, never re-rendered: `status` shows it
+# with each running image against the generation's recorded one and the :53
+# publishes; `drift` exits 0 current, 1 drift (an image off the generation),
+# 2 security drift; a tick logs security drift at err once a day.
+
+# ci_drift_env: the Linux world with an installed generation; CI_CLI runs the
+# checkout's controller.
+ci_drift_env() {
+  ci_env linux
+  export XDG_STATE_HOME="$HOME/.local/state" XDG_CONFIG_HOME="$HOME/.config"
+  ob_install_state "$@"
+}
+# ci_cli <cmd...>: the controller from a private checkout-shaped copy (the
+# controller refuses a library directory others can write).
+ci_cli() {
+  local t="$CASE_DIR/tree"
+  if [ ! -d "$t" ]; then
+    mkdir -p "$t" && cp -R "$NICE_DNS_ROOT/health" "$NICE_DNS_ROOT/lib" "$NICE_DNS_ROOT/routes" "$t/" && chmod -R go-w "$t"
+    chmod go-w "$CASE_DIR"
+  fi
+  CI_OUT="$(bash "$t/health/nice-dns-health" "$@" 2>&1)"; CI_RC=$?
+}
+
+t_status_shows_the_generation_and_lock_match() {
+  (
+    ci_drift_env
+    ci_cli status
+    assert_match "Generation: *$OB_GEN" "$CI_OUT" "the generation"
+    assert_match "Source commit: *0123456789abcdef0123456789abcdef01234567" "$CI_OUT" "its source commit"
+    assert_match "Lock: *sha256:0{63}7" "$CI_OUT" "the lock it was installed from"
+    assert_match "unbound +on the generation's image" "$CI_OUT" "unbound runs the recorded image"
+    assert_match "pi-hole +on the generation's image" "$CI_OUT" "pi-hole too"
+    assert_match "tor-haproxy +on the generation's image" "$CI_OUT" "and the proxy"
+    assert_match "127\.0\.0\.1:53:53/udp" "$CI_OUT" "the :53 publishes"
+    assert_match "Drift: *none" "$CI_OUT" "no drift"
+    ci_cli drift
+    assert_rc 0 "$CI_RC" "drift: current: $CI_OUT"
+  ) || exit 1
+}
+
+t_drift_reports_an_image_off_the_lock() {
+  (
+    ci_drift_env
+    printf '%064d\n' 9 >"$FAKE/image_unbound"
+    ci_cli drift
+    assert_rc 1 "$CI_RC" "an image off the generation is drift: $CI_OUT"
+    assert_match "unbound +OFF the generation's image" "$CI_OUT" "names the container"
+    rm -f "$FAKE/image_pi-hole"
+    ci_cli drift
+    assert_rc 1 "$CI_RC" "a container that does not run is drift too: $CI_OUT"
+    assert_match "pi-hole +not running" "$CI_OUT" "and says so"
+  ) || exit 1
+}
+
+t_security_drift_logs_once_per_day() {
+  (
+    ci_drift_env 0.0.0.0:53:53/tcp
+    ci_cli drift
+    assert_rc 2 "$CI_RC" "a wildcard :53 publish is security drift: $CI_OUT"
+    printf '%064d\n' 9 >"$FAKE/image_unbound"
+    ci_cli drift
+    assert_rc 2 "$CI_RC" "security drift outranks image drift"
+    ci_cli tick
+    ci_cli tick
+    assert_eq 1 "$(grep -c 'ERR install-security-drift' "$HOME/.local/state/nice-dns-health/health.log")" "two ticks, one err line:
+$(cat "$HOME/.local/state/nice-dns-health/health.log")"
+    printf '2000-01-01\n' >"$HOME/.local/state/nice-dns-health/install-security-drift.day"
+    ci_cli tick
+    assert_eq 2 "$(grep -c 'ERR install-security-drift' "$HOME/.local/state/nice-dns-health/health.log")" "a new day logs again"
+    ob_install_state
+    ci_cli tick
+    assert_eq 2 "$(grep -c 'ERR install-security-drift' "$HOME/.local/state/nice-dns-health/health.log")" "no drift, no err line"
+  ) || exit 1
+}
+
+t_drift_never_re_renders() {
+  (
+    local pod
+    ci_drift_env 0.0.0.0:53:53/tcp
+    rm -f "$XDG_STATE_HOME/nice-dns-install/current"
+    pod="$(cat "$XDG_CONFIG_HOME/containers/systemd/nice-dns.pod")"
+    # A settled controller state: a healthy pass on it takes no action.
+    ci_seed cloudflare-exit -
+    : >"$FAKE_LOG"
+    ci_cli status; ci_cli drift; ci_cli tick
+    assert_eq no-op "$(ci_get action "$CI_OUT")" "the tick takes no action for drift"
+    assert_eq "" "$(grep -E '^(podman|container) (run|rm|create|start|stop|restart|kill|pod|play|generate|pull|build|tag|rmi|image (rm|tag|pull))( |$)' "$FAKE_LOG")" "no runtime write:
+$(cat "$FAKE_LOG")"
+    assert_eq "" "$(grep -E '^systemctl .*(start|stop|restart|enable|disable|daemon-reload|reload)( |$)' "$FAKE_LOG")" "no unit change"
+    assert_eq "$pod" "$(cat "$XDG_CONFIG_HOME/containers/systemd/nice-dns.pod")" "the quadlet is as it was"
+    assert_no_path "$XDG_STATE_HOME/nice-dns-install/current" "no generation is invented"
+  ) || exit 1
+}
