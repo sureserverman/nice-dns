@@ -688,7 +688,8 @@ _nd_inst_owned_paths() {
       "${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-health/bin/nice-dns-health"
     printf 'd\t%s\t755\tuser\n' "${XDG_DATA_HOME:-$HOME/.local/share}/nice-dns-health"
     printf 'd\t%s\t755\tuser\n' "$(_nd_inst_route_dir)"
-    printf 'f\t%s\t755\troot\n' "$R/usr/bin/custom-dns-deb" "$R/etc/NetworkManager/dispatcher.d/90-nice-dns-pin"
+    printf 'f\t%s\t755\troot\n' "$R/usr/bin/custom-dns-deb" "$R/etc/NetworkManager/dispatcher.d/90-nice-dns-pin" \
+      "$R/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6" "$R/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6"
     printf 'f\t%s\t644\troot\n' "$R/etc/systemd/system/custom-dns-deb.service" "$R/etc/NetworkManager/conf.d/90-nice-dns.conf" \
       "$R/etc/sysctl.d/99-nice-dns-disable-ipv6.conf" \
       "$R/etc/systemd/system/NetworkManager-wait-online.service.d/10-wait-for-connectivity.conf"
@@ -1559,6 +1560,27 @@ if [ -x /usr/bin/custom-dns-deb ]; then
 fi
 EOF
   sudo chmod 755 "$R/etc/NetworkManager/dispatcher.d/90-nice-dns-pin"
+  # Separately, per-device IPv6: NetworkManager's activation turns a device's
+  # disable_ipv6 back to 0 (ipv6.method auto), so the owned hook sets it
+  # to 1 again on pre-up and up (deb/91-nice-dns-ipv6; BL-050). pre-up
+  # events reach only scripts in pre-up.d, hence the copy there.
+  sudo mkdir -p "$R/etc/NetworkManager/dispatcher.d/pre-up.d"
+  sudo install -m 755 "$ND_INST_TREE/deb/91-nice-dns-ipv6" "$R/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6"
+  sudo install -m 755 "$ND_INST_TREE/deb/91-nice-dns-ipv6" "$R/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6"
+  # Each device's value from before nice-dns, recorded for the uninstall,
+  # only while no nice-dns switch is in force (the sysctl.d drop-in is not
+  # there yet): writing net.ipv6.conf.all in _nd_inst_linux_ipv6_disable
+  # sets every existing device too, so a value read after it, as on a host
+  # an older install set up, is nice-dns's own. Before NetworkManager
+  # reloads.
+  local d
+  if ! sudo test -e "$R/etc/sysctl.d/99-nice-dns-disable-ipv6.conf"; then
+    for d in "$R"/proc/sys/net/ipv6/conf/*/; do
+      d="${d%/}"; d="${d##*/}"
+      case "$d" in all|default|'*') continue ;; esac
+      sudo "$R/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6" "$d" record || true
+    done
+  fi
 
   sudo systemctl reload NetworkManager 2>/dev/null || sudo systemctl restart NetworkManager
 }
@@ -1572,6 +1594,18 @@ net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
   sudo sysctl --system >/dev/null
+  # Devices that exist now: the hook as NetworkManager would run it, so a
+  # device NetworkManager turned back on is off before its next activation
+  # too (on a first install their values were recorded first, in
+  # _nd_inst_linux_nm_lockdown).
+  local hook="$R/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6" d
+  if sudo test -x "$hook"; then
+    for d in "$R"/proc/sys/net/ipv6/conf/*/; do
+      d="${d%/}"; d="${d##*/}"
+      case "$d" in all|default|'*') continue ;; esac
+      sudo "$hook" "$d" up || true
+    done
+  fi
 
   # sysctl-only on purpose. The kernel cmdline flag ipv6.disable=1 (shipped by
   # earlier versions as a grub.d drop-in) removes AF_INET6 entirely, so any

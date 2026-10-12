@@ -1047,3 +1047,141 @@ t_unreadable_mullvad_setting_refuses_before_any_change() {
     done
   done
 }
+
+# ─────────────────────────── IPv6 per device (BL-050) ───────────────────────
+#
+# NetworkManager's activation of a profile with ipv6.method auto turns the
+# device's disable_ipv6 back to 0 after systemd-sysctl set every switch to 1
+# (measured 2026-10-12, Task 2.1). An owned dispatcher hook sets it to 1
+# again on pre-up/up/reapply and never touches Mullvad's tunnel; a first
+# install records each device's value from before nice-dns for the uninstall. The address family stays: no kernel
+# ipv6.disable flag (the 2026-07-10 incident).
+
+dt_dev() { cat "$FAKE_ROOT/proc/sys/net/ipv6/conf/$1/disable_ipv6"; }
+dt_hook() { # <iface> <action>: the hook as NetworkManager runs it
+  DT_OUT="$(env -i PATH="$IP_BIN" ND_DNS_TEST_ROOT="$FAKE_ROOT" bash "$IP_TREE/deb/91-nice-dns-ipv6" "$1" "$2" 2>&1)"
+  DT_RC=$?
+}
+dt_ipv6_rec() { cat "$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-devices.tsv" 2>/dev/null; }
+
+t_ipv6_hook_disables_the_activating_device() {
+  local ep
+  (
+    local bad
+    dt_world install-deb resolved
+    dt_helper linux snapshot
+    dt_hook enp1s0 up
+    assert_rc 0 "$DT_RC" "up: $DT_OUT"
+    assert_eq 1 "$(dt_dev enp1s0)" "up: the device's IPv6 is off"
+    assert_eq "" "$(dt_ipv6_rec)" "up: NetworkManager's events never record (the value may be nice-dns's already)"
+    for act in pre-up reapply; do
+      printf '0\n' >"$FAKE_ROOT/proc/sys/net/ipv6/conf/enp1s0/disable_ipv6"
+      dt_hook enp1s0 "$act"
+      assert_eq 1 "$(dt_dev enp1s0)" "$act: off again"
+    done
+    printf '0\n' >"$FAKE_ROOT/proc/sys/net/ipv6/conf/enp1s0/disable_ipv6"
+    dt_hook enp1s0 down
+    assert_eq 0 "$(dt_dev enp1s0)" "down: nothing is written"
+    dt_hook enp1s0 record
+    assert_eq 0 "$(dt_dev enp1s0)" "record: the switch is not written"
+    assert_eq "$(printf 'enp1s0\t0')" "$(dt_ipv6_rec)" "record: the value is recorded"
+    assert_eq 600 "$(ip_mode "$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-devices.tsv")" "the record is 0600"
+    printf '1\n' >"$FAKE_ROOT/proc/sys/net/ipv6/conf/enp1s0/disable_ipv6"
+    dt_hook enp1s0 record
+    assert_eq "$(printf 'enp1s0\t0')" "$(dt_ipv6_rec)" "record: the first value is kept"
+    for bad in '../all' 'a/b' '' 'x;y'; do
+      dt_hook "$bad" up
+      assert_rc 0 "$DT_RC" "a bad name ($bad) is ignored"
+    done
+  ) || exit 1
+  ip_select
+  for ep in $IP_EPS; do
+    [ "$(ip_platform "$ep")" = linux ] || continue
+    (
+      local before
+      # A first install records each device, then turns the NIC's IPv6 off
+      # and installs the hook; the uninstall gives every switch back.
+      dt_world "$ep" resolved; before="$(dt_dns_state)"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: install: $IP_OUT"
+      assert_eq 1 "$(dt_dev enp1s0)" "$ep: the NIC's IPv6 is off after the install"
+      assert_eq "$(printf 'enp1s0\t0')" "$(dt_ipv6_rec)" "$ep: its value from before nice-dns is recorded"
+      assert_file "$FAKE_ROOT/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6" "$ep: the hook"
+      assert_file "$FAKE_ROOT/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6" "$ep: its pre-up copy"
+      assert_eq 755 "$(ip_mode "$FAKE_ROOT/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6")" "$ep: executable"
+      # A reinstall keeps the record; NetworkManager turned the NIC on again.
+      printf '0\n' >"$FAKE_ROOT/proc/sys/net/ipv6/conf/enp1s0/disable_ipv6"
+      printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' >"$FAKE/git_head"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: reinstall: $IP_OUT"
+      assert_eq 1 "$(dt_dev enp1s0)" "$ep: off after the reinstall"
+      assert_eq "$(printf 'enp1s0\t0')" "$(dt_ipv6_rec)" "$ep: the record is the first one"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep: uninstall: $IP_OUT"
+      assert_eq "$before" "$(dt_dns_state)" "$ep: the uninstall gives every switch and file back"
+    ) || exit 1
+    (
+      local before
+      # An install from before this change: its switches are in force and it
+      # recorded no device. The reinstall records nothing (the value it would
+      # read is nice-dns's), and the uninstall's all=0 gives the NIC back.
+      dt_world "$ep" resolved; before="$(dt_dns_state)"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/upgrade: install: $IP_OUT"
+      rm -f "$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-devices.tsv"
+      printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' >"$FAKE/git_head"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/upgrade: reinstall: $IP_OUT"
+      assert_eq "" "$(dt_ipv6_rec)" "$ep/upgrade: nothing is recorded over switches already in force"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep/upgrade: uninstall: $IP_OUT"
+      assert_eq "$before" "$(dt_dns_state)" "$ep/upgrade: every switch is back"
+    ) || exit 1
+  done
+}
+
+t_ipv6_hook_ignores_the_mullvad_tunnel() {
+  (
+    dt_world install-deb resolved
+    dt_helper linux snapshot
+    dt_hook wg0-mullvad up
+    assert_rc 0 "$DT_RC" "$DT_OUT"
+    assert_eq 0 "$(dt_dev wg0-mullvad)" "Mullvad's tunnel is never written"
+    assert_eq "" "$(dt_ipv6_rec)" "nor recorded"
+  ) || exit 1
+  (
+    local before
+    # The record step never takes the tunnel either. (Writing
+    # net.ipv6.conf.all=1, as the install always has, sets every existing
+    # device, the tunnel too, like its default=1; Mullvad runs so, measured
+    # 2026-10-12. The uninstall's all=0 gives it back.)
+    dt_world install-deb resolved; before="$(dt_dns_state)"
+    dt_mullvad "custom 127.0.0.1"
+    ip_install install-deb
+    assert_rc 0 "$IP_RC" "install: $IP_OUT"
+    assert_not_match 'wg0-mullvad' "$(dt_ipv6_rec)" "no record row for Mullvad's tunnel"
+    ip_install install-deb uninstall
+    assert_rc 0 "$IP_RC" "uninstall: $IP_OUT"
+    assert_eq "$before" "$(dt_dns_state)" "every switch, the tunnel's too, is back"
+  ) || exit 1
+  (
+    # A record written twice (overlapping pre-up and up) restores the first.
+    dt_world install-deb resolved
+    dt_helper linux snapshot
+    printf 'enp1s0\t0\nenp1s0\t1\n' >"$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-devices.tsv"
+    printf '1\n' >"$FAKE_ROOT/proc/sys/net/ipv6/conf/enp1s0/disable_ipv6"
+    dt_helper linux pin
+    dt_helper linux restore
+    assert_rc 0 "$DT_RC" "restore: $DT_OUT"
+    assert_eq 0 "$(dt_dev enp1s0)" "the first recorded value wins"
+  ) || exit 1
+}
+
+# ipv6.disable=1 on the kernel command line removes AF_INET6, and Mullvad's
+# userspace WireGuard then cannot bind and blocks the host on every boot
+# (incident 2026-07-10). No install path may write it; comments may name it.
+t_no_install_path_writes_a_kernel_ipv6_flag() {
+  local hits
+  hits="$(cd "$NICE_DNS_ROOT" && grep -rnE 'ipv6\.disable' lib deb install-*.sh | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
+  assert_eq "" "$hits" "no install code writes ipv6.disable"
+}

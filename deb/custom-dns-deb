@@ -17,9 +17,11 @@
 #                          before its pin (refused once the pin is in place).
 #
 # Only these are owned: /etc/resolv.conf, systemd-resolved's enabled and
-# active state, the ipv6 sysctl runtime values, and the nice-dns-named files
-# in OWNED_FILES; on a host an older installer set up (origin legacy), also
-# the NetworkManager connection profiles it pinned: ipv4 DNS exactly
+# active state, the ipv6 sysctl runtime values (all, default, lo, and each
+# device's own switch as a first install recorded it in ipv6-devices.tsv
+# beside the record), and the nice-dns-named files in OWNED_FILES; on a host
+# an older installer set up (origin legacy), also the NetworkManager
+# connection profiles it pinned: ipv4 DNS exactly
 # 127.0.0.1 with automatic DNS ignored (user decision 2026-09-28, after mint
 # was left without DNS by an uninstall that kept them). VPN and other network
 # configuration are never touched.
@@ -47,11 +49,30 @@ PIN='nameserver 127.0.0.1'
 OWNED_FILES=(
   "$R/etc/NetworkManager/conf.d/90-nice-dns.conf"
   "$R/etc/NetworkManager/dispatcher.d/90-nice-dns-pin"
+  "$R/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6"
+  "$R/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6"
   "$R/etc/systemd/system/NetworkManager-wait-online.service.d/10-wait-for-connectivity.conf"
   "$R/etc/sysctl.d/99-nice-dns-disable-ipv6.conf"
   "$R/etc/systemd/system/custom-dns-deb.service"
 )
 SYSCTL_KEYS="net.ipv6.conf.all.disable_ipv6 net.ipv6.conf.default.disable_ipv6 net.ipv6.conf.lo.disable_ipv6"
+IPV6_DEVICES="$RECEIPT_DIR/ipv6-devices.tsv"
+
+# restore_ipv6_devices: each recorded device gets its value from before
+# nice-dns (its first row) back; a device that is gone is skipped. With a
+# fresh record a device with no row keeps the restored `all` value, which the
+# kernel applied to it; a legacy restore (sysctl --system) leaves it as is. After the hook itself is removed,
+# so NetworkManager no longer switches it off again.
+restore_ipv6_devices() {
+  local d v
+  [[ -f $IPV6_DEVICES && ! -L $IPV6_DEVICES ]] || return 0
+  while IFS=$'\t' read -r d v; do
+    [[ $d =~ ^[A-Za-z0-9_.:-]{1,15}$ && $d != . && $d != .. ]] || continue
+    case "$v" in 0|1) ;; *) continue ;; esac
+    [[ -f $R/proc/sys/net/ipv6/conf/$d/disable_ipv6 ]] || continue
+    printf '%s\n' "$v" 2>/dev/null >"$R/proc/sys/net/ipv6/conf/$d/disable_ipv6" || true
+  done < <(awk -F '\t' '!seen[$1]++' "$IPV6_DEVICES")
+}
 
 # pinned: resolv.conf is the regular file nice-dns writes (one nameserver, 127.0.0.1).
 pinned() {
@@ -270,6 +291,7 @@ cmd_restore() {
       systemctl enable --now systemd-resolved >/dev/null 2>&1 || true
     fi
   fi
+  restore_ipv6_devices
   # 4) An older installer's profile pins (legacy only): from the record, or,
   #    with no record at all, as found now (an install from before records,
   #    whose pins are nice-dns's by the same signature). Before the
@@ -288,7 +310,7 @@ cmd_restore() {
     echo "custom-dns-deb: a NetworkManager profile still points at 127.0.0.1 (see above); the record is kept: fix it and run the restore again" >&2
     exit 1
   fi
-  rm -f "${RECEIPT_DIR:?}/receipt.tsv" "${RECEIPT_DIR:?}/resolv.conf.orig"
+  rm -f "${RECEIPT_DIR:?}/receipt.tsv" "${RECEIPT_DIR:?}/resolv.conf.orig" "${RECEIPT_DIR:?}/ipv6-devices.tsv"
   rmdir "$RECEIPT_DIR" 2>/dev/null || true
   echo "custom-dns-deb: restored the resolver state from before nice-dns ($origin)"
 }
@@ -299,7 +321,7 @@ cmd_discard() {
     echo "custom-dns-deb: the resolver is pinned; use restore, not discard" >&2
     return 1
   fi
-  rm -f "${RECEIPT_DIR:?}/receipt.tsv" "${RECEIPT_DIR:?}/resolv.conf.orig"
+  rm -f "${RECEIPT_DIR:?}/receipt.tsv" "${RECEIPT_DIR:?}/resolv.conf.orig" "${RECEIPT_DIR:?}/ipv6-devices.tsv"
   rmdir "$RECEIPT_DIR" 2>/dev/null || true
 }
 
