@@ -12,7 +12,7 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the
   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02
   re-pins after each change to a cited file (Task 1.1: 04b98cf, Unbound
   anchor and control; Task 1.3: d6c1a1f, Pi-hole HealthCmd; Stage 1 gate: 80d6c18, control refusal; Task 2.1: 9e71d32, route include; Task 2.3: bc846b2, Unbound WORKDIR; Stage 2 gate: 94a9c60, route resolution check). Sub-plan 03 re-pins the same
-  way (Task 1.1: ba144fd, health observations and platform adapters; Task 1.2: e81697f, state directory and boot identity appended to the platform adapters; Task 1.3: 6bf29f3, acknowledged recovery; Stage 1 gate: 4b11779, one controller pass; 20589e8, route recorded on success; Task 2.1: 3a4b4d6, bundle and minute schedules; Task 2.2: d934ed5, bridge lifecycle; Task 2.3: b8b9bb8, shadow install and privacy-safe failure dump; 93a9122, macOS exec reports a missing executable as 127; 674635f, the macOS fallback always rebuilds; 8f10ffe, it rebuilds the whole stack; e6436ad, restart ladder; dca5b57, a stopped macOS container has no generation; Stage 2 gate: 969945e, bridge refresh ownership; 5de0e7d, policy timers from tunables.tsv; close-out: a4eea01, the ladder waits out the first restart's readiness; ca16537, quadlet health checks verify and only report, Wants= not Requires=; c55ea50, probe-route bounded; 778df19, a failed macOS kickstart withdraws its request; 5dff7b7, a Linux adapter comment; 0efca9c, the macOS proxy lookup honours the recovery deadline; pre-merge review: 16d65cb, a runtime fault the platform cannot repair escalates). Sub-plan 4 re-pins the same way (Task 1.1: 509a6de, shared installer preparation in lib/install.sh; 7019cf0, the macOS hardened pi-hole build has no --pull; fdf6179, a first install migrates podman before its builds; Task 1.2: ec2b51c, owned DNS receipts and transactional cutover; Task 1.3: 495241e, immutable release inputs; Stage 1 gate: 58e6472, restores that cannot half-fail; Task 2.1: 57db2a3, private admin credential, host-only DNS, least privilege; Task 2.2: 3148e14, instance state kept across the lifecycle; Task 2.3: 66f1666, legacy profile pins restored and the macOS stack started on a fresh datapath; Stage 2 gate: 3fab8dd, the macOS cache flushed after each resolver change; 7a403df, uninstall removes instance state only after DNS is given back; 66cd340, a macOS rollback stops the builder and restarts the runtime). Sub-plan 5 re-pins the same way (Task 1.2: 3c0308f, Unbound mounts the host route directory and the installers seed it; 0be8182, an unmountable route path fails in preparation; Task 1.3: eaa31a3, a fresh proxy falls back to an exit route; Task 1.4: adf3c1b, a fresh proxy starts Unbound on the exit route; Stage 1 gate: 0e2d2ba, Unbound starts once its route answers, a failed switch keeps the proxy generation, the quadlet is written by rename, the uninstall removes only its own route files; round 2: 6364176, the controller refuses the request id "suspend"; fc63139, a refused route probe ends Unbound's wait at once; Task 2.1: 4acf446, macOS scoped DNS stays on the container bridge; Task 2.2: 3637314, a refresh leaves out bridges that carry streams badly and adopts the set when the running proxy uses one; 34f1d0b, the controller remembers a weak bridge for 30 days; 733cfb1, that memory is written under the controller's pipefail; aa6b7e9, the Linux boot selection's skip really skips). The 2026-10-12 Mullvad findings plan re-pins the same way (Task 1.1: dacb3b4, the installers' comments no longer name the process-substitution one-liner; Stage 1 gate: 13ddba8, Linux builds without --dns, declared resolver literals, the installer drives Mullvad's DNS setting; round 1: 5162e17, Mullvad restore paths and the claims the switch made false; Stage 2 gate: c0af48f, per-device IPv6 hook and install drift; round 1: aeb5494, drift that fails closed). `check-contracts` fails when a cited file changes
+  way (Task 1.1: ba144fd, health observations and platform adapters; Task 1.2: e81697f, state directory and boot identity appended to the platform adapters; Task 1.3: 6bf29f3, acknowledged recovery; Stage 1 gate: 4b11779, one controller pass; 20589e8, route recorded on success; Task 2.1: 3a4b4d6, bundle and minute schedules; Task 2.2: d934ed5, bridge lifecycle; Task 2.3: b8b9bb8, shadow install and privacy-safe failure dump; 93a9122, macOS exec reports a missing executable as 127; 674635f, the macOS fallback always rebuilds; 8f10ffe, it rebuilds the whole stack; e6436ad, restart ladder; dca5b57, a stopped macOS container has no generation; Stage 2 gate: 969945e, bridge refresh ownership; 5de0e7d, policy timers from tunables.tsv; close-out: a4eea01, the ladder waits out the first restart's readiness; ca16537, quadlet health checks verify and only report, Wants= not Requires=; c55ea50, probe-route bounded; 778df19, a failed macOS kickstart withdraws its request; 5dff7b7, a Linux adapter comment; 0efca9c, the macOS proxy lookup honours the recovery deadline; pre-merge review: 16d65cb, a runtime fault the platform cannot repair escalates). Sub-plan 4 re-pins the same way (Task 1.1: 509a6de, shared installer preparation in lib/install.sh; 7019cf0, the macOS hardened pi-hole build has no --pull; fdf6179, a first install migrates podman before its builds; Task 1.2: ec2b51c, owned DNS receipts and transactional cutover; Task 1.3: 495241e, immutable release inputs; Stage 1 gate: 58e6472, restores that cannot half-fail; Task 2.1: 57db2a3, private admin credential, host-only DNS, least privilege; Task 2.2: 3148e14, instance state kept across the lifecycle; Task 2.3: 66f1666, legacy profile pins restored and the macOS stack started on a fresh datapath; Stage 2 gate: 3fab8dd, the macOS cache flushed after each resolver change; 7a403df, uninstall removes instance state only after DNS is given back; 66cd340, a macOS rollback stops the builder and restarts the runtime). Sub-plan 5 re-pins the same way (Task 1.2: 3c0308f, Unbound mounts the host route directory and the installers seed it; 0be8182, an unmountable route path fails in preparation; Task 1.3: eaa31a3, a fresh proxy falls back to an exit route; Task 1.4: adf3c1b, a fresh proxy starts Unbound on the exit route; Stage 1 gate: 0e2d2ba, Unbound starts once its route answers, a failed switch keeps the proxy generation, the quadlet is written by rename, the uninstall removes only its own route files; round 2: 6364176, the controller refuses the request id "suspend"; fc63139, a refused route probe ends Unbound's wait at once; Task 2.1: 4acf446, macOS scoped DNS stays on the container bridge; Task 2.2: 3637314, a refresh leaves out bridges that carry streams badly and adopts the set when the running proxy uses one; 34f1d0b, the controller remembers a weak bridge for 30 days; 733cfb1, that memory is written under the controller's pipefail; aa6b7e9, the Linux boot selection's skip really skips). The 2026-10-12 Mullvad findings plan re-pins the same way (Task 1.1: dacb3b4, the installers' comments no longer name the process-substitution one-liner; Stage 1 gate: 13ddba8, Linux builds without --dns, declared resolver literals, the installer drives Mullvad's DNS setting; round 1: 5162e17, Mullvad restore paths and the claims the switch made false; Stage 2 gate: c0af48f, per-device IPv6 hook and install drift; round 1: aeb5494, drift that fails closed; Task 3.1: no cited file changed after aeb5494, contract text written for Mullvad's DNS setting, the per-device IPv6 hook and install drift). `check-contracts` fails when a cited file changes
   after this commit.
 - Checked by `bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md`.
   The check needs every workflow ID below, every operation ID in
@@ -102,6 +102,12 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
 - No client query reaches a direct public resolver [PRIV-NO-DIRECT].
 - Diagnostics and evidence use controlled names and keep no client query
   history [PRIV-NO-QUERY-HISTORY].
+- On Linux, IPv6 is off on every host device, set per device each time the
+  network stack activates it, not only through `all` and `default`. The
+  address family stays: never the kernel's `ipv6.disable=1`, which left
+  Mullvad blocked on every boot (incident 2026-07-10, DEC-020).
+- On Linux, a host :53 publish off loopback is detected at runtime and
+  reported as security drift (WF-DNS-002) [SEC-LISTENERS].
 
 ### Current baseline (observed in source)
 
@@ -219,15 +225,17 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
 - The macOS installers edit the build copies: unbound.conf binds 0.0.0.0 and
   allows 172.31.240.248/29 (lib/install.sh:2123-2126), and the route include
   forwards to `172.31.240.252@853` (lib/install.sh:2129-2130).
-- Provider identity is mixed today. The default route authenticates
-  `tor.cloudflare-dns.com` (unbound/route/forward-route.conf:17). The health script
-  used to describe the proxy backends as the onion primary, a 1.1.1.1 backup
-  and a 9.9.9.9 fallback via Tor exit. A Quad9 backend there would receive a
-  Cloudflare-named TLS session. That breaks [PRIV-ROUTE-IDENTITY]. baseline:
-  unverified. The proxy config lives in the sibling repos and was not read
-  here. Since the Sub-plan 3 Stage 1 gate the health CLI's recovery comment
-  describes the single controller pass (health/nice-dns-health:415-463); the
-  routes and their classes are in routes/providers.tsv.
+- Provider identity is bound per route. Each proxy listener names one
+  provider and one TLS name (routes/providers.tsv:14-17, DEC-001), and the
+  default route authenticates `tor.cloudflare-dns.com`
+  (unbound/route/forward-route.conf:17). Before Sub-plan 2 the health script
+  described a single endpoint with an onion primary, a 1.1.1.1 backup and a
+  9.9.9.9 fallback via Tor exit; a Quad9 backend there would have received a
+  Cloudflare-named TLS session. No nice-dns file describes that fallback now.
+  That each proxy image keeps a listener to its one provider is baseline:
+  unverified here: the proxy configs live in the sibling repos
+  [PRIV-ROUTE-IDENTITY]. The health CLI's recovery comment describes the
+  single controller pass (health/nice-dns-health:415-463).
 - Unbound validates against the root anchor in
   `auto-trust-anchor-file: "/var/lib/unbound/root.key"`
   (unbound/etc/unbound.conf:30-34). That directory is persistent state owned
@@ -263,15 +271,35 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   refused. The nice-dns image deletes any control keys an older published
   base still carries (unbound/Containerfile:32-34) [SEC-CONTROL-LOCAL].
 - Unbound does not use IPv6 (`do-ip6: no`, unbound/etc/unbound.conf:19).
-  Linux installs disable IPv6 through sysctl (lib/install.sh:1590-1625).
+  Linux installs disable IPv6 through a sysctl.d drop-in for `all`,
+  `default` and `lo`, then switch off every existing device
+  (lib/install.sh:1590-1610). That alone did not hold: NetworkManager's
+  activation of a profile with `ipv6.method auto` set the NIC back to 0 on
+  every boot (measured 2026-10-12, BL-050). Since the 2026-10-12 Mullvad
+  findings plan an owned NetworkManager dispatcher hook,
+  `91-nice-dns-ipv6`, with a copy in `pre-up.d`, sets the activating
+  device's own `disable_ipv6` to 1 on pre-up, up and reapply
+  (lib/install.sh:1583-1585, deb/91-nice-dns-ipv6:45-50). It skips `lo` and
+  Mullvad's `*-mullvad` tunnel, which `default` already covers, and changes
+  no connection profile. NetworkManager sends pre-up only after it set up
+  IP, so each activation leaves a short IPv6 window; whether frames leave in
+  it is baseline: unverified until the Stage 3 live capture. No install path
+  writes `ipv6.disable=1`; the grub drop-in earlier versions shipped is
+  removed (lib/install.sh:1612-1624).
 - The Linux pod publishes DNS and the admin UI on the host loopback only:
   127.0.0.1:53 TCP/UDP and 127.0.0.1:8880 (deb/quadlet/nice-dns.pod:17-19)
   [SEC-LISTENERS]. Until Sub-plan 4 Task 2.1 it published :53 with no host
   address, on every host interface, so the host answered DNS for its whole
   network. macOS reaches the stack only over the host-only dnsnet.
-- Pod members resolve through aardvark, whose upstream is `DNS=1.1.1.1`
-  (deb/quadlet/nice-dns.network:5), declared in release/bootstrap.tsv
-  (literal network-dns). The stack's bootstrap does not use it: under
+  An install from before that change keeps its wildcard publish; the
+  controller now reads the installed quadlets and their drop-ins on every
+  pass and reports a :53 publish off loopback as `install-security-drift`
+  (lib/platform/linux.sh:222-291; WF-DNS-002). It reads declarations: a pod
+  not restarted since an edit runs what it ran, and the admin publish is not
+  judged.
+- Pod members resolve through aardvark, whose upstream,
+  `DNS=1.1.1.1` (declared in release/bootstrap.tsv, literal network-dns), is
+  set at deb/quadlet/nice-dns.network:5. The stack's bootstrap does not use it: under
   Mullvad custom DNS it is unreachable and the stack still starts and
   answers (measured 2026-10-12; deb/quadlet/nice-dns.pod:7-11). This is
   container-level traffic, not client traffic. Which in-pod processes use it
@@ -316,8 +344,9 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
 #### Steps
 
 1. Once a minute, `observe` takes a bounded reading: local service, DNS
-   ownership, runtime, and authenticated DNS per route. Each reading is
-   healthy, unhealthy or indeterminate, with a duration and a reason.
+   ownership, runtime, install drift (Linux), and authenticated DNS per
+   route. Each reading is healthy, unhealthy or indeterminate, with a
+   duration and a reason.
 2. `decide` uses the readings, the history and the time. It returns one of:
    no-op, switch-route, refresh-bridges, restart-component, repair-runtime,
    escalate.
@@ -344,6 +373,10 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   [EVD-FAILURES-COUNTED].
 - Diagnostics use controlled names and hold no client query history or
   secrets [PRIV-NO-QUERY-HISTORY] [PRIV-NO-SECRETS].
+- Install drift is reported, never repaired unattended. A security drift
+  (no recorded install generation, or :53 published off loopback) is
+  unhealthy and logged at err at most once a day; no action follows from it
+  and nothing is re-rendered (DEC-018) [SEC-LISTENERS].
 
 ### Current baseline (observed in source)
 
@@ -582,6 +615,23 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   pinned in release/images.lock (tor-socat v2.10, tor-haproxy v2.14) are
   from before those commits: deployed behavior changes when they are
   released and re-pinned (baseline: unverified on a deployed host).
+- Since the 2026-10-12 Mullvad findings plan each pass also reads the
+  install (BL-045). The Linux `install-drift` observation
+  (lib/health.sh:281-293) asks the platform adapter
+  (lib/platform/linux.sh:274-291). The adapter reads files only. It is
+  unhealthy with a reason starting `install-security-drift:` when no
+  generation is recorded or the installed quadlets declare :53 off
+  loopback, and indeterminate while an install is under way. No policy reads
+  the observation (lib/health.sh:32-39). The pass logs a security drift at
+  err, to syslog and the rolling log, at most once a day per reason
+  (health/nice-dns-health:976-989, called at health/nice-dns-health:1103).
+  `nice-dns-health status` prints the generation, source commit, lock, each
+  container's image against the generation's and the :53 publishes;
+  `nice-dns-health drift` prints the same and exits 0 current, 1 drift (an
+  image off the generation's or not running), 2 security drift, 3 not
+  checked (health/nice-dns-health:927-970). Both read files and
+  `podman inspect` only: nothing re-renders or restarts (DEC-018).
+  [SEC-LISTENERS]
 
 ### Platform notes
 
@@ -609,14 +659,24 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
 1. Prepare: fetch or build images from recorded immutable inputs. Validate
    them before touching the working DNS.
 2. Snapshot only the DNS state the installer owns. This includes
-   platform-specific settings and symlinks. It excludes unrelated VPN and
-   network configuration.
+   platform-specific settings and symlinks, and on Linux each device's IPv6
+   switch. It excludes unrelated VPN and network configuration, with one
+   exception: Mullvad's DNS setting (step 6).
 3. Activate the candidate. Test the deployed DNS path. Switch the host
    resolver only after readiness.
 4. On failure, restore the prior working deployment and the owned-state
    snapshot. Uninstall restores the snapshot exactly.
 5. Keep Tor state, operator settings, credentials and resolver cache across
    repair and upgrade.
+6. Linux with Mullvad installed: record Mullvad's DNS setting before any
+   change. Switch it to Mullvad's default only when a loopback-only custom
+   setting has nothing answering and no stack runs, so preparation can
+   resolve. Set it to custom 127.0.0.1 right after the pin, and verify the
+   pin once Mullvad's own rewrite has settled. A rollback or a failed
+   preparation restores the setting this install found. Uninstall restores
+   the setting from before nice-dns, while the setting is still custom
+   127.0.0.1. A setting that cannot be read stops the install before any
+   change (DEC-019).
 
 #### Invariants
 
@@ -625,7 +685,11 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
 - Only owned state is changed, and it is restored exactly
   [SEC-OWNED-RESTORE].
 - Build and bootstrap network use is declared and never becomes a client
-  path [PRIV-BOOTSTRAP-DECLARED].
+  path. Every public resolver written into the product is declared; Linux
+  builds name none and resolve through the host's resolver
+  [PRIV-BOOTSTRAP-DECLARED].
+- Every root-run file the installer writes is owned and removed or restored
+  by the uninstall [SEC-OWNED-RESTORE].
 - Resolver management uses a restricted local channel. No image-shared keys
   [SEC-CONTROL-LOCAL].
 - Credentials are delivered without printing them. Evidence carries no
@@ -661,6 +725,13 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   systemd-resolved's enabled and active state and the ipv6 sysctls; macOS
   records each service's servers. An install from before records is
   `legacy`: its state before nice-dns is unknown [SEC-OWNED-RESTORE].
+  Since the 2026-10-12 Mullvad findings plan a Linux first install also
+  records each device's own `disable_ipv6` in `ipv6-devices.tsv` beside the
+  record, only while no nice-dns switch is in force (lib/install.sh:1575-1582,
+  deb/91-nice-dns-ipv6:52-64). The hook and its `pre-up.d` copy are owned
+  files (deb/custom-dns-deb:49-57), and the restore gives each recorded
+  device its value back after the hook is gone
+  (deb/custom-dns-deb:61-75, deb/custom-dns-deb:294).
   On a `legacy` host the Linux record also lists the NetworkManager
   profiles an older installer pinned to 127.0.0.1 with automatic DNS off
   (`nm_pin`); a fresh host's profiles are never claimed
@@ -754,9 +825,9 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   (lib/install.sh:1358-1366).
 - Linux builds take no `--dns` and resolve through the host's resolver as
   it stands in preparation (lib/install.sh:53); macOS builds resolve
-  through `--dns 1.1.1.1` (lib/install.sh:57). Every public resolver the
-  product names is declared in release/bootstrap.tsv
-  [PRIV-BOOTSTRAP-DECLARED].
+  through `--dns 1.1.1.1` (release/bootstrap.tsv, literal build-dns;
+  lib/install.sh:57). Every public resolver the product names is declared
+  there [PRIV-BOOTSTRAP-DECLARED].
 - Since Sub-plan 4 Task 1.3 every pulled image and build base is the
   reviewed digest in release/images.lock, with its platforms, source commit
   and signer (docs/release-inputs.md). Before any interruption an install
@@ -781,6 +852,33 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
 - The macOS helper boots out and re-bootstraps Mullvad on the agent's
   `pre`/`post` (mac/start-container-root.sh:268-272). That is VPN state the
   installer does not own (ARCH-06); the installer itself never calls `pre`.
+- Linux drives Mullvad's DNS setting since the 2026-10-12 Mullvad findings
+  plan (BL-048, DEC-019; lib/install.sh:1627-1645). Connected Mullvad
+  rewrote the pin within milliseconds unless its setting was custom
+  127.0.0.1, and with that setting and nothing answering the host had no DNS
+  (measured 2026-10-12, Mullvad 2026.3). With `mullvad` installed, once the
+  source is staged (install-deb.sh:64, install-deb-hardened.sh:85) the
+  install reads `mullvad dns get` and refuses (exit 1) on output it does not
+  know (lib/install.sh:1656-1669). It records the setting it found and the
+  one from before nice-dns in `generations/<gen>/mullvad-dns.tsv`, 0600. A
+  found custom 127.0.0.1 inherits the previous generation's earlier setting
+  or, with no record, stands in as Mullvad's default. It switches to the
+  default only when the setting is loopback-only custom, no nice-dns stack
+  runs and none of its servers answers (lib/install.sh:1758-1789). After
+  the pin it sets custom 127.0.0.1 (lib/install.sh:1793-1798, called at
+  lib/install.sh:1853); the pin check then retries up to 5 times, 1 s
+  apart (lib/install.sh:913-925). A failed preparation, including a signal,
+  and a rollback put back the setting the install found
+  (lib/install.sh:1722-1734, lib/install.sh:983-986). Uninstall restores
+  the setting from before nice-dns while it is still custom 127.0.0.1, and
+  otherwise leaves the owner's setting alone; with no record it sets the
+  default. A setting or record it cannot read fails the uninstall
+  (lib/install.sh:1805-1826, called at lib/install.sh:1907). If the host
+  then does not resolve, it names `mullvad reconnect`
+  (lib/install.sh:1832-1837). Whether the resolver record taken while
+  Mullvad was connected resolves after an uninstall with Mullvad
+  disconnected is baseline: unverified [SEC-OWNED-RESTORE]
+  [PRIV-NO-HOST-PUBLIC].
 - Unbound remote control is a Unix socket at `/run/unbound/control.sock`
   with no keys and no network listener (unbound/etc/unbound.conf:166-169).
   Neither image carries control keys; the hardened-unbound base no longer
