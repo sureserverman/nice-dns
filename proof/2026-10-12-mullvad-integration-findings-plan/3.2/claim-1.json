@@ -1,0 +1,11 @@
+{
+ "created": "2026-10-12T21:06:19+00:00",
+ "fingerprint": "0d4986cb07dbdb487d7e4de06ac486c843fe09830010cd437afe5869e868cd30",
+ "index": 1,
+ "kind": "claim-deviation",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-10-12-mullvad-integration-findings-plan.md",
+ "schema": 2,
+ "task": "3.2",
+ "text": "`for d in 018 019 020; do awk -v id=\"## DEC-$d \" 'index($0,id)==1{p=1;next} /^## DEC-/{p=0} p' /mnt/vault/Portfolio/containers/nice-dns/decisions.md | grep -c '^- \\*\\*\\(Decided\\|Reason\\|Source\\):'; done` prints `3` three times. Check the field names against the file's existing entries first and use theirs.",
+ "why": "The decisions register is in the vault (/mnt/vault, not a git repo), so a break patch cannot be applied from the repo. Watched by hand: the Test: loop printed 0 0 0 before the insert and 3 3 3 after; the pre-insert copy is kept in the session scratchpad."
+}
