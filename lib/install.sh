@@ -1564,23 +1564,25 @@ EOF
   # disable_ipv6 back to 0 (ipv6.method auto), so the owned hook sets it
   # to 1 again on pre-up and up (deb/91-nice-dns-ipv6; BL-050). pre-up
   # events reach only scripts in pre-up.d, hence the copy there.
-  sudo mkdir -p "$R/etc/NetworkManager/dispatcher.d/pre-up.d"
-  sudo install -m 755 "$ND_INST_TREE/deb/91-nice-dns-ipv6" "$R/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6"
-  sudo install -m 755 "$ND_INST_TREE/deb/91-nice-dns-ipv6" "$R/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6"
   # Each device's value from before nice-dns, recorded for the uninstall,
   # only while no nice-dns switch is in force (the sysctl.d drop-in is not
   # there yet): writing net.ipv6.conf.all in _nd_inst_linux_ipv6_disable
   # sets every existing device too, so a value read after it, as on a host
   # an older install set up, is nice-dns's own. Before NetworkManager
   # reloads.
+  # The source copy records (it is not installed yet, so no NetworkManager
+  # event can write a switch first); then the hook is installed.
   local d
   if ! sudo test -e "$R/etc/sysctl.d/99-nice-dns-disable-ipv6.conf"; then
     for d in "$R"/proc/sys/net/ipv6/conf/*/; do
       d="${d%/}"; d="${d##*/}"
       case "$d" in all|default|'*') continue ;; esac
-      sudo "$R/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6" "$d" record || true
+      sudo bash "$ND_INST_TREE/deb/91-nice-dns-ipv6" "$d" record || true
     done
   fi
+  sudo mkdir -p "$R/etc/NetworkManager/dispatcher.d/pre-up.d"
+  sudo install -m 755 "$ND_INST_TREE/deb/91-nice-dns-ipv6" "$R/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6"
+  sudo install -m 755 "$ND_INST_TREE/deb/91-nice-dns-ipv6" "$R/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6"
 
   sudo systemctl reload NetworkManager 2>/dev/null || sudo systemctl restart NetworkManager
 }

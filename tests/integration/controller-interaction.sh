@@ -230,6 +230,10 @@ t_status_shows_the_generation_and_lock_match() {
     assert_match "tor-haproxy +on the generation's image" "$CI_OUT" "and the proxy"
     assert_match "127\.0\.0\.1:53:53/udp" "$CI_OUT" "the :53 publishes"
     assert_match "Drift: *none" "$CI_OUT" "no drift"
+    printf 'lock\tsha256:\033[31mred\n' >>"$XDG_STATE_HOME/nice-dns-install/generations/$OB_GEN/prepare.tsv"
+    sed -i '/^lock\tsha256:0/d' "$XDG_STATE_HOME/nice-dns-install/generations/$OB_GEN/prepare.tsv"
+    ci_cli status
+    assert_not_match "$(printf '\033')" "$CI_OUT" "no control character from a file reaches the terminal"
     ci_cli drift
     assert_rc 0 "$CI_RC" "drift: current: $CI_OUT"
   ) || exit 1
@@ -264,9 +268,20 @@ $(cat "$HOME/.local/state/nice-dns-health/health.log")"
     printf '2000-01-01\n' >"$HOME/.local/state/nice-dns-health/install-security-drift.day"
     ci_cli tick
     assert_eq 2 "$(grep -c 'ERR install-security-drift' "$HOME/.local/state/nice-dns-health/health.log")" "a new day logs again"
+    ob_install_state 192.168.1.5:53:53/udp
+    ci_cli tick
+    assert_eq 3 "$(grep -c 'ERR install-security-drift' "$HOME/.local/state/nice-dns-health/health.log")" "a different drift the same day logs once more"
+    ci_cli tick
+    assert_eq 3 "$(grep -c 'ERR install-security-drift' "$HOME/.local/state/nice-dns-health/health.log")" "and only once"
     ob_install_state
     ci_cli tick
-    assert_eq 2 "$(grep -c 'ERR install-security-drift' "$HOME/.local/state/nice-dns-health/health.log")" "no drift, no err line"
+    assert_eq 3 "$(grep -c 'ERR install-security-drift' "$HOME/.local/state/nice-dns-health/health.log")" "no drift, no err line"
+    # A stamp that cannot be written logs nothing (it would repeat every pass).
+    ob_install_state 0.0.0.0:53:53/udp
+    rm -f "$HOME/.local/state/nice-dns-health/install-security-drift.day"
+    mkdir "$HOME/.local/state/nice-dns-health/install-security-drift.day.new"
+    ci_cli tick; ci_cli tick
+    assert_eq 3 "$(grep -c 'ERR install-security-drift' "$HOME/.local/state/nice-dns-health/health.log")" "no stamp, no err line"
   ) || exit 1
 }
 

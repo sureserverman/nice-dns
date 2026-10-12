@@ -67,6 +67,7 @@ own timeout, a missing tool). `observe` prints them as
 |---|---|
 | `runtime` | the runtime CLI (`podman`; Apple `container`, also at `/opt/homebrew/bin/container`) answers and `pi-hole`, `unbound` and one of `tor-haproxy` / `tor-socat` run |
 | `dns-owner` | Linux: `/etc/resolv.conf` names only `nameserver 127.0.0.1`. macOS: every enabled network service (`networksetup`) and `scutil --dns` resolver #1 use `172.31.240.250` |
+| `install-drift` | Linux only: an install generation is recorded and the installed quadlets (with their drop-ins) declare host port 53 on loopback only. Otherwise `install-security-drift`, unhealthy, logged at err once a day per reason; indeterminate while an install is under way. Reported, never acted on: nothing is re-rendered (`nice-dns-health status` / `drift`) |
 | `local-service` | `pi.hole` has an A record (FTL alive) |
 | `filtering` | every A record of `doubleclick.net` (after CNAMEs) is `0.0.0.0` |
 | `local-cache` | Pi-hole answers `cloudflare.com` (NOERROR or NXDOMAIN). This can be a cached answer: it is not upstream health |

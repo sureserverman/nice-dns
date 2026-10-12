@@ -690,6 +690,8 @@ g=20261012T120000Z-0123456789ab
 mkdir -p "$XDG_STATE_HOME/nice-dns-install/generations/$g"
 echo "$g" >"$XDG_STATE_HOME/nice-dns-install/current"
 printf 'schema\tnice-dns-install-prepare/1\n' >"$XDG_STATE_HOME/nice-dns-install/generations/$g/prepare.tsv"
+mkdir -p "$XDG_CONFIG_HOME/containers/systemd"
+printf '[Pod]\nPublishPort=127.0.0.1:53:53/udp\n' >"$XDG_CONFIG_HOME/containers/systemd/nice-dns.pod"
 for plat in linux macos; do
   if [ "$plat" = macos ]; then echo 172.31.240.250 >/work/fake/addr; FAKE_UNAME=Darwin; log=$HOME/Library/Logs/nice-dns-health/health.log
   else echo 127.0.0.1 >/work/fake/addr; FAKE_UNAME=Linux; log=$XDG_STATE_HOME/nice-dns-health/health.log; fi
@@ -828,22 +830,46 @@ t_proxy_generation_without_a_hash_tool_is_indeterminate() {
 # before 57db2a3 published 0.0.0.0:53, an open resolver for the LAN).
 
 t_a_wildcard_53_publish_is_security_drift() {
-  local pub
+  local pub q
   ob_setup linux
   ob_install_state
   ob_observe
-  ob_expect install-drift healthy "generation $OB_GEN"
+  ob_expect install-drift healthy "generation $OB_GEN; the quadlets declare :53 on loopback only"
   printf '%s\n' "$OB_OUT" | bash -c '. "$1" && nd_health_validate' _ "$OB_HEALTH" || fail "valid with install-drift: $OB_OUT"
-  for pub in 53:53/udp 0.0.0.0:53:53/tcp 192.168.1.5:53:53 '[::]:53:53/udp'; do
+  for pub in 53:53/udp 0.0.0.0:53:53/tcp 192.168.1.5:53:53 '[::]:53:53/udp' 50-60:50-60/udp '[::'; do
     ob_install_state 127.0.0.1:53:53/tcp "$pub"
     ob_observe
-    ob_expect install-drift unhealthy 'install-security-drift: :53 is published on' "$pub is security drift"
+    ob_expect install-drift unhealthy 'install-security-drift: the quadlets declare :53 on' "$pub is security drift"
   done
-  for pub in '[::1]:53:53/udp' 'localhost:53:53' 127.0.0.53:53:53 0.0.0.0:8880:80 53/udp; do
+  for pub in '[::1]:53:53/udp' 'localhost:53:53' 127.0.0.53:53:53 0.0.0.0:8880:80 53/udp 127.0.0.1:50-60:50-60 1000-2000:1000-2000; do
     ob_install_state 127.0.0.1:53:53/tcp "$pub"
     ob_observe
     ob_expect install-drift healthy "" "$pub is not security drift"
   done
+  # The other ways a unit declares a publish, and its drop-ins.
+  q="$XDG_CONFIG_HOME/containers/systemd"
+  ob_install_state
+  printf '[Container]\nPodmanArgs=--cap-add=NET_ADMIN --publish 0.0.0.0:53:53/udp\n' >"$q/pi-hole.container"
+  ob_observe
+  ob_expect install-drift unhealthy 'pi-hole.container PodmanArgs|0\.0\.0\.0 \(pi-hole.container' "PodmanArgs --publish"
+  ob_install_state
+  printf '[Container]\nPodmanArgs=-p53:53\n' >"$q/unbound.container"
+  ob_observe
+  ob_expect install-drift unhealthy 'every address \(unbound.container' "PodmanArgs -p"
+  ob_install_state
+  printf '[Container]\nNetwork=host\n' >"$q/pi-hole.container"
+  ob_observe
+  ob_expect install-drift unhealthy 'the host network' "Network=host"
+  ob_install_state
+  mkdir -p "$q/nice-dns.pod.d"; printf '[Pod]\nPublishPort=53:53/udp\n' >"$q/nice-dns.pod.d/90-local.conf"
+  ob_observe
+  ob_expect install-drift unhealthy 'nice-dns.pod.d/90-local.conf' "a drop-in's publish"
+  rm -rf "$q/nice-dns.pod.d"
+  # Another product's quadlet is not nice-dns's.
+  ob_install_state
+  printf '[Container]\nPublishPort=53:53/udp\n' >"$q/other-dns.container"
+  ob_observe
+  ob_expect install-drift healthy "" "another product's quadlet is not read"
 }
 
 t_a_missing_generation_is_security_drift() {
@@ -859,6 +885,24 @@ t_a_missing_generation_is_security_drift() {
   rm -f "$XDG_STATE_HOME/nice-dns-install/generations/$OB_GEN/prepare.tsv"
   ob_observe
   ob_expect install-drift unhealthy 'install-security-drift: no install generation is recorded' "a generation without its manifest"
+  # An install under way (its generation neither activated nor rolled back)
+  # is not drift: the controller runs before the install makes it current.
+  ob_install_state
+  rm -f "$XDG_STATE_HOME/nice-dns-install/current" "$XDG_STATE_HOME/nice-dns-install/generations/$OB_GEN/activated"
+  ob_observe
+  ob_expect install-drift indeterminate "install under way: generation $OB_GEN" "an install under way"
+  printf 'status\trolled-back\n' >>"$XDG_STATE_HOME/nice-dns-install/generations/$OB_GEN/prepare.tsv"
+  ob_observe
+  ob_expect install-drift unhealthy 'no install generation is recorded' "a rolled-back first install"
+  ob_install_state
+  rm -f "$XDG_STATE_HOME/nice-dns-install/current"
+  ob_observe
+  ob_expect install-drift unhealthy 'no install generation is recorded' "an activated generation that is no longer current (uninstalled)"
+  # No nice-dns.pod: nothing to judge.
+  ob_install_state
+  rm -f "$XDG_CONFIG_HOME/containers/systemd/nice-dns.pod"
+  ob_observe
+  ob_expect install-drift indeterminate "no nice-dns.pod" "no quadlet to read"
   # macOS has no install-drift observation; the set is still valid.
   ob_platform macos
   ob_observe

@@ -200,43 +200,92 @@ nd_platform_install_generation() {
   printf '%s\n' "$g"
 }
 
-# nd_platform_dns_publishes: "file<TAB>host<TAB>value" for each PublishPort of
-# host port 53 in the installed quadlets (host empty: every address).
+# nd_platform_install_pending: an install is under way: no generation is
+# current, and the newest generation has neither activated nor rolled back
+# (its controller already runs while the stack comes up). Prints it.
+nd_platform_install_pending() {
+  local sd d g=""
+  sd="$(nd_platform_install_state_dir)"
+  for d in "$sd"/generations/*/; do
+    d="${d%/}"; d="${d##*/}"
+    printf '%s\n' "$d" | grep -Eq '^[0-9]{8}T[0-9]{6}Z-([0-9a-f]{12}|nogit0000000)$' && g="$d"
+  done
+  [ -n "$g" ] && [ -f "$sd/generations/$g/prepare.tsv" ] && [ ! -e "$sd/generations/$g/activated" ] || return 1
+  awk -F '\t' '$1 == "status" { s = $2 } END { exit (s ~ /^rolled-back/) }' "$sd/generations/$g/prepare.tsv" || return 1
+  printf '%s\n' "$g"
+}
+
+# The quadlets nice-dns installs (deb/persistent-podman.sh), and their
+# drop-in directories (quadlet merges <unit>.d/*.conf into the unit).
+ND_PLATFORM_QUADLETS="nice-dns.pod nice-dns.network pi-hole.container unbound.container tor-haproxy.container tor-socat.container"
+
+# nd_platform_dns_publishes: "file<TAB>host<TAB>value" for each host port 53
+# the installed nice-dns quadlets and their drop-ins declare: PublishPort=,
+# PodmanArgs --publish/-p (host empty: every address; a host port range that
+# holds 53 counts), and Network=host (host "host": the stack's own 53 on
+# every address). Declarations only: a pod not restarted since an edit runs
+# what it ran.
 nd_platform_dns_publishes() {
-  local q f
+  local q u f
   q="$(nd_platform_quadlet_dir)"
-  for f in "$q"/*.pod "$q"/*.container; do
-    [ -f "$f" ] || continue
-    awk -v f="${f##*/}" '
-      /^[[:space:]]*PublishPort[[:space:]]*=/ {
-        v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v)
-        p = v; sub(/\/.*/, "", p)
-        host = ""; hp = ""
-        if (substr(p, 1, 1) == "[") {
-          i = index(p, "]"); host = substr(p, 2, i - 2); rest = substr(p, i + 2)
-          n = split(rest, a, ":"); if (n >= 2) hp = a[1]
-        } else {
-          n = split(p, a, ":")
-          if (n == 3) { host = a[1]; hp = a[2] } else if (n == 2) hp = a[1]
+  for u in $ND_PLATFORM_QUADLETS; do
+    for f in "$q/$u" "$q/$u.d"/*.conf; do
+      [ -f "$f" ] || continue
+      awk -v f="${f#"$q"/}" '
+        function chk(v,   p, host, hp, i, rest, n, a, r) {
+          p = v; sub(/\/.*/, "", p)
+          host = ""; hp = ""
+          if (substr(p, 1, 1) == "[") {
+            i = index(p, "]"); if (!i) { print f "\t?\t" v; return }
+            host = substr(p, 2, i - 2); rest = substr(p, i + 2)
+            n = split(rest, a, ":"); if (n >= 2) hp = a[1]
+          } else {
+            n = split(p, a, ":")
+            if (n == 3) { host = a[1]; hp = a[2] } else if (n == 2) hp = a[1]
+          }
+          if (hp == "53") { print f "\t" host "\t" v; return }
+          if (hp ~ /^[0-9]+-[0-9]+$/) { split(hp, r, "-"); if (r[1] + 0 <= 53 && r[2] + 0 >= 53) print f "\t" host "\t" v }
         }
-        if (hp == "53") print f "\t" host "\t" v
-      }' "$f"
+        { line = $0; sub(/^[[:space:]]+/, "", line) }
+        line ~ /^PublishPort[[:space:]]*=/ { v = line; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v); chk(v) }
+        line ~ /^Network[[:space:]]*=[[:space:]]*host([[:space:]]|$)/ { print f "\thost\tNetwork=host" }
+        line ~ /^PodmanArgs[[:space:]]*=/ {
+          v = line; sub(/^[^=]*=[[:space:]]*/, "", v)
+          n = split(v, w, /[[:space:]]+/)
+          for (i = 1; i <= n; i++) {
+            if (w[i] ~ /^(--publish|-p)$/ && i < n) chk(w[i + 1])
+            else if (w[i] ~ /^--publish=/) { x = w[i]; sub(/^--publish=/, "", x); chk(x) }
+            else if (w[i] ~ /^-p[^-]/) { x = substr(w[i], 3); chk(x) }
+            else if (w[i] ~ /^--network(=|$)/ && (w[i] == "--network=host" || (w[i] == "--network" && w[i + 1] == "host"))) print f "\thost\tPodmanArgs " w[i] (w[i] == "--network" ? " host" : "")
+          }
+        }' "$f"
+    done
   done
 }
 
 # nd_platform_install_drift <deadline> <tmp>: "verdict<TAB>reason" for the
-# installed deployment: unhealthy (install-security-drift) when no generation
-# is recorded (an install from before generations, which is never upgraded
-# in place) or a quadlet publishes host port 53 off loopback (an open
-# resolver for the network; installs before 57db2a3 published 0.0.0.0:53).
+# installed deployment as its files declare it: unhealthy
+# (install-security-drift) when no generation is recorded (an install from
+# before generations, which is never upgraded in place) or the installed
+# quadlets declare host port 53 off loopback (an open resolver for the
+# network; installs before 57db2a3 published 0.0.0.0:53); indeterminate
+# while an install is under way or when no nice-dns.pod is installed (nothing
+# to judge); else healthy.
 nd_platform_install_drift() {
   local g bad
-  g="$(nd_platform_install_generation)" || {
-    printf 'unhealthy\tinstall-security-drift: no install generation is recorded (an install from before generations; reinstall)\n'; return 0; }
-  bad="$(nd_platform_dns_publishes | awk -F '\t' '
-    $2 !~ /^(127\.[0-9.]+|::1|localhost)$/ { printf "%s%s (%s %s)", s, ($2 == "" ? "every address" : $2), $1, $3; s = ", " }')"
-  if [ -n "$bad" ]; then
-    printf 'unhealthy\tinstall-security-drift: :53 is published on %s\n' "$bad"; return 0
+  if ! g="$(nd_platform_install_generation)"; then
+    if g="$(nd_platform_install_pending)"; then
+      printf 'indeterminate\tinstall under way: generation %s is not active yet\n' "$g"; return 0
+    fi
+    printf 'unhealthy\tinstall-security-drift: no install generation is recorded (an install from before generations; reinstall)\n'; return 0
   fi
-  printf 'healthy\tgeneration %s; :53 on loopback only\n' "$g"
+  if [ ! -f "$(nd_platform_quadlet_dir)/nice-dns.pod" ]; then
+    printf 'indeterminate\tgeneration %s; no nice-dns.pod quadlet in %s to read\n' "$g" "$(nd_platform_quadlet_dir)"; return 0
+  fi
+  bad="$(nd_platform_dns_publishes | awk -F '\t' '
+    $2 !~ /^(127\.[0-9.]+|::1|localhost)$/ { printf "%s%s (%s %s)", s, ($2 == "" ? "every address" : ($2 == "host" ? "the host network" : $2)), $1, $3; s = ", " }')"
+  if [ -n "$bad" ]; then
+    printf 'unhealthy\tinstall-security-drift: the quadlets declare :53 on %s\n' "$bad"; return 0
+  fi
+  printf 'healthy\tgeneration %s; the quadlets declare :53 on loopback only\n' "$g"
 }

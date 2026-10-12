@@ -7,11 +7,15 @@
 # disable_ipv6 back to 0, after systemd-sysctl set it to 1 through
 # net.ipv6.conf.default (measured 2026-10-12: 1 before NetworkManager, 0
 # within its activation). On pre-up and up this sets the device's switch to 1
-# again (and on reapply, which reruns IP configuration). It writes only that
+# again (and on reapply, which reruns IP configuration). NetworkManager sends
+# pre-up only after it configured IP, so for a moment in every activation the
+# device has IPv6 (link-local setup; possibly MLD and neighbour discovery
+# frames); writing 1 then removes its IPv6 addresses. It writes only that
 # switch: no connection profile is changed, and the address family stays
 # (never the kernel's ipv6.disable=1, which left Mullvad blocked on every
 # boot, 2026-07-10). Mullvad's tunnel (*-mullvad)
-# keeps the default it gets, as does lo (the sysctl.d drop-in owns it). Every
+# is left to the default=1 it gets anyway, as lo is to the sysctl.d drop-in;
+# the hook only does not write them. Every
 # other device NetworkManager activates loses IPv6, a VPN profile's too: the
 # posture is no IPv6 on the host.
 #

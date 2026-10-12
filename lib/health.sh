@@ -33,9 +33,10 @@
 #                  nd_platform_install_drift prints no record; optional to
 #                  the validator). Unhealthy reasons start with
 #                  "install-security-drift:": no install generation is
-#                  recorded, or a quadlet publishes :53 off loopback. Files
-#                  only; no policy reads it, so it never drives an action
-#                  (BL-045)
+#                  recorded, or the installed quadlets declare :53 off
+#                  loopback; indeterminate while an install is under way.
+#                  Files only; no policy reads it, so it never drives an
+#                  action (BL-045)
 #   local-service  Pi-hole FTL answers pi.hole (A) at the platform endpoint
 #   filtering      a blocklisted name (doubleclick.net) is sinkholed: every
 #                  A record behind any CNAMEs is 0.0.0.0

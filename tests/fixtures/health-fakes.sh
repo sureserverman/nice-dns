@@ -244,16 +244,18 @@ ob_fake_data() {
 }
 
 # ob_install_state [publish...]: an installed Linux generation as the
-# installer records it ($XDG_STATE_HOME/nice-dns-install: current and the
-# generation's prepare.tsv), its quadlets ($XDG_CONFIG_HOME/containers/
-# systemd/nice-dns.pod with the given PublishPort values; default the
-# loopback ones), and the runtime running exactly the recorded images
-# ($FAKE/image_<container>). OB_GEN is the generation.
+# installer records it ($XDG_STATE_HOME/nice-dns-install: current, and the
+# generation's prepare.tsv and activated), its quadlets
+# ($XDG_CONFIG_HOME/containers/systemd/nice-dns.pod with the given
+# PublishPort values, default the loopback ones; no other unit), and the
+# runtime running exactly the recorded images ($FAKE/image_<container>).
+# OB_GEN is the generation.
 ob_install_state() {
   local sd="$XDG_STATE_HOME/nice-dns-install" q="$XDG_CONFIG_HOME/containers/systemd" p
   OB_GEN=20261012T120000Z-0123456789ab
   mkdir -p "$sd/generations/$OB_GEN" "$q"
   printf '%s\n' "$OB_GEN" >"$sd/current"
+  printf '2026-10-12T12:05:00Z\n' >"$sd/generations/$OB_GEN/activated"
   {
     printf 'schema\tnice-dns-install-prepare/1\ngeneration\t%s\nplatform\tlinux\nvariant\thaproxy\n' "$OB_GEN"
     printf 'source_commit\t0123456789abcdef0123456789abcdef01234567\n'
@@ -265,6 +267,7 @@ ob_install_state() {
   printf '%064d\n' 1 >"$FAKE/image_unbound"
   printf '%064d\n' 2 >"$FAKE/image_pi-hole"
   printf '%064d\n' 3 >"$FAKE/image_tor-haproxy"
+  rm -rf "$q"/*.container "$q"/*.d
   [ $# -gt 0 ] || set -- 127.0.0.1:53:53/tcp 127.0.0.1:53:53/udp 127.0.0.1:8880:80
   { printf '[Pod]\nPodName=nice-dns\n'; for p in "$@"; do printf 'PublishPort=%s\n' "$p"; done; } >"$q/nice-dns.pod"
 }

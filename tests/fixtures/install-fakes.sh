@@ -120,7 +120,7 @@ case "$me" in
       # Only when every absolute path argument lies inside the test world.
       run=0 safe=1
       for a in "$@"; do
-        case "$a" in "$FAKE_ROOT"/*|*/custom-dns-deb|*/start-container-root.sh) run=1 ;; esac
+        case "$a" in "$FAKE_ROOT"/*|*/custom-dns-deb|*/start-container-root.sh|*/91-nice-dns-ipv6) run=1 ;; esac
         case "$a" in /*) case "$a" in "${FAKE%/fake}"/*) ;; *) safe=0 ;; esac ;; esac
       done
       # The sysctl stub keeps its state under the fake root: it runs too.
