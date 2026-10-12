@@ -24,7 +24,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 
 if [[ "$ACTION" != "uninstall" ]]; then
 # -- Phase 0: compatibility gate --
-# When invoked via `bash <(curl ...)` there is no local checkout yet, so fetch
+# When the installer was fetched on its own there is no local checkout yet, so fetch
 # the gate script directly from the requested branch and verify its SHA-256
 # before sourcing. The expected hash MUST be bumped whenever check-runtime.sh
 # is edited; the pre-commit hook in scripts/update-check-runtime-sha.sh
@@ -58,7 +58,7 @@ fi
 
 # -- Stage the source, then load the shared installer library --
 # Use the in-tree checkout this script sits in when there is one; the
-# library copies it under $HOME for the build. Without one (`bash <(curl …)`)
+# library copies it under $HOME for the build. Without one (the installer fetched on its own)
 # clone the requested branch under $HOME -- Apple Container's builder VM
 # cannot read $TMPDIR (see lib/install.sh nd_install_macos_stage_tree).
 ND_INST_CLEANUP="" ND_INST_WORK=""

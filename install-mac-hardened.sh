@@ -73,7 +73,7 @@ fi
 # pihole-hardened/ files is preserved instead of overwritten by a fresh
 # clone of $BRANCH (which may not yet contain those files). Use the in-tree
 # checkout this script sits in when there is one; the
-# library copies it under $HOME for the build. Without one (`bash <(curl …)`)
+# library copies it under $HOME for the build. Without one (the installer fetched on its own)
 # clone the requested branch under $HOME -- Apple Container's builder VM
 # cannot read $TMPDIR (see lib/install.sh nd_install_macos_stage_tree).
 ND_INST_CLEANUP="" ND_INST_WORK=""

@@ -135,7 +135,7 @@ t_failed_preparation_touches_nothing() {
         script="$IP_TREE/$ep.sh"
         case "$pat" in
           'git clone')
-            # The `bash <(curl …)` path: the entrypoint alone, no checkout.
+            # The installer fetched on its own: the entrypoint alone, no checkout.
             mkdir -p "$IP_W/solo" && cp "$IP_TREE/$ep.sh" "$IP_W/solo/" && script="$IP_W/solo/$ep.sh"
             printf '^git clone\n' >"$FAKE/fail" ;;
           bridges) rm -f "$IP_HOME/.config/nice-dns/bridges.env" ;;   # and Moat (curl) fails
@@ -419,7 +419,7 @@ $(cat "$FAKE/build-cwd")"
       else
         assert_eq "" "$(grep -v "^$IP_TREE\$" "$FAKE/build-cwd")" "$ep: builds run in the checkout"
       fi
-      # Without a checkout (bash <(curl …)) the branch is cloned first.
+      # Without a checkout (the installer fetched on its own) the branch is cloned first.
       rm -rf "$IP_W/solo"; mkdir -p "$IP_W/solo" && cp "$IP_TREE/$ep.sh" "$IP_W/solo/"
       : >"$FAKE_LOG"; : >"$FAKE/build-cwd"
       printf '9999999999998888888888887777777777776666\n' >"$FAKE/git_head"
