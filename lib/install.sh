@@ -45,7 +45,7 @@
 ND_INST_SCHEMA='nice-dns-install-prepare/1'
 # One build policy per platform, shared by the standard and hardened
 # entrypoints (the flags are explained where the builds run).
-ND_INST_LINUX_BUILD_FLAGS=(--pull=newer --no-cache --dns 1.1.1.1)
+ND_INST_LINUX_BUILD_FLAGS=(--pull=newer --no-cache)
 # macOS builds run in the interruption window, while host DNS stays pinned to
 # the stopped stack, so their bases are pulled in preparation and the builds
 # take no --pull (see nd_install_macos_prepare_images).
@@ -1363,8 +1363,11 @@ EOF
 nd_install_linux_prepare_images() {
   local gen="$ND_INST_GEN"
   cd "$ND_INST_TREE" || return 1
-  # --dns 1.1.1.1 ensures the pi-hole image build's `pihole -g` precheck
-  # always succeeds, even on hosts whose default resolver is partial.
+  # No --dns: the builds resolve through podman's default resolver, i.e. the
+  # host's resolver as it stands in preparation (the running stack, or the
+  # owner's on a first install). A VPN that confines DNS, such as Mullvad
+  # custom DNS, refuses a hard-coded public resolver: the pi-hole build's
+  # `apk -U upgrade` failed that way (BL-047, measured 2026-10-11).
   #
   # The bases are the locked digests (release/images.lock), pulled here and
   # passed as BASE_IMAGE, so a build never floats to whatever :latest is today
@@ -2123,9 +2126,10 @@ nd_install_macos_build_images() {
   local gen="$ND_INST_GEN"
   cd "$ND_INST_TREE" || return 1
   # -- Build local images --
-  # --dns 1.1.1.1 because Apple's container builder VM's default DNS forwarding
-  # is unreliable when the host network's DNS is censoring or partial; the
-  # pi-hole image build does an upstream pihole -g which needs working DNS.
+  # --dns 1.1.1.1 (release/bootstrap.tsv literal build-dns) because Apple's
+  # container builder VM's default DNS forwarding is unreliable when the host
+  # network's DNS is censoring or partial; the pi-hole image build does an
+  # upstream pihole -g which needs working DNS.
   #
   # No --pull: these builds run while host DNS is pinned to the stopped stack
   # (fail closed), so the builder could not reach a registry through it. The

@@ -4,11 +4,11 @@ After=nice-dns-network.service podman-user-wait-network-online.service
 
 [Pod]
 PodName=nice-dns
-# Network=nice-dns.network is load-bearing even though pod members talk over
-# localhost: the network unit injects DNS=1.1.1.1 into containers' resolv.conf,
-# which is required so pod members can resolve image registries / Tor bridges
-# at startup. The host resolver is pinned to 127.0.0.1 (the pod itself), so
-# without this the pod would deadlock its own bootstrap.
+# Network=nice-dns.network puts the pod on dnsnet; its members talk over
+# localhost. The network unit's DNS= line is aardvark's upstream, the pod
+# members' own resolver (release/bootstrap.tsv literal network-dns). The
+# stack's bootstrap does not use it: measured 2026-10-12 under Mullvad custom
+# DNS, where it is unreachable, the stack still starts and answers.
 Network=nice-dns.network
 # Host loopback only, like the admin UI: the host's resolver is 127.0.0.1,
 # and publishing :53 on every interface made the host an open resolver for

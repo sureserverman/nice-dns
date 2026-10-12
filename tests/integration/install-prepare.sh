@@ -246,7 +246,9 @@ t_standard_and_hardened_share_build_flags() {
       assert_rc 0 "$IP_RC" "$ep: $IP_OUT"
       # macOS builds take no --pull: they run while host DNS is pinned to the
       # stopped stack, and their bases were pulled in preparation (Task 1.2).
-      if [ "$plat" = linux ]; then want='--pull=newer --no-cache --dns 1.1.1.1'; else want='--no-cache --dns 1.1.1.1'; fi
+      # Linux builds take no --dns: they resolve through the host's resolver
+      # in preparation (BL-047).
+      if [ "$plat" = linux ]; then want='--pull=newer --no-cache'; else want='--no-cache --dns 1.1.1.1'; fi
       # Each build's policy flags, with the recipe selectors (-t, -f,
       # --build-arg) and the context removed.
       flags="$(grep -E '^(podman|container) build ' "$FAKE_LOG" | awk '{
