@@ -324,6 +324,32 @@ case "$me" in
       esac
     fi
     exit 0 ;;
+  mullvad)
+    # Mullvad's DNS setting, printed as `mullvad dns get` prints it (measured
+    # 2026-10-12, Mullvad 2026.3), kept in $FAKE/mullvad_dns. Linked only by a
+    # test that puts Mullvad on the host (dt_mullvad).
+    st="$FAKE/mullvad_dns"
+    case "$1 $2" in
+      "dns get")
+        [ -f "$FAKE/mullvad_unreadable" ] && { echo "Error: Management RPC server or client error" >&2; exit 1; }
+        cat "$st"; exit 0 ;;
+      "dns set")
+        case "$3" in
+          custom) shift 3; { echo "Custom DNS: yes"; echo "Servers:"; for a in "$@"; do echo "$a"; done; } >"$st" ;;
+          default)
+            shift 3; f=" $* "
+            {
+              echo "Custom DNS: no"
+              for k in ads trackers malware adult-content gambling social-media; do
+                v=false; case "$f" in *" --block-$k "*) v=true ;; esac
+                printf 'Block %s: %s\n' "$(printf '%s' "$k" | tr '-' ' ')" "$v"
+              done
+            } >"$st" ;;
+          *) exit 2 ;;
+        esac
+        echo "Updated DNS settings"; exit 0 ;;
+    esac
+    exit 2 ;;
 esac
 exit 0
 STUB

@@ -898,8 +898,15 @@ nd_install_controller_self_check() {
 }
 
 # nd_install_verify_pin: the host resolver is pinned and the stack answers.
+# With Mullvad, its own write after `mullvad dns set` lands within ~20 ms
+# (measured 2026-10-12); the check allows ND_INST_PIN_SETTLE_TRIES (5) x 1 s.
 nd_install_verify_pin() {
-  [ "$(_nd_inst_dns_helper status)" = pinned ] || { _nd_inst_err "the host resolver is not pinned after the pin"; return 1; }
+  local i=1 tries=1
+  [ "${ND_INST_MULLVAD:-0}" = 1 ] && tries="${ND_INST_PIN_SETTLE_TRIES:-5}"
+  until [ "$(_nd_inst_dns_helper status)" = pinned ]; do
+    [ "$i" -lt "$tries" ] || { _nd_inst_err "the host resolver is not pinned after the pin"; return 1; }
+    i=$((i + 1)); sleep 1
+  done
   ND_INST_READY_TRIES=6 nd_install_wait_ready >/dev/null || return 1
 }
 
@@ -958,6 +965,10 @@ _nd_inst_rollback() {
     # A first install: give back the DNS state recorded before it, or drop
     # the unused record when nothing was pinned.
     if [ "$ND_INST_PINNED" = 1 ]; then _nd_inst_dns_helper restore || dns_ok=0; else _nd_inst_dns_helper discard || dns_ok=0; fi
+  fi
+  # Mullvad's DNS setting as this install found it (Linux, BL-048).
+  if [ "${ND_INST_MULLVAD_CHANGED:-0}" = 1 ]; then
+    _nd_inst_mullvad_restore "$ND_INST_STATE/generations/$ND_INST_GEN/mullvad-dns.tsv" before_install || dns_ok=0
   fi
   _nd_inst_restore_files
   _nd_inst_restore_tags
@@ -1563,6 +1574,173 @@ EOF
   fi
 }
 
+# ─────────────────────────── Mullvad's DNS setting (BL-048) ──────────────────
+#
+# Mullvad VPN, connected, writes its own DNS servers into /etc/resolv.conf
+# and overwrites the pin within milliseconds, unless its setting is custom
+# 127.0.0.1; with that setting and nothing answering at 127.0.0.1 the host
+# has no DNS at all (measured 2026-10-12, Mullvad 2026.3). So when Mullvad is
+# installed, the Linux install records the setting it finds in
+#   <state>/generations/<gen>/mullvad-dns.tsv   (0600)
+# before anything else uses the network, switches to Mullvad's default DNS
+# when a loopback-only custom setting has nothing answering yet, sets custom
+# 127.0.0.1 right after the pin, and puts the recorded setting back: the one
+# this install found on a rollback or a failed preparation, the one from
+# before nice-dns on an uninstall (user decision 2026-10-12, DEC-019). A
+# setting it cannot read stops the install before any change.
+
+ND_INST_MULLVAD_SCHEMA='nice-dns-mullvad-dns/1'
+ND_INST_MULLVAD=0 ND_INST_MULLVAD_CHANGED=0
+
+# _nd_inst_mullvad_read: Mullvad's current DNS setting as words, "custom
+# <ip>..." or "default [<block>...]" (ads, trackers, malware, adult-content,
+# gambling, social-media: the content blocking that is on). Fails on output
+# it does not know.
+_nd_inst_mullvad_read() {
+  local out
+  out="$(mullvad dns get 2>/dev/null)" || return 1
+  printf '%s\n' "$out" | awk '
+    NR == 1 { if ($0 == "Custom DNS: yes") m = "custom"; else if ($0 == "Custom DNS: no") m = "default"; else { bad = 1; exit } next }
+    m == "custom" && NR == 2 { if ($0 != "Servers:") { bad = 1; exit } next }
+    m == "custom" { if ($0 !~ /^[0-9A-Fa-f:.]+$/) { bad = 1; exit } s = s " " $0; n++; next }
+    {
+      if ($0 !~ /^Block (ads|trackers|malware|adult content|gambling|social media): (true|false)$/) { bad = 1; exit }
+      if ($NF == "true") { k = $0; sub(/^Block /, "", k); sub(/: true$/, "", k); gsub(/ /, "-", k); s = s " " k }
+      d++
+    }
+    END { if (bad || m == "" || (m == "custom" && n == 0) || (m == "default" && d != 6)) exit 1; print m s }'
+}
+
+# _nd_inst_mullvad_record_get <file> <key>: a recorded setting as words.
+_nd_inst_mullvad_record_get() {
+  local f="$1" first=""
+  if [ -L "$f" ] || [ ! -f "$f" ]; then return 1; fi
+  IFS= read -r first <"$f" || true
+  [ "$first" = "schema$ND_INST_TAB$ND_INST_MULLVAD_SCHEMA" ] || return 1
+  awk -F '\t' -v k="$2" '
+    NR > 1 && $1 == k {
+      if ($2 == "custom") { if (NF < 3) exit 1; for (i = 3; i <= NF; i++) if ($i !~ /^[0-9A-Fa-f:.]+$/) exit 1 }
+      else if ($2 == "default") { for (i = 3; i <= NF; i++) if ($i !~ /^(ads|trackers|malware|adult-content|gambling|social-media)$/) exit 1 }
+      else exit 1
+      s = $2; for (i = 3; i <= NF; i++) s = s " " $i; print s; found = 1; exit
+    }
+    END { if (!found) exit 1 }' "$f"
+}
+
+# _nd_inst_mullvad_apply <custom|default> <word>...: sets Mullvad's DNS.
+_nd_inst_mullvad_apply() {
+  local m="$1" w
+  shift
+  case "$m" in
+    custom) mullvad dns set custom "$@" >/dev/null ;;
+    default)
+      for w in "$@"; do set -- "$@" "--block-$w"; shift; done
+      mullvad dns set default "$@" >/dev/null ;;
+    *) return 1 ;;
+  esac
+}
+
+# _nd_inst_mullvad_loopback_only <word>...: the setting is custom with only
+# loopback servers.
+_nd_inst_mullvad_loopback_only() {
+  local w
+  [ "${1:-}" = custom ] || return 1
+  shift
+  for w in "$@"; do case "$w" in 127.*|::1) ;; *) return 1 ;; esac; done
+}
+
+# _nd_inst_mullvad_restore <file> <key>: puts a recorded setting back.
+_nd_inst_mullvad_restore() {
+  local s
+  s="$(_nd_inst_mullvad_record_get "$1" "$2")" || {
+    _nd_inst_err "the recorded Mullvad DNS setting ($1) cannot be read; set it by hand with 'mullvad dns set ...'"; return 1; }
+  # shellcheck disable=SC2086  # the recorded words
+  _nd_inst_mullvad_apply $s || { _nd_inst_err "could not set Mullvad's DNS back to: $s"; return 1; }
+  echo "  • Mullvad's DNS setting is back to: $s"
+  # shellcheck disable=SC2086
+  if _nd_inst_mullvad_loopback_only $s; then
+    echo "  ! Mullvad's DNS points at 127.0.0.1 again, where nice-dns no longer answers when it is not running; 'mullvad dns set default' gives the host DNS." >&2
+  fi
+}
+
+# _nd_inst_linux_prep_exit: the EXIT trap of the preparation once Mullvad's
+# setting may have changed: a failure puts it back (the interruption's own
+# trap, _nd_inst_exit_trap, replaces this one).
+_nd_inst_linux_prep_exit() {
+  local rc=$?
+  trap - EXIT
+  set +e
+  if [ "$rc" -ne 0 ] && [ "$ND_INST_MULLVAD_CHANGED" = 1 ]; then
+    _nd_inst_mullvad_restore "$ND_INST_STATE/generations/$ND_INST_GEN/mullvad-dns.tsv" before_install
+  fi
+  _nd_inst_sudo_keepalive_stop
+  [ -z "${ND_INST_CLEANUP:-}" ] || rm -rf "${ND_INST_CLEANUP:?}"
+  exit "$rc"
+}
+
+# nd_install_linux_mullvad_prepare: with Mullvad installed, records its DNS
+# setting and, when a loopback-only custom setting has nothing answering,
+# switches to Mullvad's default DNS so the preparation can resolve. Runs
+# before any preparation step that uses the network; refuses (exit 1) when
+# the setting cannot be read.
+nd_install_linux_mullvad_prepare() {
+  local now prev="" rec pf
+  command -v mullvad >/dev/null 2>&1 || return 0
+  now="$(_nd_inst_mullvad_read)" || {
+    _nd_inst_err "Mullvad is installed, but its DNS setting cannot be read ('mullvad dns get'; is mullvad-daemon running?); nothing was changed."
+    exit 1; }
+  rec="$ND_INST_STATE/generations/$ND_INST_GEN/mullvad-dns.tsv"
+  pf="$ND_INST_STATE/generations/$ND_INST_PREV/mullvad-dns.tsv"
+  # custom 127.0.0.1 is what the previous install left: the setting from
+  # before nice-dns is the one it carried. Any other setting is the owner's.
+  if [ "$ND_INST_PREV" != none ] && [ -f "$pf" ] && [ "$now" = "custom 127.0.0.1" ]; then
+    prev="$(_nd_inst_mullvad_record_get "$pf" before_nicedns)" || {
+      _nd_inst_err "the Mullvad DNS setting recorded in $pf cannot be read; nothing was changed."; exit 1; }
+  fi
+  [ -n "$prev" ] || prev="$now"
+  _nd_inst_write_file "$rec" "$(printf 'schema\t%s\nbefore_install\t%s\nbefore_nicedns\t%s' "$ND_INST_MULLVAD_SCHEMA" \
+    "$(printf '%s' "$now" | tr ' ' '\t')" "$(printf '%s' "$prev" | tr ' ' '\t')")" || exit 1
+  ND_INST_MULLVAD=1
+  trap '_nd_inst_linux_prep_exit' EXIT
+  echo "  • Mullvad's DNS setting is recorded: $now"
+  # shellcheck disable=SC2086  # the setting's words
+  _nd_inst_mullvad_loopback_only $now || return 0
+  if dig @127.0.0.1 +time=3 +tries=1 +short "$ND_INST_PROBE_NAME" 2>/dev/null | grep -Eq '^[0-9.]+$'; then return 0; fi
+  echo "▸ Mullvad's custom DNS is 127.0.0.1, where nothing answers yet: using Mullvad's default DNS until the stack is pinned."
+  ND_INST_MULLVAD_CHANGED=1
+  _nd_inst_mullvad_apply default || { _nd_inst_err "could not switch Mullvad to its default DNS"; exit 1; }
+  printf 'switched\tdefault\n' >>"$rec"
+}
+
+# _nd_inst_linux_mullvad_loopback: after the pin, Mullvad's DNS goes to
+# custom 127.0.0.1, the one setting that keeps the pin (and the stack) in use.
+_nd_inst_linux_mullvad_loopback() {
+  [ "$ND_INST_MULLVAD" = 1 ] || return 0
+  ND_INST_MULLVAD_CHANGED=1
+  mullvad dns set custom 127.0.0.1 >/dev/null || { _nd_inst_err "could not set Mullvad's DNS to custom 127.0.0.1"; return 1; }
+  echo "  • Mullvad's DNS is custom 127.0.0.1, the stack."
+}
+
+# _nd_inst_linux_mullvad_uninstall: puts back the setting from before
+# nice-dns, from the current generation's record. Without a record nothing is
+# changed; a loopback-only setting is reported, since nothing will answer it.
+_nd_inst_linux_mullvad_uninstall() {
+  local sd g rec now
+  command -v mullvad >/dev/null 2>&1 || return 0
+  sd="$(nd_install_state_dir)" || return 1
+  g="$(nd_install_read_current "$sd" 2>/dev/null)" || g=""
+  rec="$sd/generations/$g/mullvad-dns.tsv"
+  if [ -n "$g" ] && [ -f "$rec" ]; then
+    _nd_inst_mullvad_restore "$rec" before_nicedns
+    return
+  fi
+  now="$(_nd_inst_mullvad_read)" || return 0
+  # shellcheck disable=SC2086
+  if _nd_inst_mullvad_loopback_only $now; then
+    echo "  ! Mullvad's custom DNS is $now and nice-dns has no record of an earlier setting; once nice-dns is gone nothing answers there: 'mullvad dns set default' gives the host DNS." >&2
+  fi
+}
+
 # nd_install_linux_pin: the resolver cutover, only after the new stack answers
 # and the controller passed its self-check. The pin itself is the helper's.
 nd_install_linux_pin() {
@@ -1577,6 +1755,7 @@ nd_install_linux_pin() {
   _nd_inst_linux_nm_lockdown
   _nd_inst_linux_ipv6_disable
   sudo "$R/usr/bin/custom-dns-deb" pin
+  _nd_inst_linux_mullvad_loopback
 }
 
 # nd_install_linux_activate: records the owned DNS state, then interrupts,
@@ -1629,6 +1808,8 @@ nd_install_linux_uninstall() {
   # restore keeps its record; the rest of the uninstall still runs, and the
   # uninstall then fails so the operator retries it.
   _nd_inst_dns_helper restore || dns_ok=0
+  # Mullvad's DNS setting from before nice-dns (BL-048).
+  _nd_inst_linux_mullvad_uninstall || dns_ok=0
   sudo rm -f "$R/usr/bin/custom-dns-deb"
   if sudo test -f "$R/etc/default/grub.d/99-nice-dns-ipv6.cfg"; then
     sudo rm -f "$R/etc/default/grub.d/99-nice-dns-ipv6.cfg"
