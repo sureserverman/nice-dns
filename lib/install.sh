@@ -1884,6 +1884,10 @@ nd_install_linux_activate() {
   nd_install_controller_self_check
   nd_install_linux_pin
   nd_install_verify_pin
+  # The profile step's undo list is for a rollback of this install only.
+  if [ "${ND_INST_V6_PROFILES:-0}" = 1 ]; then
+    sudo "$ND_INST_ROOT/usr/bin/custom-dns-deb" ipv6-profiles-done || true
+  fi
   _nd_inst_end_interruption
 }
 

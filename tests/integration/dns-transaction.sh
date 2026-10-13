@@ -739,6 +739,18 @@ t_legacy_profile_pins_get_automatic_dns_back() {
     assert_eq 'wifi-1 dns= ignore=no' "$(dt_nm_state)" "nm-down: the retry resets the pin"
   ) || exit 1
   (
+    # NetworkManager removed after the install: its profiles are gone with
+    # it, so the uninstall completes and names the pins (round-3 sweep).
+    dt_world install-deb legacy
+    dt_nm_profile wifi-1 127.0.0.1 yes wlp1
+    ip_install install-deb socat
+    assert_rc 0 "$IP_RC" "no-nm: install: $IP_OUT"
+    rm -f "$IP_BIN/nmcli"
+    ip_install install-deb uninstall
+    assert_rc 0 "$IP_RC" "no-nm: the uninstall completes: $IP_OUT"
+    assert_match 'nmcli is missing.*wifi-1' "$IP_OUT" "no-nm: and names the pin"
+  ) || exit 1
+  (
     # NetworkManager does not answer when a legacy host's record is taken:
     # the pins could not be listed, so the snapshot refuses.
     dt_world install-deb legacy
@@ -1407,6 +1419,55 @@ t_ipv6_profiles_are_disabled_and_given_back() {
     assert_rc 0 "$DT_RC" "no record: $DT_OUT"
     assert_eq auto "$(cat "$FAKE_ROOT/.nm/eth-1/ipv6")" "no record: nothing is changed"
   ) || exit 1
+}
+
+t_ipv6_profiles_stale_undo_list_is_never_used() {
+  local ep
+  ip_select
+  for ep in $IP_EPS; do
+    [ "$(ip_platform "$ep")" = linux ] || continue
+    (
+      # NetworkManager does not answer at a reinstall's profile step, and the
+      # reinstall then fails: the rollback must not undo the earlier
+      # install's change from its leftover list (round-2 redesign review).
+      dt_world "$ep" resolved; dt_nm_v6_world
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/stale: install: $IP_OUT"
+      dt_mullvad "default"
+      printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' >"$FAKE/git_head"
+      printf '%s\n' '^nmcli -t -f UUID con show$' '^mullvad dns set custom 127\.0\.0\.1$' >"$FAKE/fail"
+      ip_install "$ep"
+      rm -f "$FAKE/fail"
+      assert_nonzero "$IP_RC" "$ep/stale: the reinstall fails: $IP_OUT"
+      assert_eq disabled "$(cat "$FAKE_ROOT/.nm/eth-1/ipv6")" "$ep/stale: the earlier install's change stays"
+      assert_eq "$(printf 'eth-1\tauto\nwifi-2\tdhcp')" "$(dt_ipv6_prof_rec)" "$ep/stale: and its record"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/stale: reinstall: $IP_OUT"
+      assert_eq "" "$(ls "$FAKE_ROOT/var/lib/nice-dns/dns-owned/" | grep -E '\.(run|prev)$' || true)" "$ep/stale: a successful install leaves no undo list"
+    ) || exit 1
+  done
+}
+
+t_ipv6_profiles_uninstall_completes_without_nmcli() {
+  local ep
+  ip_select
+  for ep in $IP_EPS; do
+    [ "$(ip_platform "$ep")" = linux ] || continue
+    (
+      # NetworkManager removed after the install: no profile can exist, so
+      # the uninstall completes and names what it could not give back.
+      dt_world "$ep" resolved; dt_nm_v6_world
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/no-nm: install: $IP_OUT"
+      printf '\n' >>"$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-profiles.tsv"
+      rm -f "$IP_BIN/nmcli"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep/no-nm: the uninstall completes: $IP_OUT"
+      assert_match 'nmcli is missing.*eth-1' "$IP_OUT" "$ep/no-nm: and names the profiles"
+      assert_not_match 'malformed' "$IP_OUT" "$ep/no-nm: a blank row is not malformed"
+      assert_eq "" "$(dt_ipv6_prof_rec)" "$ep/no-nm: the record is gone"
+    ) || exit 1
+  done
 }
 
 # ipv6.disable=1 on the kernel command line removes AF_INET6, and Mullvad's
