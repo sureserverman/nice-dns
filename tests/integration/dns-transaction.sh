@@ -720,6 +720,49 @@ t_legacy_profile_pins_get_automatic_dns_back() {
     assert_match 'changed since the record' "$IP_OUT" "and says so"
   ) || exit 1
   (
+    # NetworkManager does not answer at the uninstall: the pins are not read
+    # as "changed since" and dropped; the restore fails and keeps the record,
+    # and a retry resets them (Stage 3 gate class sweep, 2026-10-12).
+    dt_world install-deb legacy
+    dt_nm_profile wifi-1 127.0.0.1 yes wlp1
+    ip_install install-deb socat
+    assert_rc 0 "$IP_RC" "nm-down: install: $IP_OUT"
+    printf '%s\n' '^nmcli -t -f UUID con show$' >"$FAKE/fail"
+    ip_install install-deb uninstall
+    rm -f "$FAKE/fail"
+    assert_nonzero "$IP_RC" "nm-down: the uninstall fails: $IP_OUT"
+    assert_match 'NetworkManager did not answer' "$IP_OUT" "nm-down: and says why"
+    assert_eq 'wifi-1 dns=127.0.0.1 ignore=yes' "$(dt_nm_state)" "nm-down: the pin is still there"
+    assert_match "$(printf 'nm_pin\twifi-1')" "$(cat "$(dt_receipt linux)" 2>/dev/null)" "nm-down: and the record keeps it"
+    ip_install install-deb uninstall
+    assert_rc 0 "$IP_RC" "nm-down: the retry: $IP_OUT"
+    assert_eq 'wifi-1 dns= ignore=no' "$(dt_nm_state)" "nm-down: the retry resets the pin"
+  ) || exit 1
+  (
+    # NetworkManager removed after the install: its profiles are gone with
+    # it, so the uninstall completes and names the pins (round-3 sweep).
+    dt_world install-deb legacy
+    dt_nm_profile wifi-1 127.0.0.1 yes wlp1
+    ip_install install-deb socat
+    assert_rc 0 "$IP_RC" "no-nm: install: $IP_OUT"
+    rm -f "$IP_BIN/nmcli"
+    ip_install install-deb uninstall
+    assert_rc 0 "$IP_RC" "no-nm: the uninstall completes: $IP_OUT"
+    assert_match 'nmcli is missing.*wifi-1' "$IP_OUT" "no-nm: and names the pin"
+  ) || exit 1
+  (
+    # NetworkManager does not answer when a legacy host's record is taken:
+    # the pins could not be listed, so the snapshot refuses.
+    dt_world install-deb legacy
+    dt_nm_profile wifi-1 127.0.0.1 yes wlp1
+    printf '%s\n' '^nmcli -t -f UUID con show$' >"$FAKE/fail"
+    dt_helper linux snapshot
+    rm -f "$FAKE/fail"
+    assert_nonzero "$DT_RC" "nm-down snapshot: refuses: $DT_OUT"
+    assert_match 'NetworkManager did not answer' "$DT_OUT" "nm-down snapshot: and says why"
+    assert_eq "" "$(cat "$(dt_receipt linux)" 2>/dev/null)" "nm-down snapshot: no record is written"
+  ) || exit 1
+  (
     dt_world install-deb legacy
     dt_nm_profile wifi-1 127.0.0.1 yes wlp1
     dt_helper linux restore
@@ -744,4 +787,694 @@ t_a_profile_that_cannot_be_reset_fails_the_restore() {
     assert_rc 0 "$DT_RC" "the retry: $DT_OUT"
     assert_eq 'wifi-1 dns= ignore=no' "$(dt_nm_state)" "resets the profile"
   ) || exit 1
+}
+
+# ─────────────────────────── Mullvad's DNS setting (BL-048) ─────────────────
+#
+# Mullvad VPN, connected, writes its own servers into /etc/resolv.conf and
+# overwrites a pin within milliseconds unless its setting is custom 127.0.0.1
+# (measured 2026-10-12, Mullvad 2026.3). The Linux installer records the
+# setting it finds, switches to Mullvad's default DNS only when no nice-dns
+# stack runs and none of a loopback-only custom setting's servers answers,
+# sets custom 127.0.0.1 after the pin, and puts a recorded setting back on a
+# rollback, a failed preparation or an uninstall.
+
+# dt_mullvad <setting>: Mullvad on the host, its setting as `mullvad dns get`
+# prints it: "custom <ip>..." or "default [<block>...]" (ads, malware, ...).
+dt_mullvad() {
+  local m="$1" k v
+  ln -sf fakecmd "$IP_BIN/mullvad"
+  # shellcheck disable=SC2086  # the setting's words
+  set -- $1
+  shift
+  if [ "$m" = "${m#custom}" ]; then
+    {
+      echo "Custom DNS: no"
+      for k in ads trackers malware adult-content gambling social-media; do
+        v=false; case " $* " in *" $k "*) v=true ;; esac
+        printf 'Block %s: %s\n' "$(printf '%s' "$k" | tr '-' ' ')" "$v"
+      done
+    } >"$FAKE/mullvad_dns"
+  else
+    { echo "Custom DNS: yes"; echo "Servers:"; for k in "$@"; do echo "$k"; done; } >"$FAKE/mullvad_dns"
+  fi
+}
+dt_mullvad_calls() { grep -E '^mullvad ' "$FAKE_LOG" || true; }
+dt_mullvad_now() { tr '\n' ' ' <"$FAKE/mullvad_dns" | sed 's/ $//'; }
+# dt_newest_gen: the generation the last install allocated (activated or not).
+dt_newest_gen() { find "$IP_STATE/generations" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tail -n 1; }
+dt_mullvad_receipt() { cat "$IP_STATE/generations/$(dt_newest_gen)/mullvad-dns.tsv" 2>/dev/null; }
+dt_mv_rows() { printf 'schema\tnice-dns-mullvad-dns/1'; printf '\n%s' "$@" | tr '|' '\t'; }
+
+dt_linux_eps() {
+  local ep out=""
+  ip_select
+  for ep in $IP_EPS; do [ "$(ip_platform "$ep")" = linux ] && out="$out $ep"; done
+  printf '%s\n' "$out"
+}
+
+t_mullvad_setting_is_recorded_switched_and_set_to_loopback() {
+  local ep
+  for ep in $(dt_linux_eps); do
+    (
+      local sw pre pin set
+      # A first install with Mullvad's custom DNS at 127.0.0.1, nothing
+      # answering there and no stack: the host has no DNS until Mullvad's
+      # default is used. custom 127.0.0.1 with no earlier record is nice-dns's
+      # own address: the setting from before nice-dns stands as the default.
+      dt_world "$ep" resolved
+      dt_mullvad "custom 127.0.0.1"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: the install succeeds: $IP_OUT"
+      assert_eq "$(printf 'mullvad dns get\nmullvad dns set default\nmullvad dns set custom 127.0.0.1')" "$(dt_mullvad_calls)" "$ep: the exact Mullvad calls"
+      assert_eq "$(dt_mv_rows 'before_install|custom|127.0.0.1' 'before_nicedns|default' 'switched|default')" \
+        "$(dt_mullvad_receipt)" "$ep: the receipt"
+      assert_eq 600 "$(ip_mode "$IP_STATE/generations/$(dt_newest_gen)/mullvad-dns.tsv")" "$ep: the receipt is 0600"
+      sw="$(ip_first "$FAKE_LOG" '^mullvad dns set default$')"
+      pre="$(ip_first "$FAKE_LOG" '^(sudo apt-get|podman (pull|build)|cosign) ')"
+      pin="$(ip_first "$FAKE_LOG" '^sudo ([^ ]*/)?usr/bin/custom-dns-deb pin$')"
+      set="$(ip_first "$FAKE_LOG" '^mullvad dns set custom 127\.0\.0\.1$')"
+      assert_eq 1 "$((sw < pre))" "$ep: the switch (line $sw) precedes every network-using preparation call (line $pre):
+$(cat -n "$FAKE_LOG")"
+      assert_eq 1 "$((pin < set))" "$ep: custom 127.0.0.1 is set (line $set) after the pin (line $pin)"
+      assert_eq "Custom DNS: yes Servers: 127.0.0.1" "$(dt_mullvad_now)" "$ep: Mullvad ends at custom 127.0.0.1"
+      dt_pinned || fail "$ep: pinned at the end: $(dt_dns_state)"
+    ) || exit 1
+    (
+      # Default DNS with content blocking before nice-dns, Mullvad connected
+      # and slow to write custom 127.0.0.1 (two sleeps): no switch, the pin
+      # check waits for Mullvad's write, and a reinstall carries the setting
+      # from before nice-dns.
+      dt_world "$ep" resolved
+      dt_mullvad "default ads malware"
+      : >"$FAKE/mullvad_connected"; echo 2 >"$FAKE/mullvad_settle"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: first install: $IP_OUT"
+      assert_eq "$(printf 'mullvad dns get\nmullvad dns set custom 127.0.0.1')" "$(dt_mullvad_calls)" "$ep: no switch when Mullvad's DNS answers"
+      assert_eq "$(dt_mv_rows 'before_install|default|ads|malware' 'before_nicedns|default|ads|malware')" \
+        "$(dt_mullvad_receipt)" "$ep: the first receipt"
+      dt_pinned || fail "$ep: pinned once Mullvad's write settled: $(dt_dns_state)"
+      rm -f "$FAKE/mullvad_settle"
+      : >"$FAKE_LOG"
+      printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' >"$FAKE/git_head"
+      # A stack slow through Tor fails the probe, but it runs: no switch.
+      : >"$FAKE/dig_fail_probe"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: reinstall: $IP_OUT"
+      assert_eq "$(printf 'mullvad dns get\nmullvad dns set custom 127.0.0.1')" "$(dt_mullvad_calls)" "$ep: the reinstall's calls (a stack runs: no switch)"
+      assert_eq "$(dt_mv_rows 'before_install|custom|127.0.0.1' 'before_nicedns|default|ads|malware')" \
+        "$(dt_mullvad_receipt)" "$ep: the reinstall carries the setting from before nice-dns"
+    ) || exit 1
+    (
+      # The owner's own loopback resolver (a stub at 127.0.0.53) answers: no
+      # switch, and it is the setting from before nice-dns.
+      dt_world "$ep" resolved
+      dt_mullvad "custom 127.0.0.53"; : >"$FAKE/stub_answers"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: install: $IP_OUT"
+      assert_eq "$(printf 'mullvad dns get\nmullvad dns set custom 127.0.0.1')" "$(dt_mullvad_calls)" "$ep: the owner's answering stub is not switched"
+      assert_eq "$(dt_mv_rows 'before_install|custom|127.0.0.53' 'before_nicedns|custom|127.0.0.53')" \
+        "$(dt_mullvad_receipt)" "$ep: the receipt keeps the owner's resolver"
+    ) || exit 1
+  done
+}
+
+t_failed_activation_restores_the_recorded_mullvad_setting() {
+  local ep
+  for ep in $(dt_linux_eps); do
+    (
+      local dns0
+      # Fails in the interruption, after the switch and before the pin.
+      dt_world "$ep" resolved; dt_mullvad "custom 127.0.0.1"; dns0="$(dt_dns_state)"
+      : >"$FAKE/never_ready"
+      ip_install "$ep"
+      assert_nonzero "$IP_RC" "$ep/never_ready: fails: $IP_OUT"
+      assert_eq "$(printf 'mullvad dns get\nmullvad dns set default\nmullvad dns set custom 127.0.0.1')" "$(dt_mullvad_calls)" "$ep/never_ready: switched, then put back"
+      assert_eq "Custom DNS: yes Servers: 127.0.0.1" "$(dt_mullvad_now)" "$ep/never_ready: Mullvad is as recorded"
+      assert_eq "$dns0" "$(dt_dns_state)" "$ep/never_ready: host DNS as before"
+    ) || exit 1
+    local inj
+    for inj in '^podman build ' 'sigint:^podman build ' 'sigint_group:^podman build ' '^mullvad dns set default$'; do
+      (
+        local dns0
+        # Fails in preparation (a build, a Ctrl-C during a build, or the
+        # switch itself): nothing is interrupted, and the setting goes back.
+        dt_world "$ep" resolved; dt_mullvad "custom 127.0.0.1"; dns0="$(dt_dns_state)"
+        case "$inj" in
+          sigint:*) printf '%s\n' "${inj#sigint:}" >"$FAKE/sigint" ;;
+          sigint_group:*) printf '%s\n' "${inj#sigint_group:}" >"$FAKE/sigint_group" ;;
+          *) printf '%s\n' "$inj" >"$FAKE/fail" ;;
+        esac
+        ip_install "$ep"
+        assert_nonzero "$IP_RC" "$ep/$inj: fails: $IP_OUT"
+        rm -f "$FAKE/fail" "$FAKE/sigint" "$FAKE/sigint_group"
+        assert_eq "$(printf 'mullvad dns get\nmullvad dns set default\nmullvad dns set custom 127.0.0.1')" "$(dt_mullvad_calls)" "$ep/$inj: switched (or tried to), then put back"
+        assert_eq "Custom DNS: yes Servers: 127.0.0.1" "$(dt_mullvad_now)" "$ep/$inj: Mullvad is as recorded"
+        assert_eq "$dns0" "$(dt_dns_state)" "$ep/$inj: host DNS as before"
+        assert_eq "" "$(ip_lines "$FAKE_LOG" "$IP_DISRUPTIVE")" "$ep/$inj: nothing was interrupted"
+      ) || exit 1
+    done
+    (
+      local dns0 dep0
+      # A reinstall whose `set custom 127.0.0.1` fails after the pin: the
+      # rollback gives the previous deployment back and Mullvad the setting
+      # this install found.
+      dt_world "$ep" resolved; dt_mullvad "default ads"
+      dt_installed "$ep"
+      dns0="$(dt_dns_state)"; dep0="$(dt_deploy_state)"
+      printf '%s\n' '^mullvad dns set custom 127\.0\.0\.1$' >"$FAKE/fail"
+      ip_install "$ep"
+      assert_nonzero "$IP_RC" "$ep/set: fails: $IP_OUT"
+      rm -f "$FAKE/fail"
+      assert_eq "$(printf 'mullvad dns get\nmullvad dns set custom 127.0.0.1\nmullvad dns set custom 127.0.0.1')" "$(dt_mullvad_calls)" "$ep/set: the failed set, then the recorded setting (custom 127.0.0.1) again"
+      assert_eq "Custom DNS: yes Servers: 127.0.0.1" "$(dt_mullvad_now)" "$ep/set: Mullvad as this install found it"
+      assert_eq "$dns0" "$(dt_dns_state)" "$ep/set: host DNS as before"
+      assert_eq "$dep0" "$(dt_deploy_state)" "$ep/set: the previous deployment is back"
+    ) || exit 1
+    (
+      local checks
+      # Mullvad, connected, never writes custom 127.0.0.1 back: the pin check
+      # gives up after ND_INST_PIN_SETTLE_TRIES (5) checks and rolls back.
+      dt_world "$ep" resolved; dt_mullvad "default ads"
+      : >"$FAKE/mullvad_connected"; echo 99 >"$FAKE/mullvad_settle"
+      ip_install "$ep"
+      assert_nonzero "$IP_RC" "$ep/settle: fails: $IP_OUT"
+      assert_match 'not pinned after the pin' "$IP_OUT" "$ep/settle: and says why"
+      checks="$(sed -n "$(ip_first "$FAKE_LOG" '^mullvad dns set custom 127\.0\.0\.1$'),\$p" "$FAKE_LOG" | grep -cE 'custom-dns-deb status$')"
+      assert_eq 5 "$checks" "$ep/settle: five checks, then the rollback:
+$(cat -n "$FAKE_LOG")"
+      assert_eq "$(printf 'mullvad dns get\nmullvad dns set custom 127.0.0.1\nmullvad dns set default --block-ads')" "$(dt_mullvad_calls)" "$ep/settle: Mullvad gets the setting this install found"
+    ) || exit 1
+  done
+}
+
+t_uninstall_restores_the_recorded_mullvad_setting() {
+  local ep
+  for ep in $(dt_linux_eps); do
+    (
+      local dns0
+      dt_world "$ep" resolved; dt_mullvad "default ads malware"; dns0="$(dt_dns_state)"
+      dt_installed "$ep"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: reinstall: $IP_OUT"
+      : >"$FAKE_LOG"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep: uninstall: $IP_OUT"
+      assert_eq "$(printf 'mullvad dns get\nmullvad dns set default --block-ads --block-malware')" "$(dt_mullvad_calls)" "$ep: the uninstall puts back the setting from before nice-dns"
+      assert_eq "$dns0" "$(dt_dns_state)" "$ep: host DNS as before"
+      assert_match "Mullvad's DNS setting is back to: default ads malware" "$IP_OUT" "$ep: and says so"
+    ) || exit 1
+    (
+      # custom 127.0.0.1 found at the first install stands for Mullvad's
+      # default: the uninstall never leaves Mullvad pointing at a removed stack.
+      dt_world "$ep" resolved; dt_mullvad "custom 127.0.0.1"
+      dt_installed "$ep"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep/loopback: uninstall: $IP_OUT"
+      assert_eq "$(printf 'mullvad dns get\nmullvad dns set default')" "$(dt_mullvad_calls)" "$ep/loopback: Mullvad's default"
+    ) || exit 1
+    (
+      # The owner changed the setting since the install: left as it is.
+      dt_world "$ep" resolved; dt_mullvad "default ads"
+      dt_installed "$ep"
+      dt_mullvad "default trackers"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep/changed: uninstall: $IP_OUT"
+      assert_eq "mullvad dns get" "$(dt_mullvad_calls)" "$ep/changed: no Mullvad change"
+      assert_match 'changed since the install' "$IP_OUT" "$ep/changed: and says so"
+    ) || exit 1
+    (
+      # An install from before records (no receipt) with Mullvad at custom
+      # 127.0.0.1: Mullvad's default.
+      dt_world "$ep" resolved
+      dt_installed "$ep"
+      dt_mullvad "custom 127.0.0.1"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep/legacy: uninstall: $IP_OUT"
+      assert_eq "$(printf 'mullvad dns get\nmullvad dns set default')" "$(dt_mullvad_calls)" "$ep/legacy: Mullvad's default"
+    ) || exit 1
+    (
+      # The daemon is down: the uninstall says so and fails, keeping the
+      # record for a retry.
+      dt_world "$ep" resolved; dt_mullvad "default ads"
+      dt_installed "$ep"
+      : >"$FAKE/mullvad_unreadable"
+      ip_install "$ep" uninstall
+      assert_nonzero "$IP_RC" "$ep/daemon-down: the uninstall fails: $IP_OUT"
+      assert_match 'mullvad-daemon' "$IP_OUT" "$ep/daemon-down: and says why"
+      assert_eq "mullvad dns get" "$(dt_mullvad_calls)" "$ep/daemon-down: no change"
+      assert_file "$IP_STATE/current" "$ep/daemon-down: the state is kept for a retry"
+    ) || exit 1
+  done
+}
+
+# Connected, Mullvad rewrites the pin when its setting changes: the
+# ownership check refuses a reinstall then, and names Mullvad's way back.
+t_mullvad_rewrite_refusal_names_the_way_back() {
+  local ep
+  for ep in $(dt_linux_eps); do
+    (
+      dt_world "$ep" resolved; dt_mullvad "default ads"
+      dt_installed "$ep"
+      : >"$FAKE/mullvad_connected"
+      env FAKE_ROOT="$FAKE_ROOT" FAKE="$FAKE" FAKE_LOG="$FAKE_LOG" "$IP_BIN/mullvad" dns set default --block-ads >/dev/null
+      : >"$FAKE_LOG"
+      ip_install "$ep"
+      assert_nonzero "$IP_RC" "$ep: refuses: $IP_OUT"
+      assert_match "mullvad dns set custom 127.0.0.1" "$IP_OUT" "$ep: names Mullvad's way back"
+      assert_eq "" "$(dt_mullvad_calls)" "$ep: no Mullvad call"
+      ip_assert_untouched "$ep"
+    ) || exit 1
+  done
+}
+
+t_no_mullvad_means_no_mullvad_calls() {
+  local ep
+  for ep in $(dt_linux_eps); do
+    (
+      dt_world "$ep" resolved
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: install: $IP_OUT"
+      : >"$FAKE/never_ready"
+      ip_install "$ep"
+      assert_nonzero "$IP_RC" "$ep: a failed reinstall: $IP_OUT"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep: uninstall: $IP_OUT"
+      assert_eq "" "$(dt_mullvad_calls)" "$ep: no Mullvad call"
+      assert_eq "" "$(find "$IP_STATE" -name mullvad-dns.tsv)" "$ep: no Mullvad receipt"
+    ) || exit 1
+  done
+}
+
+t_unreadable_mullvad_setting_refuses_before_any_change() {
+  local ep how
+  for ep in $(dt_linux_eps); do
+    for how in daemon-down malformed bad-server; do
+      (
+        local dns0
+        dt_world "$ep" resolved; dt_mullvad "custom 127.0.0.1"; dns0="$(dt_dns_state)"
+        case "$how" in
+          daemon-down) : >"$FAKE/mullvad_unreadable" ;;
+          malformed) printf 'Custom DNS: maybe\n' >"$FAKE/mullvad_dns" ;;
+          bad-server) printf 'Custom DNS: yes\nServers:\nabc\n' >"$FAKE/mullvad_dns" ;;
+        esac
+        ip_install "$ep"
+        assert_nonzero "$IP_RC" "$ep/$how: refuses: $IP_OUT"
+        assert_match 'Mullvad' "$IP_OUT" "$ep/$how: and says why"
+        assert_eq "mullvad dns get" "$(dt_mullvad_calls)" "$ep/$how: no Mullvad change"
+        assert_eq "" "$(ip_lines "$FAKE_LOG" "$IP_BUILD_PULL")" "$ep/$how: no build or pull"
+        assert_eq "" "$(ip_lines "$FAKE_LOG" '^sudo apt-get ')" "$ep/$how: no package change"
+        ip_assert_untouched "$ep/$how"
+        assert_eq "$dns0" "$(dt_dns_state)" "$ep/$how: host DNS unchanged"
+      ) || exit 1
+    done
+  done
+}
+
+# ─────────────────────────── IPv6 per device (BL-050) ───────────────────────
+#
+# NetworkManager's activation of a profile with ipv6.method auto turns the
+# device's disable_ipv6 back to 0 after systemd-sysctl set every switch to 1
+# (measured 2026-10-12, Task 2.1). An owned dispatcher hook sets it to 1
+# again on pre-up/up/reapply and never touches Mullvad's tunnel; a first
+# install records each device's value from before nice-dns for the uninstall. The address family stays: no kernel
+# ipv6.disable flag (the 2026-07-10 incident).
+
+dt_dev() { cat "$FAKE_ROOT/proc/sys/net/ipv6/conf/$1/disable_ipv6"; }
+dt_hook() { # <iface> <action>: the hook as NetworkManager runs it
+  DT_OUT="$(env -i PATH="$IP_BIN" ND_DNS_TEST_ROOT="$FAKE_ROOT" bash "$IP_TREE/deb/91-nice-dns-ipv6" "$1" "$2" 2>&1)"
+  DT_RC=$?
+}
+dt_ipv6_rec() { cat "$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-devices.tsv" 2>/dev/null; }
+
+t_ipv6_hook_disables_the_activating_device() {
+  local ep
+  (
+    local bad
+    dt_world install-deb resolved
+    dt_helper linux snapshot
+    dt_hook enp1s0 up
+    assert_rc 0 "$DT_RC" "up: $DT_OUT"
+    assert_eq 1 "$(dt_dev enp1s0)" "up: the device's IPv6 is off"
+    assert_eq "" "$(dt_ipv6_rec)" "up: NetworkManager's events never record (the value may be nice-dns's already)"
+    for act in pre-up reapply; do
+      printf '0\n' >"$FAKE_ROOT/proc/sys/net/ipv6/conf/enp1s0/disable_ipv6"
+      dt_hook enp1s0 "$act"
+      assert_eq 1 "$(dt_dev enp1s0)" "$act: off again"
+    done
+    printf '0\n' >"$FAKE_ROOT/proc/sys/net/ipv6/conf/enp1s0/disable_ipv6"
+    dt_hook enp1s0 down
+    assert_eq 0 "$(dt_dev enp1s0)" "down: nothing is written"
+    dt_hook enp1s0 record
+    assert_eq 0 "$(dt_dev enp1s0)" "record: the switch is not written"
+    assert_eq "$(printf 'enp1s0\t0')" "$(dt_ipv6_rec)" "record: the value is recorded"
+    assert_eq 600 "$(ip_mode "$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-devices.tsv")" "the record is 0600"
+    printf '1\n' >"$FAKE_ROOT/proc/sys/net/ipv6/conf/enp1s0/disable_ipv6"
+    dt_hook enp1s0 record
+    assert_eq "$(printf 'enp1s0\t0')" "$(dt_ipv6_rec)" "record: the first value is kept"
+    for bad in '../all' 'a/b' '' 'x;y'; do
+      dt_hook "$bad" up
+      assert_rc 0 "$DT_RC" "a bad name ($bad) is ignored"
+    done
+  ) || exit 1
+  ip_select
+  for ep in $IP_EPS; do
+    [ "$(ip_platform "$ep")" = linux ] || continue
+    (
+      local before
+      # A first install records each device, then turns the NIC's IPv6 off
+      # and installs the hook; the uninstall gives every switch back.
+      dt_world "$ep" resolved; before="$(dt_dns_state)"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: install: $IP_OUT"
+      assert_eq 1 "$(dt_dev enp1s0)" "$ep: the NIC's IPv6 is off after the install"
+      assert_eq "$(printf 'enp1s0\t0')" "$(dt_ipv6_rec)" "$ep: its value from before nice-dns is recorded"
+      assert_file "$FAKE_ROOT/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6" "$ep: the hook"
+      assert_file "$FAKE_ROOT/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6" "$ep: its pre-up copy"
+      assert_eq 755 "$(ip_mode "$FAKE_ROOT/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6")" "$ep: executable"
+      # A reinstall keeps the record; NetworkManager turned the NIC on again.
+      printf '0\n' >"$FAKE_ROOT/proc/sys/net/ipv6/conf/enp1s0/disable_ipv6"
+      printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' >"$FAKE/git_head"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: reinstall: $IP_OUT"
+      assert_eq 1 "$(dt_dev enp1s0)" "$ep: off after the reinstall"
+      assert_eq "$(printf 'enp1s0\t0')" "$(dt_ipv6_rec)" "$ep: the record is the first one"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep: uninstall: $IP_OUT"
+      assert_eq "$before" "$(dt_dns_state)" "$ep: the uninstall gives every switch and file back"
+    ) || exit 1
+    (
+      local before
+      # An install from before this change: its switches are in force and it
+      # recorded no device. The reinstall records nothing (the value it would
+      # read is nice-dns's), and the uninstall's all=0 gives the NIC back.
+      dt_world "$ep" resolved; before="$(dt_dns_state)"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/upgrade: install: $IP_OUT"
+      rm -f "$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-devices.tsv"
+      printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' >"$FAKE/git_head"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/upgrade: reinstall: $IP_OUT"
+      assert_eq "" "$(dt_ipv6_rec)" "$ep/upgrade: nothing is recorded over switches already in force"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep/upgrade: uninstall: $IP_OUT"
+      assert_eq "$before" "$(dt_dns_state)" "$ep/upgrade: every switch is back"
+    ) || exit 1
+  done
+}
+
+t_ipv6_hook_ignores_the_mullvad_tunnel() {
+  (
+    dt_world install-deb resolved
+    dt_helper linux snapshot
+    dt_hook wg0-mullvad up
+    assert_rc 0 "$DT_RC" "$DT_OUT"
+    assert_eq 0 "$(dt_dev wg0-mullvad)" "Mullvad's tunnel is never written"
+    assert_eq "" "$(dt_ipv6_rec)" "nor recorded"
+  ) || exit 1
+  (
+    local before
+    # The record step never takes the tunnel either. (Writing
+    # net.ipv6.conf.all=1, as the install always has, sets every existing
+    # device, the tunnel too, like its default=1; Mullvad runs so, measured
+    # 2026-10-12. The uninstall's all=0 gives it back.)
+    dt_world install-deb resolved; before="$(dt_dns_state)"
+    dt_mullvad "custom 127.0.0.1"
+    ip_install install-deb
+    assert_rc 0 "$IP_RC" "install: $IP_OUT"
+    assert_not_match 'wg0-mullvad' "$(dt_ipv6_rec)" "no record row for Mullvad's tunnel"
+    ip_install install-deb uninstall
+    assert_rc 0 "$IP_RC" "uninstall: $IP_OUT"
+    assert_eq "$before" "$(dt_dns_state)" "every switch, the tunnel's too, is back"
+  ) || exit 1
+  (
+    # A record written twice (overlapping pre-up and up) restores the first.
+    dt_world install-deb resolved
+    dt_helper linux snapshot
+    printf 'enp1s0\t0\nenp1s0\t1\n' >"$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-devices.tsv"
+    printf '1\n' >"$FAKE_ROOT/proc/sys/net/ipv6/conf/enp1s0/disable_ipv6"
+    dt_helper linux pin
+    dt_helper linux restore
+    assert_rc 0 "$DT_RC" "restore: $DT_OUT"
+    assert_eq 0 "$(dt_dev enp1s0)" "the first recorded value wins"
+  ) || exit 1
+}
+
+# The hook leaves a window: NetworkManager sends pre-up only after it set up
+# IP, so the NIC sent MLD and a duplicate-address check from :: at every
+# activation (Stage 3 gate capture, 2026-10-12: 5 frames over a boot, a
+# `nmcli connection up` and a NetworkManager restart). So an install also sets
+# ipv6.method disabled on each Ethernet and Wi-Fi profile stored on disk
+# (keyfile or netplan), recording the method it found once; the uninstall puts
+# back each one still disabled (user decision 2026-10-12, DEC-020 amended).
+# Other types (Mullvad's WireGuard, VPNs, bridges, loopback, which nmcli
+# refuses) and NetworkManager's in-memory external profiles are left alone.
+dt_nm_v6() { # <uuid> <type> <method> <device> [file]
+  dt_nm_profile "$1" '' no "$4"
+  printf '%s\n' "$2" >"$FAKE_ROOT/.nm/$1/type"; printf '%s\n' "$3" >"$FAKE_ROOT/.nm/$1/ipv6"
+  [ -z "${5:-}" ] || printf '%s\n' "$5" >"$FAKE_ROOT/.nm/$1/file"
+}
+dt_nm_v6_state() { local p; for p in "$FAKE_ROOT"/.nm/*; do printf '%s %s\n' "${p##*/}" "$(cat "$p/ipv6" 2>/dev/null || echo auto)"; done; }
+dt_nm_v6_world() {
+  dt_nm_v6 eth-1 802-3-ethernet auto enp1s0
+  dt_nm_v6 wifi-2 802-11-wireless dhcp wlp1 /run/NetworkManager/system-connections/netplan-NM-wifi-2-Home.nmconnection
+  dt_nm_v6 lo-3 loopback auto lo /run/NetworkManager/system-connections/lo.nmconnection
+  dt_nm_v6 wg-4 wireguard auto wg0-mullvad /run/NetworkManager/system-connections/wg0-mullvad.nmconnection
+  dt_nm_v6 ext-5 802-3-ethernet auto enp2s0 /run/NetworkManager/system-connections/enp2s0.nmconnection
+  dt_nm_v6 ign-6 802-3-ethernet ignore enp3s0
+  dt_nm_v6 vpn-7 vpn auto tun0
+}
+dt_ipv6_prof_rec() { cat "$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-profiles.tsv" 2>/dev/null; }
+
+t_ipv6_profiles_are_disabled_and_given_back() {
+  local ep
+  ip_select
+  for ep in $IP_EPS; do
+    [ "$(ip_platform "$ep")" = linux ] || continue
+    (
+      local before
+      dt_world "$ep" resolved; dt_nm_v6_world; before="$(dt_dns_state)"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: install: $IP_OUT"
+      assert_eq "$(printf 'eth-1 disabled\next-5 auto\nign-6 ignore\nlo-3 auto\nvpn-7 auto\nwg-4 auto\nwifi-2 disabled')" "$(dt_nm_v6_state)" \
+        "$ep: the Ethernet and Wi-Fi profiles on disk lose IPv6; external, ignore, loopback, VPN and Mullvad's are untouched"
+      assert_eq "$(printf 'eth-1\tauto\nwifi-2\tdhcp')" "$(dt_ipv6_prof_rec)" "$ep: the methods they had are recorded"
+      assert_eq 600 "$(ip_mode "$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-profiles.tsv")" "$ep: the record is 0600"
+      assert_match '^nmcli dev reapply enp1s0$' "$(cat "$FAKE_LOG")" "$ep: the changed profile is reapplied on its device"
+      assert_not_match 'nmcli con mod (lo-3|wg-4|ext-5|ign-6|vpn-7) ' "$(cat "$FAKE_LOG")" "$ep: no other profile is modified"
+      # A reinstall: the owner turned eth-1 back to auto; it is disabled
+      # again, and the record keeps the first method.
+      printf 'auto\n' >"$FAKE_ROOT/.nm/eth-1/ipv6"
+      printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' >"$FAKE/git_head"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: reinstall: $IP_OUT"
+      assert_eq disabled "$(cat "$FAKE_ROOT/.nm/eth-1/ipv6")" "$ep: disabled again"
+      assert_eq "$(printf 'eth-1\tauto\nwifi-2\tdhcp')" "$(dt_ipv6_prof_rec)" "$ep: the record is the first one"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep: uninstall: $IP_OUT"
+      assert_eq "$before" "$(dt_dns_state)" "$ep: every profile, switch and file is back"
+      assert_eq "" "$(dt_ipv6_prof_rec)" "$ep: the record is gone"
+    ) || exit 1
+    (
+      # A profile another owner changed since is left as it is; a profile
+      # whose change failed is left as it was, and the install still works
+      # (the hook remains the fallback).
+      dt_world "$ep" resolved; dt_nm_v6_world
+      printf '%s\n' '^nmcli con mod wifi-2 ipv6\.method disabled$' >"$FAKE/fail"
+      ip_install "$ep"
+      rm -f "$FAKE/fail"
+      assert_rc 0 "$IP_RC" "$ep/changed: install: $IP_OUT"
+      assert_eq dhcp "$(cat "$FAKE_ROOT/.nm/wifi-2/ipv6")" "$ep/changed: the failed profile keeps its method"
+      assert_match 'could not set ipv6\.method disabled in NetworkManager profile wifi-2' "$IP_OUT" "$ep/changed: and the install says which"
+      printf 'manual\n' >"$FAKE_ROOT/.nm/eth-1/ipv6"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep/changed: uninstall: $IP_OUT"
+      assert_eq manual "$(cat "$FAKE_ROOT/.nm/eth-1/ipv6")" "$ep/changed: a method changed since is left alone"
+      assert_eq dhcp "$(cat "$FAKE_ROOT/.nm/wifi-2/ipv6")" "$ep/changed: the unchanged one too"
+      assert_match 'eth-1.*changed since' "$IP_OUT" "$ep/changed: and the uninstall says so"
+      assert_not_match 'wifi-2.*changed since' "$IP_OUT" "$ep/changed: a profile whose change failed is not reported as changed"
+    ) || exit 1
+    (
+      # The owner sets another method after the install; a reinstall
+      # records it, so the uninstall gives back the owner's latest setting.
+      dt_world "$ep" resolved; dt_nm_v6_world
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/owner: install: $IP_OUT"
+      printf 'manual\n' >"$FAKE_ROOT/.nm/wifi-2/ipv6"
+      printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' >"$FAKE/git_head"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/owner: reinstall: $IP_OUT"
+      assert_eq disabled "$(cat "$FAKE_ROOT/.nm/wifi-2/ipv6")" "$ep/owner: disabled again"
+      assert_eq "$(printf 'eth-1\tauto\nwifi-2\tmanual')" "$(dt_ipv6_prof_rec)" "$ep/owner: the record holds the owner's new method"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep/owner: uninstall: $IP_OUT"
+      assert_eq manual "$(cat "$FAKE_ROOT/.nm/wifi-2/ipv6")" "$ep/owner: the owner's method is back"
+    ) || exit 1
+    (
+      # NetworkManager does not answer at the uninstall: the profile is not
+      # skipped in silence; the restore fails and keeps the record, and a
+      # retry gives it back. A profile that is gone needs nothing.
+      dt_world "$ep" resolved; dt_nm_v6_world
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/nm-down: install: $IP_OUT"
+      printf '%s\n' '^nmcli -g ipv6\.method con show eth-1$' >"$FAKE/fail"
+      ip_install "$ep" uninstall
+      rm -f "$FAKE/fail"
+      assert_nonzero "$IP_RC" "$ep/nm-down: the uninstall fails: $IP_OUT"
+      assert_match 'could not read NetworkManager profile eth-1' "$IP_OUT" "$ep/nm-down: and names the profile"
+      assert_eq "$(printf 'eth-1\tauto\nwifi-2\tdhcp')" "$(dt_ipv6_prof_rec)" "$ep/nm-down: the record is kept"
+      rm -rf "$FAKE_ROOT/.nm/wifi-2"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep/nm-down: the retry: $IP_OUT"
+      assert_eq auto "$(cat "$FAKE_ROOT/.nm/eth-1/ipv6")" "$ep/nm-down: the profile is given back"
+      assert_match 'wifi-2 no longer exists' "$IP_OUT" "$ep/nm-down: a profile that is gone is named, not an error"
+      assert_eq "" "$(dt_ipv6_prof_rec)" "$ep/nm-down: the record is gone"
+    ) || exit 1
+    (
+      local rec0
+      # A reinstall over a deployment from before this change (profiles as
+      # the owner set them, no profile record) fails after the pin: the
+      # rollback gives back what its profile step changed, and the record is
+      # what it was.
+      dt_world "$ep" resolved; dt_nm_v6_world
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/re-rollback: install: $IP_OUT"
+      printf 'auto\n' >"$FAKE_ROOT/.nm/eth-1/ipv6"; printf 'dhcp\n' >"$FAKE_ROOT/.nm/wifi-2/ipv6"
+      rm -f "$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-profiles.tsv"
+      dt_mullvad "default"
+      printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' >"$FAKE/git_head"
+      printf '%s\n' '^mullvad dns set custom 127\.0\.0\.1$' >"$FAKE/fail"
+      ip_install "$ep"
+      rm -f "$FAKE/fail"
+      assert_nonzero "$IP_RC" "$ep/re-rollback: fails: $IP_OUT"
+      assert_eq "$(printf 'eth-1 auto\next-5 auto\nign-6 ignore\nlo-3 auto\nvpn-7 auto\nwg-4 auto\nwifi-2 dhcp')" "$(dt_nm_v6_state)" "$ep/re-rollback: every profile as the previous deployment had it"
+      assert_eq "" "$(dt_ipv6_prof_rec)" "$ep/re-rollback: and no profile record"
+      # A reinstall over this change's own deployment rolls back to it: the
+      # profiles it had disabled stay disabled, its record as it was.
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/re-rollback: reinstall: $IP_OUT"
+      rec0="$(dt_ipv6_prof_rec)"
+      dt_mullvad "default"
+      printf 'cccccccccccccccccccccccccccccccccccccccc\n' >"$FAKE/git_head"
+      printf '%s\n' '^mullvad dns set custom 127\.0\.0\.1$' >"$FAKE/fail"
+      ip_install "$ep"
+      rm -f "$FAKE/fail"
+      assert_nonzero "$IP_RC" "$ep/re-rollback 2: fails: $IP_OUT"
+      assert_eq disabled "$(cat "$FAKE_ROOT/.nm/eth-1/ipv6")" "$ep/re-rollback 2: the previous deployment's disabled profile stays so"
+      assert_eq "$rec0" "$(dt_ipv6_prof_rec)" "$ep/re-rollback 2: and its record is kept"
+    ) || exit 1
+    (
+      # A first install that fails after the pin gives the profiles back.
+      dt_world "$ep" resolved; dt_nm_v6_world; dt_mullvad "default"
+      printf '%s\n' '^mullvad dns set custom 127\.0\.0\.1$' >"$FAKE/fail"
+      ip_install "$ep"
+      rm -f "$FAKE/fail"
+      assert_nonzero "$IP_RC" "$ep/rollback: fails: $IP_OUT"
+      assert_eq "$(printf 'eth-1 auto\next-5 auto\nign-6 ignore\nlo-3 auto\nvpn-7 auto\nwg-4 auto\nwifi-2 dhcp')" "$(dt_nm_v6_state)" "$ep/rollback: every profile as it was"
+    ) || exit 1
+  done
+  (
+    # nmcli -t escapes ':' in a file name as '\:'; a profile listed after
+    # the last candidate is not one (the loop must still end well).
+    dt_world install-deb resolved
+    dt_nm_v6 odd-8 802-3-ethernet auto enp8s0 '/etc/NetworkManager/system-connections/a\:b.nmconnection'
+    dt_nm_v6 zz-9 vpn auto tun9
+    dt_helper linux snapshot
+    dt_helper linux ipv6-profiles
+    assert_rc 0 "$DT_RC" "escaped name: $DT_OUT"
+    assert_eq "$(printf 'odd-8 disabled\nzz-9 auto')" "$(dt_nm_v6_state)" "escaped name: the profile on disk is changed, the VPN after it is not"
+  ) || exit 1
+  (
+    # The undo cannot read a profile it changed (NetworkManager not
+    # answering): it fails and keeps its list and the record; a retry works.
+    dt_world install-deb resolved; dt_nm_v6_world
+    dt_helper linux snapshot
+    dt_helper linux ipv6-profiles
+    assert_eq disabled "$(cat "$FAKE_ROOT/.nm/eth-1/ipv6")" "undo: eth-1 was disabled by the run"
+    printf '%s\n' '^nmcli -g ipv6\.method con show eth-1$' >"$FAKE/fail"
+    dt_helper linux ipv6-profiles-undo
+    rm -f "$FAKE/fail"
+    assert_nonzero "$DT_RC" "undo: fails: $DT_OUT"
+    assert_match 'could not read NetworkManager profile eth-1' "$DT_OUT" "undo: and names the profile"
+    assert_eq disabled "$(cat "$FAKE_ROOT/.nm/eth-1/ipv6")" "undo: eth-1 is not given up on"
+    assert_file "$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-profiles.run" "undo: the run's list is kept"
+    dt_helper linux ipv6-profiles-undo
+    assert_rc 0 "$DT_RC" "undo retry: $DT_OUT"
+    assert_eq "$(printf 'eth-1 auto\next-5 auto\nign-6 ignore\nlo-3 auto\nvpn-7 auto\nwg-4 auto\nwifi-2 dhcp')" "$(dt_nm_v6_state)" "undo retry: every profile as before the run"
+    assert_eq "" "$(dt_ipv6_prof_rec)" "undo retry: and no profile record"
+  ) || exit 1
+  (
+    # A profile id with a leading '-' would read as an nmcli option: skipped.
+    dt_world install-deb resolved
+    dt_nm_v6 -x 802-3-ethernet auto enp9s0
+    dt_helper linux snapshot
+    dt_helper linux ipv6-profiles
+    assert_rc 0 "$DT_RC" "leading dash: $DT_OUT"
+    assert_not_match 'nmcli con mod -x' "$(cat "$FAKE_LOG")" "leading dash: not modified"
+  ) || exit 1
+  (
+    # Without the record (no snapshot), the helper changes no profile.
+    dt_world install-deb resolved; dt_nm_v6_world
+    dt_helper linux ipv6-profiles
+    assert_rc 0 "$DT_RC" "no record: $DT_OUT"
+    assert_eq auto "$(cat "$FAKE_ROOT/.nm/eth-1/ipv6")" "no record: nothing is changed"
+  ) || exit 1
+}
+
+t_ipv6_profiles_stale_undo_list_is_never_used() {
+  local ep
+  ip_select
+  for ep in $IP_EPS; do
+    [ "$(ip_platform "$ep")" = linux ] || continue
+    (
+      # NetworkManager does not answer at a reinstall's profile step, and the
+      # reinstall then fails: the rollback must not undo the earlier
+      # install's change from its leftover list (round-2 redesign review).
+      dt_world "$ep" resolved; dt_nm_v6_world
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/stale: install: $IP_OUT"
+      dt_mullvad "default"
+      printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' >"$FAKE/git_head"
+      printf '%s\n' '^nmcli -t -f UUID con show$' '^mullvad dns set custom 127\.0\.0\.1$' >"$FAKE/fail"
+      ip_install "$ep"
+      rm -f "$FAKE/fail"
+      assert_nonzero "$IP_RC" "$ep/stale: the reinstall fails: $IP_OUT"
+      assert_eq disabled "$(cat "$FAKE_ROOT/.nm/eth-1/ipv6")" "$ep/stale: the earlier install's change stays"
+      assert_eq "$(printf 'eth-1\tauto\nwifi-2\tdhcp')" "$(dt_ipv6_prof_rec)" "$ep/stale: and its record"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/stale: reinstall: $IP_OUT"
+      assert_eq "no no" "$([ -e "$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-profiles.run" ] && echo yes || echo no) $([ -e "$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-profiles.prev" ] && echo yes || echo no)" "$ep/stale: a successful install leaves no undo list"
+    ) || exit 1
+  done
+}
+
+t_ipv6_profiles_uninstall_completes_without_nmcli() {
+  local ep
+  ip_select
+  for ep in $IP_EPS; do
+    [ "$(ip_platform "$ep")" = linux ] || continue
+    (
+      # NetworkManager removed after the install: no profile can exist, so
+      # the uninstall completes and names what it could not give back.
+      dt_world "$ep" resolved; dt_nm_v6_world
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/no-nm: install: $IP_OUT"
+      printf '\n' >>"$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-profiles.tsv"
+      rm -f "$IP_BIN/nmcli"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "$ep/no-nm: the uninstall completes: $IP_OUT"
+      assert_match 'nmcli is missing.*eth-1' "$IP_OUT" "$ep/no-nm: and names the profiles"
+      assert_not_match 'malformed' "$IP_OUT" "$ep/no-nm: a blank row is not malformed"
+      assert_eq "" "$(dt_ipv6_prof_rec)" "$ep/no-nm: the record is gone"
+    ) || exit 1
+  done
+}
+
+# ipv6.disable=1 on the kernel command line removes AF_INET6, and Mullvad's
+# userspace WireGuard then cannot bind and blocks the host on every boot
+# (incident 2026-07-10). No install path may write it; comments may name it.
+t_no_install_path_writes_a_kernel_ipv6_flag() {
+  local hits
+  hits="$(cd "$NICE_DNS_ROOT" && grep -rnE 'ipv6\.disable' lib deb install-*.sh | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
+  assert_eq "" "$hits" "no install code writes ipv6.disable"
 }

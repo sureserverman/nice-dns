@@ -29,6 +29,14 @@
 #                  (Sub-plan 5 Task 1.3, ARCH-04)
 #   dns-owner      the host resolves through nice-dns (platform adapter:
 #                  Linux resolv.conf, macOS networksetup and scutil)
+#   install-drift  the installed deployment (Linux only: an adapter without
+#                  nd_platform_install_drift prints no record; optional to
+#                  the validator). Unhealthy reasons start with
+#                  "install-security-drift:": no install generation is
+#                  recorded, or the installed quadlets declare :53 off
+#                  loopback; indeterminate while an install is under way.
+#                  Files only; no policy reads it, so it never drives an
+#                  action (BL-045)
 #   local-service  Pi-hole FTL answers pi.hole (A) at the platform endpoint
 #   filtering      a blocklisted name (doubleclick.net) is sinkholed: every
 #                  A record behind any CNAMEs is 0.0.0.0
@@ -268,6 +276,22 @@ _nd_obs_dns_owner() {
   esac
 }
 
+# ─── Install drift ───────────────────────────────────────────────────────────
+
+_nd_obs_install_drift() {
+  local t0 dl line
+  declare -F nd_platform_install_drift >/dev/null || return 0
+  t0="$(_nd_now_ms)"
+  dl="$(_nd_deadline "${ND_HEALTH_CMD_DEADLINE:-10}")"
+  if [ "$dl" -le 0 ]; then _nd_obs install-drift indeterminate 0 "deadline: observation budget spent"; return 0; fi
+  line="$(nd_platform_install_drift "$dl" "$_ND_H_TMP" | head -n 1)"
+  case "$line" in
+    healthy"$_ND_H_TAB"*|unhealthy"$_ND_H_TAB"*|indeterminate"$_ND_H_TAB"*)
+      _nd_obs install-drift "${line%%"$_ND_H_TAB"*}" $(($(_nd_now_ms) - t0)) "${line#*"$_ND_H_TAB"}" ;;
+    *) _nd_obs install-drift indeterminate $(($(_nd_now_ms) - t0)) "the platform adapter gave no verdict" ;;
+  esac
+}
+
 # ─── DNS through Pi-hole ─────────────────────────────────────────────────────
 
 _nd_name_ok() {
@@ -455,6 +479,7 @@ nd_health_observe() {
   _nd_obs_runtime
   _nd_obs_proxy
   _nd_obs_dns_owner
+  _nd_obs_install_drift
   _nd_obs_dns local-service "${ND_HEALTH_LOCAL_NAME:-pi.hole}" local
   _nd_obs_dns filtering "${ND_HEALTH_FILTER_NAME:-doubleclick.net}" sinkhole
   _nd_obs_dns local-cache "${ND_HEALTH_CACHE_NAME:-cloudflare.com}" answer
@@ -473,7 +498,7 @@ nd_health_validate() {
     NR == 1 { if ($0 != "schema\tnice-dns-observations/1") bad("expected schema<TAB>nice-dns-observations/1"); next }
     /[\001-\010\013-\037\177\r]/ { bad("control character"); next }
     $1 != "obs" || NF != 5 { bad("expected obs<TAB>name<TAB>verdict<TAB>ms<TAB>reason"); next }
-    $2 !~ /^(runtime|proxy|dns-owner|local-service|filtering|local-cache|route-table|route:[a-z0-9]+(-[a-z0-9]+)*)$/ { bad("unknown observation name"); next }
+    $2 !~ /^(runtime|proxy|dns-owner|install-drift|local-service|filtering|local-cache|route-table|route:[a-z0-9]+(-[a-z0-9]+)*)$/ { bad("unknown observation name"); next }
     $3 !~ /^(healthy|unhealthy|indeterminate)$/ { bad("unknown verdict"); next }
     $2 == "proxy" && $3 == "healthy" && $5 !~ /^generation:[0-9a-f]{16}$/ { bad("a healthy proxy record needs generation:<16 hex>"); next }
     $4 !~ /^[0-9]+$/ { bad("duration is not an integer"); next }

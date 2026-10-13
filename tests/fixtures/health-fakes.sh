@@ -121,7 +121,15 @@ case "$1" in
     if [ "$me" = container ]; then want=-n; else want=--tail; fi
     if [ "$2" != "$want" ]; then echo "Error: unknown option '$2'" >&2; exit 64; fi
     cat "$FAKE/logs" 2>/dev/null; exit 0 ;;
-  inspect) printf 'id-1 %s running\n' "$(cat "$FAKE/started" 2>/dev/null || echo 2026-09-23T22:16:33Z)" ;;
+  inspect)
+    # `inspect -f {{.Image}} <name>`: the image a container runs, from
+    # $FAKE/image_<name> (no file: no such container).
+    case "$*" in *'{{.Image}}'*)
+      for n in "$@"; do :; done
+      [ -f "$FAKE/image_$n" ] || { echo "Error: no such container $n" >&2; exit 125; }
+      cat "$FAKE/image_$n"; exit 0 ;;
+    esac
+    printf 'id-1 %s running\n' "$(cat "$FAKE/started" 2>/dev/null || echo 2026-09-23T22:16:33Z)" ;;
   run)
     # The image's bridge-eval (Task 2.2): -v <host>:/pool, -out /pool/<file>.
     # $FAKE/bridge_eval: "set <file>" writes that file, "fail" exits 1,
@@ -233,4 +241,33 @@ ob_fake_data() {
   ob_dig_file "$d/dig/cloudflare.com" cloudflare.com NOERROR "cloudflare.com A 104.16.132.229" "cloudflare.com A 104.16.133.229"
   mkdir -p "$d/ctl"
   printf 'generation\t1\ntor_pid\t1001\n' >"$d/ctl/tor-generation"
+}
+
+# ob_install_state [publish...]: an installed Linux generation as the
+# installer records it ($XDG_STATE_HOME/nice-dns-install: current, and the
+# generation's prepare.tsv and activated), its quadlets
+# ($XDG_CONFIG_HOME/containers/systemd/nice-dns.pod with the given
+# PublishPort values, default the loopback ones; no other unit), and the
+# runtime running exactly the recorded images ($FAKE/image_<container>).
+# OB_GEN is the generation.
+ob_install_state() {
+  local sd="$XDG_STATE_HOME/nice-dns-install" q="$XDG_CONFIG_HOME/containers/systemd" p
+  OB_GEN=20261012T120000Z-0123456789ab
+  mkdir -p "$sd/generations/$OB_GEN" "$q"
+  printf '%s\n' "$OB_GEN" >"$sd/current"
+  printf '2026-10-12T12:05:00Z\n' >"$sd/generations/$OB_GEN/activated"
+  {
+    printf 'schema\tnice-dns-install-prepare/1\ngeneration\t%s\nplatform\tlinux\nvariant\thaproxy\n' "$OB_GEN"
+    printf 'source_commit\t0123456789abcdef0123456789abcdef01234567\n'
+    printf 'lock\tsha256:%064d\n' 7
+    printf 'image\tunbound\tlocalhost/unbound:%s\t%064d\n' "$OB_GEN" 1
+    printf 'image\tpi-hole\tlocalhost/pi-hole:%s\t%064d\n' "$OB_GEN" 2
+    printf 'image\tproxy\tlocalhost/tor-haproxy:%s\t%064d\n' "$OB_GEN" 3
+  } >"$sd/generations/$OB_GEN/prepare.tsv"
+  printf '%064d\n' 1 >"$FAKE/image_unbound"
+  printf '%064d\n' 2 >"$FAKE/image_pi-hole"
+  printf '%064d\n' 3 >"$FAKE/image_tor-haproxy"
+  rm -rf "$q"/*.container "$q"/*.d
+  [ $# -gt 0 ] || set -- 127.0.0.1:53:53/tcp 127.0.0.1:53:53/udp 127.0.0.1:8880:80
+  { printf '[Pod]\nPodName=nice-dns\n'; for p in "$@"; do printf 'PublishPort=%s\n' "$p"; done; } >"$q/nice-dns.pod"
 }

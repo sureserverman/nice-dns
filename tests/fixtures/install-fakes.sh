@@ -77,6 +77,11 @@ fi
 if [ -s "$FAKE/sigint" ] && printf '%s\n' "$l" | grep -Eq -f "$FAKE/sigint"; then
   echo "$me: injected interrupt" >&2; kill -INT "$PPID"; exit 1
 fi
+# A Ctrl-C as a terminal sends it: to the installer and to this call, which
+# dies of it ($FAKE/sigint_group). Bash then exits by the signal itself.
+if [ -s "$FAKE/sigint_group" ] && printf '%s\n' "$l" | grep -Eq -f "$FAKE/sigint_group"; then
+  echo "$me: injected group interrupt" >&2; kill -INT "$PPID"; trap - INT; kill -INT $$; exit 1
+fi
 store="$FAKE/images"; touch "$store"
 # unbound_start <how>: the route include Unbound reads when it starts
 # ($FAKE/unbound-starts; Sub-plan 5 Task 1.2): its marker, or route-absent.
@@ -115,9 +120,11 @@ case "$me" in
       # Only when every absolute path argument lies inside the test world.
       run=0 safe=1
       for a in "$@"; do
-        case "$a" in "$FAKE_ROOT"/*|*/custom-dns-deb|*/start-container-root.sh) run=1 ;; esac
+        case "$a" in "$FAKE_ROOT"/*|*/custom-dns-deb|*/start-container-root.sh|*/91-nice-dns-ipv6) run=1 ;; esac
         case "$a" in /*) case "$a" in "${FAKE%/fake}"/*) ;; *) safe=0 ;; esac ;; esac
       done
+      # The sysctl stub keeps its state under the fake root: it runs too.
+      [ "$1" = sysctl ] && run=1
       if [ "$run" = 1 ] && [ "$safe" = 1 ]; then ND_DNS_TEST_ROOT="$FAKE_ROOT"; export ND_DNS_TEST_ROOT; exec "$@"; fi
     fi
     # Otherwise never runs anything; a helper's status reads pinned. tee's
@@ -216,6 +223,11 @@ case "$me" in
   uname) case "${1:-}" in -m) echo "$FAKE_ARCH" ;; *) echo "$FAKE_UNAME" ;; esac; exit 0 ;;
   crun) echo "crun version 1.19.1"; exit 0 ;;
   dig)
+    # The Mullvad step's probe (+time=5) can be made to time out alone
+    # ($FAKE/dig_fail_probe: a stack slow through Tor), and a local stub
+    # resolver at 127.0.0.53 can answer ($FAKE/stub_answers).
+    case " $* " in *" +time=5 "*) [ -f "$FAKE/dig_fail_probe" ] && { echo ';; connection timed out'; exit 9; } ;; esac
+    case "$1" in @127.0.0.53) if [ -f "$FAKE/stub_answers" ]; then echo 104.16.132.229; exit 0; fi; echo ';; connection refused'; exit 9 ;; esac
     # In a world the chain answers only while the stack is up ($FAKE/dns_up).
     if [ -n "${FAKE_ROOT:-}" ] && [ ! -f "$FAKE/dns_up" ]; then
       echo ';; connection timed out; no servers could be reached'; exit 9
@@ -230,6 +242,8 @@ case "$me" in
           if [ -f "$FAKE/never_ready" ]; then rm -f "$FAKE/never_ready"
           elif [ ! -f "$FAKE/rollback_never_ready" ]; then : >"$FAKE/dns_up"; fi ;;
       esac
+      # The pod runs while the stack is up.
+      case "$2 $*" in "is-active "*nice-dns-pod.service*) [ -f "$FAKE/dns_up" ] || exit 3 ;; esac
       [ -f "$FAKE/fail_user_$2" ] && exit 1
       exit 0
     fi
@@ -303,10 +317,22 @@ case "$me" in
   nmcli)
     # With profiles in $FAKE_ROOT/.nm/<uuid>/{dns,ignore,device} (a test made
     # them), the connection-profile calls the DNS helper makes are stateful.
+    # Optional per profile: type (default generic), ipv6 (its ipv6.method,
+    # default auto) and file (default a keyfile under /etc), as nmcli 1.46
+    # prints them.
     if [ -n "${FAKE_ROOT:-}" ] && [ -d "$FAKE_ROOT/.nm" ]; then
       nm="$FAKE_ROOT/.nm"
       case "$*" in
         "-t -f UUID con show") ls "$nm"; exit 0 ;;
+        "-t -f UUID,TYPE,FILENAME con show")
+          for p in "$nm"/*; do
+            u="${p##*/}"
+            printf '%s:%s:%s\n' "$u" "$(cat "$p/type" 2>/dev/null || echo generic)" \
+              "$(cat "$p/file" 2>/dev/null || echo "/etc/NetworkManager/system-connections/$u.nmconnection")"
+          done
+          exit 0 ;;
+        "-g ipv6.method con show "*) u="${*##* }"; [ -d "$nm/$u" ] || exit 10; cat "$nm/$u/ipv6" 2>/dev/null || echo auto; exit 0 ;;
+        "con mod "*" ipv6.method "*) u="$3"; [ -d "$nm/$u" ] || exit 10; printf '%s\n' "$5" >"$nm/$u/ipv6"; exit 0 ;;
         "-g ipv4.dns,ipv4.ignore-auto-dns con show "*) u="${*##* }"; [ -d "$nm/$u" ] || exit 10; cat "$nm/$u/dns" "$nm/$u/ignore"; exit 0 ;;
         "-g GENERAL.DEVICES con show "*) u="${*##* }"; cat "$nm/$u/device" 2>/dev/null; exit 0 ;;
         "con mod "*" ipv4.dns  ipv4.ignore-auto-dns no") u="$3"; [ -d "$nm/$u" ] || exit 10; : >"$nm/$u/dns"; printf 'no\n' >"$nm/$u/ignore"; exit 0 ;;
@@ -318,10 +344,69 @@ case "$me" in
   sysctl)
     if [ -n "${FAKE_ROOT:-}" ]; then
       sc="$FAKE_ROOT/.sysctl"; mkdir -p "$sc"
+      # set <key> <value>: like the kernel, writing net.ipv6.conf.all.*
+      # also sets that switch on every existing device (ip-sysctl.rst).
+      set_key() {
+        echo "$2" >"$sc/$1"
+        case "$1" in net.ipv6.conf.all.disable_ipv6)
+          for d in "$FAKE_ROOT"/proc/sys/net/ipv6/conf/*/disable_ipv6; do [ -f "$d" ] && echo "$2" >"$d"; done ;;
+        esac
+      }
       case "$1" in
         -n) cat "$sc/$2" 2>/dev/null || echo 0 ;;
-        -q|-w) for a in "$@"; do case "$a" in *=*) echo "${a#*=}" >"$sc/${a%%=*}" ;; esac; done ;;
+        -q|-w) for a in "$@"; do case "$a" in *=*) set_key "${a%%=*}" "${a#*=}" ;; esac; done ;;
+        --system)
+          cat "$FAKE_ROOT"/etc/sysctl.d/*.conf 2>/dev/null | while IFS= read -r line; do
+            case "$line" in ''|'#'*) continue ;; esac
+            k="$(printf '%s' "${line%%=*}" | tr -d ' ')"; v="$(printf '%s' "${line#*=}" | tr -d ' ')"
+            set_key "$k" "$v"
+          done ;;
       esac
+    fi
+    exit 0 ;;
+  mullvad)
+    # Mullvad's DNS setting, printed as `mullvad dns get` prints it (measured
+    # 2026-10-12, Mullvad 2026.3), kept in $FAKE/mullvad_dns. Linked only by a
+    # test that puts Mullvad on the host (dt_mullvad).
+    st="$FAKE/mullvad_dns"
+    case "$1 $2" in
+      "dns get")
+        [ -f "$FAKE/mullvad_unreadable" ] && { echo "Error: Management RPC server or client error" >&2; exit 1; }
+        cat "$st"; exit 0 ;;
+      "dns set")
+        all="$*"
+        case "$3" in
+          custom) shift 3; { echo "Custom DNS: yes"; echo "Servers:"; for a in "$@"; do echo "$a"; done; } >"$st" ;;
+          default)
+            shift 3; f=" $* "
+            {
+              echo "Custom DNS: no"
+              for k in ads trackers malware adult-content gambling social-media; do
+                v=false; case "$f" in *" --block-$k "*) v=true ;; esac
+                printf 'Block %s: %s\n' "$(printf '%s' "$k" | tr '-' ' ')" "$v"
+              done
+            } >"$st" ;;
+          *) exit 2 ;;
+        esac
+        # Connected ($FAKE/mullvad_connected, in a world), Mullvad writes its
+        # tunnel servers into resolv.conf: custom 127.0.0.1 -> 127.0.0.1,
+        # anything else -> its tunnel resolver. $FAKE/mullvad_settle holds how
+        # many sleeps pass before a custom 127.0.0.1 write lands.
+        if [ -n "${FAKE_ROOT:-}" ] && [ -f "$FAKE/mullvad_connected" ]; then
+          rf="$FAKE_ROOT/etc/resolv.conf"; rm -f "$rf"
+          if [ "$all" = "dns set custom 127.0.0.1" ] && [ -s "$FAKE/mullvad_settle" ]; then
+            printf 'nameserver 10.64.0.1\n' >"$rf"; cp "$FAKE/mullvad_settle" "$FAKE/mullvad_pending"
+          elif [ "$all" = "dns set custom 127.0.0.1" ]; then printf 'nameserver 127.0.0.1\n' >"$rf"
+          else printf 'nameserver 10.64.0.1\n' >"$rf"; fi
+        fi
+        echo "Updated DNS settings"; exit 0 ;;
+    esac
+    exit 2 ;;
+  sleep)
+    if [ -s "$FAKE/mullvad_pending" ]; then
+      n=$(($(cat "$FAKE/mullvad_pending") - 1))
+      if [ "$n" -le 0 ]; then rm -f "$FAKE/mullvad_pending" "$FAKE_ROOT/etc/resolv.conf"; printf 'nameserver 127.0.0.1\n' >"$FAKE_ROOT/etc/resolv.conf"
+      else echo "$n" >"$FAKE/mullvad_pending"; fi
     fi
     exit 0 ;;
 esac
@@ -500,6 +585,9 @@ dt_world() {
     printf '0\n' >"$r/.sysctl/net.ipv6.conf.all.disable_ipv6"
     printf '0\n' >"$r/.sysctl/net.ipv6.conf.default.disable_ipv6"
     printf '0\n' >"$r/.sysctl/net.ipv6.conf.lo.disable_ipv6"
+    # Per-device IPv6 switches as NetworkManager leaves them (the NIC with
+    # ipv6.method auto, Mullvad's tunnel taking default): Task 2.1, 2026-10-12.
+    for k in enp1s0 wg0-mullvad; do mkdir -p "$r/proc/sys/net/ipv6/conf/$k"; printf '0\n' >"$r/proc/sys/net/ipv6/conf/$k/disable_ipv6"; done
     case "$st" in
       resolved) ln -s ../run/systemd/resolve/stub-resolv.conf "$r/etc/resolv.conf" ;;
       file) printf '# Generated by NetworkManager\nsearch lan\nnameserver 192.168.1.1\n' >"$r/etc/resolv.conf"; chmod 644 "$r/etc/resolv.conf" ;;
@@ -540,7 +628,10 @@ dt_dns_state() {
   else echo 'resolv missing'; fi
   for k in systemd-resolved.enabled systemd-resolved.active; do printf '%s %s\n' "$k" "$(cat "$r/.systemd/$k" 2>/dev/null)"; done
   for k in all default lo; do printf 'sysctl %s %s\n' "$k" "$(cat "$r/.sysctl/net.ipv6.conf.$k.disable_ipv6" 2>/dev/null)"; done
+  for f in "$r"/proc/sys/net/ipv6/conf/*/disable_ipv6; do [ -f "$f" ] && printf 'device %s %s\n' "$(basename "$(dirname "$f")")" "$(cat "$f")"; done
+  for f in "$r"/.nm/*/; do [ -d "$f" ] && printf 'profile %s ipv6 %s\n' "$(basename "$f")" "$(cat "$f/ipv6" 2>/dev/null || echo auto)"; done
   for f in etc/NetworkManager/conf.d/90-nice-dns.conf etc/NetworkManager/dispatcher.d/90-nice-dns-pin \
+           etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6 etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6 \
            etc/systemd/system/custom-dns-deb.service etc/sysctl.d/99-nice-dns-disable-ipv6.conf \
            etc/systemd/system/NetworkManager-wait-online.service.d/10-wait-for-connectivity.conf usr/bin/custom-dns-deb; do
     [ -e "$r/$f" ] && printf 'owned %s\n' "$f"

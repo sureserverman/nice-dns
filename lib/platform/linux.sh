@@ -171,3 +171,121 @@ nd_platform_bridge_eval() {
     -v "$d:/pool" --entrypoint /bin/bridge-eval "docker.io/sureserver/tor-$1:latest" \
     -pool /pool/bridge-pool.tsv -out "/pool/$2" -count 7 -window 150 -grace 20
 }
+
+# ─── Install drift (BL-045) ────────────────────────────────────────────────
+# Reads files only; never re-renders or restarts anything.
+#
+#   ND_INSTALL_STATE_DIR   the installer's state (default
+#                          $XDG_STATE_HOME/nice-dns-install, lib/install.sh)
+#   ND_QUADLET_DIR         the installed quadlets (default
+#                          $XDG_CONFIG_HOME/containers/systemd)
+
+nd_platform_install_state_dir() {
+  printf '%s\n' "${ND_INSTALL_STATE_DIR:-${XDG_STATE_HOME:-${HOME:?HOME is unset}/.local/state}/nice-dns-install}"
+}
+
+nd_platform_quadlet_dir() {
+  printf '%s\n' "${ND_QUADLET_DIR:-${XDG_CONFIG_HOME:-${HOME:?HOME is unset}/.config}/containers/systemd}"
+}
+
+# nd_platform_install_generation: the generation `current` names when it is a
+# well-formed id with its manifest; status 1 (nothing printed) otherwise.
+nd_platform_install_generation() {
+  local sd g=""
+  sd="$(nd_platform_install_state_dir)"
+  [ -f "$sd/current" ] && [ ! -L "$sd/current" ] || return 1
+  IFS= read -r g <"$sd/current" || true
+  printf '%s\n' "$g" | grep -Eq '^[0-9]{8}T[0-9]{6}Z-([0-9a-f]{12}|nogit0000000)$' || return 1
+  [ -f "$sd/generations/$g/prepare.tsv" ] && [ ! -L "$sd/generations/$g/prepare.tsv" ] || return 1
+  printf '%s\n' "$g"
+}
+
+# nd_platform_install_pending: an install is under way: no generation is
+# current, and the newest generation has neither activated nor rolled back
+# (its controller already runs while the stack comes up). Prints it.
+nd_platform_install_pending() {
+  local sd d g=""
+  sd="$(nd_platform_install_state_dir)"
+  for d in "$sd"/generations/*/; do
+    d="${d%/}"; d="${d##*/}"
+    printf '%s\n' "$d" | grep -Eq '^[0-9]{8}T[0-9]{6}Z-([0-9a-f]{12}|nogit0000000)$' && g="$d"
+  done
+  [ -n "$g" ] && [ -f "$sd/generations/$g/prepare.tsv" ] && [ ! -e "$sd/generations/$g/activated" ] || return 1
+  awk -F '\t' '$1 == "status" { s = $2 } END { exit (s ~ /^rolled-back/) }' "$sd/generations/$g/prepare.tsv" || return 1
+  printf '%s\n' "$g"
+}
+
+# The quadlets nice-dns installs (deb/persistent-podman.sh), and their
+# drop-in directories (quadlet merges <unit>.d/*.conf into the unit).
+ND_PLATFORM_QUADLETS="nice-dns.pod nice-dns.network pi-hole.container unbound.container tor-haproxy.container tor-socat.container"
+
+# nd_platform_dns_publishes: "file<TAB>host<TAB>value" for each host port 53
+# the installed nice-dns quadlets and their drop-ins declare: PublishPort=,
+# PodmanArgs --publish/-p (host empty: every address; a host port range that
+# holds 53 counts), and Network=host (host "host": the stack's own 53 on
+# every address). Declarations only: a pod not restarted since an edit runs
+# what it ran.
+nd_platform_dns_publishes() {
+  local q u f
+  q="$(nd_platform_quadlet_dir)"
+  for u in $ND_PLATFORM_QUADLETS; do
+    for f in "$q/$u" "$q/$u.d"/*.conf; do
+      [ -f "$f" ] || continue
+      awk -v f="${f#"$q"/}" '
+        function chk(v,   p, host, hp, i, rest, n, a, r) {
+          p = v; sub(/\/.*/, "", p)
+          host = ""; hp = ""
+          if (substr(p, 1, 1) == "[") {
+            i = index(p, "]"); if (!i) { print f "\t?\t" v; return }
+            host = substr(p, 2, i - 2); rest = substr(p, i + 2)
+            n = split(rest, a, ":"); if (n >= 2) hp = a[1]
+          } else {
+            n = split(p, a, ":")
+            if (n == 3) { host = a[1]; hp = a[2] } else if (n == 2) hp = a[1]
+          }
+          if (hp == "53") { print f "\t" host "\t" v; return }
+          if (hp ~ /^[0-9]+-[0-9]+$/) { split(hp, r, "-"); if (r[1] + 0 <= 53 && r[2] + 0 >= 53) print f "\t" host "\t" v }
+        }
+        { line = $0; sub(/^[[:space:]]+/, "", line) }
+        line ~ /^PublishPort[[:space:]]*=/ { v = line; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v); chk(v) }
+        line ~ /^Network[[:space:]]*=[[:space:]]*host([[:space:]]|$)/ { print f "\thost\tNetwork=host" }
+        line ~ /^PodmanArgs[[:space:]]*=/ {
+          v = line; sub(/^[^=]*=[[:space:]]*/, "", v)
+          n = split(v, w, /[[:space:]]+/)
+          for (i = 1; i <= n; i++) {
+            if (w[i] ~ /^(--publish|-p)$/ && i < n) chk(w[i + 1])
+            else if (w[i] ~ /^--publish=/) { x = w[i]; sub(/^--publish=/, "", x); chk(x) }
+            else if (w[i] ~ /^-p[^-]/) { x = substr(w[i], 3); chk(x) }
+            else if (w[i] ~ /^--network(=|$)/ && (w[i] == "--network=host" || (w[i] == "--network" && w[i + 1] == "host"))) print f "\thost\tPodmanArgs " w[i] (w[i] == "--network" ? " host" : "")
+          }
+        }' "$f"
+    done
+  done
+}
+
+# nd_platform_install_drift <deadline> <tmp>: "verdict<TAB>reason" for the
+# installed deployment as its files declare it: unhealthy
+# (install-security-drift) when no generation is recorded (an install from
+# before generations, which is never upgraded in place) or the installed
+# quadlets declare host port 53 off loopback (an open resolver for the
+# network; installs before 57db2a3 published 0.0.0.0:53); indeterminate
+# while an install is under way or when no nice-dns.pod is installed (nothing
+# to judge); else healthy.
+nd_platform_install_drift() {
+  local g bad
+  if ! g="$(nd_platform_install_generation)"; then
+    if g="$(nd_platform_install_pending)"; then
+      printf 'indeterminate\tinstall under way: generation %s is not active yet\n' "$g"; return 0
+    fi
+    printf 'unhealthy\tinstall-security-drift: no install generation is recorded (an install from before generations; reinstall)\n'; return 0
+  fi
+  if [ ! -f "$(nd_platform_quadlet_dir)/nice-dns.pod" ]; then
+    printf 'indeterminate\tgeneration %s; no nice-dns.pod quadlet in %s to read\n' "$g" "$(nd_platform_quadlet_dir)"; return 0
+  fi
+  bad="$(nd_platform_dns_publishes | awk -F '\t' '
+    $2 !~ /^(127\.[0-9.]+|::1|localhost)$/ { printf "%s%s (%s %s)", s, ($2 == "" ? "every address" : ($2 == "host" ? "the host network" : $2)), $1, $3; s = ", " }')"
+  if [ -n "$bad" ]; then
+    printf 'unhealthy\tinstall-security-drift: the quadlets declare :53 on %s\n' "$bad"; return 0
+  fi
+  printf 'healthy\tgeneration %s; the quadlets declare :53 on loopback only\n' "$g"
+}

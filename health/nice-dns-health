@@ -893,6 +893,9 @@ cmd_status() {
     launchctl list 2>&1 | grep -F "$LAUNCHD_LABEL" || echo "  (not loaded)"
   fi
   echo
+  echo "=== Install ==="
+  install_report || true
+  echo
   echo "=== Last 5 health.log entries ==="
   if [ -f "$ROLL_LOG" ]; then
     tail -5 "$ROLL_LOG"
@@ -904,6 +907,85 @@ cmd_status() {
   # shellcheck disable=SC2012
   ls -1t "$LOG_DIR"/failure-*.log 2>/dev/null | head -5 | sed 's/^/  /' \
     || echo "  (none)"
+}
+
+# ───────────── Install drift (BL-045) ─────────────
+#
+# install_report: the installed generation as lib/install.sh recorded it and
+# how the running deployment compares (Linux). Prints the report; status 0
+# current, 1 drift (a container runs an image other than the generation's,
+# or does not run), 2 security drift (lib/platform/linux.sh
+# nd_platform_install_drift), 3 not checked (an install under way, nothing
+# to read, or the check did not run). Reads files and `podman inspect` only
+# (each bounded to 10 s): nothing is ever re-rendered or restarted
+# (DEC-018). File values are printed without control characters.
+# _ir_clean: a value from a file, safe to print (no control characters).
+_ir_clean() { tr -d '\000-\037\177' | cut -c1-200; }
+# _ir_clean_lines: the same, line by line, keeping tabs and newlines.
+_ir_clean_lines() { tr -d '\000-\010\013-\037\177'; }
+
+install_report() {
+  local line verdict reason g sd m variant role id want c have rc=0 short to=""
+  if [ "$IS_LINUX" -ne 1 ]; then echo "Install drift: checked on Linux only"; return 3; fi
+  if ! load_health_libs; then echo "Install drift: not checked ($HEALTH_LIB_ERROR)"; return 3; fi
+  command -v timeout >/dev/null 2>&1 && to="timeout 10"
+  line="$(nd_platform_install_drift 10 "${TMPDIR:-/tmp}")"
+  verdict="${line%%$'\t'*}" reason="${line#*$'\t'}"
+  sd="$(nd_platform_install_state_dir)"
+  if g="$(nd_platform_install_generation)"; then
+    m="$sd/generations/$g/prepare.tsv"
+    printf 'Generation:    %s\n' "$g"
+    printf 'Source commit: %s\n' "$(awk -F '\t' '$1 == "source_commit" { print $2; exit }' "$m" | _ir_clean)"
+    printf 'Lock:          %s\n' "$(awk -F '\t' '$1 == "lock" { print $2; exit }' "$m" | _ir_clean)"
+    variant="$(awk -F '\t' '$1 == "variant" { print $2; exit }' "$m")"
+    echo "Images (running against the generation's):"
+    while IFS=$'\t' read -r role _ id; do
+      case "$role" in unbound) c=unbound ;; pi-hole) c=pi-hole ;; proxy) c="tor-$variant" ;; *) continue ;; esac
+      want="$(printf '%s' "${id#sha256:}" | _ir_clean)"
+      # shellcheck disable=SC2086  # $to is "timeout 10" or empty
+      if have="$($to podman inspect -f '{{.Image}}' "$c" 2>/dev/null)"; then
+        have="${have#sha256:}"; short="$(printf '%s' "$have" | cut -c1-12)"
+        if [ "$have" = "$want" ]; then printf '  %-12s on the generation'"'"'s image (%s)\n' "$c" "$short"
+        else printf '  %-12s OFF the generation'"'"'s image (runs %s, recorded %s)\n' "$c" "$short" "$(printf '%s' "$want" | cut -c1-12)"; rc=1; fi
+      else
+        printf '  %-12s not running (recorded %s)\n' "$c" "$(printf '%s' "$want" | cut -c1-12)"; rc=1
+      fi
+    done < <(awk -F '\t' '$1 == "image" && $2 != "saved" { print $2 "\t" $3 "\t" $4 }' "$m")
+  else
+    echo "Generation:    none recorded"
+  fi
+  echo ":53 publishes:"
+  nd_platform_dns_publishes | _ir_clean_lines | awk -F '\t' '{ printf "  %s  %s\n", $1, $3 } END { if (!NR) print "  none" }'
+  case "$verdict" in
+    unhealthy) printf 'Drift:         SECURITY: %s\n' "$(printf '%s' "$reason" | _ir_clean)"; return 2 ;;
+    healthy) ;;
+    *) printf 'Drift:         not checked: %s\n' "$(printf '%s' "$reason" | _ir_clean)"; return 3 ;;
+  esac
+  if [ "$rc" = 1 ]; then echo "Drift:         images (see above)"; return 1; fi
+  echo "Drift:         none"
+}
+
+cmd_drift() {
+  install_report
+}
+
+# report_security_drift <observations file>: a security drift is logged at
+# err (syslog when logger exists, and the rolling log) at most once a day for
+# each distinct reason. Nothing is logged when the day's stamp cannot be
+# written (it would otherwise repeat every pass).
+report_security_drift() {
+  local r key stamp="$LOG_DIR/install-security-drift.day"
+  r="$(awk -F '\t' '$1 == "obs" && $2 == "install-drift" && $3 == "unhealthy" { print $5; exit }' "$1")"
+  [ -n "$r" ] || return 0
+  # The reason is one line without control characters (lib/health.sh _nd_obs).
+  key="$(date +%Y-%m-%d) $r"
+  grep -qxF -- "$key" "$stamp" 2>/dev/null && return 0
+  mkdir -p "$LOG_DIR" 2>/dev/null
+  { grep -E "^$(date +%Y-%m-%d) " "$stamp" 2>/dev/null; printf '%s\n' "$key"; } >"$stamp.new" 2>/dev/null \
+    && mv -f "$stamp.new" "$stamp" 2>/dev/null || return 0
+  log_to_file "$(ts) ERR $r"
+  if command -v logger >/dev/null 2>&1; then logger -t "$SCRIPT_NAME" -p user.err "$r" 2>/dev/null || true; fi
+  echo "$SCRIPT_NAME: $r" >&2
 }
 
 cmd_logs() {
@@ -1018,6 +1100,7 @@ cmd_tick() {
   if ! nd_health_validate <"$o"; then
     rm -f "$o"; echo "$SCRIPT_NAME: the observation output is not valid" >&2; return 3
   fi
+  report_security_drift "$o"
   out="$(nd_recovery_tick "$mode" "$o")"; rc=$?
   rm -f "$o"
   log_to_file "$(ts) TICK $mode $(printf '%s\n' "$out" | awk -F '\t' '{ printf "%s%s=%s", s, $1, $2; s = " " }')"
@@ -1064,7 +1147,14 @@ Usage: $SCRIPT_NAME <command>
               that install recorded, and nothing else.
   start       (Re)start the timer / LaunchAgent.
   stop        Pause the timer / unload the LaunchAgent.
-  status      Show schedule state + last 5 log entries.
+  status      Show schedule state, the installed generation (Linux) and
+              the last 5 log entries.
+  drift       Compare the running deployment with the installed generation
+              (Linux): exit 0 current, 1 drift (a container off the
+              generation's image, or not running), 2 security drift (no
+              generation recorded, or the quadlets declare :53 off
+              loopback), 3 not checked (an install under way, no quadlets
+              to read). Reports only; nothing is re-rendered.
   run         Run a health check now (also called by the timer).
   observe     Print the observations as TSV (read-only: no log, no action).
   tick        One controller pass: observe, decide (lib/policy.sh) and act
@@ -1087,6 +1177,9 @@ What it checks (lib/health.sh; Pi-hole is 127.0.0.1 on Linux and
   dns-owner      the host resolves through nice-dns (Linux: resolv.conf
                  names only 127.0.0.1; macOS: every enabled network service
                  and scutil's resolver #1 use 172.31.240.250)
+  install-drift  Linux: an install generation is recorded and the installed
+                 quadlets declare :53 on loopback only (else
+                 install-security-drift, logged at err once a day)
   local-service  pi.hole has an A record (FTL alive)
   filtering      doubleclick.net is sinkholed to 0.0.0.0
   local-cache    Pi-hole answers cloudflare.com (may be cached; not upstream)
@@ -1105,6 +1198,7 @@ main() {
     start)      cmd_start "$@" ;;
     stop)       cmd_stop "$@" ;;
     status)     cmd_status "$@" ;;
+    drift)      cmd_drift "$@" ;;
     run)        cmd_run "$@" ;;
     observe)    cmd_observe "$@" ;;
     tick)       cmd_tick "$@" ;;

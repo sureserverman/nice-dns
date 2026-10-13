@@ -45,6 +45,77 @@ t_lock_is_well_formed() {
   assert_eq "" "$(awk -F '\t' '/^#/ { next } $1 !~ /^(schema|supported|issuer|image|unpublished|provides|requires)$/ && NF' "$RI_LOCK")" "no unknown row kinds"
 }
 
+# A public resolver written into the product bypasses the host's resolver,
+# and a VPN that confines DNS (Mullvad custom DNS) refuses it (BL-047,
+# measured 2026-10-11). So each one is declared in release/bootstrap.tsv: a
+# line matches a `literal` row (the same path, the row's anchored ERE), or,
+# for a comment line, names a declared row ("literal <id>") and mentions only
+# the resolvers that row's lines carry. Every hit counts, comment or not, and
+# a row no line matches is stale. The scan covers every file the product
+# ships (all but .git, .claude, tests, docs, proof and Markdown) for the
+# well-known public resolvers, IPv4 and IPv6 (RI_PUBLIC_RESOLVERS); it is of
+# the checkout under test ($NICE_DNS_ROOT: run a copy's tests/run.sh to scan
+# the copy). A resolver outside that list, or one built at run time, is not
+# seen.
+RI_PUBLIC_V4='1\.1\.1\.1|1\.0\.0\.1|8\.8\.8\.8|8\.8\.4\.4|9\.9\.9\.(9|10|11)|149\.112\.112\.(112|10|11)|208\.67\.22[02]\.22[02]|94\.140\.1[45]\.1[45]|4\.2\.2\.[1-6]|8\.26\.56\.26|8\.20\.247\.20|84\.200\.(69\.80|70\.40)|64\.6\.6[45]\.6|185\.228\.16[89]\.9|76\.76\.(2|10)\.0'
+RI_PUBLIC_RESOLVERS="(^|[^0-9.])($RI_PUBLIC_V4)([^0-9.]|\$)|2606:4700:4700:|2001:4860:4860:|2620:fe::|2620:119:(35|53)::|2a10:50c0::|2001:1608:10:25:"
+
+t_every_public_resolver_literal_is_declared() {
+  local root="$NICE_DNS_ROOT" hits bad
+  assert_eq "$(printf 'schema\tnice-dns-bootstrap/1')" "$(head -n 1 "$root/release/bootstrap.tsv")" "the inventory's schema"
+  hits="$(cd "$root" && find . \( -path ./.git -o -path ./.claude -o -path ./tests -o -path ./docs -o -path ./proof \) -prune \
+    -o -type f ! -name '*.md' -print | sed 's|^\./||' | sort | xargs grep -nIE -- "$RI_PUBLIC_RESOLVERS")"
+  assert_ne "" "$hits" "the scan finds the declared literals"
+  bad="$(printf '%s\n' "$hits" | RI_PUB="^($RI_PUBLIC_V4)\$" awk -F '\t' '
+    BEGIN { pub = ENVIRON["RI_PUB"] }
+    function ips(s, set,   n, t, i, k) {
+      n = split(s, t, /[^0-9.]+/); k = 0
+      for (i = 1; i <= n; i++) {
+        sub(/\.+$/, "", t[i]); sub(/^\.+/, "", t[i])
+        if (t[i] ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && t[i] ~ pub) { set[t[i]] = 1; k++ }
+      }
+      return k
+    }
+    FNR == NR {
+      if ($1 != "literal") next
+      if (NF != 8 || $2 !~ /^[a-z0-9-]+$/ || $3 !~ /^(linux|macos|all)$/ || $4 == "" ||
+          $5 !~ /^\^/ || $5 !~ /\$$/ || $6 !~ /^(preparation|interruption|runtime)$/ ||
+          $7 !~ /^(host|own|builder|none)$/ || $8 == "") {
+        print "bootstrap.tsv:" FNR ": a malformed literal row"; next
+      }
+      n++; rid[n] = $2; rpath[n] = $4; rere[n] = $5; known[$2] = 1
+      next
+    }
+    {
+      line = $0
+      p = line; sub(/:.*/, "", p); rest = substr(line, length(p) + 2)
+      ln = rest; sub(/:.*/, "", ln); text = substr(rest, length(ln) + 2)
+      ok = 0
+      for (i = 1; i <= n; i++) if (rpath[i] == p && text ~ rere[i]) {
+        ok = 1; used[i] = 1
+        split("", s); ips(text, s); for (a in s) carries[rid[i] SUBSEP a] = 1
+      }
+      if (ok) next
+      if (text ~ /^[ \t]*#/) { nc++; cwhere[nc] = p ":" ln; ctext[nc] = text; next }
+      print p ":" ln ": undeclared: " text
+    }
+    END {
+      for (c = 1; c <= nc; c++) {
+        named = 0; split("", s); ips(ctext[c], s)
+        for (id in known) {
+          t = ctext[c]
+          if (!match(t, "literal " id "([^a-z0-9-]|$)")) continue
+          named = 1
+          for (a in s) if (!((id SUBSEP a) in carries)) print cwhere[c] ": comment mentions " a ", which literal " id " does not carry: " ctext[c]
+        }
+        if (!named) print cwhere[c] ": undeclared (a comment naming no literal row): " ctext[c]
+      }
+      for (i = 1; i <= n; i++) if (!(i in used)) print "bootstrap.tsv: literal " rid[i] " (" rpath[i] ") matches no line: stale"
+    }' "$root/release/bootstrap.tsv" -)"
+  assert_eq "" "$bad" "every public resolver literal is declared in release/bootstrap.tsv"
+  assert_match '^literal	' "$(cat "$root/release/bootstrap.tsv")" "the literals are declared as rows"
+}
+
 # ri_env <entrypoint>: the installer fixture with a hardened sibling.
 ri_env() {
   ip_env "$1"

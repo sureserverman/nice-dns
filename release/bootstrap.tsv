@@ -2,19 +2,34 @@ schema	nice-dns-bootstrap/1
 # Declared bootstrap network use of an install (Sub-plan 4; PRIV-BOOTSTRAP-DECLARED,
 # WF-DNS-003). Parsed as data by the installer tests; never sourced. An install
 # makes no other network call, and none of these ever becomes a client DNS path:
-# host DNS is never rewritten for them.
+# host DNS is never rewritten for them. (On a Mullvad host whose loopback-only
+# custom DNS answers nothing and no nice-dns stack runs, the Linux install
+# switches Mullvad to its default DNS before these run; lib/install.sh,
+# "Mullvad's DNS setting".)
 #
 # Rows (tab-separated): exception <id> <platform> <call> <phase> <resolver> <purpose>
 #   platform  linux | macos | all
 #   call      an ERE matching the call as the installer makes it
 #   phase     preparation: before anything is interrupted (host DNS still the
-#             owner's or the running stack's pin)
+#             owner's or the running stack's pin, or Mullvad's default DNS
+#             after the switch above)
 #             interruption: after the stack stopped; host DNS then stays pinned
 #             to the stopped stack, so the call must need no host resolver
 #   resolver  host: the host's resolver as it is in that phase
 #             own: the tool's own bootstrap resolver
-#             builder: the build containers' own --dns 1.1.1.1, never the host
+#             builder: the builder's own resolver, from the macOS build
+#             flags' --dns, never the host
 #             none: no network (a local cache)
+#
+# Rows: literal <id> <platform> <path> <line> <phase> <resolver> <purpose>
+#   A public resolver written into the product (checked by
+#   tests/integration/release-inputs.sh t_every_public_resolver_literal_is_declared).
+#   path      the file, from the checkout root
+#   line      an ERE, anchored at both ends, matching the whole line
+#   phase     also runtime: every start after the install (boot, restart),
+#             host DNS pinned to the stack
+#   A comment that mentions the resolver names its row ("literal <id>"), or a
+#   row declares that comment line itself (a file nice-dns does not author).
 exception	signatures	all	^cosign verify 	preparation	host	signature checks of the locked images (Sigstore, Docker Hub)
 exception	packages	linux	^sudo (apt-get (update|install)|add-apt-repository) 	preparation	host	Debian/Ubuntu packages and the podman PPA
 exception	source	all	^git clone 	preparation	host	the requested branch, when the installer runs without a checkout
@@ -22,7 +37,7 @@ exception	gate	macos	^curl -fsSL https://raw\.githubusercontent\.com/sureserverm
 exception	images	linux	^podman pull [^ ]+@sha256:[0-9a-f]{64}$	preparation	host	the locked images, by digest (release/images.lock)
 exception	images	macos	^container image pull [^ ]+@sha256:[0-9a-f]{64}$	preparation	host	the locked images, by digest (release/images.lock)
 exception	sibling-base	macos	^container image pull alpine:3\.21\.3$	preparation	host	the hardened sibling's own FROM, pinned by its Dockerfile
-exception	builds	linux	^podman build .*--dns 1\.1\.1\.1 	preparation	builder	build steps (apk upgrade, pihole -g gravity lists, post-install); the sibling's FROM is pulled here too
+exception	builds	linux	^podman build --pull=newer --no-cache (--build-arg|-t) 	preparation	host	build steps (apk upgrade, pihole -g gravity lists, post-install) through podman's default resolver, the host's as it stands in preparation (BL-047); the sibling's FROM is pulled here too
 exception	builds	macos	^container build .*--dns 1\.1\.1\.1 	interruption	builder	build steps; Apple's builder wedges a running dnsnet, so builds wait for the stack to stop
 exception	homebrew	macos	^(brew (update|install --formula [a-z]+|fetch --formula container)|sudo softwareupdate --install-rosetta --agree-to-license)$	preparation	host	Homebrew packages (git, container) and Rosetta
 exception	runtime-upgrade	macos	^HOMEBREW_NO_AUTO_UPDATE=1 brew upgrade --formula container$	interruption	none	the container upgrade from the bottle fetched in preparation
@@ -32,3 +47,10 @@ exception	runtime	macos	^container system start	interruption	none	the runtime ag
 exception	bridges	linux	^persistent-podman\.sh 	interruption	own	bridge selection (nice-dns-fetch-bridges.service, only with fewer than 3 bridges): bridge-eval resolves Moat and rdsys with its own bootstrap resolver, not the host's
 exception	builder	macos	^container builder start$	interruption	none	the builder VM; its image is cached since the first install (a runtime upgrade that changes it would need the network: live proof pending)
 exception	sibling-base	linux	^podman pull alpine:3\.21\.3$	preparation	host	the hardened sibling's own FROM, pinned by its Dockerfile
+literal	build-dns	macos	lib/install.sh	^ND_INST_MACOS_BUILD_FLAGS=\(--no-cache --dns 1\.1\.1\.1\)$	interruption	builder	the macOS image builds' resolver: Apple's builder VM forwards DNS unreliably, and the host's resolver is the stopped stack then
+literal	network-dns	linux	deb/quadlet/nice-dns.network	^DNS=1\.1\.1\.1$	runtime	own	aardvark's upstream on dnsnet, the pod members' own resolver; the stack's bootstrap does not use it (measured 2026-10-12 under Mullvad custom DNS, where it is unreachable and the stack still starts)
+literal	moat-lookup	macos	scripts/fetch-bridges.sh	^    for _r in 1\.1\.1\.1 9\.9\.9\.9 8\.8\.8\.8; do$	preparation	own	the installer's Moat lookup (the bridges row) tries these first, then falls back to the host's resolver; Linux installs the script as ~/.local/bin/nice-dns-fetch-bridges but never runs it (its bridge unit runs bridge-eval)
+literal	moat-lookup	macos	scripts/fetch-bridges.sh	^    for _r in 1\.1\.1\.1 9\.9\.9\.9 8\.8\.8\.8; do$	runtime	own	start-container.sh's bridge rotation, while the host's resolver is the not-yet-running stack
+literal	pihole-presets	all	pihole/etc/dns-servers.conf	^[^;]+;[0-9.]+;[0-9.]*;[0-9A-Fa-f:]*;[0-9A-Fa-f:]*$	runtime	none	Pi-hole's admin-UI list of upstream presets, copied into the image; nothing resolves through it: Pi-hole's upstream is Unbound (pihole/etc/dnsmasq.conf server=127.0.0.1#5335)
+literal	pihole-toml-example	all	pihole/etc/pihole.toml	^  # Example: \[ "8\.8\.8\.8", "127\.0\.0\.1#5335", "docker-resolver" \]$	runtime	none	an example in the comment pihole-FTL writes into its own config; not a setting
+literal	dot-identity-doc	all	routes/providers.tsv	^# Identities: https://developers\.cloudflare\.com/1\.1\.1\.1/encryption/dns-over-tls/$	runtime	none	a documentation URL in a comment; not a resolver

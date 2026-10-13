@@ -25,13 +25,20 @@ patterns the controller and installer use.
 
 ```bash
 # Debian / Ubuntu
-bash <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb.sh)
+curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb.sh -o install-deb.sh && bash install-deb.sh
 
 # macOS
-bash <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac.sh)
+curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac.sh -o install-mac.sh && bash install-mac.sh
 ```
 
-Re-running the installer tears down the existing stack and recreates it cleanly.
+Re-running the installer prepares the new images first, then replaces the running stack, and puts the previous one back if anything fails. Tor state, the Pi-hole lists and the admin password are kept; only `uninstall` removes them.
+
+**Mullvad VPN (Linux).** The installer reads Mullvad's DNS setting, records
+it, and ends with `mullvad dns set custom 127.0.0.1`: with any other setting
+a connected Mullvad overwrites the resolver pin. If Mullvad's custom DNS is
+already `127.0.0.1`, Mullvad is connected and nice-dns is not running, the host has no DNS, so the
+fetch above fails: run `mullvad dns set default` first. A failed install, and
+the uninstall, put the recorded setting back.
 
 ### Arguments
 
@@ -122,11 +129,11 @@ queries badly. See [health/README.md](health/README.md).
 ## Uninstall
 
 ```bash
-bash <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb.sh) uninstall
-bash <(curl -sL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac.sh) uninstall
+curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb.sh -o install-deb.sh && bash install-deb.sh uninstall
+curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac.sh -o install-mac.sh && bash install-mac.sh uninstall
 ```
 
-Removes quadlets/LaunchAgent, pods, containers, images, the network, and restores system DNS. Shared system tweaks (PPA pin, sysctl, AppArmor, Homebrew packages, Rosetta) are left in place.
+Removes quadlets/LaunchAgent, pods, containers, images, the network, and restores system DNS. On Linux it also gives Mullvad back the DNS setting it had before nice-dns, unless that setting was changed since. Shared system tweaks (PPA pin, sysctl, AppArmor, Homebrew packages, Rosetta) are left in place.
 
 ## License
 

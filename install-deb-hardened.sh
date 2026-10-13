@@ -51,7 +51,12 @@ elif [[ -f lib/install.sh && -d deb/quadlet && -f deb/custom-dns-deb && -f pihol
 else
   command -v git >/dev/null 2>&1 || sudo apt-get install -yq --no-install-recommends git
   ND_INST_CLEANUP="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-install.XXXXXXXX")"
-  git clone -b "$BRANCH" https://github.com/sureserverman/nice-dns.git "$ND_INST_CLEANUP/nice-dns"
+  if ! git clone -b "$BRANCH" https://github.com/sureserverman/nice-dns.git "$ND_INST_CLEANUP/nice-dns"; then
+    # Before the source is staged nothing handles Mullvad yet (lib/install.sh,
+    # "Mullvad's DNS setting"): custom DNS at 127.0.0.1 with no stack answers nothing.
+    command -v mullvad >/dev/null 2>&1 && echo "If Mullvad's custom DNS is 127.0.0.1 and nice-dns is not running, the host has no DNS: run 'mullvad dns set default', then this installer again." >&2
+    exit 1
+  fi
   ND_INST_SRC="$ND_INST_CLEANUP/nice-dns" ND_INST_ORIGIN=clone
 fi
 # shellcheck source=lib/install.sh
@@ -68,11 +73,16 @@ VARIANT="$ACTION"
 
 # -- Preparation (lib/install.sh) --
 # Dependencies, images (the hardened base first) and the prepare manifest. Nothing here interrupts the
-# running stack or touches host DNS; a failure exits and leaves it as it was.
+# running stack or touches host DNS, except that with Mullvad installed
+# and nothing answering its loopback DNS, Mullvad is switched to its default
+# DNS; a failure exits and leaves the stack, and Mullvad's setting, as they were.
 nd_install_begin linux install-deb-hardened.sh hardened "$VARIANT" "$BRANCH"
 # Refuses (exit 3) before any change when another owner took over host DNS.
 nd_install_check_owned
 nd_install_check_route_dir
+# Mullvad's DNS setting, recorded (and switched when nothing answers it)
+# before any step below uses the network.
+nd_install_linux_mullvad_prepare
 # The reviewed image inputs (release/images.lock): shape, this host's
 # platform, the proxy's interfaces and, with cosign, the signatures.
 nd_install_read_lock

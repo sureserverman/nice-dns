@@ -1,0 +1,28 @@
+{
+ "baseline": {
+  "elapsed_s": 84.6,
+  "exit": 0,
+  "tail": "run_id=20261012T164700Z-48d3c867 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261012T164700Z-48d3c867\nPASS  t_argument_surface_is_unchanged\nPASS  t_bash32_pure_functions\nPASS  t_bash32_runs_the_mac_entrypoints\nPASS  t_builds_and_pulls_precede_the_interruption\nPASS  t_checkout_is_used_without_a_clone\nPASS  t_entrypoints_option_is_validated\nPASS  t_failed_preparation_touches_nothing\nPASS  t_mac_rewrites_are_portable_and_exact\nPASS  t_new_subids_are_migrated_before_the_builds\nPASS  t_prepare_manifest_is_owned_and_complete\nPASS  t_reinstall_keeps_the_previous_generation\nPASS  t_standard_and_hardened_share_build_flags\nPASS  t_uninstall_still_removes_the_stack\ngroup integration/install-prepare: collected=13 passed=13 failed=0\ncollected=13 passed=13 failed=0\nresult=pass run_id=20261012T164700Z-48d3c867 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261012T164700Z-48d3c867\nrun_id=20261012T164807Z-db527c6e artifacts=/home/user/.local/state/nice-dns-tests/runs/20261012T164807Z-db527c6e\nPASS  t_every_public_resolver_literal_is_declared\nPASS  t_hardened_needs_its_sibling\nPASS  t_installers_use_the_locked_digests\nPASS  t_lock_is_well_formed\nPASS  t_malformed_lock_is_refused\nPASS  t_missing_interface_is_refused\nPASS  t_refresh_script_checks_and_writes\nPASS  t_signatures_are_verified_when_cosign_is_present\nPASS  t_unsupported_platform_is_refused\ngroup integration/release-inputs: collected=9 passed=9 failed=0\ncollected=9 passed=9 failed=0\nresult=pass run_id=20261012T164807Z-db527c6e artifacts=/home/user/.local/state/nice-dns-tests/runs/20261012T164807Z-db527c6e"
+ },
+ "break_patch": "--- a/lib/install.sh\n+++ b/lib/install.sh\n@@ -45,7 +45,7 @@\n ND_INST_SCHEMA='nice-dns-install-prepare/1'\n # One build policy per platform, shared by the standard and hardened\n # entrypoints (the flags are explained where the builds run).\n-ND_INST_LINUX_BUILD_FLAGS=(--pull=newer --no-cache)\n+ND_INST_LINUX_BUILD_FLAGS=(--pull=newer --no-cache --dns 1.1.1.1)\n # macOS builds run in the interruption window, while host DNS stays pinned to\n # the stopped stack, so their bases are pulled in preparation and the builds\n # take no --pull (see nd_install_macos_prepare_images).\n",
+ "build": null,
+ "created": "2026-10-12T16:49:31+00:00",
+ "fingerprint": "a87e5f6735d96c24c26d151e3e6fe31da955a0f74151b82109a03cac896452d1",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "shell, no build",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-10-12-mullvad-integration-findings-plan.md",
+ "red": {
+  "elapsed_s": 66.8,
+  "exit": 1,
+  "tail": "run_id=20261012T164825Z-26a37700 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261012T164825Z-26a37700\nPASS  t_argument_surface_is_unchanged\nPASS  t_bash32_pure_functions\nPASS  t_bash32_runs_the_mac_entrypoints\nPASS  t_builds_and_pulls_precede_the_interruption\nPASS  t_checkout_is_used_without_a_clone\nPASS  t_entrypoints_option_is_validated\nPASS  t_failed_preparation_touches_nothing\nPASS  t_mac_rewrites_are_portable_and_exact\nPASS  t_new_subids_are_migrated_before_the_builds\nPASS  t_prepare_manifest_is_owned_and_complete\nPASS  t_reinstall_keeps_the_previous_generation\nFAIL  t_standard_and_hardened_share_build_flags (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261012T164825Z-26a37700/cases/integration-install-prepare/t_standard_and_hardened_share_build_flags/case.log)\n      ASSERT FAIL: install-deb: every build (unbound, pi-hole and any base) uses exactly [--pull=newer --no-cache]:\n      podman build --pull=newer --no-cache --dns 1.1.1.1 --build-arg BASE_IMAGE=docker.io/sureserver/hardened-unbound@sha256:132e0ffde4a25c8bf9df32affe23304949229cff945ffefd513233eb89dffea4 -t localhost/unbound:20261012T164926Z-0123456789ab unbound/\n      podman build --pull=newer --no-cache --dns 1.1.1.1 --build-arg BASE_IMAGE=docker.io/pihole/pihole@sha256:5b9c8cf51de7d6d3f2240dbe72baf5f06e1fd39cb4d77a99fab4fa13e23bd1be -t localhost/pi-hole:20261012T164926Z-0123456789ab pihole/: expected [--pull=newer --no-cache] got [--pull=newer --no-cache --dns 1.1.1.1]\nPASS  t_uninstall_still_removes_the_stack\ngroup integration/install-prepare: collected=13 passed=12 failed=1\ncollected=13 passed=12 failed=1\nresult=fail run_id=20261012T164825Z-26a37700 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261012T164825Z-26a37700"
+ },
+ "schema": 2,
+ "task": "1.2",
+ "test": "bash tests/run.sh integration install-prepare && bash tests/run.sh integration release-inputs",
+ "text": "`bash tests/run.sh integration install-prepare && bash tests/run.sh integration release-inputs`, including a new case `t_every_public_resolver_literal_is_declared`. The case runs the scope grep and fails on any hit without a matching `release/bootstrap.tsv` row. Prove it by adding an undeclared `8.8.8.8` to a scratch copy and watching it go red.",
+ "touched": [
+  "lib/install.sh"
+ ]
+}

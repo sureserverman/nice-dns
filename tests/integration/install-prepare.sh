@@ -135,7 +135,7 @@ t_failed_preparation_touches_nothing() {
         script="$IP_TREE/$ep.sh"
         case "$pat" in
           'git clone')
-            # The `bash <(curl …)` path: the entrypoint alone, no checkout.
+            # The installer fetched on its own: the entrypoint alone, no checkout.
             mkdir -p "$IP_W/solo" && cp "$IP_TREE/$ep.sh" "$IP_W/solo/" && script="$IP_W/solo/$ep.sh"
             printf '^git clone\n' >"$FAKE/fail" ;;
           bridges) rm -f "$IP_HOME/.config/nice-dns/bridges.env" ;;   # and Moat (curl) fails
@@ -246,7 +246,9 @@ t_standard_and_hardened_share_build_flags() {
       assert_rc 0 "$IP_RC" "$ep: $IP_OUT"
       # macOS builds take no --pull: they run while host DNS is pinned to the
       # stopped stack, and their bases were pulled in preparation (Task 1.2).
-      if [ "$plat" = linux ]; then want='--pull=newer --no-cache --dns 1.1.1.1'; else want='--no-cache --dns 1.1.1.1'; fi
+      # Linux builds take no --dns: they resolve through the host's resolver
+      # in preparation (BL-047).
+      if [ "$plat" = linux ]; then want='--pull=newer --no-cache'; else want='--no-cache --dns 1.1.1.1'; fi
       # Each build's policy flags, with the recipe selectors (-t, -f,
       # --build-arg) and the context removed.
       flags="$(grep -E '^(podman|container) build ' "$FAKE_LOG" | awk '{
@@ -419,7 +421,7 @@ $(cat "$FAKE/build-cwd")"
       else
         assert_eq "" "$(grep -v "^$IP_TREE\$" "$FAKE/build-cwd")" "$ep: builds run in the checkout"
       fi
-      # Without a checkout (bash <(curl …)) the branch is cloned first.
+      # Without a checkout (the installer fetched on its own) the branch is cloned first.
       rm -rf "$IP_W/solo"; mkdir -p "$IP_W/solo" && cp "$IP_TREE/$ep.sh" "$IP_W/solo/"
       : >"$FAKE_LOG"; : >"$FAKE/build-cwd"
       printf '9999999999998888888888887777777777776666\n' >"$FAKE/git_head"
