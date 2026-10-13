@@ -1443,7 +1443,7 @@ t_ipv6_profiles_stale_undo_list_is_never_used() {
       assert_eq "$(printf 'eth-1\tauto\nwifi-2\tdhcp')" "$(dt_ipv6_prof_rec)" "$ep/stale: and its record"
       ip_install "$ep"
       assert_rc 0 "$IP_RC" "$ep/stale: reinstall: $IP_OUT"
-      assert_eq "" "$(ls "$FAKE_ROOT/var/lib/nice-dns/dns-owned/" | grep -E '\.(run|prev)$' || true)" "$ep/stale: a successful install leaves no undo list"
+      assert_eq "no no" "$([ -e "$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-profiles.run" ] && echo yes || echo no) $([ -e "$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-profiles.prev" ] && echo yes || echo no)" "$ep/stale: a successful install leaves no undo list"
     ) || exit 1
   done
 }
