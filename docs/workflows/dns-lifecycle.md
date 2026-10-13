@@ -653,7 +653,11 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   image off the generation's or not running), 2 security drift, 3 not
   checked (health/nice-dns-health:927-970). Both read files and
   `podman inspect` only: nothing re-renders or restarts (DEC-018).
-  [SEC-LISTENERS]
+  The pass's report reaches only a host whose controller came from an
+  install with this change, and that install records a generation; an
+  install from before generations, often with no controller at all, reports
+  nothing until it is reinstalled, and only `drift` run from a current
+  checkout reads it by hand [SEC-LISTENERS].
 
 ### Platform notes
 
