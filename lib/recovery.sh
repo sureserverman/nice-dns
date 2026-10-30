@@ -786,7 +786,7 @@ repair_runtime() {
     nd_recovery_journal "$id" runtime unsupported "no repair for $fault on $(nd_platform_name)"
     _nd_rec_out unsupported runtime "$id" - - "no repair for $fault on $(nd_platform_name)"; rm -rf "$_ND_RX"; return 3
   fi
-  nd_recovery_journal "$id" runtime requested "repair of $fault (exit $rc)"
+  nd_recovery_journal "$id" runtime requested "repair of $fault: $(cat "$_ND_RX/rep.note" 2>/dev/null)exit $rc"
   i=$(( $(_nd_rec_now) + svc )) n=0 rc=1
   while [ "$(_nd_rec_now)" -lt "$i" ]; do
     if nd_platform_runtime_list "$dl" "$_ND_RX/running" >/dev/null 2>&1; then

@@ -97,8 +97,16 @@ l=systemctl; for a in "$@"; do l="$l $a"; done; printf '%s\n' "$l" >>"$FAKE_LOG"
 case "$2" in
   restart)
     [ -f "$FAKE/restart_changes" ] && echo "t$(date +%s)-new" >"$FAKE/started"
-    [ -f "$FAKE/restart_brings_up" ] && ! grep -qx tor-haproxy "$FAKE/running" && echo tor-haproxy >>"$FAKE/running" ;;
-  start) [ -f "$FAKE/start_brings_up" ] && printf 'pi-hole\nunbound\ntor-haproxy\n' >"$FAKE/running" ;;
+    [ -f "$FAKE/restart_brings_up" ] && ! grep -qx tor-haproxy "$FAKE/running" && echo tor-haproxy >>"$FAKE/running"
+    # $FAKE/pod_restart_heals: the pod restart is what brings every member back.
+    [ -f "$FAKE/pod_restart_heals" ] && [ "$3" = nice-dns-pod.service ] && printf 'pi-hole\nunbound\ntor-haproxy\n' >"$FAKE/running" ;;
+  # `show -p ExecMainStatus --value <unit>`: $FAKE/exec_status, default 0.
+  show) cat "$FAKE/exec_status" 2>/dev/null || echo 0 ;;
+  # $FAKE/start_fails, until a re-exec when $FAKE/reexec_heals says so.
+  daemon-reexec) [ -f "$FAKE/reexec_heals" ] && rm -f "$FAKE/start_fails" ;;
+  start)
+    [ -f "$FAKE/start_fails" ] && exit 1
+    [ -f "$FAKE/start_brings_up" ] && printf 'pi-hole\nunbound\ntor-haproxy\n' >"$FAKE/running" ;;
 esac
 exit 0
 STUB
@@ -1009,5 +1017,60 @@ t_missing_container_is_started_by_name() {
     out="$(nd_recovery_apply "$CASE_DIR/dec" ra-n4 7)"; rc=$?
     assert_rc 0 "$rc" "macos: the agent recreates it: $out"
     assert_match '^launchctl kickstart gui/[0-9]+/org.nice-dns.start-container$' "$(cat "$FAKE_LOG")" "macos: unchanged"
+  ) || exit 1
+}
+
+# The refused-socket fault (Task 1.6; .claude/evidence/1.6): reproduced on mint,
+# exit 126 with a stale systemd/private, exit 125 with podman's tmp gone too.
+t_a_stuck_user_manager_is_repaired_by_a_reexec() {
+  local out rc
+  (
+    ra_fake linux
+    printf 'pi-hole\nunbound\n' >"$FAKE/running"
+    echo 126 >"$FAKE/exec_status"
+    : >"$FAKE/start_fails"; : >"$FAKE/reexec_heals"; : >"$FAKE/start_brings_up"
+    ra_repair_dec tor-haproxy
+    out="$(nd_recovery_apply "$CASE_DIR/dec" ra-m1 7)"; rc=$?
+    assert_rc 0 "$rc" "the proxy comes back: $out"
+    assert_eq 1 "$(grep -c '^systemctl --user daemon-reexec$' "$FAKE_LOG")" "the manager is re-executed once"
+    [ "$(grep -n 'daemon-reexec' "$FAKE_LOG" | cut -d: -f1)" -lt "$(grep -n 'start tor-haproxy' "$FAKE_LOG" | cut -d: -f1)" ] || fail "the re-exec comes before the start"
+    assert_eq 0 "$(grep -c 'restart nice-dns-pod' "$FAKE_LOG")" "a re-exec that heals needs no pod restart"
+    assert_match 'daemon-reexec' "$(cat "$ND_STATE_DIR/recovery.tsv")" "the journal says what the repair did"
+    assert_eq "$(printf 'runtime requested\nruntime acknowledged')" "$(ra_journal)" "journal phases"
+  ) || exit 1
+}
+
+t_a_reset_podman_is_repaired_by_a_pod_restart() {
+  local out rc
+  (
+    ra_fake linux
+    printf 'nice-dns-infra\n' >"$FAKE/running"
+    echo 125 >"$FAKE/exec_status"
+    : >"$FAKE/start_fails"; : >"$FAKE/pod_restart_heals"
+    ra_repair_dec 'pi-hole unbound tor-haproxy'
+    out="$(nd_recovery_apply "$CASE_DIR/dec" ra-m2 7)"; rc=$?
+    assert_rc 0 "$rc" "the stack comes back: $out"
+    assert_eq 1 "$(grep -c '^systemctl --user daemon-reexec$' "$FAKE_LOG")" "the re-exec is tried first, and once"
+    assert_eq 1 "$(grep -c '^systemctl --user restart nice-dns-pod.service$' "$FAKE_LOG")" "then the pod restarts, once"
+    assert_match 'nice-dns-pod' "$(cat "$ND_STATE_DIR/recovery.tsv")" "the journal says so"
+  ) || exit 1
+}
+
+t_an_ordinary_missing_container_gets_no_reexec_or_pod_restart() {
+  local out rc
+  (
+    ra_fake linux
+    printf 'pi-hole\nunbound\n' >"$FAKE/running"; : >"$FAKE/start_brings_up"
+    ra_repair_dec tor-haproxy
+    nd_recovery_apply "$CASE_DIR/dec" ra-m3 7 >/dev/null; assert_rc 0 $? "started by name"
+    assert_eq 0 "$(grep -c 'daemon-reexec' "$FAKE_LOG")" "a unit stopped cleanly needs no re-exec"
+    assert_eq 0 "$(grep -c 'restart' "$FAKE_LOG")" "nor any restart"
+    # A failed start with an ordinary status is not this fault either.
+    : >"$FAKE_LOG"; printf 'pi-hole\nunbound\n' >"$FAKE/running"; rm -f "$FAKE/start_brings_up"
+    echo 1 >"$FAKE/exec_status"; : >"$FAKE/start_fails"
+    out="$(nd_recovery_apply "$CASE_DIR/dec" ra-m4 7)"; rc=$?
+    assert_rc 1 "$rc" "still missing is not acknowledged: $out"
+    assert_eq 0 "$(grep -c -e 'daemon-reexec' -e 'nice-dns-pod' "$FAKE_LOG")" "exit 1 restarts nothing"
+    assert_match 'not-acknowledged' "$(ra_journal)" "and it is journalled, not silent"
   ) || exit 1
 }

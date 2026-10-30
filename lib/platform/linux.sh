@@ -162,10 +162,25 @@ nd_platform_runtime_repairs() { printf 'containers-missing\n'; }
 # pi-hole.service to pull the others through Wants= did nothing while Pi-hole ran
 # (214 times on mint, 2026-10-29). With no usable name (no variant is known) that
 # start is still the only thing to try.
+# A unit that exited 126 or 125 means podman could not start it. Exit 126 with
+# "systemd/private: connection refused" kept a proxy down for 20 hours until a
+# reboot; reproduced on mint with a stale socket, and a re-exec makes the manager
+# bind it again. Exit 125 ("pod cgroup is not set") follows when podman's tmp went
+# too and it reset its state; only a pod restart clears that. Neither needs a
+# reboot (2026-10-30). What the repair did is left in <tmp>/rep.note for the journal.
 nd_platform_repair_runtime() {
-  local fault="$1" dl="$2" tmp="$3" n rc=0 named=0
+  local fault="$1" dl="$2" tmp="$3" n rc=0 named=0 stuck=0
   shift 3
   [ "$fault" = containers-missing ] || return 3
+  for n in "$@"; do
+    case "$n" in pi-hole|unbound|tor-haproxy|tor-socat) ;; *) continue ;; esac
+    nd_bounded "$dl" "$tmp/rep" "$tmp/rep.err" systemctl --user show -p ExecMainStatus --value "$n.service"
+    case "$(head -n 1 "$tmp/rep" 2>/dev/null)" in 125|126) stuck=1 ;; esac
+  done
+  if [ "$stuck" = 1 ]; then
+    nd_bounded "$dl" "$tmp/rep" "$tmp/rep.err" systemctl --user daemon-reexec
+    printf 'daemon-reexec (exit %s); ' "$?" >>"$tmp/rep.note"
+  fi
   for n in "$@"; do
     case "$n" in pi-hole|unbound|tor-haproxy|tor-socat) ;; *) continue ;; esac
     named=1
@@ -173,6 +188,11 @@ nd_platform_repair_runtime() {
     nd_bounded "$dl" "$tmp/rep" "$tmp/rep.err" systemctl --user start "$n.service" || rc=$?
   done
   [ "$named" = 1 ] || nd_bounded "$dl" "$tmp/rep" "$tmp/rep.err" systemctl --user start pi-hole.service || rc=$?
+  if [ "$rc" -ne 0 ] && [ "$stuck" = 1 ]; then
+    rc=0
+    nd_bounded "$dl" "$tmp/rep" "$tmp/rep.err" systemctl --user restart nice-dns-pod.service || rc=$?
+    printf 'restart nice-dns-pod.service (exit %s); ' "$rc" >>"$tmp/rep.note"
+  fi
   return "$rc"
 }
 
