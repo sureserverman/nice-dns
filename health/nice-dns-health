@@ -1082,7 +1082,7 @@ LAUNCHER
 # outage writes one failure dump, so a long outage leaves evidence while it lasts
 # (none existed for the 2026-10-30 windows on mint).
 dump_first_escalation() {
-  local dump name verdict
+  local t name verdict
   [ "$(printf '%s\n' "$2" | awk -F '\t' '$1 == "action" { print $2; exit }')" = escalate ] || return 0
   nd_recovery_first_escalation || return 0
   HEALTH_OBS="$(cat "$1")"
@@ -1095,8 +1095,15 @@ dump_first_escalation() {
       indeterminate) INDETERMINATE_CHECKS+=("$name") ;;
     esac
   done <"$1"
-  dump="$(write_failure_dump "$(ts)")"
-  log_to_file "$(ts) ESCALATED first of this outage -> $dump"
+  # Bounded: the dump runs the runtime's own commands, which are what hang on a
+  # wedged host, and a hung dump would hold the controller for the whole outage.
+  t="$(mktemp "${TMPDIR:-/tmp}/nice-dns-dump.XXXXXX")" || return 0
+  if nd_bounded "${ND_FAILURE_DUMP_S:-60}" "$t" "$t.err" write_failure_dump "$(ts)"; then
+    log_to_file "$(ts) ESCALATED first of this outage -> $(cat "$t")"
+  else
+    log_to_file "$(ts) ESCALATED first of this outage; the failure dump did not finish within ${ND_FAILURE_DUMP_S:-60} s"
+  fi
+  rm -f "$t" "$t.err"
 }
 
 # tick [--shadow]: one controller pass (lib/recovery.sh nd_recovery_tick):

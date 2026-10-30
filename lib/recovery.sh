@@ -829,7 +829,7 @@ nd_recovery_restart_tor() {
 # restart that the image cannot acknowledge falls back once to the service
 # restart; nothing is retried beyond that in one pass.
 nd_recovery_apply() {
-  local dec="$1" id="$2" rgen="$3" action target reason rc
+  local dec="$1" id="$2" rgen="$3" action target reason rc names
   action="$(_nd_rec_field action "$dec")"; target="$(_nd_rec_field target "$dec")"; reason="$(_nd_rec_field reason "$dec")"
   case "$action" in
     no-op) return 0 ;;
@@ -853,10 +853,10 @@ nd_recovery_apply() {
       esac ;;
     repair-runtime)
       # The observation names what is missing: "containers-missing: a b (running: c)".
-      rc=""
-      case "$reason" in *containers-missing:*) rc="${reason#*containers-missing: }"; rc="${rc%% (running*}" ;; esac
+      names=""
+      case "$reason" in *containers-missing:*) names="${reason#*containers-missing: }"; names="${names%% (running*}" ;; esac
       # shellcheck disable=SC2086  # the names are words; the adapter checks each
-      repair_runtime "$target" "$id" $rc; return $? ;;
+      repair_runtime "$target" "$id" $names; return $? ;;
     *) nd_recovery_journal "$id" controller refused "unknown action '$action'"; return 2 ;;
   esac
 }

@@ -866,7 +866,10 @@ t_unbound_healthy_reading_clears_both_counters_and_indeterminate_holds() {
   sp_ub_pass "$CASE_DIR/bad"; sp_ub_pass "$CASE_DIR/bad"; sp_ub_pass "$CASE_DIR/bad"
   assert_eq 1 "$(sp_key "$CASE_DIR/cur" unbound_restarts)" "a restart"
   sp_ub_pass "$CASE_DIR/good"
-  assert_eq "" "$(sp_key "$CASE_DIR/cur" unbound_restarts)" "a healthy reading clears the restart count too"
+  assert_eq 1 "$(sp_key "$CASE_DIR/cur" unbound_restarts)" "a healthy reading right after a restart keeps the count: a flap is not a cure"
+  SP_NOW=$((SP_NOW + 1800))
+  sp_ub_pass "$CASE_DIR/good"
+  assert_eq "" "$(sp_key "$CASE_DIR/cur" unbound_restarts)" "healthy a retry interval after the last restart clears it"
 }
 
 t_unbound_new_boot_clears_the_counters() {
@@ -922,4 +925,60 @@ t_full_outage_past_the_cap_restarts_the_stack_every_half_hour() {
   sp_ub_pass "$CASE_DIR/ok"
   assert_eq 0 "$(sp_key "$CASE_DIR/cur" outage_restarts)" "a healthy route clears the count"
   assert_eq - "$(sp_key "$CASE_DIR/cur" outage_since)" "and the outage"
+}
+
+t_unbound_flapping_probe_cannot_defeat_the_restart_cap() {
+  local i n=0
+  sp_ub_start
+  cp "$CASE_DIR/ok" "$CASE_DIR/bad"; sp_ub "$CASE_DIR/bad" unhealthy 'route: probe-route exit 1'
+  cp "$CASE_DIR/ok" "$CASE_DIR/good"; sp_ub "$CASE_DIR/good" healthy 'control and route answer'
+  # F F F H, for 60 passes (an hour): at most 2 restarts plus one per retry interval.
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    sp_ub_pass "$CASE_DIR/bad"; [ "$SP_TARGET" = unbound ] && n=$((n + 1))
+    sp_ub_pass "$CASE_DIR/bad"; [ "$SP_TARGET" = unbound ] && n=$((n + 1))
+    sp_ub_pass "$CASE_DIR/bad"; [ "$SP_TARGET" = unbound ] && n=$((n + 1))
+    sp_ub_pass "$CASE_DIR/good"
+  done
+  assert_eq 1 "$(( n <= 4 ))" "an hour of flapping restarted Unbound $n times"
+}
+
+t_unbound_retry_does_not_starve_the_stack_restart() {
+  local i stack=0
+  sp_ub_start
+  sp_obs "$CASE_DIR/out" healthy unhealthy unhealthy unhealthy unhealthy
+  sp_ub "$CASE_DIR/out" unhealthy 'control: no answer'
+  for i in $(seq 1 150); do
+    sp_ub_pass "$CASE_DIR/out"
+    if [ "$SP_TARGET" = stack ]; then stack=$((stack + 1)); fi
+    # Past the ladder's cap a stack restart covers Unbound as well.
+    if [ "$SP_TARGET" = unbound ] && [ "$(sp_key "$CASE_DIR/cur" outage_restarts)" -ge 2 ]; then
+      fail "past the cap the stack is what restarts, not Unbound (pass $i)"
+    fi
+  done
+  assert_eq 1 "$(( stack >= 2 ))" "the stack restarts during a long outage with a dead control socket: $stack"
+}
+
+t_unbound_acts_only_on_a_failure_seen_in_this_pass() {
+  sp_ub_start
+  cp "$CASE_DIR/ok" "$CASE_DIR/bad"; sp_ub "$CASE_DIR/bad" unhealthy 'control: exit 1'
+  cp "$CASE_DIR/ok" "$CASE_DIR/idk"; sp_ub "$CASE_DIR/idk" indeterminate 'deadline: nothing answered'
+  sp_ub_pass "$CASE_DIR/bad"; sp_ub_pass "$CASE_DIR/bad"; sp_ub_pass "$CASE_DIR/bad"
+  assert_eq unbound "$SP_TARGET" "the first restart"
+  sp_ub_pass "$CASE_DIR/bad"; sp_ub_pass "$CASE_DIR/bad"; sp_ub_pass "$CASE_DIR/bad"
+  assert_ne unbound "$SP_TARGET" "the streak is met again inside the cooldown"
+  SP_NOW=$((SP_NOW + 300))
+  sp_ub_pass "$CASE_DIR/idk"
+  assert_ne unbound "$SP_TARGET" "an indeterminate pass acts on nothing, even with the streak met"
+  sp_ub_pass "$CASE_DIR/ok"
+  assert_ne unbound "$SP_TARGET" "nor does a pass with no reading"
+  sp_ub_pass "$CASE_DIR/bad"
+  assert_eq unbound "$SP_TARGET" "a failure seen in this pass does"
+}
+
+t_unbound_route_failure_with_only_compat_answering_is_not_counted() {
+  sp_ub_start
+  sp_obs "$CASE_DIR/cmp" healthy unhealthy unhealthy unhealthy healthy
+  sp_ub "$CASE_DIR/cmp" unhealthy 'route: probe-route exit 1'
+  sp_ub_pass "$CASE_DIR/cmp"; sp_ub_pass "$CASE_DIR/cmp"; sp_ub_pass "$CASE_DIR/cmp"; sp_ub_pass "$CASE_DIR/cmp"
+  assert_eq "" "$(sp_key "$CASE_DIR/cur" unbound_fail)" "compat is never selected, so it says nothing about Unbound's route"
 }

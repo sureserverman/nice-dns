@@ -94,6 +94,7 @@ STUB
   cat >"$b/systemctl" <<'STUB'
 #!/bin/sh
 l=systemctl; for a in "$@"; do l="$l $a"; done; printf '%s\n' "$l" >>"$FAKE_LOG"
+if [ -f "$FAKE/systemctl_hang" ]; then exec sleep "$(cat "$FAKE/systemctl_hang")"; fi
 case "$2" in
   restart)
     [ -f "$FAKE/restart_changes" ] && echo "t$(date +%s)-new" >"$FAKE/started"
@@ -1072,5 +1073,40 @@ t_an_ordinary_missing_container_gets_no_reexec_or_pod_restart() {
     assert_rc 1 "$rc" "still missing is not acknowledged: $out"
     assert_eq 0 "$(grep -c -e 'daemon-reexec' -e 'nice-dns-pod' "$FAKE_LOG")" "exit 1 restarts nothing"
     assert_match 'not-acknowledged' "$(ra_journal)" "and it is journalled, not silent"
+  ) || exit 1
+}
+
+t_the_pod_restart_repair_is_rate_limited() {
+  (
+    ra_fake linux
+    printf 'pi-hole\nunbound\n' >"$FAKE/running"
+    echo 125 >"$FAKE/exec_status"; : >"$FAKE/start_fails"
+    ra_repair_dec tor-haproxy
+    nd_recovery_apply "$CASE_DIR/dec" ra-p1 7 >/dev/null
+    assert_eq 1 "$(grep -c 'restart nice-dns-pod' "$FAKE_LOG")" "the first failed repair restarts the pod"
+    nd_recovery_apply "$CASE_DIR/dec" ra-p2 7 >/dev/null
+    assert_eq 1 "$(grep -c 'restart nice-dns-pod' "$FAKE_LOG")" "the next, a cooldown later, does not: Pi-hole is still serving"
+    assert_match 'not-acknowledged' "$(ra_journal)" "it stays journalled"
+    ND_POLICY_RETRY_S=0 nd_recovery_apply "$CASE_DIR/dec" ra-p3 7 >/dev/null
+    assert_eq 2 "$(grep -c 'restart nice-dns-pod' "$FAKE_LOG")" "a retry interval later, it does again"
+  ) || exit 1
+}
+
+t_a_hung_service_manager_cannot_outlast_the_repair_budget() {
+  local start el
+  (
+    ra_fake linux
+    printf 'nice-dns-infra\n' >"$FAKE/running"
+    echo 973 >"$FAKE/systemctl_hang"
+    export ND_RECOVERY_SERVICE_S=3
+    ra_repair_dec 'pi-hole unbound tor-haproxy'
+    start="$(date +%s)"
+    nd_recovery_apply "$CASE_DIR/dec" ra-b1 7 >/dev/null
+    el=$(( $(date +%s) - start ))
+    # Per-call deadlines times eight calls would be over 30 s.
+    assert_eq 1 "$(( el <= 18 ))" "the repair ends near its budget, took $el s"
+    sleep 1
+    # shellcheck disable=SC2009  # pgrep is not in the stub PATH
+    assert_eq 0 "$(ps -eo args 2>/dev/null | grep -c '^sleep 973$')" "no hung child is left"
   ) || exit 1
 }

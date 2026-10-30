@@ -326,7 +326,7 @@ t_unbound_failing_with_routes_healthy_is_restarted_by_real_ticks() {
       rm -f "$FAKE/unbound_control"
       ci_tick
       assert_eq "$(printf 'unbound requested\nunbound acknowledged\nunbound ready')" "$(ci_journal)" "$plat: requested, acknowledged, ready"
-      assert_eq "" "$(ci_state unbound_restarts)" "$plat: a healthy reading clears the count"
+      assert_eq "" "$(ci_state unbound_fail)" "$plat: a healthy reading clears the streak"
     ) || exit 1
   done
 }

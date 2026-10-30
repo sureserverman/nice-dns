@@ -54,12 +54,14 @@
 #     fault.
 #   * Unbound's own health, after runtime faults and before route selection. An
 #     unbound observation with a control: reason counts always; a route: reason
-#     counts only with a route healthy in the same pass, since in a full outage
-#     the probe is telling the truth about Tor. Indeterminate or absent changes
-#     nothing; healthy clears unbound_fail and unbound_restarts. At
+#     counts only with an identity route healthy in the same pass, since otherwise
+#     the probe is telling the truth about the upstream. Indeterminate or absent
+#     changes nothing and acts on nothing. Healthy clears unbound_fail, and clears
+#     unbound_restarts once ND_POLICY_RETRY_S has passed since the last restart. At
 #     ND_POLICY_UNBOUND_FAILS (3) in a row, outside the startup allowance and the
 #     cooldown, Unbound restarts (target unbound). After
 #     ND_POLICY_UNBOUND_MAX_RESTARTS (2) it retries every ND_POLICY_RETRY_S (1800).
+#     Past the ladder's cap in a full outage the stack restart covers it instead.
 #     The controller owns this restart: no quadlet restarts on health, since a
 #     health-triggered restart looped and wiped Tor's bootstrap.
 #   * Route selection, when an identity route is healthy: the current route
@@ -245,16 +247,26 @@ nd_policy_decide() {
     fi
 
     # Unbound's own health. A control failure is always its own; a route failure
-    # is its own only while a route answers, since in a full outage the probe is
-    # telling the truth about Tor. Indeterminate or absent changes nothing.
+    # is its own only while an identity route answers (Unbound never selects
+    # compat), since otherwise the probe is telling the truth about the upstream.
+    # Indeterminate or absent changes nothing and acts on nothing. A healthy
+    # reading ends the streak; the restart count ends only a retry interval after
+    # the last restart, or a flapping probe would defeat the cap.
+    local ub_seen=0
     case "$ub:$ub_reason" in
-      healthy:*) s_ubfail=0 s_ubrest=0 ;;
-      unhealthy:control:*) s_ubfail=$((s_ubfail + 1)) ;;
-      unhealthy:route:*) if [ "$healthy_now" = 1 ] || [ "$compat_ok" = 1 ]; then s_ubfail=$((s_ubfail + 1)); fi ;;
+      healthy:*)
+        s_ubfail=0
+        if ! _nd_p_num "$s_rec" || [ $((now - s_rec)) -ge "$retry" ]; then s_ubrest=0; fi ;;
+      unhealthy:control:*) s_ubfail=$((s_ubfail + 1)) ub_seen=1 ;;
+      unhealthy:route:*) if [ "$healthy_now" = 1 ]; then s_ubfail=$((s_ubfail + 1)) ub_seen=1; fi ;;
     esac
-    if [ "$s_ubfail" -ge "$ubfails" ]; then
+    if [ "$ub_seen" = 1 ] && [ "$s_ubfail" -ge "$ubfails" ]; then
       if [ "$in_startup" = 1 ] || [ "$in_cool" = 1 ]; then
         notes="${notes}Unbound failed $s_ubfail checks in a row, inside the startup allowance or cooldown; "
+      elif [ "$healthy_now" != 1 ] && [ "$s_rest" -ge "$maxr" ]; then
+        # Past the ladder's cap the stack restart below covers Unbound as well.
+        # Both would be due at the same moment, and Unbound's would reset the timer.
+        notes="${notes}Unbound failed $s_ubfail checks in a row; the stack restart covers it; "
       elif [ "$s_ubrest" -lt "$ubmax" ] || ! _nd_p_num "$s_rec" || [ $((now - s_rec)) -ge "$retry" ]; then
         ub_due=1
       else

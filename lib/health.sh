@@ -476,6 +476,13 @@ $rows
 EOF
 }
 
+# _nd_ub_exec_failed <rc>: the runtime failed to run the command, so it says
+# nothing about Unbound: podman's own exit 125, or an "Error:" line on any line of
+# stderr (podman may warn first; Apple container exits 1 with one).
+_nd_ub_exec_failed() {
+  [ "$1" = 125 ] || grep -q '^Error:' "$_ND_H_TMP/ub.err" 2>/dev/null
+}
+
 # _nd_obs_unbound: see the unbound record in the header. The route probes above
 # run in the proxy image, so they pass with Unbound broken; this one is the only
 # record that looks at Unbound itself.
@@ -500,9 +507,9 @@ _nd_obs_unbound() {
       fi
       return 0 ;;
     126|127) _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "no unbound-control in the image (exit $rc)"; return 0 ;;
-    *) case "$why" in
-         Error:*) _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "the runtime could not exec in unbound (exit $rc): $why"; return 0 ;;
-       esac
+    *) if _nd_ub_exec_failed "$rc"; then
+         _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "the runtime could not exec in unbound (exit $rc): $(grep -m 1 '^Error:' "$_ND_H_TMP/ub.err")"; return 0
+       fi
        _nd_obs unbound unhealthy $(($(_nd_now_ms) - t0)) "control: exit $rc: $why"; return 0 ;;
   esac
   dl="$(_nd_deadline "${ND_HEALTH_UNBOUND_PROBE_DEADLINE:-20}")"
@@ -512,11 +519,11 @@ _nd_obs_unbound() {
     0) _nd_obs unbound healthy $(($(_nd_now_ms) - t0)) "control and route answer" ;;
     124) _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "deadline: probe-route gave no verdict within ${dl}s" ;;
     126|127) _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "no probe-route in the image (exit $rc)" ;;
-    *) why="$(_nd_first_line "$_ND_H_TMP/ub.err")"
-       case "$why" in
-         Error:*) _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "the runtime could not exec in unbound (exit $rc): $why" ;;
-         *) _nd_obs unbound unhealthy $(($(_nd_now_ms) - t0)) "route: probe-route exit $rc: $why" ;;
-       esac ;;
+    *) if _nd_ub_exec_failed "$rc"; then
+         _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "the runtime could not exec in unbound (exit $rc): $(grep -m 1 '^Error:' "$_ND_H_TMP/ub.err")"
+       else
+         _nd_obs unbound unhealthy $(($(_nd_now_ms) - t0)) "route: probe-route exit $rc: $(_nd_first_line "$_ND_H_TMP/ub.err")"
+       fi ;;
   esac
 }
 

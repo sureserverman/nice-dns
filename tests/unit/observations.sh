@@ -1005,3 +1005,41 @@ t_tick_writes_one_failure_dump_per_outage() {
     rm -f "$FAKE/probe/"*
   done
 }
+
+t_a_runtime_exec_failure_is_never_unbounds_fault() {
+  local plat
+  ob_setup linux
+  export ND_HEALTH_CMD_DEADLINE=1
+  for plat in $(ob_platforms); do
+    ob_platform "$plat"
+    # A warning before the error, as podman prints with its bus refused.
+    echo exec-error >"$FAKE/unbound_control"
+    ob_observe
+    ob_expect unbound indeterminate 'could not exec' "$plat: exit 125 with a warning first is the runtime's failure"
+    ob_unbound_reset
+    echo exec-error >"$FAKE/unbound_probe_rc"
+    ob_observe
+    ob_expect unbound indeterminate 'could not exec' "$plat: the same from the route probe"
+    ob_unbound_reset
+  done
+}
+
+t_the_first_escalation_dump_is_bounded() {
+  local g now t0
+  ob_setup linux
+  ob_tree
+  for g in 18531 18532 18533 853; do printf 'servfail\n' >"$FAKE/probe/$g"; done
+  now="$(date +%s)"
+  export ND_STATE_DIR="$CASE_DIR/ctl" ND_FAILURE_DUMP_S=2
+  mkdir -p "$ND_STATE_DIR"; chmod 700 "$ND_STATE_DIR"
+  printf 'schema\tnice-dns-controller-state/1\ngeneration\t1\nboot_id\tboot-a\nupdated\t%s\nstarted\t%s\nroute\t-\noutage_since\t%s\noutage_restarts\t2\nlast_action\t-\nlast_action_at\t-\nrecovery_at\t%s\n' \
+    "$((now - 60))" "$((now - 7200))" "$((now - 3600))" "$((now - 600))" >"$ND_STATE_DIR/state.tsv"
+  chmod 600 "$ND_STATE_DIR/state.tsv"
+  # The dump's own `logs` hangs, as on a wedged runtime; the observations do not use it.
+  printf '%s\n' 1 >"$FAKE/logs.hang"
+  t0=$SECONDS
+  ND_BOOT_ID=boot-a bash "$OB_TREE/health/nice-dns-health" tick >"$CASE_DIR/out" 2>&1
+  assert_match '^action	escalate$' "$(cat "$CASE_DIR/out")" "the pass escalates"
+  assert_eq 1 "$(( SECONDS - t0 <= 25 ))" "a hung dump does not hold the pass: $(( SECONDS - t0 )) s"
+  unset ND_STATE_DIR ND_FAILURE_DUMP_S
+}
