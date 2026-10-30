@@ -89,7 +89,21 @@ case "$1" in
           garbage) printf 'OCI runtime exec failed:\texec failed\nno such file\n' >&2; exit 126 ;;
           hang) sleep "$(cat "$FAKE/hang_secs")" & wait; exit 1 ;;
         esac ;;
+      # Unbound's control client: $FAKE/unbound_control is refused, hang (a
+      # frozen daemon: the socket accepts and never answers) or missing.
+      unbound-control)
+        case "$(cat "$FAKE/unbound_control" 2>/dev/null)" in
+          refused) echo 'error: connect: Connection refused for /run/unbound/control.sock' >&2; exit 1 ;;
+          hang) sleep "$(cat "$FAKE/hang_secs")" & wait; exit 1 ;;
+          missing)
+            if [ "$me" = container ]; then echo 'Error: failed to start process (cause: "internalError: "failed to find target executable unbound-control"")' >&2; exit 1; fi
+            echo 'Error: crun: executable file `unbound-control` not found in $PATH' >&2; exit 127 ;;
+        esac
+        exit 0 ;;
+      # A plain exec: $FAKE/exec_hang is a runtime that cannot exec at all.
+      true) if [ -f "$FAKE/exec_hang" ]; then sleep "$(cat "$FAKE/hang_secs")" & wait; exit 1; fi; exit 0 ;;
       /usr/local/bin/nice-dns-unbound-start)
+        if [ -f "$FAKE/unbound_probe_hang" ]; then sleep "$(cat "$FAKE/hang_secs")" & wait; exit 1; fi
         # "missing": an Unbound image without the tool, as each runtime
         # really reports it (observed 2026-09-25): podman/crun 127, Apple
         # container exit 1 with its own message.

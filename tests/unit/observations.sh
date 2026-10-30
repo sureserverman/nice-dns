@@ -467,7 +467,7 @@ t_observe_output_is_valid_tsv_with_one_line_reasons() {
       assert_match 'runtime-down: .*failed to connect' "$(ob_reason runtime)" "$plat: the runtime's error is the reason"
     fi
     if [ "$plat" = linux ]; then drift="install-drift "; else drift=""; fi
-    assert_eq "runtime proxy dns-owner ${drift}local-service filtering local-cache route:cloudflare-onion route:cloudflare-exit route:quad9-exit route:cloudflare-legacy " \
+    assert_eq "runtime proxy dns-owner ${drift}local-service filtering local-cache route:cloudflare-onion route:cloudflare-exit route:quad9-exit route:cloudflare-legacy unbound " \
       "$(printf '%s\n' "$OB_OUT" | awk -F '\t' '$1 == "obs" { print $2 }' | tr '\n' ' ')" "$plat: the documented names, in order (install-drift on Linux only)"
   done
 }
@@ -718,8 +718,8 @@ INNER
   assert_match '^response\|NOERROR\|104\.16\.132\.229 104\.16\.133\.229$' "$out" "dig parse under 3.2 (BusyBox awk)"
   assert_match '^bounded=124 secs=[12]$' "$out" "the deadline holds under 3.2"
   assert_match '^left=0$' "$out" "no process left under 3.2"
-  assert_eq 10 "$(awk -F '\t' '$1 == "obs" && $3 == "healthy"' "$w/obs-linux.tsv" | wc -l | tr -d ' ')" "all ten linux observations healthy under 3.2 (proxy added, Sub-plan 5 Task 1.3)"
-  assert_eq 10 "$(awk -F '\t' '$1 == "obs" && $3 == "healthy"' "$w/obs-macos.tsv" | wc -l | tr -d ' ')" "all ten macos observations healthy under 3.2 (proxy added, Sub-plan 5 Task 1.3)"
+  assert_eq 11 "$(awk -F '\t' '$1 == "obs" && $3 == "healthy"' "$w/obs-linux.tsv" | wc -l | tr -d ' ')" "all eleven linux observations healthy under 3.2 (proxy, then unbound added)"
+  assert_eq 11 "$(awk -F '\t' '$1 == "obs" && $3 == "healthy"' "$w/obs-macos.tsv" | wc -l | tr -d ' ')" "all eleven macos observations healthy under 3.2 (proxy, then unbound added)"
   for p in linux macos; do
     assert_match "^cli-run-$p=0\$" "$out" "$p: CLI run passes under 3.2"
     assert_match "^cli-indeterminate-$p=1\$" "$out" "$p: CLI indeterminate run under 3.2"
@@ -908,4 +908,73 @@ t_a_missing_generation_is_security_drift() {
   ob_observe
   assert_eq "" "$(ob_verdict install-drift)" "no install-drift record on macOS"
   printf '%s\n' "$OB_OUT" | bash -c '. "$1" && nd_health_validate' _ "$OB_HEALTH" || fail "macOS set valid without install-drift"
+}
+
+# ob_unbound_reset: a working Unbound.
+ob_unbound_reset() { rm -f "$FAKE/unbound_control" "$FAKE/exec_hang" "$FAKE/unbound_probe_rc" "$FAKE/unbound_probe_hang"; }
+
+t_unbound_is_observed_on_its_own_evidence() {
+  local plat
+  ob_setup linux
+  export ND_HEALTH_CMD_DEADLINE=1
+  for plat in $(ob_platforms); do
+    ob_platform "$plat"
+    ob_observe
+    ob_expect unbound healthy 'control and route answer' "$plat: a working Unbound"
+    printf '%s\n' "$OB_OUT" | bash -c '. "$1" && nd_health_validate' _ "$OB_HEALTH" || fail "$plat: the set with an unbound record is valid"
+
+    ob_unbound_reset; echo refused >"$FAKE/unbound_control"
+    ob_observe
+    ob_expect unbound unhealthy '^control: .*Connection refused' "$plat: a refused control socket is Unbound's own failure"
+
+    ob_unbound_reset; echo 1 >"$FAKE/unbound_probe_rc"
+    ob_observe
+    ob_expect unbound unhealthy '^route: ' "$plat: a failed route probe"
+
+    # A frozen daemon (live, mint 2026-10-30, SIGSTOP): control hangs, exec answers.
+    ob_unbound_reset; echo hang >"$FAKE/unbound_control"
+    ob_observe
+    ob_expect unbound unhealthy '^control: .*no answer' "$plat: control hangs while the container still execs"
+
+    ob_unbound_reset; echo hang >"$FAKE/unbound_control"; : >"$FAKE/exec_hang"
+    ob_observe
+    ob_expect unbound indeterminate 'deadline' "$plat: a timeout with no working exec is no evidence"
+
+    ob_unbound_reset; echo missing >"$FAKE/unbound_control"
+    ob_observe
+    ob_expect unbound indeterminate 'no unbound-control' "$plat: an image without the control client (exit 127)"
+
+    ob_unbound_reset; echo missing >"$FAKE/unbound_probe_rc"
+    ob_observe
+    ob_expect unbound indeterminate 'no probe-route' "$plat: an image without the probe (exit 127)"
+
+    ob_unbound_reset; echo 126 >"$FAKE/unbound_probe_rc"
+    ob_observe
+    ob_expect unbound indeterminate 'no probe-route' "$plat: exit 126 is the same"
+
+    ob_unbound_reset; : >"$FAKE/unbound_probe_hang"
+    ND_HEALTH_UNBOUND_PROBE_DEADLINE=1 ob_observe
+    ob_expect unbound indeterminate 'deadline' "$plat: a route probe past its deadline"
+
+    ob_unbound_reset; printf 'pi-hole\ntor-haproxy\n' >"$FAKE/running"
+    ob_observe
+    ob_expect unbound indeterminate 'not running' "$plat: a missing container is the runtime observation's fault"
+    printf 'pi-hole\nunbound\ntor-haproxy\n' >"$FAKE/running"
+    ob_unbound_reset
+  done
+}
+
+t_unbound_observation_stays_inside_the_budget() {
+  local plat t0
+  ob_setup linux
+  export ND_HEALTH_CMD_DEADLINE=1 ND_HEALTH_UNBOUND_PROBE_DEADLINE=30
+  for plat in $(ob_platforms); do
+    ob_platform "$plat"
+    echo hang >"$FAKE/unbound_control"; : >"$FAKE/unbound_probe_hang"; : >"$FAKE/exec_hang"
+    t0=$SECONDS
+    ob_observe 4
+    assert_eq 0 "$(( SECONDS - t0 > 10 ))" "$plat: the pass ends near its budget, took $(( SECONDS - t0 )) s"
+    ob_expect unbound indeterminate '' "$plat: a spent budget acts on nothing"
+    ob_unbound_reset
+  done
 }
