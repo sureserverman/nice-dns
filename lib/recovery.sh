@@ -20,7 +20,8 @@
 #                                         restart Unbound (macOS: the stack)
 #   nd_recovery_restart_stack <request_id>
 #                                         restart the whole stack
-#   repair_runtime <fault> <request_id>   repair the runtime fault observed
+#   repair_runtime <fault> <request_id> [missing name...]
+#                                         repair the runtime fault observed
 #   nd_recovery_apply <decision> <request_id> <route_generation>
 #                                         carry out one lib/policy.sh decision
 #   nd_recovery_tick <active|shadow> <observations>
@@ -775,11 +776,12 @@ nd_recovery_first_escalation() {
 
 repair_runtime() {
   local fault="${1:-}" id="${2:-}" dl="${ND_RECOVERY_CMD_DEADLINE:-15}" svc="${ND_RECOVERY_SERVICE_S:-120}" rc i=0 n
+  shift 2
   case "$fault" in runtime-down|containers-missing) ;; *) _nd_rec_out refused runtime "$id" - - "no repair for fault '$fault'"; return 2 ;; esac
   if ! _nd_rec_id_ok "$id"; then _nd_rec_out refused runtime "$id" - - "bad request id"; return 2; fi
   _nd_rec_lock_ok "$id" runtime || return 5
   _ND_RX="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-recovery.XXXXXX")" || return 4
-  nd_platform_repair_runtime "$fault" "$svc" "$_ND_RX"; rc=$?
+  nd_platform_repair_runtime "$fault" "$svc" "$_ND_RX" "$@"; rc=$?
   if [ "$rc" -eq 3 ]; then
     nd_recovery_journal "$id" runtime unsupported "no repair for $fault on $(nd_platform_name)"
     _nd_rec_out unsupported runtime "$id" - - "no repair for $fault on $(nd_platform_name)"; rm -rf "$_ND_RX"; return 3
@@ -849,7 +851,12 @@ nd_recovery_apply() {
         stack) nd_recovery_restart_stack "$id"; return $? ;;
         *) nd_recovery_journal "$id" controller refused "no restart for component '$target'"; return 2 ;;
       esac ;;
-    repair-runtime) repair_runtime "$target" "$id"; return $? ;;
+    repair-runtime)
+      # The observation names what is missing: "containers-missing: a b (running: c)".
+      rc=""
+      case "$reason" in *containers-missing:*) rc="${reason#*containers-missing: }"; rc="${rc%% (running*}" ;; esac
+      # shellcheck disable=SC2086  # the names are words; the adapter checks each
+      repair_runtime "$target" "$id" $rc; return $? ;;
     *) nd_recovery_journal "$id" controller refused "unknown action '$action'"; return 2 ;;
   esac
 }

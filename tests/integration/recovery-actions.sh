@@ -969,3 +969,45 @@ t_first_escalation_of_an_outage_is_reported_once() {
     nd_recovery_first_escalation; assert_rc 1 $? "an escalation with no outage is not one"
   ) || exit 1
 }
+
+# ─────────────────────────── fakes: repair by name ──────────────────────────
+
+# ra_repair_dec <names>: the decision the policy writes for a missing container.
+ra_repair_dec() { printf 'schema\tnice-dns-decision/1\naction\trepair-runtime\ntarget\tcontainers-missing\nreason\truntime fault: containers-missing: %s (running: pi-hole)\n' "$1" >"$CASE_DIR/dec"; }
+
+t_missing_container_is_started_by_name() {
+  local out rc
+  (
+    ra_fake linux
+    # The 10-29 fault: Pi-hole active, the proxy unit stopped.
+    printf 'pi-hole\nunbound\n' >"$FAKE/running"; : >"$FAKE/start_brings_up"
+    ra_repair_dec tor-haproxy
+    out="$(nd_recovery_apply "$CASE_DIR/dec" ra-n1 7)"; rc=$?
+    assert_rc 0 "$rc" "the proxy comes back: $out"
+    assert_eq 1 "$(grep -c '^systemctl --user reset-failed tor-haproxy.service$' "$FAKE_LOG")" "its failed state is cleared"
+    assert_eq 1 "$(grep -c '^systemctl --user start tor-haproxy.service$' "$FAKE_LOG")" "it is started by name"
+    assert_eq 0 "$(grep -c '^systemctl --user start pi-hole.service$' "$FAKE_LOG")" "a running Pi-hole is not what gets started"
+    assert_eq "$(printf 'runtime requested\nruntime acknowledged')" "$(ra_journal)" "journal"
+    assert_not_match 'restart|exec|kill' "$(cat "$FAKE_LOG")" "nothing running is restarted"
+
+    : >"$FAKE_LOG"; printf 'pi-hole\n' >"$FAKE/running"
+    ra_repair_dec 'unbound tor-haproxy'
+    nd_recovery_apply "$CASE_DIR/dec" ra-n2 7 >/dev/null
+    assert_eq 1 "$(grep -c '^systemctl --user start unbound.service$' "$FAKE_LOG")" "every missing name is started"
+    assert_eq 1 "$(grep -c '^systemctl --user start tor-haproxy.service$' "$FAKE_LOG")" "all of them"
+
+    # Only the stack's own names reach systemctl.
+    : >"$FAKE_LOG"; printf 'pi-hole\n' >"$FAKE/running"
+    ra_repair_dec 'unbound;rm evil.service'
+    nd_recovery_apply "$CASE_DIR/dec" ra-n3 7 >/dev/null
+    assert_not_match 'evil|;rm' "$(cat "$FAKE_LOG")" "a strange name is dropped"
+  ) || exit 1
+  (
+    ra_fake macos
+    printf 'pi-hole\n' >"$FAKE/running"; : >"$FAKE/start_brings_up"
+    ra_repair_dec tor-haproxy
+    out="$(nd_recovery_apply "$CASE_DIR/dec" ra-n4 7)"; rc=$?
+    assert_rc 0 "$rc" "macos: the agent recreates it: $out"
+    assert_match '^launchctl kickstart gui/[0-9]+/org.nice-dns.start-container$' "$(cat "$FAKE_LOG")" "macos: unchanged"
+  ) || exit 1
+}

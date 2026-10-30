@@ -154,17 +154,26 @@ nd_platform_restart_stack() {
 # can repair here; the policy escalates any other (ND_POLICY_RUNTIME_REPAIRS).
 nd_platform_runtime_repairs() { printf 'containers-missing\n'; }
 
-# nd_platform_repair_runtime <fault> <deadline> <tmp>: 0 issued; 3 no repair
-# exists for this fault here. Rootless podman has no daemon to restart, so a
-# runtime that does not answer is escalated, not repaired (it is not in
-# nd_platform_runtime_repairs). Missing containers are started through
-# pi-hole.service, whose Wants= pulls unbound and the proxy; running units are
-# left alone.
+# nd_platform_repair_runtime <fault> <deadline> <tmp> [missing name...]: 0
+# issued; 3 no repair exists for this fault here. Rootless podman has no daemon
+# to restart, so a runtime that does not answer is escalated, not repaired (it
+# is not in nd_platform_runtime_repairs). Missing containers are started by name:
+# their failed state is cleared first, and running units are left alone. Starting
+# pi-hole.service to pull the others through Wants= did nothing while Pi-hole ran
+# (214 times on mint, 2026-10-29). With no usable name (no variant is known) that
+# start is still the only thing to try.
 nd_platform_repair_runtime() {
-  case "$1" in
-    containers-missing) nd_bounded "$2" "$3/rep" "$3/rep.err" systemctl --user start pi-hole.service ;;
-    *) return 3 ;;
-  esac
+  local fault="$1" dl="$2" tmp="$3" n rc=0 named=0
+  shift 3
+  [ "$fault" = containers-missing ] || return 3
+  for n in "$@"; do
+    case "$n" in pi-hole|unbound|tor-haproxy|tor-socat) ;; *) continue ;; esac
+    named=1
+    nd_bounded "$dl" "$tmp/rep" "$tmp/rep.err" systemctl --user reset-failed "$n.service"
+    nd_bounded "$dl" "$tmp/rep" "$tmp/rep.err" systemctl --user start "$n.service" || rc=$?
+  done
+  [ "$named" = 1 ] || nd_bounded "$dl" "$tmp/rep" "$tmp/rep.err" systemctl --user start pi-hole.service || rc=$?
+  return "$rc"
 }
 
 # ─── Bridge operations (Sub-plan 3, Task 2.2; ARCH-07) ─────────────────────
