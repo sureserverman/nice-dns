@@ -86,11 +86,13 @@ nd_policy_decide() {
   local startup="${ND_POLICY_STARTUP_S:-120}" grace="${ND_POLICY_GRACE_S:-300}" cool="${ND_POLICY_COOLDOWN_S:-300}"
   local promote="${ND_POLICY_PROMOTE:-5}" demote="${ND_POLICY_DEMOTE:-2}" maxr="${ND_POLICY_MAX_RESTARTS:-2}"
   local stale="${ND_POLICY_STALE:-5}" ladder="${ND_POLICY_LADDER_S:-660}"
+  local ubfails="${ND_POLICY_UNBOUND_FAILS:-3}" ubmax="${ND_POLICY_UNBOUND_MAX_RESTARTS:-2}" retry="${ND_POLICY_RETRY_S:-1800}"
   local repairs=" ${ND_POLICY_RUNTIME_REPAIRS:-runtime-down containers-missing} "
   local routes="${ND_ROUTES_FILE:-$ND_POLICY_LIB_DIR/../routes/providers.tsv}"
   local tab=$'\t' cr=$'\r' a b c d e rest i j n=0 v
   local -a rid=() rok=() rfail=() runk=() robs=()
   local s_boot=- s_updated=- s_started=- s_route=- s_out=- s_rest=0 s_la=- s_laat=- s_rec=- s_pgen=- p_gen="" fresh=0
+  local s_ubfail=0 s_ubrest=0 ub=- ub_reason="" ub_due=0
   local rt=- rt_reason="" compat_ok=0 valid=1 why="" notes=""
   local action=no-op target=- reason=""
 
@@ -125,6 +127,7 @@ nd_policy_decide() {
       boot_id) s_boot="$b" ;; updated) s_updated="$b" ;; started) s_started="$b" ;;
       route) s_route="$b" ;; outage_since) s_out="$b" ;; outage_restarts) s_rest="$b" ;;
       proxy_gen) s_pgen="$b" ;;
+      unbound_fail) s_ubfail="$b" ;; unbound_restarts) s_ubrest="$b" ;;
       last_action) s_la="$b" ;; last_action_at) s_laat="$b" ;; recovery_at) s_rec="$b" ;;
       streak)
         i=0
@@ -135,6 +138,8 @@ nd_policy_decide() {
     esac
   done <"$stf"
   _nd_p_num "$s_rest" || s_rest=0
+  _nd_p_num "$s_ubfail" || s_ubfail=0
+  _nd_p_num "$s_ubrest" || s_ubrest=0
 
   # Observations.
   local first=1
@@ -158,6 +163,7 @@ nd_policy_decide() {
     case "$b" in
       runtime) rt="$c"; rt_reason="$e" ;;
       proxy) case "$c:$e" in healthy:generation:*) p_gen="${e#generation:}" ;; esac ;;
+      unbound) ub="$c"; ub_reason="$e" ;;
       route:*)
         i=0
         while [ "$i" -lt "$n" ]; do
@@ -172,7 +178,7 @@ nd_policy_decide() {
   # Boot and clock.
   if [ "$s_boot" != "$boot" ]; then
     [ "$s_boot" = - ] || notes="boot changed; timers restart; "
-    s_boot="$boot" s_started="$now" s_out=- s_rest=0 s_rec=- s_laat=-
+    s_boot="$boot" s_started="$now" s_out=- s_rest=0 s_rec=- s_laat=- s_ubfail=0 s_ubrest=0
     [ "$s_la" = - ] || s_la=-
     i=0; while [ "$i" -lt "$n" ]; do rok[i]=0; rfail[i]=0; runk[i]=0; i=$((i + 1)); done
     fresh=1
@@ -224,6 +230,24 @@ nd_policy_decide() {
       s_out="$now"
     fi
 
+    # Unbound's own health. A control failure is always its own; a route failure
+    # is its own only while a route answers, since in a full outage the probe is
+    # telling the truth about Tor. Indeterminate or absent changes nothing.
+    case "$ub:$ub_reason" in
+      healthy:*) s_ubfail=0 s_ubrest=0 ;;
+      unhealthy:control:*) s_ubfail=$((s_ubfail + 1)) ;;
+      unhealthy:route:*) if [ "$healthy_now" = 1 ] || [ "$compat_ok" = 1 ]; then s_ubfail=$((s_ubfail + 1)); fi ;;
+    esac
+    if [ "$s_ubfail" -ge "$ubfails" ]; then
+      if [ "$in_startup" = 1 ] || [ "$in_cool" = 1 ]; then
+        notes="${notes}Unbound failed $s_ubfail checks in a row, inside the startup allowance or cooldown; "
+      elif [ "$s_ubrest" -lt "$ubmax" ] || ! _nd_p_num "$s_rec" || [ $((now - s_rec)) -ge "$retry" ]; then
+        ub_due=1
+      else
+        notes="${notes}Unbound failed $s_ubfail checks in a row after $s_ubrest restarts; next restart ${retry} s after the last ($((now - s_rec)) s so far); "
+      fi
+    fi
+
     local rt_fault=""
     if [ "$rt" = unhealthy ]; then
       case "$rt_reason" in
@@ -242,6 +266,9 @@ nd_policy_decide() {
       elif [ "$in_cool" = 1 ]; then reason="runtime fault ($rt_fault) inside the recovery cooldown"
       else action=repair-runtime target="$rt_fault" reason="runtime fault: $rt_reason"
       fi
+    elif [ "$ub_due" = 1 ]; then
+      action=restart-component target=unbound reason="Unbound failed $s_ubfail checks in a row: $ub_reason"
+      s_ubfail=0 s_ubrest=$((s_ubrest + 1)) s_rec="$now"
     elif [ "$healthy_now" = 1 ]; then
       # Current route: an identity route whose fail streak is under demote.
       local cur=-1 best=-1 cand=-1
@@ -310,6 +337,9 @@ nd_policy_decide() {
   printf 'schema\tnice-dns-decision/1\naction\t%s\ntarget\t%s\nreason\t%s\n' "$action" "$target" "$reason"
   printf 'schema\tnice-dns-controller-state/1\nboot_id\t%s\nupdated\t%s\nstarted\t%s\nroute\t%s\n' "$s_boot" "$s_updated" "$s_started" "$s_route"
   printf 'outage_since\t%s\noutage_restarts\t%s\nlast_action\t%s\nlast_action_at\t%s\nrecovery_at\t%s\nproxy_gen\t%s\n' "$s_out" "$s_rest" "$s_la" "$s_laat" "$s_rec" "$s_pgen"
+  # Only when non-zero: a bundle from before these rows refuses them (BL-036).
+  [ "$s_ubfail" = 0 ] || printf 'unbound_fail\t%s\n' "$s_ubfail"
+  [ "$s_ubrest" = 0 ] || printf 'unbound_restarts\t%s\n' "$s_ubrest"
   i=0
   while [ "$i" -lt "$n" ]; do
     printf 'streak\t%s\t%s\t%s\t%s\n' "${rid[i]}" "${rok[i]}" "${rfail[i]}" "${runk[i]}"

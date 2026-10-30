@@ -41,9 +41,12 @@
 #                   repair-runtime escalate
 #   last_action_at  epoch, or -
 #   recovery_at     epoch of the last restart or repair (the cooldown), or -
+#   unbound_fail    Unbound checks failed in a row; only when non-zero
+#   unbound_restarts restarts of Unbound since it was last healthy; only when
+#                   non-zero
 #   streak <route> <ok> <fail> <unknown>
 #                   consecutive healthy / unhealthy / not-healthy observations
-# Every key appears exactly once; streak rows once per route; nothing else.
+# Every other key appears exactly once; streak rows once per route; nothing else.
 #
 # The lock belongs to the process that runs the controller ($$; subshells
 # share it). A lock is stale, and is removed by compare-and-delete, when it was taken
@@ -131,7 +134,7 @@ _nd_state_check() {
       else if (k == "updated" || k == "started" || k == "outage_since" || k == "last_action_at" || k == "recovery_at") ok = epoch(v)
       else if (k == "route") ok = v == "-" || rid(v)
       else if (k == "proxy_gen") ok = v == "-" || v ~ /^[0-9a-f]{16}$/
-      else if (k == "outage_restarts") ok = num(v)
+      else if (k == "outage_restarts" || k == "unbound_fail" || k == "unbound_restarts") ok = num(v)
       else if (k == "last_action") ok = v ~ /^(-|no-op|switch-route|refresh-bridges|restart-component|repair-runtime|escalate)$/
       else { bad("unknown key " k); next }
       if (!ok) bad("bad value for " k)
