@@ -189,14 +189,29 @@ _nd_route_file_info() {
     END { if (r == "" || g == "" || n != 1) exit 1; print r "\t" g "\t" a }' "$1"
 }
 
+# _nd_route_x <deadline> <cmd...>: a route step under nd_bounded, stdout and
+# stderr as the command gave them. A frozen Unbound accepts the control
+# connection and never answers, so an unbounded unbound-control holds the whole
+# controller pass until systemd kills it, with nothing saved (mint 2026-10-30).
+_nd_route_x() {
+  local dl="$1" t rc
+  shift
+  t="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-route.XXXXXX")" || return 4
+  nd_bounded "$dl" "$t/o" "$t/e" "$@"; rc=$?
+  cat "$t/o"; cat "$t/e" >&2
+  [ "$rc" -ne 124 ] || printf 'no answer within %ss\n' "$dl" >&2
+  rm -rf "${t:?}"
+  return "$rc"
+}
+
 # route_readback: the route marker and root forwarder address of the running
 # Unbound, read through the control socket: "route<TAB>generation<TAB>address".
 # 1 when control is unreachable or the running config has no single marker
 # and single root forwarder.
 route_readback() {
   local data fwd
-  data="$(nd_platform_unbound_exec unbound-control -c "$_ND_CTL" list_local_data 2>/dev/null)" || return 1
-  fwd="$(nd_platform_unbound_exec unbound-control -c "$_ND_CTL" list_forwards 2>/dev/null)" || return 1
+  data="$(_nd_route_x "${ND_RECOVERY_CMD_DEADLINE:-15}" nd_platform_unbound_exec unbound-control -c "$_ND_CTL" list_local_data 2>/dev/null)" || return 1
+  fwd="$(_nd_route_x "${ND_RECOVERY_CMD_DEADLINE:-15}" nd_platform_unbound_exec unbound-control -c "$_ND_CTL" list_forwards 2>/dev/null)" || return 1
   printf '%s\n--forwards--\n%s\n' "$data" "$fwd" | awk '
     /^--forwards--$/ { part = 2; next }
     part != 2 && $1 == "nice-dns-route.invalid." && $4 == "TXT" {
@@ -215,33 +230,35 @@ route_readback() {
 
 # _nd_route_wait_runtime <route> <generation> <address>: poll the readback
 # (a reload completes after unbound-control has answered "ok"). _ND_RT holds
-# the last readback.
+# the last readback. The limit is wall-clock: one readback can take a command
+# deadline.
 _nd_route_wait_runtime() {
-  local i=0 max=$(( ${ND_ROUTE_READBACK_SECONDS:-15} * 4 ))
+  local end=$(( $(date +%s) + ${ND_ROUTE_READBACK_SECONDS:-15} ))
   while :; do
     _ND_RT="$(route_readback)" || _ND_RT="unreadable"
     [ "$_ND_RT" = "$1	$2	$3" ] && return 0
-    i=$((i + 1))
-    [ "$i" -lt "$max" ] || return 1
+    [ "$(date +%s)" -lt "$end" ] || return 1
     sleep 0.25
   done
 }
 
 _nd_route_reload() {
   local out
-  out="$(nd_platform_unbound_exec unbound-control -c "$_ND_CTL" reload_keep_cache 2>&1)" || return 1
+  out="$(_nd_route_x "${ND_RECOVERY_CMD_DEADLINE:-15}" nd_platform_unbound_exec unbound-control -c "$_ND_CTL" reload_keep_cache 2>&1)" || return 1
   printf '%s\n' "$out" | grep -qx ok
 }
 
 # _nd_route_resolves: resolution through the running route, bypassing the
-# cache (see the header).
+# cache (see the header). Twice the command deadline: the probe spends up to
+# its own 15 s (NICE_DNS_PROBE_TIMEOUT) in the image, and cutting it short here
+# would roll back a route that was only slow.
 _nd_route_resolves() {
-  nd_platform_unbound_exec "$_ND_START" probe-route "${ND_ROUTE_PROBE_NAME:-.}" 2>&1
+  _nd_route_x "$(( ${ND_RECOVERY_CMD_DEADLINE:-15} * 2 ))" nd_platform_unbound_exec "$_ND_START" probe-route "${ND_ROUTE_PROBE_NAME:-.}" 2>&1
 }
 
 # _nd_route_check <container path>: the image validates a route include.
 _nd_route_check() {
-  nd_platform_unbound_exec "$_ND_START" check-route "$1" 2>&1
+  _nd_route_x "${ND_RECOVERY_CMD_DEADLINE:-15}" nd_platform_unbound_exec "$_ND_START" check-route "$1" 2>&1
 }
 
 # _nd_route_dir_ok <dir>: a real directory owned by us, not writable by group

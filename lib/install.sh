@@ -876,10 +876,7 @@ nd_install_wait_ready() {
 # from this tree, so the probe must exist.
 _nd_inst_route_probe() {
   local rc=0
-  case "$ND_INST_PLATFORM" in
-    linux) podman exec --user unbound unbound /usr/local/bin/nice-dns-unbound-start probe-route . >/dev/null 2>&1 || rc=$? ;;
-    macos) "${CONTAINER_BIN:-container}" exec --user unbound unbound /usr/local/bin/nice-dns-unbound-start probe-route . >/dev/null 2>&1 || rc=$? ;;
-  esac
+  _nd_inst_route_call _nd_route_resolves >/dev/null 2>&1 || rc=$?
   # A rolled-back generation may predate probe-route (exit 126/127): its Pi-hole
   # answer is then all there is to go on.
   if [ "${ND_INST_PROBE_OPTIONAL:-0}" = 1 ] && { [ "$rc" = 126 ] || [ "$rc" = 127 ]; }; then rc=0; fi

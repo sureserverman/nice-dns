@@ -403,6 +403,9 @@ case "$me" in
     esac
     exit 2 ;;
   sleep)
+    # A command deadline (nd_bounded's watchdog) must really wait, or it kills
+    # the command it guards at once. The installer's own polls are 5 s or less.
+    case "${1:-0}" in *[!0-9]*) ;; *) [ "$1" -lt 15 ] || exec /bin/sleep "$1" ;; esac
     if [ -s "$FAKE/mullvad_pending" ]; then
       n=$(($(cat "$FAKE/mullvad_pending") - 1))
       if [ "$n" -le 0 ]; then rm -f "$FAKE/mullvad_pending" "$FAKE_ROOT/etc/resolv.conf"; printf 'nameserver 127.0.0.1\n' >"$FAKE_ROOT/etc/resolv.conf"

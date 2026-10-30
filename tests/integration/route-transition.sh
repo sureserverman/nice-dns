@@ -384,6 +384,35 @@ t_refused_when_unbound_is_not_running() {
   assert_eq "$inc" "$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")" "reconcile touched nothing"
 }
 
+# A frozen Unbound accepts the control connection and never answers (mint
+# 2026-10-30): the change must end by itself, report it, and leave the previous
+# route in place.
+rt_unbound_signal() {
+  rt_pm exec "$ND_UNBOUND_CONTAINER" sh -c 'for p in /proc/[0-9]*; do [ "$(cat "$p/comm" 2>/dev/null)" != unbound ] || kill -"$1" "${p#/proc/}" || exit 1; done' sh "$1"
+}
+
+t_frozen_unbound_does_not_hold_a_route_change() {
+  local inc start el
+  rt_stack cloudflare-onion 1
+  inc="$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")"
+  # The daemon, not the container's first process (the start script).
+  rt_unbound_signal STOP
+  assert_rc 0 "$RT_RC" "Unbound frozen: $RT_OUT"
+  start="$(date +%s)"
+  ND_RECOVERY_CMD_DEADLINE=3 rt_call apply_route quad9-exit 2
+  el=$(( $(date +%s) - start ))
+  rt_unbound_signal CONT
+  assert_rc 3 "$RT_RRC" "the change escalates: $RT_RES"
+  assert_eq escalate "$(rt_f result)" "result"
+  # Four timed-out control calls (first readback, two reloads, last readback)
+  # at 3 s plus the 1 s kill grace, and two check-route execs.
+  [ "$el" -le 30 ] || fail "the frozen Unbound held the change for ${el}s"
+  assert_eq "$inc" "$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")" "the previous include is back"
+  rt_call reconcile_route
+  assert_rc 0 "$RT_RRC" "reconcile applies the desired route after the thaw: $RT_RES"
+  assert_eq "quad9-exit	2	127.0.0.1" "$(route_readback)" "the desired route runs after the thaw"
+}
+
 t_unsafe_route_directory_refused() {
   local real="$CASE_DIR/real-route"
   rt_setup
