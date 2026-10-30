@@ -169,3 +169,188 @@ t_command_keeps_to_bash_32_syntax() {
   assert_eq "" "$hits" "no Bash 4 syntax in nice-dns"
   bash -n "$NICE_DNS_ROOT/nice-dns" || fail "nice-dns does not parse"
 }
+
+# ─────────────────────────── Task 2.3: reinstall ────────────────────────────
+
+t_reinstall_uses_the_recorded_choices() {
+  local u os
+  for u in $(cl_platforms); do
+    cl_world "$u"; os="$(cl_os "$u")"; cl_record socat hardened dev
+    cl_run "$CL_TREE/nice-dns" reinstall
+    assert_rc 0 "$CL_RC" "$u: reinstall: $CL_ERR"
+    assert_eq "installer[checkout] install-$os-hardened.sh socat dev" "$(cl_calls '^installer')" "$u: the record reaches the hardened script"
+    assert_eq "" "$(cl_calls '^git ')" "$u: a checkout does not clone"
+  done
+}
+
+t_reinstall_flags_override_the_record() {
+  cl_world Linux; cl_record socat hardened dev
+  cl_run "$CL_TREE/nice-dns" reinstall haproxy --standard --branch main
+  assert_eq "installer[checkout] install-deb.sh haproxy main" "$(cl_calls '^installer')" "every flag overrides"
+  : >"$CL_LOG"
+  cl_run "$CL_TREE/nice-dns" reinstall --branch next
+  assert_eq "installer[checkout] install-deb-hardened.sh socat next" "$(cl_calls '^installer')" "one flag leaves the rest recorded"
+}
+
+t_installed_reinstall_clones_the_recorded_branch() {
+  cl_world Linux; cl_installed; cl_record socat standard dev
+  cl_run "$CL_CMD" reinstall
+  assert_rc 0 "$CL_RC" "reinstall: $CL_ERR"
+  assert_match '^git .*clone .*-b dev ' "$(cl_calls '^git ')" "the recorded branch is cloned"
+  assert_eq "installer[clone] install-deb.sh socat dev" "$(cl_calls '^installer')" "the clone's installer runs"
+  assert_eq "" "$(find "$CASE_DIR" -maxdepth 1 -name 'nice-dns-reinstall.*')" "the clone is removed afterwards"
+}
+
+t_failed_clone_names_local_and_changes_nothing() {
+  cl_world Darwin; cl_installed; cl_record haproxy standard main
+  : >"$CL_FAKE/clone_fails"
+  cl_run "$CL_CMD" reinstall
+  assert_rc 1 "$CL_RC" "a failed clone fails"
+  assert_match 'nice-dns reinstall --local' "$CL_ERR" "it names --local"
+  assert_match 'running stack is untouched' "$CL_ERR" "it says the stack is untouched"
+  assert_eq "" "$(cl_calls '^installer')" "no installer ran"
+  assert_eq "" "$(find "$CASE_DIR" -maxdepth 1 -name 'nice-dns-reinstall.*')" "no clone is left"
+}
+
+t_reinstall_local_uses_the_snapshot_with_no_clone() {
+  cl_world Linux; cl_installed; cl_record haproxy standard main
+  : >"$CL_FAKE/clone_fails"
+  cl_run "$CL_CMD" reinstall --local
+  assert_rc 0 "$CL_RC" "--local: $CL_ERR"
+  assert_eq "installer[snapshot] install-deb.sh haproxy main" "$(cl_calls '^installer')" "the snapshot's installer runs"
+  assert_eq "" "$(cl_calls '^git ')" "nothing is cloned"
+  rm -rf "$CL_HOME/.local/share/nice-dns/source"
+  : >"$CL_LOG"
+  cl_run "$CL_CMD" reinstall --local
+  assert_rc 1 "$CL_RC" "--local with no snapshot fails"
+  assert_match 'no kept source' "$CL_ERR" "and says so"
+}
+
+t_reinstall_and_restart_with_nothing_installed() {
+  local u cmd
+  for u in $(cl_platforms); do
+    for cmd in reinstall restart; do
+      cl_world "$u"
+      cl_run "$CL_TREE/nice-dns" "$cmd"
+      assert_rc 1 "$CL_RC" "$u $cmd: exit 1"
+      assert_match 'nice-dns is not installed; run `nice-dns install`' "$CL_ERR" "$u $cmd: the message"
+      assert_eq "" "$(cl_calls .)" "$u $cmd: nothing ran"
+    done
+  done
+}
+
+t_reinstall_refuses_an_unreadable_record() {
+  cl_world Linux; cl_record "" standard main
+  cl_run "$CL_TREE/nice-dns" reinstall
+  assert_rc 1 "$CL_RC" "no variant in the record"
+  assert_eq "" "$(cl_calls '^installer')" "no installer ran"
+  : >"$CL_LOG"
+  cl_run "$CL_TREE/nice-dns" reinstall socat
+  assert_rc 0 "$CL_RC" "a flag supplies it: $CL_ERR"
+}
+
+# ─────────────────────────── Task 2.4: restart ──────────────────────────────
+
+# cl_restart_world <uname>: an installed stack with the controller's schedules.
+cl_restart_world() {
+  cl_world "$1"; cl_record haproxy standard main
+  CL_RESTART_PLAT=linux
+  if [ "$1" = Darwin ]; then
+    CL_RESTART_PLAT=macos
+    mkdir -p "$CL_HOME/Library/LaunchAgents"
+    : >"$CL_HOME/Library/LaunchAgents/org.nice-dns.health.plist"
+    : >"$CL_HOME/Library/LaunchAgents/org.nice-dns.health-bridges.plist"
+  fi
+}
+
+# Lines of the log: hold, the one restart, release.
+cl_hold_pat() { if [ "$CL_RESTART_PLAT" = linux ]; then echo '^systemctl --user stop nice-dns-health'; else echo '^launchctl unload .*org\.nice-dns\.health'; fi; }
+cl_restart_pat() { if [ "$CL_RESTART_PLAT" = linux ]; then echo '^systemctl --user restart nice-dns-pod\.service'; else echo '^launchctl kickstart -k gui/'; fi; }
+cl_release_pat() { if [ "$CL_RESTART_PLAT" = linux ]; then echo '^systemctl --user start nice-dns-health'; else echo '^launchctl load .*org\.nice-dns\.health'; fi; }
+cl_line() { grep -nE "$1" "$CL_LOG" | "$2" -n 1 | cut -d: -f1; }
+
+cl_assert_released() {
+  assert_eq 2 "$(grep -cE "$(cl_release_pat)" "$CL_LOG")" "$1: both schedules are released"
+}
+
+t_restart_runs_once_between_hold_and_release() {
+  local u last_hold rs first_rel
+  for u in $(cl_platforms); do
+    cl_restart_world "$u"
+    cl_run "$CL_TREE/nice-dns" restart
+    assert_rc 0 "$CL_RC" "$u: restart: $CL_ERR"
+    assert_match 'DNS is answering' "$CL_OUT" "$u: it reports the result"
+    assert_eq 1 "$(grep -cE "$(cl_restart_pat)" "$CL_LOG")" "$u: one restart"
+    last_hold="$(cl_line "$(cl_hold_pat)" tail)"; rs="$(cl_line "$(cl_restart_pat)" head)"; first_rel="$(cl_line "$(cl_release_pat)" head)"
+    [ -n "$last_hold" ] && [ "$last_hold" -lt "$rs" ] || fail "$u: the hold comes first:
+$(cat "$CL_LOG")"
+    [ "$rs" -lt "$first_rel" ] || fail "$u: the release comes after the wait:
+$(cat "$CL_LOG")"
+    cl_assert_released "$u"
+    assert_eq "" "$(cl_calls '^(sudo|networksetup|mullvad) ')" "$u: no resolver command ran"
+  done
+}
+
+t_restart_without_an_answer_says_so_and_releases() {
+  local u
+  for u in $(cl_platforms); do
+    cl_restart_world "$u"
+    : >"$CL_FAKE/no_dns"
+    ND_INST_READY_TRIES=1 cl_run "$CL_TREE/nice-dns" restart
+    assert_rc 1 "$CL_RC" "$u: no answer is a failure"
+    assert_match 'DNS is not answering yet' "$CL_ERR" "$u: the message"
+    assert_match 'nice-dns-health status' "$CL_ERR" "$u: it names the status command"
+    assert_not_match 'not pinning' "$CL_ERR" "$u: not the installer's wording"
+    cl_assert_released "$u"
+  done
+}
+
+t_restart_failure_is_reported_and_releases() {
+  cl_restart_world Linux
+  echo 5 >"$CL_FAKE/restart_rc"
+  cl_run "$CL_TREE/nice-dns" restart
+  assert_rc 1 "$CL_RC" "a failed restart fails"
+  assert_match 'exit 5.*the restart broke' "$CL_ERR" "with the reason"
+  assert_eq "" "$(cl_calls '^dig ')" "no wait after a failed restart"
+  cl_assert_released Linux
+}
+
+t_restart_releases_on_a_signal() {
+  local u pid i
+  for u in $(cl_platforms); do
+    cl_restart_world "$u"
+    : >"$CL_FAKE/no_dns"
+    HOME="$CL_HOME" PATH="$CL_FAKE:$PATH" TMPDIR="$CASE_DIR" XDG_STATE_HOME="" ND_INST_READY_TRIES=50 \
+      bash "$CL_TREE/nice-dns" restart >"$CL_W/out" 2>"$CL_W/err" &
+    pid=$!
+    i=0
+    until grep -q '^dig ' "$CL_LOG"; do
+      i=$((i + 1)); [ "$i" -lt 100 ] || { kill "$pid" 2>/dev/null; fail "$u: the wait never began"; }
+      sleep 0.1
+    done
+    kill -TERM "$pid"
+    wait "$pid"
+    assert_rc 143 "$?" "$u: the signal ends it"
+    cl_assert_released "$u"
+    assert_eq "" "$(find "$CASE_DIR" -maxdepth 1 -name 'nice-dns-restart.*')" "$u: its temporary directory is gone"
+  done
+}
+
+# Stopping a timer does not end a pass already running: the state lock is what
+# keeps a restart and a controller action apart.
+t_restart_waits_for_a_running_pass_and_gives_up_cleanly() {
+  local d="$CASE_DIR/state-busy"
+  cl_restart_world Linux
+  mkdir -p "$d"; chmod 700 "$d"
+  ln -s "nd-lock:$$:$(cat /proc/sys/kernel/random/boot_id):$(date +%s):tok" "$d/lock"
+  ND_STATE_DIR="$d" ND_CLI_LOCK_TRIES=1 cl_run "$CL_TREE/nice-dns" restart
+  assert_rc 1 "$CL_RC" "a busy controller refuses: $CL_ERR"
+  assert_match 'still busy; nothing was restarted' "$CL_ERR" "the message"
+  assert_eq 0 "$(grep -cE "$(cl_restart_pat)" "$CL_LOG")" "no restart while a pass runs"
+  cl_assert_released Linux
+  rm -f "$d/lock"
+  : >"$CL_LOG"
+  ND_STATE_DIR="$d" ND_CLI_LOCK_TRIES=1 cl_run "$CL_TREE/nice-dns" restart
+  assert_rc 0 "$CL_RC" "a free lock restarts: $CL_ERR"
+  assert_eq "" "$(readlink "$d/lock" 2>/dev/null)" "the lock is given back"
+}
