@@ -1089,6 +1089,13 @@ t_the_pod_restart_repair_is_rate_limited() {
     assert_match 'not-acknowledged' "$(ra_journal)" "it stays journalled"
     ND_POLICY_RETRY_S=0 nd_recovery_apply "$CASE_DIR/dec" ra-p3 7 >/dev/null
     assert_eq 2 "$(grep -c 'restart nice-dns-pod' "$FAKE_LOG")" "a retry interval later, it does again"
+    # A new boot forgets it, and so does a clock that moved back (mint's dead RTC).
+    ND_BOOT_ID=boot-b nd_recovery_apply "$CASE_DIR/dec" ra-p4 7 >/dev/null
+    assert_eq 3 "$(grep -c 'restart nice-dns-pod' "$FAKE_LOG")" "a new boot does not wait out the last boot's interval"
+    export ND_BOOT_ID=boot-b
+    printf 'boot-b %s\n' "$(( $(date +%s) + 86400 ))" >"$ND_STATE_DIR/pod-repair-at"
+    nd_recovery_apply "$CASE_DIR/dec" ra-p5 7 >/dev/null
+    assert_eq 4 "$(grep -c 'restart nice-dns-pod' "$FAKE_LOG")" "a marker in the future holds nothing"
   ) || exit 1
 }
 

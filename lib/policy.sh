@@ -263,7 +263,7 @@ nd_policy_decide() {
     if [ "$ub_seen" = 1 ] && [ "$s_ubfail" -ge "$ubfails" ]; then
       if [ "$in_startup" = 1 ] || [ "$in_cool" = 1 ]; then
         notes="${notes}Unbound failed $s_ubfail checks in a row, inside the startup allowance or cooldown; "
-      elif [ "$healthy_now" != 1 ] && [ "$s_rest" -ge "$maxr" ]; then
+      elif [ "$healthy_now" != 1 ] && [ "$unhealthy_now" = 1 ] && [ "$s_rest" -ge "$maxr" ]; then
         # Past the ladder's cap the stack restart below covers Unbound as well.
         # Both would be due at the same moment, and Unbound's would reset the timer.
         notes="${notes}Unbound failed $s_ubfail checks in a row; the stack restart covers it; "

@@ -982,3 +982,17 @@ t_unbound_route_failure_with_only_compat_answering_is_not_counted() {
   sp_ub_pass "$CASE_DIR/cmp"; sp_ub_pass "$CASE_DIR/cmp"; sp_ub_pass "$CASE_DIR/cmp"; sp_ub_pass "$CASE_DIR/cmp"
   assert_eq "" "$(sp_key "$CASE_DIR/cur" unbound_fail)" "compat is never selected, so it says nothing about Unbound's route"
 }
+
+t_unbound_past_the_cap_with_routes_unknown_is_still_restarted() {
+  local now
+  sp_ub_start
+  now=$((SP_NOW + 7200))
+  # Past the cap, no route observed, control dead: the stack restart cannot act
+  # on this pass, so Unbound's own rule must.
+  sp_obs "$CASE_DIR/idk" healthy indeterminate indeterminate indeterminate indeterminate
+  sp_ub "$CASE_DIR/idk" unhealthy 'control: exit 1'
+  awk -F '\t' -v n="$now" 'BEGIN { OFS = "\t" } $1 == "outage_since" { $2 = n - 3600 } $1 == "outage_restarts" { $2 = 2 } { print }' "$CASE_DIR/cur" >"$CASE_DIR/cur.2" && mv "$CASE_DIR/cur.2" "$CASE_DIR/cur"
+  SP_NOW="$now"
+  sp_ub_pass "$CASE_DIR/idk"; sp_ub_pass "$CASE_DIR/idk"; sp_ub_pass "$CASE_DIR/idk"
+  assert_eq unbound "$SP_TARGET" "a dead control socket is not left to a stack restart that cannot run"
+}

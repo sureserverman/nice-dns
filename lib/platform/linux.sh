@@ -169,11 +169,13 @@ nd_platform_runtime_repairs() { printf 'containers-missing\n'; }
 # too and it reset its state; only a pod restart clears that. Neither needs a
 # reboot (2026-10-30). Exit 125 has persistent causes as well (an image that cannot
 # be pulled), and a pod restart costs a running Pi-hole its service, so it runs at
-# most once per ND_POLICY_RETRY_S (1800 s). The whole repair spends at most twice
+# most once per ND_POLICY_RETRY_S (1800 s) within a boot: a new boot or a clock that
+# moved back forgets the last one, as the policy's timers do, or a dead RTC could
+# hold the repair that DNS, and so NTP, needs. The whole repair spends at most twice
 # <deadline>, so it stays inside the tick's timeout and the lock's lease. What it
 # did is left in <tmp>/rep.note for the journal.
 nd_platform_repair_runtime() {
-  local fault="$1" dl="$2" tmp="$3" n rc=0 named=0 stuck=0 end now mark last
+  local fault="$1" dl="$2" tmp="$3" n rc=0 named=0 stuck=0 end now mark last b boot
   shift 3
   [ "$fault" = containers-missing ] || return 3
   end=$(( $(date +%s) + dl * 2 ))
@@ -205,9 +207,15 @@ nd_platform_repair_runtime() {
   [ "$named" = 1 ] || nd_bounded "$(_nd_rep_left)" "$tmp/rep" "$tmp/rep.err" systemctl --user start pi-hole.service || rc=$?
   if [ "$rc" -ne 0 ] && [ "$stuck" = 1 ] && [ "$(_nd_rep_left)" -gt 0 ]; then
     mark="$(nd_platform_state_dir)/pod-repair-at"; now="$(date +%s)"
-    last="$(cat "$mark" 2>/dev/null)"; case "$last" in ''|*[!0-9]*) last=0 ;; esac
+    boot="${ND_BOOT_ID:-$(nd_platform_boot_id)}"
+    last=0
+    if [ -f "$mark" ]; then
+      IFS=' ' read -r b last <"$mark" || true
+      case "$last" in ''|*[!0-9]*) last=0 ;; esac
+      if [ "$b" != "$boot" ] || [ "$last" -gt "$now" ]; then last=0; fi
+    fi
     if [ $((now - last)) -ge "${ND_POLICY_RETRY_S:-1800}" ]; then
-      (umask 077 && printf '%s\n' "$now" >"$mark")
+      (umask 077 && printf '%s %s\n' "$boot" "$now" >"$mark")
       rc=0
       nd_bounded "$(_nd_rep_left)" "$tmp/rep" "$tmp/rep.err" systemctl --user restart nice-dns-pod.service || rc=$?
       printf 'restart nice-dns-pod.service (exit %s); ' "$rc" >>"$tmp/rep.note"
