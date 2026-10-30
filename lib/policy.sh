@@ -15,7 +15,8 @@
 #   schema  nice-dns-decision/1
 #   action  no-op | switch-route | refresh-bridges | restart-component |
 #           repair-runtime | escalate
-#   target  a route id (switch-route), tor or proxy (restart-component), the runtime
+#   target  a route id (switch-route), tor, proxy, unbound or stack
+#           (restart-component), the runtime
 #           fault (repair-runtime), or -
 #   reason  one line
 # followed by the proposed next state (nice-dns-controller-state/1, without a
@@ -51,6 +52,16 @@
 #     default both; the tick sets it from nd_platform_runtime_repairs);
 #     otherwise it escalates. An indeterminate runtime is no evidence of a
 #     fault.
+#   * Unbound's own health, after runtime faults and before route selection. An
+#     unbound observation with a control: reason counts always; a route: reason
+#     counts only with a route healthy in the same pass, since in a full outage
+#     the probe is telling the truth about Tor. Indeterminate or absent changes
+#     nothing; healthy clears unbound_fail and unbound_restarts. At
+#     ND_POLICY_UNBOUND_FAILS (3) in a row, outside the startup allowance and the
+#     cooldown, Unbound restarts (target unbound). After
+#     ND_POLICY_UNBOUND_MAX_RESTARTS (2) it retries every ND_POLICY_RETRY_S (1800).
+#     The controller owns this restart: no quadlet restarts on health, since a
+#     health-triggered restart looped and wiped Tor's bootstrap.
 #   * Route selection, when an identity route is healthy: the current route
 #     stays while its fail streak is under ND_POLICY_DEMOTE (2) and its
 #     unknown streak under ND_POLICY_STALE (5): a route without evidence is
@@ -68,7 +79,10 @@
 #     from the later of its start and the end of the startup allowance
 #     (ND_POLICY_STARTUP_S, 120), outside the cooldown (ND_POLICY_COOLDOWN_S,
 #     300 after the last restart or repair), at most ND_POLICY_MAX_RESTARTS (2)
-#     times per outage; then it escalates. The first restart of an outage is
+#     times per outage. Past that the whole stack restarts (target stack) every
+#     ND_POLICY_RETRY_S, and the passes between escalate: DEC-021 replaced the
+#     end of DEC-007's ladder, where it only escalated and a host stayed without
+#     DNS until a reboot. The first restart of an outage is
 #     Tor's (target tor: the image's in-image restart, falling back to the
 #     service); a later one is the proxy's (target proxy: the service restart
 #     directly), since the outage outlived a Tor restart. That later step also

@@ -80,6 +80,20 @@ when no route answered and at least one failed. When a later run still sees
 it after the 300 s grace (`NICE_DNS_RESTART_GRACE_SECS`), that run triggers
 the Tor restart described in the script.
 
+The `unbound` observation reads Unbound itself: its control socket, then its
+route in a fresh session. Three failures in a row restart it, with the routes
+healthy or not when the control socket is what failed. A failed route check
+during a full outage is left to the Tor restarts below, since Unbound is telling
+the truth. After two restarts it retries every 30 minutes. Pi-hole and the proxy
+keep running on Linux; on macOS the restart rebuilds the stack.
+
+A full outage restarts Tor, then the proxy. After that the whole stack restarts
+every 30 minutes until a route answers, and the first escalation of the outage
+writes one failure dump. A missing container is started by name. If its unit last
+exited 125 or 126, podman could not start it, so the user service manager is
+re-executed first, and the pod restarts if that start still fails. Every action
+is a row in `recovery.tsv`.
+
 ## Bridge refresh
 
 Once a day (Linux `OnCalendar=daily`; macOS at 04:17), and at most once an

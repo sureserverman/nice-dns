@@ -420,8 +420,10 @@ cmd_run() {
 # (lib/policy.sh) with one state, one lock, one cooldown and one restart cap
 # decides every action, whichever command a scheduler calls:
 #   * a full outage restarts Tor after the startup allowance plus a 5-minute
-#     grace, observed in the same pass, outside a 5-minute cooldown, at most
-#     twice per outage (then it escalates); a usable route prevents it;
+#     grace, observed in the same pass, outside a 5-minute cooldown, twice per
+#     outage; then the stack restarts every 30 minutes and the passes between
+#     escalate; a usable route prevents it;
+#   * a failing Unbound restarts on its own evidence (lib/policy.sh);
 #   * the restart is request_recovery (the proxy image's acknowledged
 #     restart) and, when that is not acknowledged, one service restart
 #     (nd_recovery_restart_tor);
@@ -1131,8 +1133,10 @@ cmd_tick() {
 }
 
 # bridges-refresh: evaluate the bridge pool with the proxy image's
-# bridge-eval and adopt a changed set at the proxy's next start
-# (lib/recovery.sh nd_bridges_refresh; the daily schedule calls it).
+# bridge-eval and adopt a changed set: at once, through a proxy restart, when the
+# running proxy uses a bridge the set leaves out; otherwise when the proxy
+# restarts for another reason (lib/recovery.sh nd_bridges_refresh; the daily
+# schedule calls it).
 cmd_bridges_refresh() {
   local out rc v t c
   if ! load_health_libs; then echo "$SCRIPT_NAME: not loading the health libraries: $HEALTH_LIB_ERROR" >&2; return 2; fi
@@ -1164,7 +1168,9 @@ Usage: $SCRIPT_NAME <command>
   self-check  Check that this copy's libraries load (no stack contact).
   bridges-refresh
               Evaluate the bridge pool (the proxy image's bridge-eval) and
-              adopt a changed set at the proxy's next start (daily schedule).
+              adopt a changed set (daily schedule): at once, through a proxy
+              restart, when the running proxy uses a bridge the set leaves out;
+              otherwise when the proxy restarts for another reason.
   uninstall   Remove the schedule, bundle, entrypoint, logs and controller state
               that install recorded, and nothing else.
   start       (Re)start the timer / LaunchAgent.
