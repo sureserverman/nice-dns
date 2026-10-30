@@ -893,3 +893,33 @@ t_unbound_state_rows_exist_only_when_non_zero() {
   nd_state_commit "$tok" 1 "$CASE_DIR/cur" >/dev/null 2>&1; assert_rc 2 $? "a bad value is refused"
   nd_state_unlock "$tok"
 }
+
+# ─────────────────────────── past the restart cap ────────────────────────────
+
+t_full_outage_past_the_cap_restarts_the_stack_every_half_hour() {
+  local i last n=0 esc=0
+  sp_ub_start
+  sp_obs "$CASE_DIR/out" healthy unhealthy unhealthy unhealthy unhealthy
+  i=0
+  while [ "$(sp_key "$CASE_DIR/cur" outage_restarts)" != 2 ] && [ "$i" -lt 60 ]; do sp_ub_pass "$CASE_DIR/out"; i=$((i + 1)); done
+  assert_eq proxy "$SP_TARGET" "the ladder before the cap is unchanged: Tor, then the proxy"
+  last="$(sp_key "$CASE_DIR/cur" recovery_at)"
+  i=0
+  while [ "$SP_TARGET" != stack ] && [ "$i" -lt 60 ]; do
+    sp_ub_pass "$CASE_DIR/out"; i=$((i + 1))
+    [ "$SP_ACTION" = escalate ] && esc=$((esc + 1))
+  done
+  assert_eq stack "$SP_TARGET" "past the cap, the stack restarts"
+  assert_eq restart-component "$SP_ACTION" "as a restart"
+  assert_eq 1 "$(( SP_NOW - last >= 1800 ))" "restart 3 lands no sooner than 1800 s after restart 2 ($((SP_NOW - last)) s)"
+  assert_eq 1 "$(( esc > 0 ))" "other passes still journal the escalation"
+  last="$SP_NOW"
+  i=0
+  sp_ub_pass "$CASE_DIR/out"
+  while [ "$SP_TARGET" != stack ] && [ "$i" -lt 60 ]; do sp_ub_pass "$CASE_DIR/out"; i=$((i + 1)); done
+  assert_eq stack "$SP_TARGET" "and again"
+  assert_eq 1 "$(( SP_NOW - last >= 1800 && SP_NOW - last <= 1860 ))" "at that interval ($((SP_NOW - last)) s)"
+  sp_ub_pass "$CASE_DIR/ok"
+  assert_eq 0 "$(sp_key "$CASE_DIR/cur" outage_restarts)" "a healthy route clears the count"
+  assert_eq - "$(sp_key "$CASE_DIR/cur" outage_since)" "and the outage"
+}

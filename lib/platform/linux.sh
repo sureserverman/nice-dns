@@ -144,6 +144,12 @@ nd_platform_restart_unbound() {
   nd_bounded "$1" "$2/svc" "$2/svc.err" systemctl --user restart unbound.service
 }
 
+# nd_platform_restart_stack <deadline> <tmp>: the whole pod. Each member has
+# BindsTo= on it, and it Wants= each member, so all three stop and start with it.
+nd_platform_restart_stack() {
+  nd_bounded "$1" "$2/svc" "$2/svc.err" systemctl --user restart nice-dns-pod.service
+}
+
 # nd_platform_runtime_repairs: the runtime faults nd_platform_repair_runtime
 # can repair here; the policy escalates any other (ND_POLICY_RUNTIME_REPAIRS).
 nd_platform_runtime_repairs() { printf 'containers-missing\n'; }

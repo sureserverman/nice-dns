@@ -978,3 +978,30 @@ t_unbound_observation_stays_inside_the_budget() {
     ob_unbound_reset
   done
 }
+
+t_tick_writes_one_failure_dump_per_outage() {
+  local plat now g
+  ob_setup linux
+  for plat in $(ob_platforms); do
+    ob_platform "$plat"
+    ob_tree
+    rm -rf "$XDG_STATE_HOME/nice-dns-health" "$HOME/Library/Logs/nice-dns-health" "$XDG_STATE_HOME/nice-dns/controller" "$HOME/Library/Application Support/nice-dns/controller"
+    for g in 18531 18532 18533 853; do printf 'servfail\n' >"$FAKE/probe/$g"; done
+    now="$(date +%s)"
+    export ND_STATE_DIR="$CASE_DIR/ctl-$plat"
+    mkdir -p "$ND_STATE_DIR"; chmod 700 "$ND_STATE_DIR"
+    # Past the cap and the cooldown, not yet at the retry: every pass escalates.
+    printf 'schema\tnice-dns-controller-state/1\ngeneration\t1\nboot_id\tboot-a\nupdated\t%s\nstarted\t%s\nroute\t-\noutage_since\t%s\noutage_restarts\t2\nlast_action\t-\nlast_action_at\t-\nrecovery_at\t%s\n' \
+      "$((now - 60))" "$((now - 7200))" "$((now - 3600))" "$((now - 600))" >"$ND_STATE_DIR/state.tsv"
+    chmod 600 "$ND_STATE_DIR/state.tsv"
+    ND_BOOT_ID=boot-a bash "$OB_TREE/health/nice-dns-health" tick >"$CASE_DIR/tick1" 2>&1
+    assert_match '^action	escalate$' "$(cat "$CASE_DIR/tick1")" "$plat: the pass escalates"
+    ND_BOOT_ID=boot-a bash "$OB_TREE/health/nice-dns-health" tick >"$CASE_DIR/tick2" 2>&1
+    assert_match '^action	escalate$' "$(cat "$CASE_DIR/tick2")" "$plat: and so does the next"
+    assert_eq 1 "$(find "$HOME" -name 'failure-*.log' | wc -l | tr -d ' ')" "$plat: one dump for the outage"
+    assert_match 'route:cloudflare-exit' "$(cat "$(find "$HOME" -name 'failure-*.log' | head -n 1)")" "$plat: it holds the observations"
+    find "$HOME" -name 'failure-*.log' -exec rm -f {} +
+    unset ND_STATE_DIR
+    rm -f "$FAKE/probe/"*
+  done
+}

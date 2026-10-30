@@ -904,3 +904,68 @@ t_every_policy_restart_target_has_a_handler() {
     ) || exit 1
   done
 }
+
+# ─────────────────────────── fakes: stack restart ───────────────────────────
+
+t_stack_restart_is_acknowledged_by_a_new_generation() {
+  local plat out rc
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      : >"$FAKE/restart_changes"
+      ra_dec stack
+      out="$(nd_recovery_apply "$CASE_DIR/dec" ra-s1 7)"; rc=$?
+      assert_rc 0 "$rc" "$plat: a new proxy generation: $out"
+      assert_eq acknowledged "$(ra_field result "$out")" "$plat: result"
+      assert_eq "$(printf 'stack requested\nstack acknowledged')" "$(ra_journal)" "$plat: journal"
+      if [ "$plat" = linux ]; then
+        assert_eq 1 "$(grep -c '^systemctl --user restart nice-dns-pod.service$' "$FAKE_LOG")" "linux: the pod, once"
+      else
+        assert_eq 1 "$(grep -c '^launchctl kickstart -k gui/[0-9]*/org.nice-dns.start-container$' "$FAKE_LOG")" "macos: the kickstart, once"
+      fi
+      ra_obs "$CASE_DIR/obs" healthy
+      _nd_rec_readiness "$CASE_DIR/obs" "$(date +%s)"
+      assert_eq "$(printf 'stack requested\nstack acknowledged\nstack ready')" "$(ra_journal)" "$plat: ready through a route and Unbound"
+      rm -f "$FAKE/restart_changes"; : >"$FAKE_LOG"
+      out="$(nd_recovery_apply "$CASE_DIR/dec" ra-s2 7)"; rc=$?
+      assert_rc 1 "$rc" "$plat: an unchanged generation is not acknowledged"
+    ) || exit 1
+  done
+}
+
+t_stack_restart_brings_back_a_missing_proxy() {
+  local plat out rc
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      printf 'pi-hole\nunbound\n' >"$FAKE/running"; : >"$FAKE/restart_brings_up"; : >"$FAKE/restart_changes"
+      printf '[Container]\n' >"$XDG_CONFIG_HOME/containers/systemd/tor-haproxy.container"
+      printf 'tor-haproxy\n' >"$FAKE/stopped"
+      ra_dec stack
+      out="$(nd_recovery_apply "$CASE_DIR/dec" ra-s3 7)"; rc=$?
+      assert_rc 0 "$rc" "$plat: the proxy is back: $out"
+    ) || exit 1
+  done
+}
+
+t_first_escalation_of_an_outage_is_reported_once() {
+  local out tok
+  (
+    ra_fake linux
+    ra_outage_state
+    nd_recovery_first_escalation; assert_rc 0 $? "the first escalation of an outage"
+    nd_recovery_first_escalation; assert_rc 1 $? "not the second"
+    nd_recovery_first_escalation; assert_rc 1 $? "or the third"
+    # A later outage is a new one.
+    nd_state_load | awk -F '\t' 'BEGIN { OFS = "\t" } $1 == "outage_since" { $2 = 1760000000 } { print }' >"$CASE_DIR/seed2"
+    tok="$(nd_state_lock)" || fail "lock"
+    nd_state_commit "$tok" 1 "$CASE_DIR/seed2" >/dev/null || fail "commit"
+    nd_state_unlock "$tok"
+    nd_recovery_first_escalation; assert_rc 0 $? "a new outage reports again"
+    nd_state_load | awk -F '\t' 'BEGIN { OFS = "\t" } $1 == "outage_since" { $2 = "-" } { print }' >"$CASE_DIR/seed3"
+    tok="$(nd_state_lock)" || fail "lock"
+    nd_state_commit "$tok" 2 "$CASE_DIR/seed3" >/dev/null || fail "commit"
+    nd_state_unlock "$tok"
+    nd_recovery_first_escalation; assert_rc 1 $? "an escalation with no outage is not one"
+  ) || exit 1
+}

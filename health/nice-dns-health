@@ -1075,6 +1075,27 @@ LAUNCHER
   chmod 0755 "$f.new" && mv -f "$f.new" "$f"
 }
 
+# dump_first_escalation <observations> <tick output>: the first escalation of an
+# outage writes one failure dump, so a long outage leaves evidence while it lasts
+# (none existed for the 2026-10-30 windows on mint).
+dump_first_escalation() {
+  local dump name verdict
+  [ "$(printf '%s\n' "$2" | awk -F '\t' '$1 == "action" { print $2; exit }')" = escalate ] || return 0
+  nd_recovery_first_escalation || return 0
+  HEALTH_OBS="$(cat "$1")"
+  CHECK_DETAIL=""
+  FAILED_CHECKS=()
+  INDETERMINATE_CHECKS=()
+  while IFS=$'\t' read -r _ name verdict _; do
+    case "$verdict" in
+      unhealthy) FAILED_CHECKS+=("$name") ;;
+      indeterminate) INDETERMINATE_CHECKS+=("$name") ;;
+    esac
+  done <"$1"
+  dump="$(write_failure_dump "$(ts)")"
+  log_to_file "$(ts) ESCALATED first of this outage -> $dump"
+}
+
 # tick [--shadow]: one controller pass (lib/recovery.sh nd_recovery_tick):
 # observe, decide under the state lock, act (or, with --shadow, only record
 # what it would do, in a separate shadow state), commit. The schedules still
@@ -1102,6 +1123,7 @@ cmd_tick() {
   fi
   report_security_drift "$o"
   out="$(nd_recovery_tick "$mode" "$o")"; rc=$?
+  [ "$mode" != active ] || dump_first_escalation "$o" "$out"
   rm -f "$o"
   log_to_file "$(ts) TICK $mode $(printf '%s\n' "$out" | awk -F '\t' '{ printf "%s%s=%s", s, $1, $2; s = " " }')"
   printf '%s\n' "$out"

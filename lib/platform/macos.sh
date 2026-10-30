@@ -233,6 +233,9 @@ nd_platform_restart_proxy() {
 # a Tor bootstrap.
 nd_platform_restart_unbound() { nd_platform_restart_proxy unbound "$1" "$2"; }
 
+# nd_platform_restart_stack <deadline> <tmp>: the same kickstart.
+nd_platform_restart_stack() { nd_platform_restart_proxy "" "$1" "$2"; }
+
 # nd_platform_runtime_repairs: the runtime faults nd_platform_repair_runtime
 # can repair here; the policy escalates any other (ND_POLICY_RUNTIME_REPAIRS).
 nd_platform_runtime_repairs() { printf 'runtime-down containers-missing\n'; }

@@ -313,7 +313,16 @@ nd_policy_decide() {
       if [ "$in_startup" = 1 ]; then reason="full outage inside the startup allowance"
       elif [ $((now - from)) -lt "$grace" ]; then reason="full outage for $((now - s_out)) s; grace $grace s"
       elif [ "$in_cool" = 1 ]; then reason="full outage; inside the recovery cooldown"
-      elif [ "$s_rest" -ge "$maxr" ]; then action=escalate reason="full outage persists after $s_rest restarts (tor, then proxy)"
+      elif [ "$s_rest" -ge "$maxr" ]; then
+        # Past the cap the ladder is spent, but stopping here left hosts without
+        # DNS until a reboot (mint, 2026-10-30): the stack restarts every $retry s
+        # and the passes between journal the escalation.
+        if ! _nd_p_num "$s_rec" || [ $((now - s_rec)) -ge "$retry" ]; then
+          action=restart-component target=stack reason="full outage since $s_out persists after $s_rest restarts; restarting the stack"
+          s_rest=$((s_rest + 1)) s_rec="$now"
+        else
+          action=escalate reason="full outage persists after $s_rest restarts (tor, then proxy); next stack restart $retry s after the last ($((now - s_rec)) s so far)"
+        fi
       elif [ "$s_rest" -ge 1 ] && _nd_p_num "$s_rec" && [ $((now - s_rec)) -lt "$ladder" ]; then
         reason="full outage; waiting out the last restart's readiness window ($((now - s_rec)) of $ladder s)"
       elif [ "$s_rest" -ge 1 ]; then
