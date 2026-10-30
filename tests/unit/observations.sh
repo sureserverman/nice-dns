@@ -946,11 +946,11 @@ t_unbound_is_observed_on_its_own_evidence() {
 
     ob_unbound_reset; echo missing >"$FAKE/unbound_probe_rc"
     ob_observe
-    ob_expect unbound indeterminate 'no probe-route' "$plat: an image without the probe (exit 127)"
+    ob_expect unbound indeterminate 'probe-route cannot run' "$plat: an image without the probe (exit 127)"
 
     ob_unbound_reset; echo 126 >"$FAKE/unbound_probe_rc"
     ob_observe
-    ob_expect unbound indeterminate 'no probe-route' "$plat: exit 126 is the same"
+    ob_expect unbound indeterminate 'probe-route cannot run' "$plat: exit 126 is the same"
 
     ob_unbound_reset; : >"$FAKE/unbound_probe_hang"
     ND_HEALTH_UNBOUND_PROBE_DEADLINE=1 ob_observe

@@ -242,8 +242,25 @@ _nd_route_wait_runtime() {
   done
 }
 
+# _nd_route_wait_visible: the container reads the host's include. The Mac's
+# shared directory shows a file just renamed over as missing for 40-300 ms
+# (measured 2026-10-30), and Unbound exits on a reload that cannot open its
+# include: a route change then took DNS down for a minute or two until the
+# controller rebuilt the stack.
+_nd_route_wait_visible() {
+  local want got end=$(( $(date +%s) + ${ND_ROUTE_READBACK_SECONDS:-15} ))
+  want="$(cat "$(nd_platform_route_dir)/forward-route.conf")" || return 1
+  while :; do
+    if got="$(_nd_route_x "${ND_RECOVERY_CMD_DEADLINE:-15}" nd_platform_unbound_exec cat "$_ND_CTR_ROUTE_DIR/forward-route.conf" 2>/dev/null)" \
+       && [ "$got" = "$want" ]; then return 0; fi
+    [ "$(date +%s)" -lt "$end" ] || return 1
+    sleep 0.25
+  done
+}
+
 _nd_route_reload() {
   local out
+  _nd_route_wait_visible || return 1
   out="$(_nd_route_x "${ND_RECOVERY_CMD_DEADLINE:-15}" nd_platform_unbound_exec unbound-control -c "$_ND_CTL" reload_keep_cache 2>&1)" || return 1
   printf '%s\n' "$out" | grep -qx ok
 }

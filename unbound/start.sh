@@ -214,6 +214,11 @@ check_route() {
 # exit 0 only for a NOERROR or NXDOMAIN response.
 probe_route() {
   qname="${1:-.}"
+  # A missing tool is not a route that failed: 127 tells the caller the check
+  # could not run (lib/health.sh: indeterminate, no action).
+  for tool in awk unbound-checkconf timeout dig; do
+    command -v "$tool" >/dev/null 2>&1 || { echo "$ME: $tool is not in the image" >&2; exit 127; }
+  done
   case "$qname" in ''|*[!A-Za-z0-9._-]*) die "unsafe probe name '$qname'" ;; esac
   fwd="$(awk '/^[[:space:]]*forward-addr:/ { print $2 }' "$ROUTE")"
   addr="${fwd%%@*}" rest="${fwd#*@}"

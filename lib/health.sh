@@ -518,7 +518,7 @@ _nd_obs_unbound() {
   case "$rc" in
     0) _nd_obs unbound healthy $(($(_nd_now_ms) - t0)) "control and route answer" ;;
     124) _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "deadline: probe-route gave no verdict within ${dl}s" ;;
-    126|127) _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "no probe-route in the image (exit $rc)" ;;
+    126|127) _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "probe-route cannot run in the image (exit $rc): $(tail -n 1 "$_ND_H_TMP/ub.err" 2>/dev/null | tr '\t\n' '  ')" ;;
     *) if _nd_ub_exec_failed "$rc"; then
          _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "the runtime could not exec in unbound (exit $rc): $(grep -m 1 '^Error:' "$_ND_H_TMP/ub.err")"
        else
