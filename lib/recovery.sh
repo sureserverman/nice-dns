@@ -16,6 +16,8 @@
 #                                         restart when it is not acknowledged
 #                                         (not-acknowledged, unsupported or
 #                                         unreachable): the only Tor restart path
+#   nd_recovery_restart_unbound <request_id>
+#                                         restart Unbound (macOS: the stack)
 #   repair_runtime <fault> <request_id>   repair the runtime fault observed
 #   nd_recovery_apply <decision> <request_id> <route_generation>
 #                                         carry out one lib/policy.sh decision
@@ -723,6 +725,31 @@ nd_recovery_restart_service() {
   return 1
 }
 
+# nd_recovery_restart_unbound: Unbound's service restart. The acknowledgement is
+# a new start of the unbound container; readiness is a later healthy unbound
+# observation (_nd_rec_readiness).
+nd_recovery_restart_unbound() {
+  local id="${1:-}" dl="${ND_RECOVERY_CMD_DEADLINE:-15}" svc="${ND_RECOVERY_SERVICE_S:-120}" g0 rc
+  if ! _nd_rec_id_ok "$id"; then _nd_rec_out refused unbound "$id" - - "bad request id"; return 2; fi
+  _ND_RX="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-recovery.XXXXXX")" || return 4
+  g0="$(nd_platform_container_generation unbound "$dl" "$_ND_RX" 2>/dev/null)" || g0="-"
+  [ -n "$g0" ] || g0="-"
+  _nd_rec_lock_ok "$id" unbound || { rm -rf "$_ND_RX"; return 5; }
+  nd_recovery_journal "$id" unbound requested "restart; container before: $g0"
+  nd_platform_restart_unbound "$svc" "$_ND_RX"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    nd_recovery_journal "$id" unbound not-acknowledged "the restart exited $rc: $(head -n 1 "$_ND_RX/svc.err" 2>/dev/null)"
+    _nd_rec_out not-acknowledged unbound "$id" "$g0" - "restart of unbound exited $rc"; rm -rf "$_ND_RX"; return 1
+  fi
+  if _nd_rec_wait_generation unbound "$g0" "$svc"; then
+    nd_recovery_journal "$id" unbound acknowledged "unbound restarted: $_ND_REC_GEN"
+    _nd_rec_out acknowledged unbound "$id" "$g0" "$_ND_REC_GEN" "unbound runs as a new container start"; rm -rf "$_ND_RX"; return 0
+  fi
+  nd_recovery_journal "$id" unbound not-acknowledged "no new start within ${svc}s (last: ${_ND_REC_GEN:-none})"
+  _nd_rec_out not-acknowledged unbound "$id" "$g0" "${_ND_REC_GEN:--}" "no new start of unbound within ${svc}s"; rm -rf "$_ND_RX"
+  return 1
+}
+
 repair_runtime() {
   local fault="${1:-}" id="${2:-}" dl="${ND_RECOVERY_CMD_DEADLINE:-15}" svc="${ND_RECOVERY_SERVICE_S:-120}" rc i=0 n
   case "$fault" in runtime-down|containers-missing) ;; *) _nd_rec_out refused runtime "$id" - - "no repair for fault '$fault'"; return 2 ;; esac
@@ -795,6 +822,7 @@ nd_recovery_apply() {
       case "$target" in
         tor) nd_recovery_restart_tor "$id"; return $? ;;
         proxy) nd_recovery_restart_service "$id"; return $? ;;
+        unbound) nd_recovery_restart_unbound "$id"; return $? ;;
         *) nd_recovery_journal "$id" controller refused "no restart for component '$target'"; return 2 ;;
       esac ;;
     repair-runtime) repair_runtime "$target" "$id"; return $? ;;
@@ -813,6 +841,7 @@ nd_recovery_apply() {
 #                     without probe-route (exit 126/127) gives "ready,
 #                     uncorroborated".
 #   runtime           the runtime observation is healthy
+#   unbound           the unbound observation is healthy
 _nd_rec_readiness() {
   local f d row id comp at ok det age ids
   d="$(nd_platform_state_dir)"; f="$d/recovery.tsv"
@@ -838,8 +867,8 @@ _nd_rec_readiness() {
           esac
           rm -rf "$_ND_RX"
         fi ;;
-      runtime)
-        awk -F '\t' '$1 == "obs" && $2 == "runtime" && $3 == "healthy" { f = 1 } END { exit !f }' "$1" && ok=1 ;;
+      runtime|unbound)
+        awk -F '\t' -v n="$comp" '$1 == "obs" && $2 == n && $3 == "healthy" { f = 1 } END { exit !f }' "$1" && ok=1 ;;
     esac
     age=$(( $2 - at ))
     if [ "$ok" = 1 ]; then nd_recovery_journal "$id" "$comp" ready "observed working ${age}s after the acknowledgement$det"

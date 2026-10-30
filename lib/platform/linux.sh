@@ -136,6 +136,14 @@ nd_platform_restart_proxy() {
   nd_bounded "$2" "$3/svc" "$3/svc.err" systemctl --user restart "$1.service"
 }
 
+# nd_platform_restart_unbound <deadline> <tmp>: Unbound's service alone;
+# pi-hole only Wants= it and the proxy does not depend on it, so both keep
+# running. ExecStartPre=route-start finds the tick's lock busy and keeps the
+# persisted route, which is the wanted result on a warm proxy (BL-039 item 2).
+nd_platform_restart_unbound() {
+  nd_bounded "$1" "$2/svc" "$2/svc.err" systemctl --user restart unbound.service
+}
+
 # nd_platform_runtime_repairs: the runtime faults nd_platform_repair_runtime
 # can repair here; the policy escalates any other (ND_POLICY_RUNTIME_REPAIRS).
 nd_platform_runtime_repairs() { printf 'containers-missing\n'; }

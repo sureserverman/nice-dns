@@ -808,3 +808,99 @@ t_unbound_probe_route_is_bounded() {
   [ $((t1 - t0)) -le 10 ] || fail "probe-route ran $((t1 - t0)) s with a 2 s bound: $out"
   assert_match 'forwarder=127\.0\.0\.1@18532#one\.one\.one\.one .*rcode=- error=timeout' "$out" "the expiry is reported as a timeout"
 }
+
+# ─────────────────────────── fakes: Unbound restart ─────────────────────────
+
+# ra_ub_obs <file> <verdict> <reason>: routes healthy, with an unbound record.
+ra_ub_obs() { ra_obs "$1" healthy; printf 'obs\tunbound\t%s\t40\t%s\n' "$2" "$3" >>"$1"; }
+ra_dec() { printf 'schema\tnice-dns-decision/1\naction\trestart-component\ntarget\t%s\nreason\ttest\n' "$1" >"$CASE_DIR/dec"; }
+
+t_unbound_restart_journals_requested_acknowledged_ready() {
+  local plat out rc
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      : >"$FAKE/restart_changes"
+      ra_dec unbound
+      out="$(nd_recovery_apply "$CASE_DIR/dec" ra-u1 7)"; rc=$?
+      assert_rc 0 "$rc" "$plat: a new Unbound generation is the acknowledgement: $out"
+      assert_eq acknowledged "$(ra_field result "$out")" "$plat: result"
+      assert_eq unbound "$(ra_field component "$out")" "$plat: component"
+      assert_eq "$(printf 'unbound requested\nunbound acknowledged')" "$(ra_journal)" "$plat: no readiness in the acknowledging call"
+      if [ "$plat" = linux ]; then
+        assert_eq 1 "$(grep -c '^systemctl --user restart unbound.service$' "$FAKE_LOG")" "linux: Unbound alone, once"
+        assert_eq 1 "$(grep -c '^systemctl ' "$FAKE_LOG")" "linux: no other unit is touched"
+      else
+        assert_eq 1 "$(grep -c '^launchctl kickstart -k gui/[0-9]*/org.nice-dns.start-container$' "$FAKE_LOG")" "macos: the stack's kickstart, once"
+        assert_file "$HOME/.local/state/nice-dns/restart-requested" "macos: asks the agent to rebuild"
+      fi
+      # Readiness is a later observation of Unbound itself, not of the routes.
+      ra_ub_obs "$CASE_DIR/obs" unhealthy 'control: exit 1'
+      _nd_rec_readiness "$CASE_DIR/obs" "$(date +%s)"
+      assert_eq "$(printf 'unbound requested\nunbound acknowledged')" "$(ra_journal)" "$plat: still failing, not ready"
+      ra_ub_obs "$CASE_DIR/obs" healthy 'control and route answer'
+      _nd_rec_readiness "$CASE_DIR/obs" "$(date +%s)"
+      assert_eq "$(printf 'unbound requested\nunbound acknowledged\nunbound ready')" "$(ra_journal)" "$plat: ready once observed healthy"
+    ) || exit 1
+  done
+}
+
+t_unbound_restart_without_a_new_generation_is_not_acknowledged() {
+  local plat out rc
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      ra_dec unbound
+      out="$(nd_recovery_apply "$CASE_DIR/dec" ra-u2 7)"; rc=$?
+      assert_rc 1 "$rc" "$plat: an unchanged generation fails: $out"
+      assert_eq not-acknowledged "$(ra_field result "$out")" "$plat: result"
+      assert_eq "$(printf 'unbound requested\nunbound not-acknowledged')" "$(ra_journal)" "$plat: journal"
+      if [ "$plat" = macos ]; then
+        : >"$FAKE/launchctl_fails"
+        out="$(nd_recovery_apply "$CASE_DIR/dec" ra-u3 7)"; rc=$?
+        assert_rc 1 "$rc" "macos: a failed kickstart"
+        assert_eq 0 "$(find "$HOME/.local/state/nice-dns" -name restart-requested | wc -l | tr -d ' ')" "macos: a failed kickstart withdraws the request"
+      fi
+    ) || exit 1
+  done
+}
+
+t_unbound_restart_is_refused_without_the_lock_and_in_shadow() {
+  local plat out rc i
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      : >"$FAKE/restart_changes"
+      ra_dec unbound
+      out="$(ND_RECOVERY_LOCK_TOKEN=not-the-holder nd_recovery_apply "$CASE_DIR/dec" ra-u4 7)"; rc=$?
+      assert_rc 5 "$rc" "$plat: a lost lock stops it: $out"
+      assert_eq "" "$(grep -E '^(systemctl|launchctl)' "$FAKE_LOG")" "$plat: nothing was restarted"
+      export ND_POLICY_STARTUP_S=0
+      ra_ub_obs "$CASE_DIR/obs" unhealthy 'control: exit 1'
+      for i in 1 2 3; do out="$(nd_recovery_tick shadow "$CASE_DIR/obs")"; done
+      assert_eq unbound "$(ra_field target "$out")" "$plat: shadow decides the restart"
+      assert_eq shadow "$(ra_field result "$out")" "$plat: and only records it"
+      assert_eq "" "$(grep -E '^(systemctl|launchctl)' "$FAKE_LOG")" "$plat: shadow runs no restart"
+    ) || exit 1
+  done
+}
+
+t_every_policy_restart_target_has_a_handler() {
+  local plat t out rc
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      : >"$FAKE/restart_changes"; echo new >"$FAKE/ack"
+      # shellcheck disable=SC2013  # the targets are single words in the source
+      for t in $(grep -oE 'action=restart-component target=[a-z]+' "$NICE_DNS_ROOT/lib/policy.sh" | sed 's/.*target=//' | sort -u); do
+        ra_dec "$t"
+        # The fake's new generation is per second; each target starts from an old one.
+        echo t0-old >"$FAKE/started"
+        out="$(nd_recovery_apply "$CASE_DIR/dec" "ra-h-$t" 7)"; rc=$?
+        assert_rc 0 "$rc" "$plat: policy target $t has a handler: $out"
+      done
+      ra_dec no-such-component
+      nd_recovery_apply "$CASE_DIR/dec" ra-h-x 7 >/dev/null; assert_rc 2 $? "$plat: an unknown target is refused"
+    ) || exit 1
+  done
+}
