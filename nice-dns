@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+# nice-dns: one command for the stack on Linux and macOS. It picks the install
+# script for this platform and adds no install logic (lib/install.sh holds it).
+# Written for macOS's Bash 3.2. No `set -e`: the libraries `restart` sources run
+# under the controller's options (health/nice-dns-health), and every step here
+# checks its own result.
+set -uo pipefail
+
+ND_CLI_SNAPSHOT="$HOME/.local/share/nice-dns/source"
+# shellcheck disable=SC2016  # the backticks are text for the reader
+ND_CLI_NOT_INSTALLED='nice-dns is not installed; run `nice-dns install`'
+ND_CLI_REPO=https://github.com/sureserverman/nice-dns.git
+
+usage() {
+  cat <<'EOF'
+Usage: nice-dns <command> [options]
+
+  install [haproxy|socat] [--hardened] [--branch B]
+      Install the stack (defaults: haproxy, standard Pi-hole, main).
+  reinstall [haproxy|socat] [--hardened|--standard] [--branch B] [--local]
+      Install again with the recorded choices; options override them.
+      A checkout uses itself. The installed command clones the branch;
+      --local uses the source kept at the last install instead.
+  restart
+      Restart the whole stack and wait for DNS to answer.
+  uninstall
+      Remove the stack, then this command.
+EOF
+}
+
+bad_usage() {
+  printf 'nice-dns: %s\n' "$1" >&2
+  usage >&2
+  exit 2
+}
+
+err() { printf 'nice-dns: %s\n' "$1" >&2; }
+
+if [ "$(id -u)" -eq 0 ]; then
+  echo "Please run nice-dns as a regular user, not with sudo." >&2
+  exit 1
+fi
+
+[ $# -gt 0 ] || bad_usage "no command given"
+ND_CLI_CMD="$1"
+shift
+
+case "$ND_CLI_CMD" in
+  install|reinstall|restart|uninstall) ;;
+  -h|--help|help) usage; exit 0 ;;
+  *) bad_usage "unknown command '$ND_CLI_CMD'" ;;
+esac
+
+case "$(uname -s)" in
+  Linux) ND_CLI_PLATFORM=linux ND_CLI_OS=deb ;;
+  Darwin) ND_CLI_PLATFORM=macos ND_CLI_OS=mac ;;
+  *) err "unsupported platform '$(uname -s)'; nice-dns runs on Linux and macOS"; exit 1 ;;
+esac
+
+ND_CLI_HERE="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$ND_CLI_HERE/lib/install.sh" ]; then
+  ND_CLI_CHECKOUT=1 ND_CLI_ROOT="$ND_CLI_HERE"
+else
+  ND_CLI_CHECKOUT=0 ND_CLI_ROOT="$ND_CLI_SNAPSHOT"
+fi
+
+# Same place as lib/install.sh nd_install_state_dir. Read here too, because
+# "nothing is installed" must be answerable with no source tree at all.
+state_dir() {
+  case "$ND_CLI_PLATFORM" in
+    linux) printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-install" ;;
+    macos) printf '%s\n' "$HOME/Library/Application Support/nice-dns-install" ;;
+  esac
+}
+
+# recorded_manifest: the current generation's prepare.tsv; 1 when none.
+recorded_manifest() {
+  local sd gen
+  sd="$(state_dir)"
+  [ -f "$sd/current" ] || return 1
+  gen="$(cat "$sd/current")"
+  [ -n "$gen" ] && [ -f "$sd/generations/$gen/prepare.tsv" ] || return 1
+  printf '%s\n' "$sd/generations/$gen/prepare.tsv"
+}
+
+recorded_field() { awk -F '\t' -v k="$2" '$1 == k { print $2; exit }' "$1"; }
+
+ND_CLI_VARIANT="" ND_CLI_PIHOLE="" ND_CLI_BRANCH="" ND_CLI_LOCAL=0
+
+# parse_choices <allow reinstall-only options: 0|1> <args...>
+parse_choices() {
+  local re="$1"
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      haproxy|socat)
+        [ -z "$ND_CLI_VARIANT" ] || bad_usage "more than one proxy variant given"
+        ND_CLI_VARIANT="$1" ;;
+      --hardened) ND_CLI_PIHOLE=hardened ;;
+      --standard)
+        [ "$re" = 1 ] || bad_usage "unknown option '$1' for $ND_CLI_CMD"
+        ND_CLI_PIHOLE=standard ;;
+      --local)
+        [ "$re" = 1 ] || bad_usage "unknown option '$1' for $ND_CLI_CMD"
+        ND_CLI_LOCAL=1 ;;
+      --branch)
+        [ $# -ge 2 ] || bad_usage "--branch needs a name"
+        case "$2" in -*|'') bad_usage "--branch needs a name" ;; esac
+        ND_CLI_BRANCH="$2"
+        shift ;;
+      *) bad_usage "unknown option '$1' for $ND_CLI_CMD" ;;
+    esac
+    shift
+  done
+}
+
+# run_installer <source root> <variant> <flavour> <branch>
+run_installer() {
+  local script="install-$ND_CLI_OS"
+  [ "$3" = hardened ] && script="$script-hardened"
+  script="$1/$script.sh"
+  if [ ! -f "$script" ]; then
+    err "no installer at $script"
+    return 1
+  fi
+  bash "$script" "$2" "$4"
+}
+
+ND_CLI_TMP=""
+cleanup_tmp() { [ -z "$ND_CLI_TMP" ] || rm -rf "${ND_CLI_TMP:?}"; }
+
+cmd_install() {
+  parse_choices 0 "$@"
+  if [ ! -f "$ND_CLI_ROOT/lib/install.sh" ]; then
+    err "no source tree: run this from a checkout, or install with the curl command in the README"
+    return 1
+  fi
+  run_installer "$ND_CLI_ROOT" "${ND_CLI_VARIANT:-haproxy}" "${ND_CLI_PIHOLE:-standard}" "${ND_CLI_BRANCH:-main}"
+}
+
+cmd_uninstall() {
+  [ $# -eq 0 ] || bad_usage "unknown option '$1' for uninstall"
+  local script="$ND_CLI_ROOT/install-$ND_CLI_OS.sh"
+  if [ ! -f "$script" ]; then
+    err "$ND_CLI_NOT_INSTALLED"
+    return 1
+  fi
+  bash "$script" uninstall
+}
+
+cmd_reinstall() {
+  local m variant flavour branch src
+  parse_choices 1 "$@"
+  if ! m="$(recorded_manifest)"; then
+    err "$ND_CLI_NOT_INSTALLED"
+    return 1
+  fi
+  variant="${ND_CLI_VARIANT:-$(recorded_field "$m" variant)}"
+  flavour="${ND_CLI_PIHOLE:-$(recorded_field "$m" pihole)}"
+  branch="${ND_CLI_BRANCH:-$(recorded_field "$m" branch)}"
+  case "$variant" in haproxy|socat) ;; *) err "the record $m names no proxy variant; give haproxy or socat"; return 1 ;; esac
+  case "$flavour" in standard|hardened) ;; *) err "the record $m names no Pi-hole flavour; give --hardened or --standard"; return 1 ;; esac
+  [ -n "$branch" ] || branch=main
+
+  if [ "$ND_CLI_LOCAL" = 1 ]; then
+    src="$ND_CLI_SNAPSHOT"
+    if [ ! -f "$src/lib/install.sh" ]; then
+      err "no kept source at $src"
+      return 1
+    fi
+  elif [ "$ND_CLI_CHECKOUT" = 1 ]; then
+    src="$ND_CLI_HERE"
+  else
+    ND_CLI_TMP="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-reinstall.XXXXXXXX")" || return 1
+    trap cleanup_tmp EXIT
+    # The running stack is what answers DNS here, so a stalled transfer must
+    # end by itself. Nothing has changed yet when this fails.
+    if ! git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 clone -q --depth 1 -b "$branch" "$ND_CLI_REPO" "$ND_CLI_TMP/nice-dns"; then
+      err "could not fetch branch '$branch' (is DNS down?). The running stack is untouched."
+      # shellcheck disable=SC2016  # the backticks are text for the reader
+      err 'Run `nice-dns reinstall --local` to use the source kept at the last install.'
+      return 1
+    fi
+    src="$ND_CLI_TMP/nice-dns"
+  fi
+  run_installer "$src" "$variant" "$flavour" "$branch"
+}
+
+# ─── restart ─────────────────────────────────────────────────────────────────
+
+ND_CLI_LOCK="" ND_CLI_RELEASE=0
+
+restart_cleanup() {
+  [ -z "$ND_CLI_LOCK" ] || nd_state_unlock "$ND_CLI_LOCK" >/dev/null 2>&1
+  ND_CLI_LOCK=""
+  if [ "$ND_CLI_RELEASE" = 1 ]; then
+    ND_CLI_RELEASE=0
+    _nd_inst_release_controller
+  fi
+  cleanup_tmp
+}
+
+# restart_take_lock: stopping a timer does not end a pass already running, so
+# wait for the controller's state lock (its lease is 600 s). A state directory
+# that does not exist yet has no controller to overlap with.
+restart_take_lock() {
+  local i=0 rc max="${ND_CLI_LOCK_TRIES:-125}"
+  while :; do
+    ND_CLI_LOCK="$(nd_state_lock 2>/dev/null)"; rc=$?
+    case "$rc" in
+      0) return 0 ;;
+      3) ;;
+      *) ND_CLI_LOCK=""; return 0 ;;
+    esac
+    ND_CLI_LOCK=""
+    i=$((i + 1))
+    [ "$i" -lt "$max" ] || return 1
+    sleep 5
+  done
+}
+
+cmd_restart() {
+  [ $# -eq 0 ] || bad_usage "unknown option '$1' for restart"
+  local rc=0
+  if ! recorded_manifest >/dev/null || [ ! -f "$ND_CLI_ROOT/lib/install.sh" ]; then
+    err "$ND_CLI_NOT_INSTALLED"
+    return 1
+  fi
+  ND_PLATFORM="$ND_CLI_PLATFORM"
+  export ND_PLATFORM
+  # shellcheck disable=SC1091  # the source root is found at run time
+  . "$ND_CLI_ROOT/lib/install.sh" || return 1
+  # shellcheck disable=SC1091
+  . "$ND_CLI_ROOT/lib/recovery.sh" || return 1
+  # shellcheck disable=SC2034  # read by the sourced lib/install.sh
+  ND_INST_PLATFORM="$ND_CLI_PLATFORM"
+  # shellcheck disable=SC2034
+  ND_INST_SRC="$ND_CLI_ROOT"
+  # shellcheck disable=SC2034
+  ND_INST_TREE="$ND_CLI_ROOT"
+  ND_CLI_TMP="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-restart.XXXXXXXX")" || return 1
+  trap restart_cleanup EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  nd_install_hold_controller
+  ND_CLI_RELEASE=1
+  if ! restart_take_lock; then
+    err "the controller is still busy; nothing was restarted. Try again in a few minutes."
+    return 1
+  fi
+  echo "Restarting the stack..."
+  nd_platform_restart_stack "${ND_RECOVERY_SERVICE_S:-120}" "$ND_CLI_TMP" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    err "the stack restart failed (exit $rc): $(head -n 1 "$ND_CLI_TMP/svc.err" 2>/dev/null)"
+    # shellcheck disable=SC2016  # the backticks are text for the reader
+    err 'Check `nice-dns-health status`.'
+    return 1
+  fi
+  if ! nd_install_wait_ready 2>/dev/null; then
+    # shellcheck disable=SC2016  # the backticks are text for the reader
+    err 'the stack restarted, but DNS is not answering yet. Check `nice-dns-health status`.'
+    return 1
+  fi
+  echo "nice-dns restarted; DNS is answering."
+}
+
+case "$ND_CLI_CMD" in
+  install) cmd_install "$@" ;;
+  uninstall) cmd_uninstall "$@" ;;
+  reinstall) cmd_reinstall "$@" ;;
+  restart) cmd_restart "$@" ;;
+esac
