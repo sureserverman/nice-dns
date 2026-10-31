@@ -1,0 +1,28 @@
+{
+ "baseline": {
+  "elapsed_s": 331.5,
+  "exit": 0,
+  "tail": "run_id=20261031T000146Z-7f53534a artifacts=/home/user/.local/state/nice-dns-tests/runs/20261031T000146Z-7f53534a\nPASS  t_1_before\nPASS  t_2_upgrade_from_legacy\nPASS  t_3_state_survives\nPASS  t_4_uninstall_restores\nPASS  t_5_final_install\nPASS  t_6_evidence_is_private\nPASS  t_x_hardened_group_runs_alone\nPASS  t_x_reuse_rule_ignores_docs_not_product\nPASS  t_y_gate_flow_switches_reuses_and_writes_a_verified_receipt\nPASS  t_y_rerun_skips_what_is_proven\nPASS  t_z_dry_run_catches_every_seeded_defect\nPASS  t_z_gate_flow_catches_every_seeded_defect\ngroup integration/install-lifecycle-dryrun: collected=12 passed=12 failed=0\ncollected=12 passed=12 failed=0\nresult=pass run_id=20261031T000146Z-7f53534a artifacts=/home/user/.local/state/nice-dns-tests/runs/20261031T000146Z-7f53534a\nrun_id=20261031T000444Z-dd87fe67 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261031T000444Z-dd87fe67\nPASS  t_anchor_and_tor_volumes_keep_their_state\nPASS  t_command_and_source_follow_the_install\nPASS  t_every_transition_keeps_the_instance_state\nPASS  t_failed_uninstall_keeps_the_command\nPASS  t_installed_bundle_works_after_the_checkout_moves\nPASS  t_linux_quadlets_mount_the_instance_state\nPASS  t_macos_launch_paths_mount_the_instance_state\nPASS  t_pihole_lists_survive_restart_image_switch_and_back\ngroup integration/lifecycle-transitions: collected=8 passed=8 failed=0\ncollected=8 passed=8 failed=0\nresult=pass run_id=20261031T000444Z-dd87fe67 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261031T000444Z-dd87fe67"
+ },
+ "break_patch": "--- a/lib/install.sh\n+++ b/lib/install.sh\n@@ -511,7 +511,6 @@\n   local d=\"$ND_INST_STATE/generations/$ND_INST_GEN\"\n   _nd_inst_write_file \"$d/activated\" \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" || return 1\n   _nd_inst_write_file \"$ND_INST_STATE/current\" \"$ND_INST_GEN\" || return 1\n-  _nd_inst_publish_command\n   _nd_inst_prune\n   _nd_inst_sudo_keepalive_stop\n   echo \"\u25b8 Generation $ND_INST_GEN is active (previous: $ND_INST_PREV).\"\n",
+ "build": null,
+ "created": "2026-10-31T00:12:25+00:00",
+ "fingerprint": "576f0a05507ea8fa77b89a79ae6a11a9d832c60260c00f4d8ee62d0699f0f032",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "shell: nothing is built",
+ "plan": "/home/user/nice-dns-ci/plan/2026-10-30-nice-dns-command-and-unbound-recovery-plan.md",
+ "red": {
+  "elapsed_s": 307.5,
+  "exit": 1,
+  "tail": "run_id=20261031T000718Z-72e871a2 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261031T000718Z-72e871a2\nPASS  t_1_before\nPASS  t_2_upgrade_from_legacy\nPASS  t_3_state_survives\nPASS  t_4_uninstall_restores\nPASS  t_5_final_install\nPASS  t_6_evidence_is_private\nPASS  t_x_hardened_group_runs_alone\nPASS  t_x_reuse_rule_ignores_docs_not_product\nPASS  t_y_gate_flow_switches_reuses_and_writes_a_verified_receipt\nPASS  t_y_rerun_skips_what_is_proven\nPASS  t_z_dry_run_catches_every_seeded_defect\nPASS  t_z_gate_flow_catches_every_seeded_defect\ngroup integration/install-lifecycle-dryrun: collected=12 passed=12 failed=0\ncollected=12 passed=12 failed=0\nresult=pass run_id=20261031T000718Z-72e871a2 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261031T000718Z-72e871a2\nrun_id=20261031T001014Z-61b70e0c artifacts=/home/user/.local/state/nice-dns-tests/runs/20261031T001014Z-61b70e0c\nPASS  t_anchor_and_tor_volumes_keep_their_state\nFAIL  t_command_and_source_follow_the_install (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261031T001014Z-61b70e0c/cases/integration-lifecycle-transitions/t_command_and_source_follow_the_install/case.log)\n      ASSERT FAIL: install-deb: the command is installed\nPASS  t_every_transition_keeps_the_instance_state\nFAIL  t_failed_uninstall_keeps_the_command (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261031T001014Z-61b70e0c/cases/integration-lifecycle-transitions/t_failed_uninstall_keeps_the_command/case.log)\n      ASSERT FAIL: the command stays for the retry: no regular file /home/user/.local/state/nice-dns-tests/runs/20261031T001014Z-61b70e0c/cases/integration-lifecycle-transitions/t_failed_uninstall_keeps_the_command/w-install-deb/home/.local/bin/nice-dns\nPASS  t_installed_bundle_works_after_the_checkout_moves\nPASS  t_linux_quadlets_mount_the_instance_state\nPASS  t_macos_launch_paths_mount_the_instance_state\nPASS  t_pihole_lists_survive_restart_image_switch_and_back\ngroup integration/lifecycle-transitions: collected=8 passed=6 failed=2\ncollected=8 passed=6 failed=2\nresult=fail run_id=20261031T001014Z-61b70e0c artifacts=/home/user/.local/state/nice-dns-tests/runs/20261031T001014Z-61b70e0c"
+ },
+ "schema": 2,
+ "task": "2.2",
+ "test": "bash tests/run.sh integration install-lifecycle-dryrun && bash tests/run.sh integration lifecycle-transitions",
+ "text": "`bash tests/run.sh integration install-lifecycle-dryrun && bash tests/run.sh integration lifecycle-transitions` with new cases: after install the command and snapshot exist and the snapshot uninstalls with `git` absent and no network; a command directory off `PATH` prints the notice and one on `PATH` does not; a rollback keeps the earlier copy; after uninstall both are gone and reset-failed ran",
+ "touched": [
+  "lib/install.sh"
+ ]
+}

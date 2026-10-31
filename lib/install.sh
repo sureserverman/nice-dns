@@ -511,9 +511,103 @@ nd_install_finish() {
   local d="$ND_INST_STATE/generations/$ND_INST_GEN"
   _nd_inst_write_file "$d/activated" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
   _nd_inst_write_file "$ND_INST_STATE/current" "$ND_INST_GEN" || return 1
+  _nd_inst_publish_command
   _nd_inst_prune
   _nd_inst_sudo_keepalive_stop
   echo "▸ Generation $ND_INST_GEN is active (previous: $ND_INST_PREV)."
+}
+
+# The `nice-dns` command and the source it uses when it runs off a checkout
+# (WF-DNS-003). Published after a fully successful install, so a failed install
+# leaves the earlier copies; each arrives by rename, so a reader sees a whole
+# copy. Removed last by an uninstall that gave host DNS back: one that did not
+# is retried with this same command. The command's directory follows the
+# controller's rule (health/nice-dns-health pick_installed_bin).
+ND_INST_SOURCE_ITEMS="deb mac lib health routes release pihole pihole-hardened unbound scripts install-deb.sh install-deb-hardened.sh install-mac.sh install-mac-hardened.sh nice-dns"
+
+_nd_inst_source_dir() { printf '%s\n' "$HOME/.local/share/nice-dns/source"; }
+
+_nd_inst_command_fallback_dir() {
+  if [ "$ND_INST_PLATFORM" = linux ]; then
+    printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-health/bin"
+  else
+    printf '%s\n' "$HOME/Library/Logs/nice-dns-health/bin"
+  fi
+}
+
+_nd_inst_command_dir() {
+  local d="$HOME/.local/bin"
+  if { [ -d "$d" ] && [ -w "$d" ]; } || { [ ! -e "$d" ] && mkdir -p "$d" 2>/dev/null; }; then
+    printf '%s\n' "$d"
+    return 0
+  fi
+  d="$(_nd_inst_command_fallback_dir)"
+  mkdir -p "$d" && printf '%s\n' "$d"
+}
+
+# _nd_inst_publish_source: 1 with the earlier copy still in place.
+_nd_inst_publish_source() {
+  local dst base new old item
+  dst="$(_nd_inst_source_dir)"
+  base="$(dirname "$dst")"
+  mkdir -p "$base" || return 1
+  new="$(mktemp -d "$base/.source.XXXXXXXX")" || return 1
+  old="$new.old"
+  for item in $ND_INST_SOURCE_ITEMS; do
+    cp -Rp "$ND_INST_SRC/$item" "$new/" || { rm -rf "${new:?}"; return 1; }
+  done
+  chmod 755 "$new"
+  if [ -e "$dst" ]; then
+    mv "$dst" "$old" || { rm -rf "${new:?}"; return 1; }
+  fi
+  if ! mv "$new" "$dst"; then
+    [ ! -e "$old" ] || mv "$old" "$dst"
+    rm -rf "${new:?}"
+    return 1
+  fi
+  rm -rf "${old:?}"
+}
+
+_nd_inst_publish_command_file() {
+  local d new
+  d="$(_nd_inst_command_dir)" || return 1
+  new="$d/.nice-dns.new.$$"
+  cp "$ND_INST_SRC/nice-dns" "$new" && chmod 755 "$new" && mv -f "$new" "$d/nice-dns" && return 0
+  rm -f "$new"
+  return 1
+}
+
+# _nd_inst_publish_command: the stack is already running and pinned here, so a
+# failure says so and leaves the install standing.
+_nd_inst_publish_command() {
+  if ! _nd_inst_publish_source; then
+    echo "! Could not keep the source under $(_nd_inst_source_dir); the earlier copy stays." >&2
+    return 0
+  fi
+  _nd_inst_publish_command_file \
+    || echo "! Could not install the nice-dns command; the earlier copy stays." >&2
+  return 0
+}
+
+# nd_install_command_notice: an install's last output. When the command's
+# directory is not on the installer's PATH it gives the full path and the exact
+# line to add; no shell profile is edited.
+nd_install_command_notice() {
+  local d
+  d="$(_nd_inst_command_dir)" || return 0
+  [ -x "$d/nice-dns" ] || return 0
+  case ":$PATH:" in
+    *":$d:"*) echo "Manage the stack with: nice-dns install|uninstall|reinstall|restart" ;;
+    *) printf 'Manage the stack with %s/nice-dns; to run it as nice-dns, add this line to your shell profile: export PATH="%s:$PATH"\n' "$d" "$d" ;;
+  esac
+}
+
+_nd_inst_command_remove() {
+  local dst
+  rm -f "$HOME/.local/bin/nice-dns" "$(_nd_inst_command_fallback_dir)/nice-dns"
+  dst="$(_nd_inst_source_dir)"
+  rm -rf "${dst:?}"
+  rmdir "$(dirname "$dst")" 2>/dev/null || true
 }
 
 # _nd_inst_prune: removes the generation-tagged images of every generation
@@ -1902,6 +1996,11 @@ nd_install_linux_uninstall() {
   ep="$(_nd_inst_controller_entry)"
   if [ -n "$ep" ] && [ -f "$ep" ]; then bash "$ep" uninstall || true; fi
   systemctl --user daemon-reload 2>/dev/null || true
+  # A unit that failed stays listed as "not-found failed" after its file is gone.
+  for ref in nice-dns-pod nice-dns-network pi-hole unbound tor-haproxy tor-socat \
+             nice-dns-health nice-dns-health-bridges nice-dns-fetch-bridges; do
+    systemctl --user reset-failed "$ref.service" 2>/dev/null || true
+  done
   # The locally built images (localhost/unbound, localhost/pi-hole and the
   # hardened base), their generation tags, and the pulled tor images: those
   # are stored under their full docker.io/sureserver/... reference, which a
@@ -1946,6 +2045,7 @@ _nd_inst_uninstall_state() {
   _nd_inst_state_remove
   _nd_inst_pihole_credential_remove
   sd="$(nd_install_state_dir)" && rm -f "${sd:?}/current"
+  _nd_inst_command_remove
 }
 
 # _nd_inst_uninstall_verdict <dns_ok>: fails the uninstall when host DNS was

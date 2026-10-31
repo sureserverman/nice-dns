@@ -100,3 +100,4 @@ nd_install_linux_prepare_images
 # self-check, and any failure rolls back (lib/install.sh, transaction notes).
 nd_install_linux_activate
 nd_install_finish
+nd_install_command_notice

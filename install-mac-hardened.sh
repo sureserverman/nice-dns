@@ -132,3 +132,4 @@ nd_install_macos_activate
 nd_install_finish
 
 echo "All done. DNS is set to 172.31.240.250 (pi-hole, hardened base). Web UI: http://172.31.240.250"
+nd_install_command_notice

@@ -165,6 +165,78 @@ lt_generated() {
 }
 lt_mounts() { printf '%s\n' "$1" | tr ' ' '\n' | awk 'p { print; p = 0; next } $0 == "-v" || $0 == "--volume" { p = 1 } /^--volume=/ { print substr($0, 10) }'; }
 
+# The `nice-dns` command and its kept source (Task 2.2): published by a whole
+# install, kept through a failed one, usable with no git or network, removed last.
+t_command_and_source_follow_the_install() {
+  local ep
+  ip_select
+  for ep in $IP_EPS; do
+    (
+      local cmd src plat out
+      plat="$(ip_platform "$ep")"
+      dt_world "$ep" "$(dt_fresh_state "$ep")"
+      cmd="$IP_HOME/.local/bin/nice-dns" src="$IP_HOME/.local/share/nice-dns/source"
+      ip_install "$ep" socat
+      assert_rc 0 "$IP_RC" "$ep: install: $IP_OUT"
+      [ -x "$cmd" ] || fail "$ep: the command is installed"
+      assert_file "$src/lib/install.sh" "$ep: the source is kept"
+      assert_file "$src/$ep.sh" "$ep: with its install script"
+      assert_eq "" "$(find "$IP_HOME/.local/share/nice-dns" -maxdepth 1 -name '.source.*')" "$ep: no staging directory is left"
+      out="$(printf '%s\n' "$IP_OUT" | tail -n 1)"
+      assert_match "$IP_HOME/.local/bin/nice-dns" "$out" "$ep: off PATH, the last line gives the full path"
+      assert_match "export PATH=\"$IP_HOME/.local/bin:" "$out" "$ep: and the line to add"
+      assert_file "$cmd" "$ep: the command is still there"
+      lt_marks "$ep"
+
+      IP_PATH_EXTRA="$IP_HOME/.local/bin"
+      lt_step "$ep" "$ep: install with the command on PATH" ok socat
+      IP_PATH_EXTRA=""
+      out="$(printf '%s\n' "$IP_OUT" | tail -n 1)"
+      assert_not_match 'export PATH' "$IP_OUT" "$ep: on PATH, no notice"
+      assert_match 'nice-dns install\|uninstall\|reinstall\|restart' "$out" "$ep: it points to the command"
+
+      echo '# earlier' >>"$cmd"; echo earlier >"$src/earlier"
+      : >"$FAKE/never_ready"
+      lt_step "$ep" "$ep: a failed install" fail socat
+      rm -f "$FAKE/never_ready"
+      assert_match '# earlier' "$(cat "$cmd")" "$ep: a rollback keeps the earlier command"
+      assert_file "$src/earlier" "$ep: and the earlier source"
+
+      # Off a kept source, with no git to clone with.
+      rm -f "$IP_BIN/git"
+      : >"$FAKE_LOG"
+      ip_run "$src/$ep.sh" uninstall
+      assert_rc 0 "$IP_RC" "$ep: the kept source uninstalls: $IP_OUT"
+      assert_eq "" "$(grep -E '^git |^curl |pull ' "$FAKE_LOG" || true)" "$ep: with no git and no network"
+      assert_no_path "$cmd" "$ep: the command is gone"
+      assert_no_path "$IP_HOME/.local/share/nice-dns" "$ep: the kept source is gone"
+      if [ "$plat" = linux ]; then
+        assert_match '^systemctl --user reset-failed unbound\.service$' "$(cat "$FAKE_LOG")" "$ep: reset-failed ran"
+        assert_match '^systemctl --user reset-failed nice-dns-pod\.service$' "$(cat "$FAKE_LOG")" "$ep: for the pod too"
+      fi
+    ) || exit 1
+  done
+}
+
+# An uninstall that could not give host DNS back is retried with this command.
+t_failed_uninstall_keeps_the_command() {
+  (
+    local ep=install-deb cmd
+    dt_world "$ep" "$(dt_fresh_state "$ep")"
+    cmd="$IP_HOME/.local/bin/nice-dns"
+    ip_install "$ep" haproxy
+    assert_rc 0 "$IP_RC" "install: $IP_OUT"
+    printf '%s\n' 'custom-dns-deb restore' >"$FAKE/fail"
+    ip_install "$ep" uninstall
+    if [ "$IP_RC" -ne 0 ]; then
+      assert_file "$cmd" "the command stays for the retry"
+      assert_file "$IP_HOME/.local/share/nice-dns/source/lib/install.sh" "and its source"
+    else
+      fail "the injected restore failure did not fail the uninstall: $IP_OUT"
+    fi
+  ) || exit 1
+}
+
 t_linux_quadlets_mount_the_instance_state() {
   local v q gen
   for v in haproxy socat; do

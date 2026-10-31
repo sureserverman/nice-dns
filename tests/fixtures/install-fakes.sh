@@ -431,7 +431,7 @@ STUB
 ip_tree() {
   local d="$1" f
   mkdir -p "$d"
-  for f in install-deb.sh install-deb-hardened.sh install-mac.sh install-mac-hardened.sh lib deb mac scripts unbound pihole pihole-hardened health routes release; do
+  for f in install-deb.sh install-deb-hardened.sh install-mac.sh install-mac-hardened.sh nice-dns lib deb mac scripts unbound pihole pihole-hardened health routes release; do
     cp -R "$NICE_DNS_ROOT/$f" "$d/"
   done
   # shellcheck disable=SC2016  # expanded by the stubs
@@ -531,7 +531,7 @@ ip_env() {
 # ip_run <script> [args...]: run an entrypoint in the world; IP_RC, IP_OUT.
 ip_run() {
   local cwd="${IP_CWD:-$IP_W}"
-  IP_OUT="$(cd "$cwd" && env -i HOME="$IP_HOME" USER=tester LOGNAME=tester PATH="$IP_BIN" \
+  IP_OUT="$(cd "$cwd" && env -i HOME="$IP_HOME" USER=tester LOGNAME=tester PATH="${IP_PATH_EXTRA:+$IP_PATH_EXTRA:}$IP_BIN" \
     TMPDIR="$IP_W/tmp" XDG_STATE_HOME="$IP_HOME/.local/state" XDG_CONFIG_HOME="$IP_HOME/.config" \
     XDG_RUNTIME_DIR="$IP_W/run" FAKE="$FAKE" FAKE_LOG="$FAKE_LOG" FAKE_UNAME="$IP_UNAME" FAKE_ARCH="$IP_ARCH" \
     ND_INST_ETC="$IP_W/etc" ND_INST_SUDO_KEEPALIVE=0 ND_INST_REQUIRE_SIGNATURES="${ND_INST_REQUIRE_SIGNATURES:-}" FAKE_ROOT="${FAKE_ROOT:-}" ND_INST_ROOT="${FAKE_ROOT:-}" ND_PERSIST_ROOT="${ND_PERSIST_ROOT:-}" bash "$@" 2>&1 </dev/null)"
