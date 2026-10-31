@@ -6,7 +6,7 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the
 - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)
   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.
 - Baseline source: this repository at commit
-  `c990b763f585f4a640b73cc5ce6405aaa483abdb`. Citations are `path:line` at that commit.
+  `aadfd2412b4d0fac6ff955c46b89a763ac9be967`. Citations are `path:line` at that commit.
   The eight-cell baseline receipt measured b85bc9b. The document was first
   written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,
   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02
@@ -489,9 +489,9 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   the controller writes `bridges.env` directly (WF-DNS-004).
 - Restart ladder since Sub-plan 3 Task 2.3: the first restart of an outage
   is Tor's (below); a later one of the same outage targets the proxy, the
-  service restart directly (lib/policy.sh:357). Since the close-out the later
+  service restart directly (lib/policy.sh:375). Since the close-out the later
   step also waits ND_POLICY_LADDER_S (660 s) after the first, the first
-  restart's readiness window plus a minute (lib/policy.sh:352-353), so it
+  restart's readiness window plus a minute (lib/policy.sh:370-371), so it
   never recreates a Tor that is still bootstrapping. Live on the Mac, a wedged
   runtime made two in-image restarts acknowledge and never become ready; only
   the stack rebuild repairs it.
@@ -499,9 +499,9 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   observes the proxy container's generation (`proxy`, a hash of the
   platform's container generation, lib/health.sh:246, run at
   lib/health.sh:540) and the state keeps it (`proxy_gen`,
-  lib/state.sh:136). A new boot, or a generation that differs from the
+  lib/state.sh:138). A new boot, or a generation that differs from the
   recorded one, restarts every route streak and drops a selected onion
-  route (lib/policy.sh:210-221), so the pass selects the preferred healthy
+  route (lib/policy.sh:215-226), so the pass selects the preferred healthy
   exit and the onion returns only after its sustained streak. An exit route
   stays selected; no proxy record, or an indeterminate one, is no evidence
   of a restart. Until then the last route stayed selected across a boot and
@@ -520,7 +520,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   the exit 46 s after the restart.
 - Runtime faults: repair-runtime acts only on a fault the platform can
   repair (lib/platform/linux.sh:159, lib/platform/macos.sh:253); any other
-  escalates at once (lib/policy.sh:288-289). Rootless Podman has no daemon
+  escalates at once (lib/policy.sh:294-295). Rootless Podman has no daemon
   to restart, so Linux escalates runtime-down. Before the pre-merge review
   it re-issued an unsupported repair every cooldown and never escalated.
   Since 2026-10-31 (DEC-021) three repairs of missing containers with no
@@ -531,15 +531,15 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
 - Unbound (since 2026-10-30, DEC-021). The observation is lib/health.sh:489-528:
   a control call past its deadline is Unbound's own failure only while a plain
   exec in the container answers. Measured on mint with SIGSTOP: control hangs,
-  probe-route passes, exec answers in 0 s. The rule is lib/policy.sh:256-274 and
-  the action lib/policy.sh:296. The restart is nd_recovery_restart_unbound
+  probe-route passes, exec answers in 0 s. The rule is lib/policy.sh:261-279 and
+  the action lib/policy.sh:314. The restart is nd_recovery_restart_unbound
   (lib/recovery.sh:793, lib/platform/linux.sh:143, lib/platform/macos.sh:234): a new
   container start is the acknowledgement, a later healthy observation is readiness.
   A timed-out control call stays in the container until that restart, because a
   deadline stops only the local client: at most about 30 in a retry interval.
   On Linux it is unbound.service alone; on macOS it rebuilds the stack (BL-038).
 - Past the restart cap (since 2026-10-30, DEC-021) a full outage restarts the stack
-  every `ND_POLICY_RETRY_S`, 1800 s (lib/policy.sh:347, lib/recovery.sh:797,
+  every `ND_POLICY_RETRY_S`, 1800 s (lib/policy.sh:365, lib/recovery.sh:797,
   lib/platform/linux.sh:149, lib/platform/macos.sh:237). The first escalation of an
   outage writes one dump (health/nice-dns-health:1084, lib/recovery.sh:802).
 - A missing container is started by name since 2026-10-30
@@ -573,7 +573,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
     stack restart runs.
   - Since Sub-plan 3 Task 1.3, the old `touch /tmp/tor-restart-flag`,
     logged as "triggered" without any answer, is gone.
-- Every action holds the state lock (lib/state.sh:207). Before each change,
+- Every action holds the state lock (lib/state.sh:209). Before each change,
   the action checks the lock again (lib/recovery.sh:647). Its waits are
   bounded in wall-clock seconds.
 - A Tor restart is ready when an identity route answers and Unbound
@@ -591,7 +591,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   PID in that persistent state file blocks the start for up to 600 s. Two waiters
   can also both take over a dead holder. lib/state.sh now provides the
   controller lock (boot, pid and lease staleness, compare-and-delete;
-  lib/state.sh:207). mac/start-container.sh moves to it with the installed
+  lib/state.sh:209). mac/start-container.sh moves to it with the installed
   bundle (Sub-plan 3 Task 2.1) [REC-ACK-READINESS].
 - Cache masking: Unbound serves expired answers for up to 24 h
   (unbound/etc/unbound.conf:99-101). dnsmasq has `use-stale-cache=3600`
