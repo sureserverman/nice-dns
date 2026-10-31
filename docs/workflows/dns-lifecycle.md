@@ -6,7 +6,7 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the
 - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)
   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.
 - Baseline source: this repository at commit
-  `4ab0029b431219dc792d3cc2f9f3481e136adee7`. Citations are `path:line` at that commit.
+  `c990b763f585f4a640b73cc5ce6405aaa483abdb`. Citations are `path:line` at that commit.
   The eight-cell baseline receipt measured b85bc9b. The document was first
   written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,
   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02
@@ -123,7 +123,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   (pihole/etc/pihole.toml:12-14). The Linux quadlet sets
   `DNS1=127.0.0.1#5335` (deb/quadlet/pi-hole.container:39).
 - On macOS the installer and LaunchAgent override the upstream to
-  `172.31.240.251#5335` (lib/install.sh:2654-2655, mac/start-container.sh:500-501).
+  `172.31.240.251#5335` (lib/install.sh:2655-2656, mac/start-container.sh:500-501).
 - Pi-hole query logging is off in the shipped config
   (pihole/etc/pihole.toml:197). dnsmasq `log-queries` is commented out
   (pihole/etc/dnsmasq.conf:48). baseline: unverified at runtime for both
@@ -164,12 +164,12 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   file and renames it, after the route directory is checked and seeded, so
   the directory never holds a unit with an unfilled placeholder) and both
   macOS launch paths
-  (lib/install.sh:2667, mac/start-container.sh:512), the same directory
+  (lib/install.sh:2668, mac/start-container.sh:512), the same directory
   the controller manages (lib/platform/linux.sh:18,
   lib/platform/macos.sh:22). The installers seed it before Unbound first
   starts with an identity route, cloudflare-exit at generation 1, never the
   compat route (lib/recovery.sh:487-499, lib/install.sh:1983,
-  lib/install.sh:2500); an include already there is the controller's and
+  lib/install.sh:2501); an include already there is the controller's and
   is kept [PRIV-ROUTE-IDENTITY]. Since Sub-plan 5 Task 1.4 every launch
   path that starts Unbound first runs the controller's launcher
   `<controller root>/route-start`: the quadlet's ExecStartPre
@@ -178,7 +178,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   deb/persistent-podman.sh:129 drop the line with a warning when the path
   cannot go into a unit), the macOS agent before it creates
   Unbound (mac/start-container.sh:477, called at mac/start-container.sh:508)
-  and the macOS installer's first run (lib/install.sh:2661). The launcher is
+  and the macOS installer's first run (lib/install.sh:2662). The launcher is
   written at install before any schedule (health/nice-dns-health:758,
   health/nice-dns-health:1064) and runs `route-start`, which acts only for an
   active install (health/nice-dns-health:1043-1045). Under the controller's
@@ -265,7 +265,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   [SEC-DNSSEC-SIGNED] [SEC-DNSSEC-UNSIGNED] [SEC-DNSSEC-BOGUS].
   Since Sub-plan 4 Task 2.2 /var/lib/unbound is the volume
   nice-dns-unbound-anchor on both platforms (deb/quadlet/unbound.container:21,
-  lib/install.sh:2666, mac/start-container.sh:511), so a new container keeps
+  lib/install.sh:2667, mac/start-container.sh:511), so a new container keeps
   the anchor's RFC 5011 state; until then each one re-seeded from the image.
 - Resolver management is a Unix socket, `/run/unbound/control.sock`, with
   `control-use-cert: no` and no TCP listener or key files
@@ -863,17 +863,17 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   The builds and the volume hand-over run containers on the default
   network, after which Apple's runtime brings dnsnet containers up with
   their interfaces down, so the runtime is restarted before dnsnet and the
-  stack start (lib/install.sh:2602-2617). A macOS rollback stops the builder
+  stack start (lib/install.sh:2603-2618). A macOS rollback stops the builder
   and restarts the runtime the same way before a previous stack comes back,
   and starts the runtime again if that restart failed
-  (lib/install.sh:2471-2477, lib/install.sh:1068, lib/install.sh:1069-1078).
+  (lib/install.sh:2472-2478, lib/install.sh:1068, lib/install.sh:1069-1078).
 - The resolver is pinned only after the new stack answers an ordinary query
   at the pinned address and Unbound resolves over its authenticated route
   (lib/install.sh:960-975,
   lib/install.sh:981-988), and after the installed
   controller passes its self-check (lib/install.sh:1006-1012).
   Linux: lib/install.sh:1976-1996. macOS:
-  lib/install.sh:2491-2516; `mac/persist.sh` loads the
+  lib/install.sh:2492-2517; `mac/persist.sh` loads the
   start-container agent, whose first run pins every service, only after the
   controller installed and its installed copy passed its self-check
   (mac/persist.sh:58-81). The pin is
@@ -891,7 +891,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
 - Uninstall removes the stack, images, bridge service, controller and, on
   macOS, a debug monitor set up by hand, and gives back the recorded DNS state
   (lib/install.sh:2003-2062,
-  lib/install.sh:2521-2530;
+  lib/install.sh:2522-2531;
   deb/custom-dns-deb:459-563, mac/start-container-root.sh:222-255).
   The Linux helper puts resolv.conf back first and whole (a new file or
   link renamed over it) while `dns=none` still holds NetworkManager off it;
@@ -1005,7 +1005,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   secret `nice-dns-pihole-webpassword` (lib/install.sh:366), which the
   quadlet mounts for uid 1000 (deb/quadlet/pi-hole.container:33-34).
   macOS mounts the directory read-only at /run/secrets at both launch
-  sites (lib/install.sh:2644-2657, mac/start-container.sh:490-503). Both
+  sites (lib/install.sh:2645-2658, mac/start-container.sh:490-503). Both
   images read it through `WEBPASSWORD_FILE` and refuse to start when it is
   missing, unreadable or empty (pihole/nd-start.sh:30-38; the
   hardened base's start.sh, pi-hole-hardened 4574d52). Uninstall removes
@@ -1017,7 +1017,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   (deb/quadlet/pi-hole-standard.conf:13-14); the hardened image keeps
   NET_BIND_SERVICE with no-new-privileges
   (deb/quadlet/pi-hole-hardened.conf:11-13). macOS runs the standard set for
-  both (lib/install.sh:2649). pihole-FTL runs as uid 1000 in both. Pi-hole's
+  both (lib/install.sh:2650). pihole-FTL runs as uid 1000 in both. Pi-hole's
   NTP server and client are off (pihole/etc/pihole.toml:492, 502, 515), so
   it listens on :53, :80 and :443 only (tests/integration/deployment-security.sh)
   [SEC-LEAST-PRIV] [SEC-LISTENERS].
@@ -1039,21 +1039,21 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   once host DNS was given back: a failed or interrupted restore keeps the
   state, the admin password and the current-generation marker for the retry
   or a reinstall (lib/install.sh:2055-2062, called at lib/install.sh:2044 and
-  lib/install.sh:2528) [SEC-OWNED-RESTORE]. Tor state: the Linux volume
+  lib/install.sh:2529) [SEC-OWNED-RESTORE]. Tor state: the Linux volume
   nice-dns-tor-<proxy> (deb/quadlet/tor-haproxy.container:20,
   deb/quadlet/tor-socat.container:16), on macOS
   ~/.local/state/nice-dns/tor-<proxy>, now mounted by the installer's run
-  too (lib/install.sh:2672, mac/start-container.sh:543). The root anchor:
+  too (lib/install.sh:2673, mac/start-container.sh:543). The root anchor:
   WF-DNS-001. The operator's Pi-hole lists (user decision: lists survive,
   configuration comes from the image): gravity.db on the volume
   nice-dns-pihole-lists (pihole/etc/pihole.toml:946,
-  deb/quadlet/pi-hole.container:19, lib/install.sh:2647,
+  deb/quadlet/pi-hole.container:19, lib/install.sh:2648,
   mac/start-container.sh:493). Each image keeps its build's gravity.db as a
   seed; pihole/nd-start.sh uses the volume as it is while the seed ids
   match and otherwise carries the operator's rows into the new seed
   (pihole/nd-start.sh:47, pihole/merge-lists.sql), keeping the previous
   file. macOS creates its volumes and hands them to the image's user in the
-  interruption window (lib/install.sh:407-422, lib/install.sh:2499):
+  interruption window (lib/install.sh:407-422, lib/install.sh:2500):
   Apple's volumes start root-owned and empty. Checked per entrypoint by
   tests/integration/lifecycle-transitions.sh, whose failed steps must leave
   the previous deployment exactly as it was [SEC-OWNED-RESTORE].
