@@ -195,6 +195,13 @@ t_command_and_source_follow_the_install() {
       assert_not_match 'export PATH' "$IP_OUT" "$ep: on PATH, no notice"
       assert_match 'nice-dns install\|uninstall\|reinstall\|restart' "$out" "$ep: it points to the command"
 
+      # A publish cut off between its two renames: the next one recovers it.
+      mkdir "$IP_HOME/.local/share/nice-dns/.source.stale"
+      mv "$src" "$IP_HOME/.local/share/nice-dns/.source.cut.old"
+      lt_step "$ep" "$ep: install after a cut-off publish" ok socat
+      assert_file "$src/lib/install.sh" "$ep: the kept source is back"
+      assert_eq "" "$(find "$IP_HOME/.local/share/nice-dns" -maxdepth 1 -name '.source.*')" "$ep: no leftovers"
+
       echo '# earlier' >>"$cmd"; echo earlier >"$src/earlier"
       : >"$FAKE/never_ready"
       lt_step "$ep" "$ep: a failed install" fail socat

@@ -114,10 +114,35 @@ parse_choices() {
   done
 }
 
+# hardened_sibling: the pi-hole-hardened checkout for an install run from
+# anywhere but a checkout, whose own parent directory holds nothing useful: the
+# checkout's neighbour, else the one the last hardened install recorded, else a
+# stable place the installer's refusal can name.
+hardened_sibling() {
+  local m row
+  if [ "$ND_CLI_CHECKOUT" = 1 ]; then
+    printf '%s\n' "$(cd "$ND_CLI_HERE/.." && pwd)/pi-hole-hardened"
+    return 0
+  fi
+  if m="$(recorded_manifest)"; then
+    row="$(awk -F '\t' '$1 == "source" && $2 == "hardened-base" { print $3; exit }' "$m")"
+    row="${row%@*}"
+    if [ -n "$row" ] && [ -f "$row/Dockerfile" ]; then
+      printf '%s\n' "$row"
+      return 0
+    fi
+  fi
+  printf '%s\n' "$HOME/.local/share/nice-dns/pi-hole-hardened"
+}
+
 # run_installer <source root> <variant> <flavour> <branch>
 run_installer() {
   local script="install-$ND_CLI_OS"
   [ "$3" = hardened ] && script="$script-hardened"
+  if [ "$3" = hardened ] && { [ "$ND_CLI_CHECKOUT" = 0 ] || [ "$1" != "$ND_CLI_HERE" ]; }; then
+    ND_INST_HARDENED_SIBLING="$(hardened_sibling)"
+    export ND_INST_HARDENED_SIBLING
+  fi
   script="$1/$script.sh"
   if [ ! -f "$script" ]; then
     err "no installer at $script"
@@ -129,13 +154,48 @@ run_installer() {
 ND_CLI_TMP=""
 cleanup_tmp() { [ -z "$ND_CLI_TMP" ] || rm -rf "${ND_CLI_TMP:?}"; }
 
-cmd_install() {
-  parse_choices 0 "$@"
-  if [ ! -f "$ND_CLI_ROOT/lib/install.sh" ]; then
-    err "no source tree: run this from a checkout, or install with the curl command in the README"
+# fetch_branch <branch>: clones it into a temporary directory, sets ND_CLI_SRC.
+# An install script ignores its branch argument when it sits in a checkout, so
+# a branch the operator named is only honoured from a clone. The running stack
+# is what answers DNS here, so a stalled transfer must end by itself. Nothing
+# has changed yet when this fails.
+fetch_branch() {
+  ND_CLI_TMP="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-fetch.XXXXXXXX")" || return 1
+  trap cleanup_tmp EXIT
+  if ! git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 clone -q --depth 1 -b "$1" "$ND_CLI_REPO" "$ND_CLI_TMP/nice-dns"; then
+    err "could not fetch branch '$1' (is DNS down?). The running stack is untouched."
     return 1
   fi
-  run_installer "$ND_CLI_ROOT" "${ND_CLI_VARIANT:-haproxy}" "${ND_CLI_PIHOLE:-standard}" "${ND_CLI_BRANCH:-main}"
+  ND_CLI_SRC="$ND_CLI_TMP/nice-dns"
+}
+
+# default_branch: what a run with no --branch records. A checkout's own branch;
+# from the kept source, the branch last recorded.
+default_branch() {
+  local b="" m
+  if [ "$ND_CLI_CHECKOUT" = 1 ]; then
+    b="$(git -C "$ND_CLI_HERE" rev-parse --abbrev-ref HEAD 2>/dev/null)" || b=""
+    [ "$b" != HEAD ] || b=""
+  elif m="$(recorded_manifest)"; then
+    b="$(recorded_field "$m" branch)"
+  fi
+  printf '%s\n' "${b:-main}"
+}
+
+cmd_install() {
+  local src="$ND_CLI_ROOT" branch
+  parse_choices 0 "$@"
+  if [ -n "$ND_CLI_BRANCH" ]; then
+    fetch_branch "$ND_CLI_BRANCH" || return 1
+    src="$ND_CLI_SRC" branch="$ND_CLI_BRANCH"
+  else
+    if [ ! -f "$ND_CLI_ROOT/lib/install.sh" ]; then
+      err "no source tree: run this from a checkout, or install with the curl command in the README"
+      return 1
+    fi
+    branch="$(default_branch)"
+  fi
+  run_installer "$src" "${ND_CLI_VARIANT:-haproxy}" "${ND_CLI_PIHOLE:-standard}" "$branch"
 }
 
 cmd_uninstall() {
@@ -161,6 +221,9 @@ cmd_reinstall() {
   case "$variant" in haproxy|socat) ;; *) err "the record $m names no proxy variant; give haproxy or socat"; return 1 ;; esac
   case "$flavour" in standard|hardened) ;; *) err "the record $m names no Pi-hole flavour; give --hardened or --standard"; return 1 ;; esac
   [ -n "$branch" ] || branch=main
+  if [ "$ND_CLI_LOCAL" = 1 ] && [ -n "$ND_CLI_BRANCH" ]; then
+    bad_usage "--local uses the kept source, so --branch has no meaning with it"
+  fi
 
   if [ "$ND_CLI_LOCAL" = 1 ]; then
     src="$ND_CLI_SNAPSHOT"
@@ -168,20 +231,15 @@ cmd_reinstall() {
       err "no kept source at $src"
       return 1
     fi
-  elif [ "$ND_CLI_CHECKOUT" = 1 ]; then
+  elif [ "$ND_CLI_CHECKOUT" = 1 ] && [ -z "$ND_CLI_BRANCH" ]; then
     src="$ND_CLI_HERE"
   else
-    ND_CLI_TMP="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-reinstall.XXXXXXXX")" || return 1
-    trap cleanup_tmp EXIT
-    # The running stack is what answers DNS here, so a stalled transfer must
-    # end by itself. Nothing has changed yet when this fails.
-    if ! git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 clone -q --depth 1 -b "$branch" "$ND_CLI_REPO" "$ND_CLI_TMP/nice-dns"; then
-      err "could not fetch branch '$branch' (is DNS down?). The running stack is untouched."
+    if ! fetch_branch "$branch"; then
       # shellcheck disable=SC2016  # the backticks are text for the reader
       err 'Run `nice-dns reinstall --local` to use the source kept at the last install.'
       return 1
     fi
-    src="$ND_CLI_TMP/nice-dns"
+    src="$ND_CLI_SRC"
   fi
   run_installer "$src" "$variant" "$flavour" "$branch"
 }
@@ -244,8 +302,11 @@ cmd_restart() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
-  nd_install_hold_controller
+  # Before the hold: a signal during it must still release what it stopped.
+  # shellcheck disable=SC2034  # read by the sourced lib/install.sh
+  ND_INST_HELD=""
   ND_CLI_RELEASE=1
+  nd_install_hold_controller
   if ! restart_take_lock; then
     err "the controller is still busy; nothing was restarted. Try again in a few minutes."
     return 1
@@ -258,7 +319,13 @@ cmd_restart() {
     err 'Check `nice-dns-health status`.'
     return 1
   fi
-  if ! nd_install_wait_ready 2>/dev/null; then
+  # The schedules stay held until exit, so the lock has done its work; a long
+  # readiness wait must not outlast its 600 s lease.
+  nd_state_unlock "$ND_CLI_LOCK" >/dev/null 2>&1
+  ND_CLI_LOCK=""
+  # The readiness check below must see the new stack, not the old one.
+  nd_platform_wait_restarted "${ND_CLI_REBUILD_S:-300}" || rc=$?
+  if [ "$rc" -ne 0 ] || ! nd_install_wait_ready 2>/dev/null; then
     # shellcheck disable=SC2016  # the backticks are text for the reader
     err 'the stack restarted, but DNS is not answering yet. Check `nice-dns-health status`.'
     return 1

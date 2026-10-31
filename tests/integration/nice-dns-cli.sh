@@ -31,6 +31,13 @@ echo "$s \$*" >>"$CL_LOG"
 FAKE="$CL_FAKE"
 case "$s" in
   dig) [ -f "\$FAKE/no_dns" ] && exit 9; echo 1.2.3.4 ;;
+  launchctl)
+    case "\$*" in
+      *kickstart*)
+        [ -f "\$FAKE/agent_stuck" ] || rm -f "\$HOME/.local/state/nice-dns/restart-requested"
+        [ -f "\$FAKE/restart_rc" ] && { echo "the restart broke" >&2; exit "\$(cat "\$FAKE/restart_rc")"; } ;;
+      print*) [ -f "\$FAKE/agent_stuck" ] && printf '\tstate = running\n'; [ -f "\$FAKE/agent_stuck" ] || printf '\tstate = not running\n' ;;
+    esac ;;
   systemctl)
     case "\$*" in
       *is-active*) exit 0 ;;
@@ -39,6 +46,7 @@ case "$s" in
   git)
     [ -f "\$FAKE/clone_fails" ] && exit 128
     case "\$*" in
+      *rev-parse*) [ -f "\$FAKE/git_branch" ] && cat "\$FAKE/git_branch" ;;
       *clone*)
         for last; do :; done
         mkdir -p "\$last"
@@ -61,6 +69,7 @@ where=checkout
 [ -f "\$(dirname "\$0")/from-clone" ] && where=clone
 case "\$0" in *"/.local/share/nice-dns/source/"*) where=snapshot ;; esac
 echo "installer[\$where] $s.sh \$*" >>"$CL_LOG"
+[ -z "\${ND_INST_HARDENED_SIBLING:-}" ] || echo "sibling \$ND_INST_HARDENED_SIBLING" >>"$CL_LOG"
 exit "\${CL_INSTALLER_RC:-0}"
 EOF
   done
@@ -106,7 +115,7 @@ t_each_command_reaches_the_right_script() {
     assert_eq "installer[checkout] install-$os.sh haproxy main" "$(cl_calls '^installer')" "$u: install defaults"
     : >"$CL_LOG"
     cl_run "$CL_TREE/nice-dns" install socat --hardened --branch dev
-    assert_eq "installer[checkout] install-$os-hardened.sh socat dev" "$(cl_calls '^installer')" "$u: install with every choice"
+    assert_eq "installer[clone] install-$os-hardened.sh socat dev" "$(cl_calls '^installer')" "$u: --branch installs that branch, from a clone"
     : >"$CL_LOG"
     cl_run "$CL_TREE/nice-dns" uninstall
     assert_rc 0 "$CL_RC" "$u: uninstall: $CL_ERR"
@@ -186,10 +195,15 @@ t_reinstall_uses_the_recorded_choices() {
 t_reinstall_flags_override_the_record() {
   cl_world Linux; cl_record socat hardened dev
   cl_run "$CL_TREE/nice-dns" reinstall haproxy --standard --branch main
-  assert_eq "installer[checkout] install-deb.sh haproxy main" "$(cl_calls '^installer')" "every flag overrides"
+  assert_eq "installer[clone] install-deb.sh haproxy main" "$(cl_calls '^installer')" "every flag overrides; a named branch comes from a clone"
   : >"$CL_LOG"
   cl_run "$CL_TREE/nice-dns" reinstall --branch next
-  assert_eq "installer[checkout] install-deb-hardened.sh socat next" "$(cl_calls '^installer')" "one flag leaves the rest recorded"
+  assert_eq "installer[clone] install-deb-hardened.sh socat next" "$(cl_calls '^installer')" "one flag leaves the rest recorded"
+  : >"$CL_LOG"
+  cl_run "$CL_TREE/nice-dns" reinstall haproxy --standard
+  assert_eq "installer[checkout] install-deb.sh haproxy dev" "$(cl_calls '^installer')" "with no branch named, the checkout installs itself"
+  cl_run "$CL_TREE/nice-dns" reinstall --local --branch next
+  assert_rc 2 "$CL_RC" "--local with --branch is a usage error"
 }
 
 t_installed_reinstall_clones_the_recorded_branch() {
@@ -198,7 +212,7 @@ t_installed_reinstall_clones_the_recorded_branch() {
   assert_rc 0 "$CL_RC" "reinstall: $CL_ERR"
   assert_match '^git .*clone .*-b dev ' "$(cl_calls '^git ')" "the recorded branch is cloned"
   assert_eq "installer[clone] install-deb.sh socat dev" "$(cl_calls '^installer')" "the clone's installer runs"
-  assert_eq "" "$(find "$CASE_DIR" -maxdepth 1 -name 'nice-dns-reinstall.*')" "the clone is removed afterwards"
+  assert_eq "" "$(find "$CASE_DIR" -maxdepth 1 -name 'nice-dns-fetch.*')" "the clone is removed afterwards"
 }
 
 t_failed_clone_names_local_and_changes_nothing() {
@@ -209,7 +223,7 @@ t_failed_clone_names_local_and_changes_nothing() {
   assert_match 'nice-dns reinstall --local' "$CL_ERR" "it names --local"
   assert_match 'running stack is untouched' "$CL_ERR" "it says the stack is untouched"
   assert_eq "" "$(cl_calls '^installer')" "no installer ran"
-  assert_eq "" "$(find "$CASE_DIR" -maxdepth 1 -name 'nice-dns-reinstall.*')" "no clone is left"
+  assert_eq "" "$(find "$CASE_DIR" -maxdepth 1 -name 'nice-dns-fetch.*')" "no clone is left"
 }
 
 t_reinstall_local_uses_the_snapshot_with_no_clone() {
@@ -237,6 +251,52 @@ t_reinstall_and_restart_with_nothing_installed() {
       assert_eq "" "$(cl_calls .)" "$u $cmd: nothing ran"
     done
   done
+}
+
+# The installers ignore their branch argument in a checkout, so what is recorded
+# must be what was installed (review, 2026-10-31).
+t_a_named_branch_is_what_gets_installed_and_recorded() {
+  cl_world Linux
+  printf 'feature\n' >"$CL_FAKE/git_branch"
+  cl_run "$CL_TREE/nice-dns" install
+  assert_eq "installer[checkout] install-deb.sh haproxy feature" "$(cl_calls '^installer')" "a checkout records its own branch"
+  rm -f "$CL_FAKE/git_branch"
+  : >"$CL_LOG"
+  : >"$CL_FAKE/clone_fails"
+  cl_run "$CL_TREE/nice-dns" install --branch dev
+  assert_rc 1 "$CL_RC" "a branch that cannot be fetched fails"
+  assert_eq "" "$(cl_calls '^installer')" "and installs nothing"
+}
+
+t_hardened_off_a_clone_or_the_kept_source_finds_its_sibling() {
+  local sd
+  cl_world Linux; cl_installed; cl_record haproxy standard main
+  cl_run "$CL_CMD" reinstall --hardened --local
+  assert_eq "sibling $CL_HOME/.local/share/nice-dns/pi-hole-hardened" "$(cl_calls '^sibling')" "nothing recorded: a stable place the refusal can name"
+  sd="$CL_HOME/.local/state/nice-dns-install"
+  mkdir -p "$CL_W/mine/pi-hole-hardened"; : >"$CL_W/mine/pi-hole-hardened/Dockerfile"
+  printf 'source\thardened-base\t%s@abc\n' "$CL_W/mine/pi-hole-hardened" >>"$sd/generations/g1/prepare.tsv"
+  : >"$CL_LOG"
+  cl_run "$CL_CMD" reinstall --hardened
+  assert_eq "sibling $CL_W/mine/pi-hole-hardened" "$(cl_calls '^sibling')" "the recorded one"
+  cl_world Linux; cl_record haproxy standard main
+  cl_run "$CL_TREE/nice-dns" install --hardened --branch dev
+  assert_eq "sibling $CL_W/pi-hole-hardened" "$(cl_calls '^sibling')" "a checkout's neighbour, for its clone"
+  : >"$CL_LOG"
+  cl_run "$CL_TREE/nice-dns" install --hardened
+  assert_eq "" "$(cl_calls '^sibling')" "a checkout's own run is the installer's business"
+  (
+    # shellcheck disable=SC2034  # read by the sourced lib/install.sh
+    ND_INST_SRC="$CL_TREE" ND_INST_HARDENED_SIBLING="$CL_W/mine/pi-hole-hardened" ND_INST_PLATFORM=linux
+    # shellcheck source=lib/install.sh
+    . "$CL_TREE/lib/install.sh"
+    mkdir -p "$CL_W/mine/pi-hole-hardened"
+    : >"$CL_W/mine/pi-hole-hardened/Dockerfile"; : >"$CL_W/mine/pi-hole-hardened/post-install.sh"
+    # shellcheck disable=SC2034
+    ND_INST_MANIFEST=/dev/null
+    _nd_inst_manifest_row() { return 0; }
+    assert_eq "$CL_W/mine/pi-hole-hardened" "$(_nd_inst_hardened_sibling 2>/dev/null)" "the library honours the name it is given"
+  ) || exit 1
 }
 
 t_reinstall_refuses_an_unreadable_record() {
@@ -303,6 +363,17 @@ t_restart_without_an_answer_says_so_and_releases() {
     assert_not_match 'not pinning' "$CL_ERR" "$u: not the installer's wording"
     cl_assert_released "$u"
   done
+}
+
+# kickstart returns at once and the old stack can still answer (review, 2026-10-31).
+t_macos_restart_waits_for_the_rebuild_before_checking_dns() {
+  cl_restart_world Darwin
+  : >"$CL_FAKE/agent_stuck"
+  ND_CLI_REBUILD_S=1 ND_INST_READY_TRIES=1 cl_run "$CL_TREE/nice-dns" restart
+  assert_rc 1 "$CL_RC" "a rebuild still running is not a success: $CL_OUT"
+  assert_eq "" "$(cl_calls '^dig ')" "DNS is not checked against the old stack"
+  assert_match 'not answering yet' "$CL_ERR" "the message"
+  cl_assert_released Darwin
 }
 
 t_restart_failure_is_reported_and_releases() {

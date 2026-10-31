@@ -551,6 +551,13 @@ _nd_inst_publish_source() {
   dst="$(_nd_inst_source_dir)"
   base="$(dirname "$dst")"
   mkdir -p "$base" || return 1
+  # An earlier publish cut off between its two renames left the kept copy aside.
+  if [ ! -e "$dst" ]; then
+    for old in "$base"/.source.*.old; do
+      [ -d "$old" ] && mv "$old" "$dst" && break
+    done
+  fi
+  rm -rf "$base"/.source.*
   new="$(mktemp -d "$base/.source.XXXXXXXX")" || return 1
   old="$new.old"
   for item in $ND_INST_SOURCE_ITEMS; do
@@ -596,6 +603,7 @@ nd_install_command_notice() {
   local d
   d="$(_nd_inst_command_dir)" || return 0
   [ -x "$d/nice-dns" ] || return 0
+  # shellcheck disable=SC2016  # $PATH is text for the reader's profile
   case ":$PATH:" in
     *":$d:"*) echo "Manage the stack with: nice-dns install|uninstall|reinstall|restart" ;;
     *) printf 'Manage the stack with %s/nice-dns; to run it as nice-dns, add this line to your shell profile: export PATH="%s:$PATH"\n' "$d" "$d" ;;
@@ -606,7 +614,7 @@ _nd_inst_command_remove() {
   local dst
   rm -f "$HOME/.local/bin/nice-dns" "$(_nd_inst_command_fallback_dir)/nice-dns"
   dst="$(_nd_inst_source_dir)"
-  rm -rf "${dst:?}"
+  rm -rf "${dst:?}" "$(dirname "$dst")"/.source.*
   rmdir "$(dirname "$dst")" 2>/dev/null || true
 }
 
@@ -1266,7 +1274,8 @@ _nd_inst_record_blocklist() {
 # recorded. Refuses when there is none.
 _nd_inst_hardened_sibling() {
   local sib c
-  sib="$(cd "$ND_INST_SRC/.." && pwd)/pi-hole-hardened"
+  # The `nice-dns` command names it when it runs off a clone or the kept source.
+  sib="${ND_INST_HARDENED_SIBLING:-$(cd "$ND_INST_SRC/.." && pwd)/pi-hole-hardened}"
   if [[ ! -f "$sib/Dockerfile" || ! -f "$sib/post-install.sh" ]]; then
     _nd_inst_err "the hardened base is not published (release/images.lock); clone https://github.com/sureserverman/pi-hole-hardened next to nice-dns/ ($sib) and run again"
     return 1

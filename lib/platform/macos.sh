@@ -236,6 +236,18 @@ nd_platform_restart_unbound() { nd_platform_restart_proxy unbound "$1" "$2"; }
 # nd_platform_restart_stack <deadline> <tmp>: the same kickstart.
 nd_platform_restart_stack() { nd_platform_restart_proxy "" "$1" "$2"; }
 
+# nd_platform_wait_restarted <deadline>: kickstart returns as soon as the agent
+# is started, and the old stack can still answer until the agent tears it down.
+# Done when the agent has taken the request and finished. 124 at the deadline.
+nd_platform_wait_restarted() {
+  local d="${XDG_STATE_HOME:-${HOME:?HOME is unset}/.local/state}/nice-dns/restart-requested"
+  local end=$(( $(date +%s) + $1 ))
+  while [ -e "$d" ] || launchctl print "gui/$(id -u)/$_ND_MAC_AGENT" 2>/dev/null | grep -q '^[[:space:]]*state = running$'; do
+    [ "$(date +%s)" -lt "$end" ] || return 124
+    sleep 2
+  done
+}
+
 # nd_platform_runtime_repairs: the runtime faults nd_platform_repair_runtime
 # can repair here; the policy escalates any other (ND_POLICY_RUNTIME_REPAIRS).
 nd_platform_runtime_repairs() { printf 'runtime-down containers-missing\n'; }

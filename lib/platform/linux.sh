@@ -150,6 +150,10 @@ nd_platform_restart_stack() {
   nd_bounded "$1" "$2/svc" "$2/svc.err" systemctl --user restart nice-dns-pod.service
 }
 
+# nd_platform_wait_restarted <deadline>: the restart above is done when
+# systemctl returns.
+nd_platform_wait_restarted() { return 0; }
+
 # nd_platform_runtime_repairs: the runtime faults nd_platform_repair_runtime
 # can repair here; the policy escalates any other (ND_POLICY_RUNTIME_REPAIRS).
 nd_platform_runtime_repairs() { printf 'containers-missing\n'; }

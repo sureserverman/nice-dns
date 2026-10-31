@@ -29,8 +29,9 @@ nice-dns uninstall
 ```
 
 - **`nice-dns install`** is for a checkout: `./nice-dns install`. A first install on a new machine uses the `curl` line below, which leaves `nice-dns` in `~/.local/bin`. If that directory is not on your `PATH`, the install's last line gives the full path and the line to add.
+- **`--branch`** always clones that branch, even from a checkout. `--hardened` needs a `pi-hole-hardened` checkout: next to your nice-dns checkout, or where the last hardened install found it, or in `~/.local/share/nice-dns/`.
 - **`nice-dns reinstall`** installs again with the recorded proxy, Pi-hole flavour and branch; options override them. It clones the branch first. If that fails because DNS is down, the running stack is untouched and `--local` uses the source kept at the last install.
-- **`nice-dns restart`** restarts the whole stack and waits for DNS to answer. It leaves host DNS alone. On macOS and Linux alike this costs a Tor bootstrap of a minute or more.
+- **`nice-dns restart`** restarts the whole stack and waits for DNS to answer. It runs no DNS command itself; on macOS the stack's own start script re-pins DNS and bounces Mullvad, as it does whenever it rebuilds. Either way this costs a Tor bootstrap of a minute or more.
 - **`nice-dns uninstall`** removes the stack, gives host DNS back, then removes the command.
 
 ## Install
