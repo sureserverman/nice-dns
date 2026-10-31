@@ -959,12 +959,14 @@ _nd_inst_release_controller() {
 }
 
 # nd_install_wait_ready: the new chain answers an ordinary query at the
-# address the host will be pinned to, within ND_INST_READY_TRIES x 5 s.
+# address the host will be pinned to, within ND_INST_READY_TRIES x 5 s. That is
+# a limit on the clock too: the probes take time on top of each pause, and 120
+# tries took 935 s (mint, 2026-10-31) while `restart` held the controller.
 nd_install_wait_ready() {
-  local i=0 addr
+  local i=0 addr limit=$((ND_INST_READY_TRIES * 5)) t0="$SECONDS"
   addr="$(_nd_inst_dns_addr)"
   echo "Waiting for the DNS chain to come up at $addr (Tor bootstrap takes 1-4 min)..."
-  while [ "$i" -lt "$ND_INST_READY_TRIES" ]; do
+  while [ "$i" -lt "$ND_INST_READY_TRIES" ] && [ $((SECONDS - t0)) -lt "$limit" ]; do
     if dig "@$addr" +time=3 +tries=1 +short "$ND_INST_PROBE_NAME" 2>/dev/null | grep -Eq '^[0-9.]+$' \
         && _nd_inst_route_probe; then
       echo "Chain is resolving, and Unbound resolves over its authenticated route."
@@ -1025,7 +1027,7 @@ nd_install_verify_pin() {
     [ "$i" -lt "$tries" ] || { _nd_inst_err "the host resolver is not pinned after the pin"; return 1; }
     i=$((i + 1)); sleep 1
   done
-  ND_INST_READY_TRIES=6 nd_install_wait_ready >/dev/null || return 1
+  ND_INST_READY_TRIES=10 nd_install_wait_ready >/dev/null || return 1
 }
 
 # _nd_inst_begin_interruption: from here a failure rolls back.

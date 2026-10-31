@@ -425,3 +425,53 @@ t_restart_waits_for_a_running_pass_and_gives_up_cleanly() {
   assert_rc 0 "$CL_RC" "a free lock restarts: $CL_ERR"
   assert_eq "" "$(readlink "$d/lock" 2>/dev/null)" "the lock is given back"
 }
+
+# Live 2026-10-31: 120 tries of 5 s took 935 s, each with its dig on top, while
+# the error said 600 s and `restart` held the controller throughout.
+t_the_readiness_wait_keeps_to_its_stated_limit() {
+  local t0 out rc took
+  t0="$(date +%s)"
+  out="$(
+    sed -n '/^nd_install_wait_ready() {/,/^}/p' "$NICE_DNS_ROOT/lib/install.sh" >"$CASE_DIR/wait.sh"
+    # shellcheck disable=SC1091
+    . "$CASE_DIR/wait.sh"
+    _nd_inst_dns_addr() { echo 127.0.0.1; }
+    _nd_inst_route_probe() { return 0; }
+    _nd_inst_err() { printf '%s\n' "$1"; }
+    dig() { command sleep 8; }
+    sleep() { :; }
+    ND_INST_PROBE_NAME=example.com ND_INST_READY_TRIES=4
+    nd_install_wait_ready
+  )"; rc=$?
+  took=$(( $(date +%s) - t0 ))
+  assert_rc 1 "$rc" "no answer fails: $out"
+  assert_match "within 20 s" "$out" "the message states the limit"
+  # Four 8 s attempts by count alone take 32 s; the limit stops it at the third.
+  [ "$took" -le 26 ] || fail "the wait took ${took}s against a 20 s limit"
+  out="$(
+    # shellcheck disable=SC1091
+    . "$CASE_DIR/wait.sh"
+    _nd_inst_dns_addr() { echo 127.0.0.1; }
+    _nd_inst_route_probe() { return 0; }
+    _nd_inst_err() { printf '%s\n' "$1"; }
+    dig() { echo 1.2.3.4; }
+    sleep() { :; }
+    ND_INST_PROBE_NAME=example.com ND_INST_READY_TRIES=1
+    nd_install_wait_ready
+  )"
+  assert_rc 0 "$?" "an answer passes: $out"
+  # A count of tries still ends the wait where sleep is faked.
+  t0="$(date +%s)"
+  (
+    # shellcheck disable=SC1091
+    . "$CASE_DIR/wait.sh"
+    _nd_inst_dns_addr() { echo 127.0.0.1; }
+    _nd_inst_err() { :; }
+    dig() { :; }
+    sleep() { :; }
+    ND_INST_PROBE_NAME=example.com ND_INST_READY_TRIES=120
+    nd_install_wait_ready
+  ) >/dev/null
+  assert_rc 1 "$?" "a wait that never answers ends"
+  [ $(( $(date +%s) - t0 )) -lt 5 ] || fail "with sleep faked the tries end it at once"
+}
