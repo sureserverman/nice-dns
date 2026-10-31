@@ -1,0 +1,28 @@
+{
+ "baseline": {
+  "elapsed_s": 1.8,
+  "exit": 0,
+  "tail": "check-contracts: OK (WF-DNS-001..004 and all operations in /home/user/dev/containers/nice-dns/tests/manifests/privacy-ops.tsv) docs/workflows/dns-lifecycle.md"
+ },
+ "break_patch": "--- a/lib/policy.sh\n+++ b/lib/policy.sh\n@@ -1,5 +1,5 @@\n # shellcheck shell=bash\n-# nice-dns recovery policy (ARCH-02 policy.sh, ARCH-03 decide, ARCH-04,\n+# nice-dns recovery policy (ARCH-02 policy.sh, ARCH-03 decide, ARCH-04 ,\n # ARCH-07). Sourced; Bash 3.2 compatible (macOS /bin/bash), safe under set -u.\n #\n #   nd_policy_decide <observations> <state> <now_epoch> <boot_id>\n",
+ "build": null,
+ "created": "2026-10-31T00:13:37+00:00",
+ "fingerprint": "8e2eb4ef6dfd9ffda381b2603acfc103a29d6bfe89ca4892609a4f7256851434",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "shell: nothing is built",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-10-30-nice-dns-command-and-unbound-recovery-plan.md",
+ "red": {
+  "elapsed_s": 1.8,
+  "exit": 1,
+  "tail": "check-contracts: cited lib/policy.sh changed since the pinned commit 572f8dc3a362; re-derive its citations and re-pin"
+ },
+ "schema": 2,
+ "task": "2.5",
+ "test": "bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md && for s in install uninstall reinstall restart; do grep -q \"nice-dns $s\" README.md || exit 1; done",
+ "text": "`bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md && for s in install uninstall reinstall restart; do grep -q \"nice-dns $s\" README.md || exit 1; done`",
+ "touched": [
+  "lib/policy.sh"
+ ]
+}
