@@ -6,8 +6,8 @@
  },
  "break_patch": "--- a/lib/policy.sh\n+++ b/lib/policy.sh\n@@ -1,5 +1,5 @@\n # shellcheck shell=bash\n-# nice-dns recovery policy (ARCH-02 policy.sh, ARCH-03 decide, ARCH-04,\n+# nice-dns recovery policy (ARCH-02 policy.sh, ARCH-03 decide, ARCH-04 ,\n # ARCH-07). Sourced; Bash 3.2 compatible (macOS /bin/bash), safe under set -u.\n #\n #   nd_policy_decide <observations> <state> <now_epoch> <boot_id>\n",
  "build": null,
- "created": "2026-10-31T00:13:37+00:00",
- "fingerprint": "8e2eb4ef6dfd9ffda381b2603acfc103a29d6bfe89ca4892609a4f7256851434",
+ "created": "2026-10-31T00:21:14+00:00",
+ "fingerprint": "992c6bf227a8bcd91e602bc5c9fa623418deae5765d1315fb7ed2a4144bd5876",
  "index": 1,
  "kind": "claim",
  "named_break": null,
@@ -16,7 +16,7 @@
  "red": {
   "elapsed_s": 1.8,
   "exit": 1,
-  "tail": "check-contracts: cited lib/policy.sh changed since the pinned commit 572f8dc3a362; re-derive its citations and re-pin"
+  "tail": "check-contracts: cited lib/policy.sh changed since the pinned commit 64eebc682819; re-derive its citations and re-pin"
  },
  "schema": 2,
  "task": "2.5",
