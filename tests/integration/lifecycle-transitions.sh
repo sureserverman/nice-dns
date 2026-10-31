@@ -209,6 +209,7 @@ t_command_and_source_follow_the_install() {
       assert_match '# earlier' "$(cat "$cmd")" "$ep: a rollback keeps the earlier command"
       assert_file "$src/earlier" "$ep: and the earlier source"
 
+      [ "$plat" != linux ] || assert_eq 53 "$(cat "$FAKE_ROOT/.sysctl/net.ipv4.ip_unprivileged_port_start")" "$ep: the install lowers the low-port limit"
       # Off a kept source, with no git to clone with.
       rm -f "$IP_BIN/git"
       : >"$FAKE_LOG"
@@ -220,6 +221,8 @@ t_command_and_source_follow_the_install() {
       if [ "$plat" = linux ]; then
         assert_match '^systemctl --user reset-failed unbound\.service$' "$(cat "$FAKE_LOG")" "$ep: reset-failed ran"
         assert_match '^systemctl --user reset-failed nice-dns-pod\.service$' "$(cat "$FAKE_LOG")" "$ep: for the pod too"
+        assert_eq 1024 "$(cat "$FAKE_ROOT/.sysctl/net.ipv4.ip_unprivileged_port_start")" "$ep: the uninstall gives the low-port limit back"
+        assert_no_path "$FAKE_ROOT/etc/sysctl.d/99-podman-privileged-ports.conf" "$ep: and removes its file"
       fi
     ) || exit 1
   done

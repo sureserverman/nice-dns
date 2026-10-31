@@ -794,6 +794,7 @@ _nd_inst_owned_paths() {
       "$R/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6" "$R/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6"
     printf 'f\t%s\t644\troot\n' "$R/etc/systemd/system/custom-dns-deb.service" "$R/etc/NetworkManager/conf.d/90-nice-dns.conf" \
       "$R/etc/sysctl.d/99-nice-dns-disable-ipv6.conf" \
+      "$R/etc/sysctl.d/99-podman-privileged-ports.conf" \
       "$R/etc/systemd/system/NetworkManager-wait-online.service.d/10-wait-for-connectivity.conf"
   else
     for f in start-container health health-bridges bridge-eval; do
@@ -1440,7 +1441,7 @@ APPARMOR
   fi
 
   echo 'net.ipv4.ip_unprivileged_port_start = 53' | \
-    sudo tee /etc/sysctl.d/99-podman-privileged-ports.conf >/dev/null
+    sudo tee "$ND_INST_ROOT/etc/sysctl.d/99-podman-privileged-ports.conf" >/dev/null
   sudo sysctl --system
 
   # Add UID/GID mappings for current user if missing. Accept any pre-existing

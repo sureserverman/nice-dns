@@ -579,7 +579,7 @@ dt_world() {
   local ep="$1" st="$2" r
   ip_env "$ep"
   FAKE_ROOT="$IP_W/root"; r="$FAKE_ROOT"
-  mkdir -p "$r/etc" "$r/.systemd" "$r/.sysctl" "$r/run/systemd/resolve" "$r/usr/bin" "$r/usr/local/sbin"
+  mkdir -p "$r/etc" "$r/etc/sysctl.d" "$r/.systemd" "$r/.sysctl" "$r/run/systemd/resolve" "$r/usr/bin" "$r/usr/local/sbin"
   if [ "$(ip_platform "$ep")" = linux ]; then
     printf 'nameserver 127.0.0.53\noptions edns0 trust-ad\n' >"$r/run/systemd/resolve/stub-resolv.conf"
     : >"$r/.systemd/systemd-resolved.unit"; : >"$r/.systemd/NetworkManager.unit"
@@ -588,6 +588,7 @@ dt_world() {
     printf '0\n' >"$r/.sysctl/net.ipv6.conf.all.disable_ipv6"
     printf '0\n' >"$r/.sysctl/net.ipv6.conf.default.disable_ipv6"
     printf '0\n' >"$r/.sysctl/net.ipv6.conf.lo.disable_ipv6"
+    printf '1024\n' >"$r/.sysctl/net.ipv4.ip_unprivileged_port_start"
     # Per-device IPv6 switches as NetworkManager leaves them (the NIC with
     # ipv6.method auto, Mullvad's tunnel taking default): Task 2.1, 2026-10-12.
     for k in enp1s0 wg0-mullvad; do mkdir -p "$r/proc/sys/net/ipv6/conf/$k"; printf '0\n' >"$r/proc/sys/net/ipv6/conf/$k/disable_ipv6"; done
