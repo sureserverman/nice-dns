@@ -89,7 +89,23 @@ case "$1" in
           garbage) printf 'OCI runtime exec failed:\texec failed\nno such file\n' >&2; exit 126 ;;
           hang) sleep "$(cat "$FAKE/hang_secs")" & wait; exit 1 ;;
         esac ;;
+      # Unbound's control client: $FAKE/unbound_control is refused, hang (a
+      # frozen daemon: the socket accepts and never answers) or missing.
+      unbound-control)
+        case "$(cat "$FAKE/unbound_control" 2>/dev/null)" in
+          refused) echo 'error: connect: Connection refused for /run/unbound/control.sock' >&2; exit 1 ;;
+          exec-error) printf 'time="x" level=warning msg="Failed to add conmon to systemd sandbox cgroup"\nError: OCI runtime error\n' >&2; exit 125 ;;
+          hang) sleep "$(cat "$FAKE/hang_secs")" & wait; exit 1 ;;
+          missing)
+            if [ "$me" = container ]; then echo 'Error: failed to start process (cause: "internalError: "failed to find target executable unbound-control"")' >&2; exit 1; fi
+            echo 'Error: crun: executable file `unbound-control` not found in $PATH' >&2; exit 127 ;;
+        esac
+        exit 0 ;;
+      # A plain exec: $FAKE/exec_hang is a runtime that cannot exec at all.
+      true) if [ -f "$FAKE/exec_hang" ]; then sleep "$(cat "$FAKE/hang_secs")" & wait; exit 1; fi; exit 0 ;;
       /usr/local/bin/nice-dns-unbound-start)
+        if [ -f "$FAKE/unbound_probe_hang" ]; then sleep "$(cat "$FAKE/hang_secs")" & wait; exit 1; fi
+        if [ "$(cat "$FAKE/unbound_probe_rc" 2>/dev/null)" = exec-error ]; then printf 'time="x" level=warning msg="sandbox cgroup"\nError: OCI runtime error\n' >&2; exit 125; fi
         # "missing": an Unbound image without the tool, as each runtime
         # really reports it (observed 2026-09-25): podman/crun 127, Apple
         # container exit 1 with its own message.
@@ -120,6 +136,7 @@ case "$1" in
     # no --tail). $FAKE/logs holds the container output.
     if [ "$me" = container ]; then want=-n; else want=--tail; fi
     if [ "$2" != "$want" ]; then echo "Error: unknown option '$2'" >&2; exit 64; fi
+    if [ -f "$FAKE/logs.hang" ]; then sleep "$(cat "$FAKE/hang_secs")" & wait; exit 1; fi
     cat "$FAKE/logs" 2>/dev/null; exit 0 ;;
   inspect)
     # `inspect -f {{.Image}} <name>`: the image a container runs, from

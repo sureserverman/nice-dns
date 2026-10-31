@@ -94,11 +94,20 @@ STUB
   cat >"$b/systemctl" <<'STUB'
 #!/bin/sh
 l=systemctl; for a in "$@"; do l="$l $a"; done; printf '%s\n' "$l" >>"$FAKE_LOG"
+if [ -f "$FAKE/systemctl_hang" ]; then exec sleep "$(cat "$FAKE/systemctl_hang")"; fi
 case "$2" in
   restart)
     [ -f "$FAKE/restart_changes" ] && echo "t$(date +%s)-new" >"$FAKE/started"
-    [ -f "$FAKE/restart_brings_up" ] && ! grep -qx tor-haproxy "$FAKE/running" && echo tor-haproxy >>"$FAKE/running" ;;
-  start) [ -f "$FAKE/start_brings_up" ] && printf 'pi-hole\nunbound\ntor-haproxy\n' >"$FAKE/running" ;;
+    [ -f "$FAKE/restart_brings_up" ] && ! grep -qx tor-haproxy "$FAKE/running" && echo tor-haproxy >>"$FAKE/running"
+    # $FAKE/pod_restart_heals: the pod restart is what brings every member back.
+    [ -f "$FAKE/pod_restart_heals" ] && [ "$3" = nice-dns-pod.service ] && printf 'pi-hole\nunbound\ntor-haproxy\n' >"$FAKE/running" ;;
+  # `show -p ExecMainStatus --value <unit>`: $FAKE/exec_status, default 0.
+  show) cat "$FAKE/exec_status" 2>/dev/null || echo 0 ;;
+  # $FAKE/start_fails, until a re-exec when $FAKE/reexec_heals says so.
+  daemon-reexec) [ -f "$FAKE/reexec_heals" ] && rm -f "$FAKE/start_fails" ;;
+  start)
+    [ -f "$FAKE/start_fails" ] && exit 1
+    [ -f "$FAKE/start_brings_up" ] && printf 'pi-hole\nunbound\ntor-haproxy\n' >"$FAKE/running" ;;
 esac
 exit 0
 STUB
@@ -807,4 +816,304 @@ t_unbound_probe_route_is_bounded() {
   assert_ne 0 "$rc" "a probe whose dig never answers fails: $out"
   [ $((t1 - t0)) -le 10 ] || fail "probe-route ran $((t1 - t0)) s with a 2 s bound: $out"
   assert_match 'forwarder=127\.0\.0\.1@18532#one\.one\.one\.one .*rcode=- error=timeout' "$out" "the expiry is reported as a timeout"
+}
+
+# ─────────────────────────── fakes: Unbound restart ─────────────────────────
+
+# ra_ub_obs <file> <verdict> <reason>: routes healthy, with an unbound record.
+ra_ub_obs() { ra_obs "$1" healthy; printf 'obs\tunbound\t%s\t40\t%s\n' "$2" "$3" >>"$1"; }
+ra_dec() { printf 'schema\tnice-dns-decision/1\naction\trestart-component\ntarget\t%s\nreason\ttest\n' "$1" >"$CASE_DIR/dec"; }
+
+t_unbound_restart_journals_requested_acknowledged_ready() {
+  local plat out rc
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      : >"$FAKE/restart_changes"
+      ra_dec unbound
+      out="$(nd_recovery_apply "$CASE_DIR/dec" ra-u1 7)"; rc=$?
+      assert_rc 0 "$rc" "$plat: a new Unbound generation is the acknowledgement: $out"
+      assert_eq acknowledged "$(ra_field result "$out")" "$plat: result"
+      assert_eq unbound "$(ra_field component "$out")" "$plat: component"
+      assert_eq "$(printf 'unbound requested\nunbound acknowledged')" "$(ra_journal)" "$plat: no readiness in the acknowledging call"
+      if [ "$plat" = linux ]; then
+        assert_eq 1 "$(grep -c '^systemctl --user restart unbound.service$' "$FAKE_LOG")" "linux: Unbound alone, once"
+        assert_eq 1 "$(grep -c '^systemctl ' "$FAKE_LOG")" "linux: no other unit is touched"
+      else
+        assert_eq 1 "$(grep -c '^launchctl kickstart -k gui/[0-9]*/org.nice-dns.start-container$' "$FAKE_LOG")" "macos: the stack's kickstart, once"
+        assert_file "$HOME/.local/state/nice-dns/restart-requested" "macos: asks the agent to rebuild"
+      fi
+      # Readiness is a later observation of Unbound itself, not of the routes.
+      ra_ub_obs "$CASE_DIR/obs" unhealthy 'control: exit 1'
+      _nd_rec_readiness "$CASE_DIR/obs" "$(date +%s)"
+      assert_eq "$(printf 'unbound requested\nunbound acknowledged')" "$(ra_journal)" "$plat: still failing, not ready"
+      ra_ub_obs "$CASE_DIR/obs" healthy 'control and route answer'
+      _nd_rec_readiness "$CASE_DIR/obs" "$(date +%s)"
+      assert_eq "$(printf 'unbound requested\nunbound acknowledged\nunbound ready')" "$(ra_journal)" "$plat: ready once observed healthy"
+    ) || exit 1
+  done
+}
+
+t_unbound_restart_without_a_new_generation_is_not_acknowledged() {
+  local plat out rc
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      ra_dec unbound
+      out="$(nd_recovery_apply "$CASE_DIR/dec" ra-u2 7)"; rc=$?
+      assert_rc 1 "$rc" "$plat: an unchanged generation fails: $out"
+      assert_eq not-acknowledged "$(ra_field result "$out")" "$plat: result"
+      assert_eq "$(printf 'unbound requested\nunbound not-acknowledged')" "$(ra_journal)" "$plat: journal"
+      if [ "$plat" = macos ]; then
+        : >"$FAKE/launchctl_fails"
+        out="$(nd_recovery_apply "$CASE_DIR/dec" ra-u3 7)"; rc=$?
+        assert_rc 1 "$rc" "macos: a failed kickstart"
+        assert_eq 0 "$(find "$HOME/.local/state/nice-dns" -name restart-requested | wc -l | tr -d ' ')" "macos: a failed kickstart withdraws the request"
+      fi
+    ) || exit 1
+  done
+}
+
+t_unbound_restart_is_refused_without_the_lock_and_in_shadow() {
+  local plat out rc i
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      : >"$FAKE/restart_changes"
+      ra_dec unbound
+      out="$(ND_RECOVERY_LOCK_TOKEN=not-the-holder nd_recovery_apply "$CASE_DIR/dec" ra-u4 7)"; rc=$?
+      assert_rc 5 "$rc" "$plat: a lost lock stops it: $out"
+      assert_eq "" "$(grep -E '^(systemctl|launchctl)' "$FAKE_LOG")" "$plat: nothing was restarted"
+      export ND_POLICY_STARTUP_S=0
+      ra_ub_obs "$CASE_DIR/obs" unhealthy 'control: exit 1'
+      for i in 1 2 3; do out="$(nd_recovery_tick shadow "$CASE_DIR/obs")"; done
+      assert_eq unbound "$(ra_field target "$out")" "$plat: shadow decides the restart"
+      assert_eq shadow "$(ra_field result "$out")" "$plat: and only records it"
+      assert_eq "" "$(grep -E '^(systemctl|launchctl)' "$FAKE_LOG")" "$plat: shadow runs no restart"
+    ) || exit 1
+  done
+}
+
+t_every_policy_restart_target_has_a_handler() {
+  local plat t out rc
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      : >"$FAKE/restart_changes"; echo new >"$FAKE/ack"
+      # shellcheck disable=SC2013  # the targets are single words in the source
+      for t in $(grep -oE 'action=restart-component target=[a-z]+' "$NICE_DNS_ROOT/lib/policy.sh" | sed 's/.*target=//' | sort -u); do
+        ra_dec "$t"
+        # The fake's new generation is per second; each target starts from an old one.
+        echo t0-old >"$FAKE/started"
+        out="$(nd_recovery_apply "$CASE_DIR/dec" "ra-h-$t" 7)"; rc=$?
+        assert_rc 0 "$rc" "$plat: policy target $t has a handler: $out"
+      done
+      ra_dec no-such-component
+      nd_recovery_apply "$CASE_DIR/dec" ra-h-x 7 >/dev/null; assert_rc 2 $? "$plat: an unknown target is refused"
+    ) || exit 1
+  done
+}
+
+# ─────────────────────────── fakes: stack restart ───────────────────────────
+
+t_stack_restart_is_acknowledged_by_a_new_generation() {
+  local plat out rc
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      : >"$FAKE/restart_changes"
+      ra_dec stack
+      out="$(nd_recovery_apply "$CASE_DIR/dec" ra-s1 7)"; rc=$?
+      assert_rc 0 "$rc" "$plat: a new proxy generation: $out"
+      assert_eq acknowledged "$(ra_field result "$out")" "$plat: result"
+      assert_eq "$(printf 'stack requested\nstack acknowledged')" "$(ra_journal)" "$plat: journal"
+      if [ "$plat" = linux ]; then
+        assert_eq 1 "$(grep -c '^systemctl --user restart nice-dns-pod.service$' "$FAKE_LOG")" "linux: the pod, once"
+      else
+        assert_eq 1 "$(grep -c '^launchctl kickstart -k gui/[0-9]*/org.nice-dns.start-container$' "$FAKE_LOG")" "macos: the kickstart, once"
+      fi
+      ra_obs "$CASE_DIR/obs" healthy
+      _nd_rec_readiness "$CASE_DIR/obs" "$(date +%s)"
+      assert_eq "$(printf 'stack requested\nstack acknowledged\nstack ready')" "$(ra_journal)" "$plat: ready through a route and Unbound"
+      rm -f "$FAKE/restart_changes"; : >"$FAKE_LOG"
+      out="$(nd_recovery_apply "$CASE_DIR/dec" ra-s2 7)"; rc=$?
+      assert_rc 1 "$rc" "$plat: an unchanged generation is not acknowledged"
+    ) || exit 1
+  done
+}
+
+t_stack_restart_brings_back_a_missing_proxy() {
+  local plat out rc
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      printf 'pi-hole\nunbound\n' >"$FAKE/running"; : >"$FAKE/restart_brings_up"; : >"$FAKE/restart_changes"
+      printf '[Container]\n' >"$XDG_CONFIG_HOME/containers/systemd/tor-haproxy.container"
+      printf 'tor-haproxy\n' >"$FAKE/stopped"
+      ra_dec stack
+      out="$(nd_recovery_apply "$CASE_DIR/dec" ra-s3 7)"; rc=$?
+      assert_rc 0 "$rc" "$plat: the proxy is back: $out"
+    ) || exit 1
+  done
+}
+
+t_first_escalation_of_an_outage_is_reported_once() {
+  local out tok
+  (
+    ra_fake linux
+    ra_outage_state
+    nd_recovery_first_escalation; assert_rc 0 $? "the first escalation of an outage"
+    nd_recovery_first_escalation; assert_rc 1 $? "not the second"
+    nd_recovery_first_escalation; assert_rc 1 $? "or the third"
+    # A later outage is a new one.
+    nd_state_load | awk -F '\t' 'BEGIN { OFS = "\t" } $1 == "outage_since" { $2 = 1760000000 } { print }' >"$CASE_DIR/seed2"
+    tok="$(nd_state_lock)" || fail "lock"
+    nd_state_commit "$tok" 1 "$CASE_DIR/seed2" >/dev/null || fail "commit"
+    nd_state_unlock "$tok"
+    nd_recovery_first_escalation; assert_rc 0 $? "a new outage reports again"
+    nd_state_load | awk -F '\t' 'BEGIN { OFS = "\t" } $1 == "outage_since" { $2 = "-" } { print }' >"$CASE_DIR/seed3"
+    tok="$(nd_state_lock)" || fail "lock"
+    nd_state_commit "$tok" 2 "$CASE_DIR/seed3" >/dev/null || fail "commit"
+    nd_state_unlock "$tok"
+    nd_recovery_first_escalation; assert_rc 1 $? "an escalation with no outage is not one"
+  ) || exit 1
+}
+
+# ─────────────────────────── fakes: repair by name ──────────────────────────
+
+# ra_repair_dec <names>: the decision the policy writes for a missing container.
+ra_repair_dec() { printf 'schema\tnice-dns-decision/1\naction\trepair-runtime\ntarget\tcontainers-missing\nreason\truntime fault: containers-missing: %s (running: pi-hole)\n' "$1" >"$CASE_DIR/dec"; }
+
+t_missing_container_is_started_by_name() {
+  local out rc
+  (
+    ra_fake linux
+    # The 10-29 fault: Pi-hole active, the proxy unit stopped.
+    printf 'pi-hole\nunbound\n' >"$FAKE/running"; : >"$FAKE/start_brings_up"
+    ra_repair_dec tor-haproxy
+    out="$(nd_recovery_apply "$CASE_DIR/dec" ra-n1 7)"; rc=$?
+    assert_rc 0 "$rc" "the proxy comes back: $out"
+    assert_eq 1 "$(grep -c '^systemctl --user reset-failed tor-haproxy.service$' "$FAKE_LOG")" "its failed state is cleared"
+    assert_eq 1 "$(grep -c '^systemctl --user start tor-haproxy.service$' "$FAKE_LOG")" "it is started by name"
+    assert_eq 0 "$(grep -c '^systemctl --user start pi-hole.service$' "$FAKE_LOG")" "a running Pi-hole is not what gets started"
+    assert_eq "$(printf 'runtime requested\nruntime acknowledged')" "$(ra_journal)" "journal"
+    assert_not_match 'restart|exec|kill' "$(cat "$FAKE_LOG")" "nothing running is restarted"
+
+    : >"$FAKE_LOG"; printf 'pi-hole\n' >"$FAKE/running"
+    ra_repair_dec 'unbound tor-haproxy'
+    nd_recovery_apply "$CASE_DIR/dec" ra-n2 7 >/dev/null
+    assert_eq 1 "$(grep -c '^systemctl --user start unbound.service$' "$FAKE_LOG")" "every missing name is started"
+    assert_eq 1 "$(grep -c '^systemctl --user start tor-haproxy.service$' "$FAKE_LOG")" "all of them"
+
+    # Only the stack's own names reach systemctl.
+    : >"$FAKE_LOG"; printf 'pi-hole\n' >"$FAKE/running"
+    ra_repair_dec 'unbound;rm evil.service'
+    nd_recovery_apply "$CASE_DIR/dec" ra-n3 7 >/dev/null
+    assert_not_match 'evil|;rm' "$(cat "$FAKE_LOG")" "a strange name is dropped"
+  ) || exit 1
+  (
+    ra_fake macos
+    printf 'pi-hole\n' >"$FAKE/running"; : >"$FAKE/start_brings_up"
+    ra_repair_dec tor-haproxy
+    out="$(nd_recovery_apply "$CASE_DIR/dec" ra-n4 7)"; rc=$?
+    assert_rc 0 "$rc" "macos: the agent recreates it: $out"
+    assert_match '^launchctl kickstart gui/[0-9]+/org.nice-dns.start-container$' "$(cat "$FAKE_LOG")" "macos: unchanged"
+  ) || exit 1
+}
+
+# The refused-socket fault (Task 1.6; .claude/evidence/1.6): reproduced on mint,
+# exit 126 with a stale systemd/private, exit 125 with podman's tmp gone too.
+t_a_stuck_user_manager_is_repaired_by_a_reexec() {
+  local out rc
+  (
+    ra_fake linux
+    printf 'pi-hole\nunbound\n' >"$FAKE/running"
+    echo 126 >"$FAKE/exec_status"
+    : >"$FAKE/start_fails"; : >"$FAKE/reexec_heals"; : >"$FAKE/start_brings_up"
+    ra_repair_dec tor-haproxy
+    out="$(nd_recovery_apply "$CASE_DIR/dec" ra-m1 7)"; rc=$?
+    assert_rc 0 "$rc" "the proxy comes back: $out"
+    assert_eq 1 "$(grep -c '^systemctl --user daemon-reexec$' "$FAKE_LOG")" "the manager is re-executed once"
+    [ "$(grep -n 'daemon-reexec' "$FAKE_LOG" | cut -d: -f1)" -lt "$(grep -n 'start tor-haproxy' "$FAKE_LOG" | cut -d: -f1)" ] || fail "the re-exec comes before the start"
+    assert_eq 0 "$(grep -c 'restart nice-dns-pod' "$FAKE_LOG")" "a re-exec that heals needs no pod restart"
+    assert_match 'daemon-reexec' "$(cat "$ND_STATE_DIR/recovery.tsv")" "the journal says what the repair did"
+    assert_eq "$(printf 'runtime requested\nruntime acknowledged')" "$(ra_journal)" "journal phases"
+  ) || exit 1
+}
+
+t_a_reset_podman_is_repaired_by_a_pod_restart() {
+  local out rc
+  (
+    ra_fake linux
+    printf 'nice-dns-infra\n' >"$FAKE/running"
+    echo 125 >"$FAKE/exec_status"
+    : >"$FAKE/start_fails"; : >"$FAKE/pod_restart_heals"
+    ra_repair_dec 'pi-hole unbound tor-haproxy'
+    out="$(nd_recovery_apply "$CASE_DIR/dec" ra-m2 7)"; rc=$?
+    assert_rc 0 "$rc" "the stack comes back: $out"
+    assert_eq 1 "$(grep -c '^systemctl --user daemon-reexec$' "$FAKE_LOG")" "the re-exec is tried first, and once"
+    assert_eq 1 "$(grep -c '^systemctl --user restart nice-dns-pod.service$' "$FAKE_LOG")" "then the pod restarts, once"
+    assert_match 'nice-dns-pod' "$(cat "$ND_STATE_DIR/recovery.tsv")" "the journal says so"
+  ) || exit 1
+}
+
+t_an_ordinary_missing_container_gets_no_reexec_or_pod_restart() {
+  local out rc
+  (
+    ra_fake linux
+    printf 'pi-hole\nunbound\n' >"$FAKE/running"; : >"$FAKE/start_brings_up"
+    ra_repair_dec tor-haproxy
+    nd_recovery_apply "$CASE_DIR/dec" ra-m3 7 >/dev/null; assert_rc 0 $? "started by name"
+    assert_eq 0 "$(grep -c 'daemon-reexec' "$FAKE_LOG")" "a unit stopped cleanly needs no re-exec"
+    assert_eq 0 "$(grep -c 'restart' "$FAKE_LOG")" "nor any restart"
+    # A failed start with an ordinary status is not this fault either.
+    : >"$FAKE_LOG"; printf 'pi-hole\nunbound\n' >"$FAKE/running"; rm -f "$FAKE/start_brings_up"
+    echo 1 >"$FAKE/exec_status"; : >"$FAKE/start_fails"
+    out="$(nd_recovery_apply "$CASE_DIR/dec" ra-m4 7)"; rc=$?
+    assert_rc 1 "$rc" "still missing is not acknowledged: $out"
+    assert_eq 0 "$(grep -c -e 'daemon-reexec' -e 'nice-dns-pod' "$FAKE_LOG")" "exit 1 restarts nothing"
+    assert_match 'not-acknowledged' "$(ra_journal)" "and it is journalled, not silent"
+  ) || exit 1
+}
+
+t_the_pod_restart_repair_is_rate_limited() {
+  (
+    ra_fake linux
+    printf 'pi-hole\nunbound\n' >"$FAKE/running"
+    echo 125 >"$FAKE/exec_status"; : >"$FAKE/start_fails"
+    ra_repair_dec tor-haproxy
+    nd_recovery_apply "$CASE_DIR/dec" ra-p1 7 >/dev/null
+    assert_eq 1 "$(grep -c 'restart nice-dns-pod' "$FAKE_LOG")" "the first failed repair restarts the pod"
+    nd_recovery_apply "$CASE_DIR/dec" ra-p2 7 >/dev/null
+    assert_eq 1 "$(grep -c 'restart nice-dns-pod' "$FAKE_LOG")" "the next, a cooldown later, does not: Pi-hole is still serving"
+    assert_match 'not-acknowledged' "$(ra_journal)" "it stays journalled"
+    ND_POLICY_RETRY_S=0 nd_recovery_apply "$CASE_DIR/dec" ra-p3 7 >/dev/null
+    assert_eq 2 "$(grep -c 'restart nice-dns-pod' "$FAKE_LOG")" "a retry interval later, it does again"
+    # A new boot forgets it, and so does a clock that moved back (mint's dead RTC).
+    ND_BOOT_ID=boot-b nd_recovery_apply "$CASE_DIR/dec" ra-p4 7 >/dev/null
+    assert_eq 3 "$(grep -c 'restart nice-dns-pod' "$FAKE_LOG")" "a new boot does not wait out the last boot's interval"
+    export ND_BOOT_ID=boot-b
+    printf 'boot-b %s\n' "$(( $(date +%s) + 86400 ))" >"$ND_STATE_DIR/pod-repair-at"
+    nd_recovery_apply "$CASE_DIR/dec" ra-p5 7 >/dev/null
+    assert_eq 4 "$(grep -c 'restart nice-dns-pod' "$FAKE_LOG")" "a marker in the future holds nothing"
+  ) || exit 1
+}
+
+t_a_hung_service_manager_cannot_outlast_the_repair_budget() {
+  local start el
+  (
+    ra_fake linux
+    printf 'nice-dns-infra\n' >"$FAKE/running"
+    echo 973 >"$FAKE/systemctl_hang"
+    export ND_RECOVERY_SERVICE_S=3
+    ra_repair_dec 'pi-hole unbound tor-haproxy'
+    start="$(date +%s)"
+    nd_recovery_apply "$CASE_DIR/dec" ra-b1 7 >/dev/null
+    el=$(( $(date +%s) - start ))
+    # Per-call deadlines times eight calls would be over 30 s.
+    assert_eq 1 "$(( el <= 18 ))" "the repair ends near its budget, took $el s"
+    sleep 1
+    # shellcheck disable=SC2009  # pgrep is not in the stub PATH
+    assert_eq 0 "$(ps -eo args 2>/dev/null | grep -c '^sleep 973$')" "no hung child is left"
+  ) || exit 1
 }

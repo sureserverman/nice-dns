@@ -1,0 +1,28 @@
+{
+ "baseline": {
+  "elapsed_s": 1.8,
+  "exit": 0,
+  "tail": "  stop        Pause the timer / unload the LaunchAgent.\n  status      Show schedule state, the installed generation (Linux) and\n              the last 5 log entries.\n  drift       Compare the running deployment with the installed generation\n              (Linux): exit 0 current, 1 drift (a container off the\n              generation's image, or not running), 2 security drift (no\n              generation recorded, or the quadlets declare :53 off\n              loopback), 3 not checked (an install under way, no quadlets\n              to read). Reports only; nothing is re-rendered.\n  run         Run a health check now (also called by the timer).\n  observe     Print the observations as TSV (read-only: no log, no action).\n  tick        One controller pass: observe, decide (lib/policy.sh) and act\n              with acknowledged recovery (lib/recovery.sh). --shadow records\n              the decision in a separate shadow state and never acts.\n  route-start Before Unbound starts: demote a persisted onion route to the\n              exit (active installs only). Run by <root>/route-start from\n              the Unbound quadlet, the macOS agent and the macOS installer.\n  logs        Print the rolling log (one line per run).\n  failures    List failure dumps. Add --last to print the most recent.\n\nLogs:\n  Linux: $XDG_STATE_HOME/nice-dns-health or ~/.local/state/nice-dns-health/\n  macOS: ~/Library/Logs/nice-dns-health/\n\nWhat it checks (lib/health.sh; Pi-hole is 127.0.0.1 on Linux and\n172.31.240.250 on macOS):\n  runtime        the runtime CLI answers; pi-hole, unbound and\n                 tor-{haproxy|socat} are running\n  dns-owner      the host resolves through nice-dns (Linux: resolv.conf\n                 names only 127.0.0.1; macOS: every enabled network service\n                 and scutil's resolver #1 use 172.31.240.250)\n  install-drift  Linux: an install generation is recorded and the installed\n                 quadlets declare :53 on loopback only (else\n                 install-security-drift, logged at err once a day)\n  local-service  pi.hole has an A record (FTL alive)\n  filtering      doubleclick.net is sinkholed to 0.0.0.0\n  local-cache    Pi-hole answers cloudflare.com (may be cached; not upstream)\n  route:<id>     each route in routes/providers.tsv answers an authenticated\n                 probe; chain-resolves fails when none does\nResults are healthy, unhealthy or indeterminate (could not be observed)."
+ },
+ "break_patch": "--- a/lib/policy.sh\n+++ b/lib/policy.sh\n@@ -1,5 +1,5 @@\n # shellcheck shell=bash\n-# nice-dns recovery policy (ARCH-02 policy.sh, ARCH-03 decide, ARCH-04,\n+# nice-dns recovery policy (ARCH-02 policy.sh, ARCH-03 decide, ARCH-04 ,\n # ARCH-07). Sourced; Bash 3.2 compatible (macOS /bin/bash), safe under set -u.\n #\n #   nd_policy_decide <observations> <state> <now_epoch> <boot_id>\n",
+ "build": null,
+ "created": "2026-10-30T23:24:07+00:00",
+ "fingerprint": "cd4ee58e6eca0331bb36157bcfaa7bb304ae0d8bcc09f478491f500a1f6ba80c",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "shell: nothing is built",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-10-30-nice-dns-command-and-unbound-recovery-plan.md",
+ "red": {
+  "elapsed_s": 1.8,
+  "exit": 1,
+  "tail": "check-contracts: cited lib/policy.sh changed since the pinned commit 4dfc27306f96; re-derive its citations and re-pin"
+ },
+ "schema": 2,
+ "task": "1.7",
+ "test": "bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md && health/nice-dns-health --help | grep -v 'next start'",
+ "text": "`bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md && health/nice-dns-health --help | grep -v 'next start'`",
+ "touched": [
+  "lib/policy.sh"
+ ]
+}

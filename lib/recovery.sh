@@ -16,7 +16,12 @@
 #                                         restart when it is not acknowledged
 #                                         (not-acknowledged, unsupported or
 #                                         unreachable): the only Tor restart path
-#   repair_runtime <fault> <request_id>   repair the runtime fault observed
+#   nd_recovery_restart_unbound <request_id>
+#                                         restart Unbound (macOS: the stack)
+#   nd_recovery_restart_stack <request_id>
+#                                         restart the whole stack
+#   repair_runtime <fault> <request_id> [missing name...]
+#                                         repair the runtime fault observed
 #   nd_recovery_apply <decision> <request_id> <route_generation>
 #                                         carry out one lib/policy.sh decision
 #   nd_recovery_tick <active|shadow> <observations>
@@ -184,14 +189,29 @@ _nd_route_file_info() {
     END { if (r == "" || g == "" || n != 1) exit 1; print r "\t" g "\t" a }' "$1"
 }
 
+# _nd_route_x <deadline> <cmd...>: a route step under nd_bounded, stdout and
+# stderr as the command gave them. A frozen Unbound accepts the control
+# connection and never answers, so an unbounded unbound-control holds the whole
+# controller pass until systemd kills it, with nothing saved (mint 2026-10-30).
+_nd_route_x() {
+  local dl="$1" t rc
+  shift
+  t="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-route.XXXXXX")" || return 4
+  nd_bounded "$dl" "$t/o" "$t/e" "$@"; rc=$?
+  cat "$t/o"; cat "$t/e" >&2
+  [ "$rc" -ne 124 ] || printf 'no answer within %ss\n' "$dl" >&2
+  rm -rf "${t:?}"
+  return "$rc"
+}
+
 # route_readback: the route marker and root forwarder address of the running
 # Unbound, read through the control socket: "route<TAB>generation<TAB>address".
 # 1 when control is unreachable or the running config has no single marker
 # and single root forwarder.
 route_readback() {
   local data fwd
-  data="$(nd_platform_unbound_exec unbound-control -c "$_ND_CTL" list_local_data 2>/dev/null)" || return 1
-  fwd="$(nd_platform_unbound_exec unbound-control -c "$_ND_CTL" list_forwards 2>/dev/null)" || return 1
+  data="$(_nd_route_x "${ND_RECOVERY_CMD_DEADLINE:-15}" nd_platform_unbound_exec unbound-control -c "$_ND_CTL" list_local_data 2>/dev/null)" || return 1
+  fwd="$(_nd_route_x "${ND_RECOVERY_CMD_DEADLINE:-15}" nd_platform_unbound_exec unbound-control -c "$_ND_CTL" list_forwards 2>/dev/null)" || return 1
   printf '%s\n--forwards--\n%s\n' "$data" "$fwd" | awk '
     /^--forwards--$/ { part = 2; next }
     part != 2 && $1 == "nice-dns-route.invalid." && $4 == "TXT" {
@@ -210,33 +230,52 @@ route_readback() {
 
 # _nd_route_wait_runtime <route> <generation> <address>: poll the readback
 # (a reload completes after unbound-control has answered "ok"). _ND_RT holds
-# the last readback.
+# the last readback. The limit is wall-clock: one readback can take a command
+# deadline.
 _nd_route_wait_runtime() {
-  local i=0 max=$(( ${ND_ROUTE_READBACK_SECONDS:-15} * 4 ))
+  local end=$(( $(date +%s) + ${ND_ROUTE_READBACK_SECONDS:-15} ))
   while :; do
     _ND_RT="$(route_readback)" || _ND_RT="unreadable"
     [ "$_ND_RT" = "$1	$2	$3" ] && return 0
-    i=$((i + 1))
-    [ "$i" -lt "$max" ] || return 1
+    [ "$(date +%s)" -lt "$end" ] || return 1
+    sleep 0.25
+  done
+}
+
+# _nd_route_wait_visible: the container reads the host's include. The Mac's
+# shared directory shows a file just renamed over as missing for 40-300 ms
+# (measured 2026-10-30), and Unbound exits on a reload that cannot open its
+# include: a route change then took DNS down for a minute or two until the
+# controller rebuilt the stack.
+_nd_route_wait_visible() {
+  local want got end=$(( $(date +%s) + ${ND_ROUTE_READBACK_SECONDS:-15} ))
+  want="$(cat "$(nd_platform_route_dir)/forward-route.conf")" || return 1
+  while :; do
+    if got="$(_nd_route_x "${ND_RECOVERY_CMD_DEADLINE:-15}" nd_platform_unbound_exec cat "$_ND_CTR_ROUTE_DIR/forward-route.conf" 2>/dev/null)" \
+       && [ "$got" = "$want" ]; then return 0; fi
+    [ "$(date +%s)" -lt "$end" ] || return 1
     sleep 0.25
   done
 }
 
 _nd_route_reload() {
   local out
-  out="$(nd_platform_unbound_exec unbound-control -c "$_ND_CTL" reload_keep_cache 2>&1)" || return 1
+  _nd_route_wait_visible || return 1
+  out="$(_nd_route_x "${ND_RECOVERY_CMD_DEADLINE:-15}" nd_platform_unbound_exec unbound-control -c "$_ND_CTL" reload_keep_cache 2>&1)" || return 1
   printf '%s\n' "$out" | grep -qx ok
 }
 
 # _nd_route_resolves: resolution through the running route, bypassing the
-# cache (see the header).
+# cache (see the header). Twice the command deadline: the probe spends up to
+# its own 15 s (NICE_DNS_PROBE_TIMEOUT) in the image, and cutting it short here
+# would roll back a route that was only slow.
 _nd_route_resolves() {
-  nd_platform_unbound_exec "$_ND_START" probe-route "${ND_ROUTE_PROBE_NAME:-.}" 2>&1
+  _nd_route_x "$(( ${ND_RECOVERY_CMD_DEADLINE:-15} * 2 ))" nd_platform_unbound_exec "$_ND_START" probe-route "${ND_ROUTE_PROBE_NAME:-.}" 2>&1
 }
 
 # _nd_route_check <container path>: the image validates a route include.
 _nd_route_check() {
-  nd_platform_unbound_exec "$_ND_START" check-route "$1" 2>&1
+  _nd_route_x "${ND_RECOVERY_CMD_DEADLINE:-15}" nd_platform_unbound_exec "$_ND_START" check-route "$1" 2>&1
 }
 
 # _nd_route_dir_ok <dir>: a real directory owned by us, not writable by group
@@ -723,18 +762,65 @@ nd_recovery_restart_service() {
   return 1
 }
 
+# _nd_rec_restart_verified <request_id> <component> <container|""> <platform fn>:
+# run the platform's restart and wait for a new start of the container (an empty
+# name: whichever proxy runs). The start is the acknowledgement; readiness is a
+# later observation (_nd_rec_readiness).
+_nd_rec_restart_verified() {
+  local id="$1" comp="$2" c="$3" fn="$4" dl="${ND_RECOVERY_CMD_DEADLINE:-15}" svc="${ND_RECOVERY_SERVICE_S:-120}" g0 rc
+  if ! _nd_rec_id_ok "$id"; then _nd_rec_out refused "$comp" "$id" - - "bad request id"; return 2; fi
+  _ND_RX="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-recovery.XXXXXX")" || return 4
+  [ -n "$c" ] || c="$(nd_platform_proxy_container "$dl" "$_ND_RX")" || c=""
+  g0=-
+  if [ -n "$c" ]; then g0="$(nd_platform_container_generation "$c" "$dl" "$_ND_RX" 2>/dev/null)" || g0=-; fi
+  [ -n "$g0" ] || g0=-
+  _nd_rec_lock_ok "$id" "$comp" || { rm -rf "$_ND_RX"; return 5; }
+  nd_recovery_journal "$id" "$comp" requested "restart; ${c:-the proxy} before: $g0"
+  "$fn" "$svc" "$_ND_RX"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    nd_recovery_journal "$id" "$comp" not-acknowledged "the restart exited $rc: $(head -n 1 "$_ND_RX/svc.err" 2>/dev/null)"
+    _nd_rec_out not-acknowledged "$comp" "$id" "$g0" - "restart of $comp exited $rc"; rm -rf "$_ND_RX"; return 1
+  fi
+  if _nd_rec_wait_generation "$c" "$g0" "$svc"; then
+    nd_recovery_journal "$id" "$comp" acknowledged "$comp restarted: $_ND_REC_GEN"
+    _nd_rec_out acknowledged "$comp" "$id" "$g0" "$_ND_REC_GEN" "${c:-the proxy} runs as a new container start"; rm -rf "$_ND_RX"; return 0
+  fi
+  nd_recovery_journal "$id" "$comp" not-acknowledged "no new start within ${svc}s (last: ${_ND_REC_GEN:-none})"
+  _nd_rec_out not-acknowledged "$comp" "$id" "$g0" "${_ND_REC_GEN:--}" "no new start of ${c:-the proxy} within ${svc}s"; rm -rf "$_ND_RX"
+  return 1
+}
+
+nd_recovery_restart_unbound() { _nd_rec_restart_verified "${1:-}" unbound unbound nd_platform_restart_unbound; }
+
+# nd_recovery_restart_stack: every member restarts; the proxy's new start is the
+# acknowledgement, because the ladder's outage is what this answers.
+nd_recovery_restart_stack() { _nd_rec_restart_verified "${1:-}" stack "" nd_platform_restart_stack; }
+
+# nd_recovery_first_escalation: 0 once per outage, for the first escalation of
+# it (the outage is named by its outage_since; the marker is in the state
+# directory). 1 otherwise, and with no outage on record.
+nd_recovery_first_escalation() {
+  local since f
+  since="$(nd_state_load 2>/dev/null | awk -F '\t' '$1 == "outage_since" { print $2 }')"
+  case "$since" in ''|-|*[!0-9]*) return 1 ;; esac
+  f="$(nd_platform_state_dir)/escalation-reported"
+  [ "$(cat "$f" 2>/dev/null)" != "$since" ] || return 1
+  (umask 077 && printf '%s\n' "$since" >"$f")
+}
+
 repair_runtime() {
   local fault="${1:-}" id="${2:-}" dl="${ND_RECOVERY_CMD_DEADLINE:-15}" svc="${ND_RECOVERY_SERVICE_S:-120}" rc i=0 n
+  shift 2
   case "$fault" in runtime-down|containers-missing) ;; *) _nd_rec_out refused runtime "$id" - - "no repair for fault '$fault'"; return 2 ;; esac
   if ! _nd_rec_id_ok "$id"; then _nd_rec_out refused runtime "$id" - - "bad request id"; return 2; fi
   _nd_rec_lock_ok "$id" runtime || return 5
   _ND_RX="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-recovery.XXXXXX")" || return 4
-  nd_platform_repair_runtime "$fault" "$svc" "$_ND_RX"; rc=$?
+  nd_platform_repair_runtime "$fault" "$svc" "$_ND_RX" "$@"; rc=$?
   if [ "$rc" -eq 3 ]; then
     nd_recovery_journal "$id" runtime unsupported "no repair for $fault on $(nd_platform_name)"
     _nd_rec_out unsupported runtime "$id" - - "no repair for $fault on $(nd_platform_name)"; rm -rf "$_ND_RX"; return 3
   fi
-  nd_recovery_journal "$id" runtime requested "repair of $fault (exit $rc)"
+  nd_recovery_journal "$id" runtime requested "repair of $fault: $(cat "$_ND_RX/rep.note" 2>/dev/null)exit $rc"
   i=$(( $(_nd_rec_now) + svc )) n=0 rc=1
   while [ "$(_nd_rec_now)" -lt "$i" ]; do
     if nd_platform_runtime_list "$dl" "$_ND_RX/running" >/dev/null 2>&1; then
@@ -777,7 +863,7 @@ nd_recovery_restart_tor() {
 # restart that the image cannot acknowledge falls back once to the service
 # restart; nothing is retried beyond that in one pass.
 nd_recovery_apply() {
-  local dec="$1" id="$2" rgen="$3" action target reason rc
+  local dec="$1" id="$2" rgen="$3" action target reason rc names
   action="$(_nd_rec_field action "$dec")"; target="$(_nd_rec_field target "$dec")"; reason="$(_nd_rec_field reason "$dec")"
   case "$action" in
     no-op) return 0 ;;
@@ -795,9 +881,16 @@ nd_recovery_apply() {
       case "$target" in
         tor) nd_recovery_restart_tor "$id"; return $? ;;
         proxy) nd_recovery_restart_service "$id"; return $? ;;
+        unbound) nd_recovery_restart_unbound "$id"; return $? ;;
+        stack) nd_recovery_restart_stack "$id"; return $? ;;
         *) nd_recovery_journal "$id" controller refused "no restart for component '$target'"; return 2 ;;
       esac ;;
-    repair-runtime) repair_runtime "$target" "$id"; return $? ;;
+    repair-runtime)
+      # The observation names what is missing: "containers-missing: a b (running: c)".
+      names=""
+      case "$reason" in *containers-missing:*) names="${reason#*containers-missing: }"; names="${names%% (running*}" ;; esac
+      # shellcheck disable=SC2086  # the names are words; the adapter checks each
+      repair_runtime "$target" "$id" $names; return $? ;;
     *) nd_recovery_journal "$id" controller refused "unknown action '$action'"; return 2 ;;
   esac
 }
@@ -806,13 +899,15 @@ nd_recovery_apply() {
 # has no readiness row yet, record ready when this pass shows its component
 # working, or not-ready once ND_RECOVERY_READY_S (600) passed without it:
 #   route:<id>        that route's probe is healthy
-#   tor, service      an identity route is healthy AND Unbound resolves over
+#   tor, service, stack
+#                     an identity route is healthy AND Unbound resolves over
 #                     its current route (nice-dns-unbound-start probe-route: a
 #                     fresh TLS session with Unbound's trust store, host-side
 #                     evidence the proxy cannot forge). An Unbound image
 #                     without probe-route (exit 126/127) gives "ready,
 #                     uncorroborated".
 #   runtime           the runtime observation is healthy
+#   unbound           the unbound observation is healthy
 _nd_rec_readiness() {
   local f d row id comp at ok det age ids
   d="$(nd_platform_state_dir)"; f="$d/recovery.tsv"
@@ -828,7 +923,7 @@ _nd_rec_readiness() {
     case "$comp" in
       route:*)
         awk -F '\t' -v n="$comp" '$1 == "obs" && $2 == n && $3 == "healthy" { f = 1 } END { exit !f }' "$1" && ok=1 ;;
-      tor|service)
+      tor|service|stack)
         if awk -F '\t' -v ids=" $_nd_rec_identity " '$1 == "obs" && $2 ~ /^route:/ && $3 == "healthy" && index(ids, " " substr($2, 7) " ") { f = 1 } END { exit !f }' "$1"; then
           _ND_RX="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-ready.XXXXXX")" || return 0
           _nd_rec_x "${ND_RECOVERY_CMD_DEADLINE:-15}" nd_platform_unbound_exec "$_ND_START" probe-route "${ND_ROUTE_PROBE_NAME:-.}"
@@ -838,8 +933,8 @@ _nd_rec_readiness() {
           esac
           rm -rf "$_ND_RX"
         fi ;;
-      runtime)
-        awk -F '\t' '$1 == "obs" && $2 == "runtime" && $3 == "healthy" { f = 1 } END { exit !f }' "$1" && ok=1 ;;
+      runtime|unbound)
+        awk -F '\t' -v n="$comp" '$1 == "obs" && $2 == n && $3 == "healthy" { f = 1 } END { exit !f }' "$1" && ok=1 ;;
     esac
     age=$(( $2 - at ))
     if [ "$ok" = 1 ]; then nd_recovery_journal "$id" "$comp" ready "observed working ${age}s after the acknowledgement$det"

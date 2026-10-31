@@ -403,6 +403,9 @@ case "$me" in
     esac
     exit 2 ;;
   sleep)
+    # A command deadline (nd_bounded's watchdog) must really wait, or it kills
+    # the command it guards at once. The installer's own polls are 5 s or less.
+    case "${1:-0}" in *[!0-9]*) ;; *) [ "$1" -lt 15 ] || exec /bin/sleep "$1" ;; esac
     if [ -s "$FAKE/mullvad_pending" ]; then
       n=$(($(cat "$FAKE/mullvad_pending") - 1))
       if [ "$n" -le 0 ]; then rm -f "$FAKE/mullvad_pending" "$FAKE_ROOT/etc/resolv.conf"; printf 'nameserver 127.0.0.1\n' >"$FAKE_ROOT/etc/resolv.conf"
@@ -428,7 +431,7 @@ STUB
 ip_tree() {
   local d="$1" f
   mkdir -p "$d"
-  for f in install-deb.sh install-deb-hardened.sh install-mac.sh install-mac-hardened.sh lib deb mac scripts unbound pihole pihole-hardened health routes release; do
+  for f in install-deb.sh install-deb-hardened.sh install-mac.sh install-mac-hardened.sh nice-dns lib deb mac scripts unbound pihole pihole-hardened health routes release; do
     cp -R "$NICE_DNS_ROOT/$f" "$d/"
   done
   # shellcheck disable=SC2016  # expanded by the stubs
@@ -440,6 +443,7 @@ if [ -n "${FAKE_ROOT:-}" ]; then
   m="deploy $(cat "$FAKE/git_head")"
   q="$HOME/.config/containers/systemd"; mkdir -p "$q"
   for f in nice-dns.network nice-dns.pod unbound.container pi-hole.container "tor-$1.container"; do printf '%s %s\n' "$f" "$m" >"$q/$f"; done
+  mkdir -p "$q/pi-hole.container.d"; printf 'drop-in %s\n' "$m" >"$q/pi-hole.container.d/50-nice-dns-caps.conf"
   rf="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/unbound-route/forward-route.conf"
   if [ -f "$rf" ]; then r="$(sed -n 's/.*"\(route=[^"]*\)".*/\1/p' "$rf")"; else r=route-absent; fi
   printf 'persistent-podman.sh %s\n' "$r" >>"$FAKE/unbound-starts"
@@ -528,7 +532,7 @@ ip_env() {
 # ip_run <script> [args...]: run an entrypoint in the world; IP_RC, IP_OUT.
 ip_run() {
   local cwd="${IP_CWD:-$IP_W}"
-  IP_OUT="$(cd "$cwd" && env -i HOME="$IP_HOME" USER=tester LOGNAME=tester PATH="$IP_BIN" \
+  IP_OUT="$(cd "$cwd" && env -i HOME="$IP_HOME" USER=tester LOGNAME=tester PATH="${IP_PATH_EXTRA:+$IP_PATH_EXTRA:}$IP_BIN" \
     TMPDIR="$IP_W/tmp" XDG_STATE_HOME="$IP_HOME/.local/state" XDG_CONFIG_HOME="$IP_HOME/.config" \
     XDG_RUNTIME_DIR="$IP_W/run" FAKE="$FAKE" FAKE_LOG="$FAKE_LOG" FAKE_UNAME="$IP_UNAME" FAKE_ARCH="$IP_ARCH" \
     ND_INST_ETC="$IP_W/etc" ND_INST_SUDO_KEEPALIVE=0 ND_INST_REQUIRE_SIGNATURES="${ND_INST_REQUIRE_SIGNATURES:-}" FAKE_ROOT="${FAKE_ROOT:-}" ND_INST_ROOT="${FAKE_ROOT:-}" ND_PERSIST_ROOT="${ND_PERSIST_ROOT:-}" bash "$@" 2>&1 </dev/null)"
@@ -573,10 +577,10 @@ dt_ep_of() { if [ "$1" = linux ]; then echo install-deb; else echo install-mac; 
 #   macos: fresh (Wi-Fi 192.168.1.1, Ethernet 9.9.9.9 149.112.112.112,
 #          Thunderbolt Bridge empty), legacy (every service pinned)
 dt_world() {
-  local ep="$1" st="$2" r
+  local ep="$1" st="$2" r k s
   ip_env "$ep"
   FAKE_ROOT="$IP_W/root"; r="$FAKE_ROOT"
-  mkdir -p "$r/etc" "$r/.systemd" "$r/.sysctl" "$r/run/systemd/resolve" "$r/usr/bin" "$r/usr/local/sbin"
+  mkdir -p "$r/etc" "$r/etc/sysctl.d" "$r/.systemd" "$r/.sysctl" "$r/run/systemd/resolve" "$r/usr/bin" "$r/usr/local/sbin"
   if [ "$(ip_platform "$ep")" = linux ]; then
     printf 'nameserver 127.0.0.53\noptions edns0 trust-ad\n' >"$r/run/systemd/resolve/stub-resolv.conf"
     : >"$r/.systemd/systemd-resolved.unit"; : >"$r/.systemd/NetworkManager.unit"
@@ -585,6 +589,7 @@ dt_world() {
     printf '0\n' >"$r/.sysctl/net.ipv6.conf.all.disable_ipv6"
     printf '0\n' >"$r/.sysctl/net.ipv6.conf.default.disable_ipv6"
     printf '0\n' >"$r/.sysctl/net.ipv6.conf.lo.disable_ipv6"
+    printf '1024\n' >"$r/.sysctl/net.ipv4.ip_unprivileged_port_start"
     # Per-device IPv6 switches as NetworkManager leaves them (the NIC with
     # ipv6.method auto, Mullvad's tunnel taking default): Task 2.1, 2026-10-12.
     for k in enp1s0 wg0-mullvad; do mkdir -p "$r/proc/sys/net/ipv6/conf/$k"; printf '0\n' >"$r/proc/sys/net/ipv6/conf/$k/disable_ipv6"; done

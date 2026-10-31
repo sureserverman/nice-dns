@@ -429,6 +429,24 @@ t_collect_runs_collector_on_target_and_maps_failures() {
   assert_eq "" "$(find "$TMPDIR" -maxdepth 1 -name 'nice-dns-collect.*')" "remote bundle dir removed"
 }
 
+# probe_identity refuses an output with no machine id, so every operation whose
+# output it checks must print the identity lines (live 2026-10-31: fresh-name
+# did not, was refused every time, and a fake adapter could not show it).
+t_identity_checked_ops_print_the_identity() {
+  local ops op script n=0
+  ops="$(sed -n 's/^  \([a-z|-]*\))$/\1/p' "$TG" | grep -E '(^|\|)controller-report(\||$)' | tail -1 | tr '|' ' ')"
+  assert_ne "" "$ops" "found the identity-checked operations"
+  script="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG")"
+  for op in $ops; do
+    n=$((n + 1))
+    printf '%s\n' "$script" | awk -v op="$op" '
+      /^  [a-z|-]+\)/ { on = 0; l = $0; sub(/^  /, "", l); sub(/\).*/, "", l); k = split(l, w, "|"); for (i = 1; i <= k; i++) if (w[i] == op) on = 1 }
+      on && /(^|[ {|;])identity($|[ ;|}])/ { f = 1 }
+      END { exit !f }' || fail "$op is identity-checked, but its remote branch prints no identity"
+  done
+  assert_match '^[1-9]' "$n" "at least one operation was checked"
+}
+
 t_remote_script_never_reads_secret_sources() {
   local script
   script="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG" | grep -v "^[[:space:]]*#")"

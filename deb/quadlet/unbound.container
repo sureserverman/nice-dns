@@ -31,7 +31,9 @@ NoNewPrivileges=true
 # answers on its local control socket and its selected route resolves in a
 # fresh authenticated TLS session that bypasses the cache (probe-route,
 # bounded by NICE_DNS_PROBE_TIMEOUT, 15 s). It therefore also reads unhealthy
-# while Tor is down: that is the truth about uncached names.
+# while Tor is down: that is the truth about uncached names. The controller
+# reads the same two checks (lib/health.sh, the unbound observation) and restarts
+# Unbound after three failures in a row (lib/policy.sh).
 HealthCmd=unbound-control -c /usr/share/nice-dns/control.conf status >/dev/null && nice-dns-unbound-start probe-route >/dev/null
 HealthInterval=60s
 HealthTimeout=30s

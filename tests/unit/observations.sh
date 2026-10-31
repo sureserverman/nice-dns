@@ -467,7 +467,7 @@ t_observe_output_is_valid_tsv_with_one_line_reasons() {
       assert_match 'runtime-down: .*failed to connect' "$(ob_reason runtime)" "$plat: the runtime's error is the reason"
     fi
     if [ "$plat" = linux ]; then drift="install-drift "; else drift=""; fi
-    assert_eq "runtime proxy dns-owner ${drift}local-service filtering local-cache route:cloudflare-onion route:cloudflare-exit route:quad9-exit route:cloudflare-legacy " \
+    assert_eq "runtime proxy dns-owner ${drift}local-service filtering local-cache route:cloudflare-onion route:cloudflare-exit route:quad9-exit route:cloudflare-legacy unbound " \
       "$(printf '%s\n' "$OB_OUT" | awk -F '\t' '$1 == "obs" { print $2 }' | tr '\n' ' ')" "$plat: the documented names, in order (install-drift on Linux only)"
   done
 }
@@ -718,8 +718,8 @@ INNER
   assert_match '^response\|NOERROR\|104\.16\.132\.229 104\.16\.133\.229$' "$out" "dig parse under 3.2 (BusyBox awk)"
   assert_match '^bounded=124 secs=[12]$' "$out" "the deadline holds under 3.2"
   assert_match '^left=0$' "$out" "no process left under 3.2"
-  assert_eq 10 "$(awk -F '\t' '$1 == "obs" && $3 == "healthy"' "$w/obs-linux.tsv" | wc -l | tr -d ' ')" "all ten linux observations healthy under 3.2 (proxy added, Sub-plan 5 Task 1.3)"
-  assert_eq 10 "$(awk -F '\t' '$1 == "obs" && $3 == "healthy"' "$w/obs-macos.tsv" | wc -l | tr -d ' ')" "all ten macos observations healthy under 3.2 (proxy added, Sub-plan 5 Task 1.3)"
+  assert_eq 11 "$(awk -F '\t' '$1 == "obs" && $3 == "healthy"' "$w/obs-linux.tsv" | wc -l | tr -d ' ')" "all eleven linux observations healthy under 3.2 (proxy, then unbound added)"
+  assert_eq 11 "$(awk -F '\t' '$1 == "obs" && $3 == "healthy"' "$w/obs-macos.tsv" | wc -l | tr -d ' ')" "all eleven macos observations healthy under 3.2 (proxy, then unbound added)"
   for p in linux macos; do
     assert_match "^cli-run-$p=0\$" "$out" "$p: CLI run passes under 3.2"
     assert_match "^cli-indeterminate-$p=1\$" "$out" "$p: CLI indeterminate run under 3.2"
@@ -908,4 +908,138 @@ t_a_missing_generation_is_security_drift() {
   ob_observe
   assert_eq "" "$(ob_verdict install-drift)" "no install-drift record on macOS"
   printf '%s\n' "$OB_OUT" | bash -c '. "$1" && nd_health_validate' _ "$OB_HEALTH" || fail "macOS set valid without install-drift"
+}
+
+# ob_unbound_reset: a working Unbound.
+ob_unbound_reset() { rm -f "$FAKE/unbound_control" "$FAKE/exec_hang" "$FAKE/unbound_probe_rc" "$FAKE/unbound_probe_hang"; }
+
+t_unbound_is_observed_on_its_own_evidence() {
+  local plat
+  ob_setup linux
+  export ND_HEALTH_CMD_DEADLINE=1
+  for plat in $(ob_platforms); do
+    ob_platform "$plat"
+    ob_observe
+    ob_expect unbound healthy 'control and route answer' "$plat: a working Unbound"
+    printf '%s\n' "$OB_OUT" | bash -c '. "$1" && nd_health_validate' _ "$OB_HEALTH" || fail "$plat: the set with an unbound record is valid"
+
+    ob_unbound_reset; echo refused >"$FAKE/unbound_control"
+    ob_observe
+    ob_expect unbound unhealthy '^control: .*Connection refused' "$plat: a refused control socket is Unbound's own failure"
+
+    ob_unbound_reset; echo 1 >"$FAKE/unbound_probe_rc"
+    ob_observe
+    ob_expect unbound unhealthy '^route: ' "$plat: a failed route probe"
+
+    # A frozen daemon (live, mint 2026-10-30, SIGSTOP): control hangs, exec answers.
+    ob_unbound_reset; echo hang >"$FAKE/unbound_control"
+    ob_observe
+    ob_expect unbound unhealthy '^control: .*no answer' "$plat: control hangs while the container still execs"
+
+    ob_unbound_reset; echo hang >"$FAKE/unbound_control"; : >"$FAKE/exec_hang"
+    ob_observe
+    ob_expect unbound indeterminate 'deadline' "$plat: a timeout with no working exec is no evidence"
+
+    ob_unbound_reset; echo missing >"$FAKE/unbound_control"
+    ob_observe
+    ob_expect unbound indeterminate 'no unbound-control' "$plat: an image without the control client (exit 127)"
+
+    ob_unbound_reset; echo missing >"$FAKE/unbound_probe_rc"
+    ob_observe
+    ob_expect unbound indeterminate 'probe-route cannot run' "$plat: an image without the probe (exit 127)"
+
+    ob_unbound_reset; echo 126 >"$FAKE/unbound_probe_rc"
+    ob_observe
+    ob_expect unbound indeterminate 'probe-route cannot run' "$plat: exit 126 is the same"
+
+    ob_unbound_reset; : >"$FAKE/unbound_probe_hang"
+    ND_HEALTH_UNBOUND_PROBE_DEADLINE=1 ob_observe
+    ob_expect unbound indeterminate 'deadline' "$plat: a route probe past its deadline"
+
+    ob_unbound_reset; printf 'pi-hole\ntor-haproxy\n' >"$FAKE/running"
+    ob_observe
+    ob_expect unbound indeterminate 'not running' "$plat: a missing container is the runtime observation's fault"
+    printf 'pi-hole\nunbound\ntor-haproxy\n' >"$FAKE/running"
+    ob_unbound_reset
+  done
+}
+
+t_unbound_observation_stays_inside_the_budget() {
+  local plat t0
+  ob_setup linux
+  export ND_HEALTH_CMD_DEADLINE=1 ND_HEALTH_UNBOUND_PROBE_DEADLINE=30
+  for plat in $(ob_platforms); do
+    ob_platform "$plat"
+    echo hang >"$FAKE/unbound_control"; : >"$FAKE/unbound_probe_hang"; : >"$FAKE/exec_hang"
+    t0=$SECONDS
+    ob_observe 4
+    assert_eq 0 "$(( SECONDS - t0 > 10 ))" "$plat: the pass ends near its budget, took $(( SECONDS - t0 )) s"
+    ob_expect unbound indeterminate '' "$plat: a spent budget acts on nothing"
+    ob_unbound_reset
+  done
+}
+
+t_tick_writes_one_failure_dump_per_outage() {
+  local plat now g
+  ob_setup linux
+  for plat in $(ob_platforms); do
+    ob_platform "$plat"
+    ob_tree
+    rm -rf "$XDG_STATE_HOME/nice-dns-health" "$HOME/Library/Logs/nice-dns-health" "$XDG_STATE_HOME/nice-dns/controller" "$HOME/Library/Application Support/nice-dns/controller"
+    for g in 18531 18532 18533 853; do printf 'servfail\n' >"$FAKE/probe/$g"; done
+    now="$(date +%s)"
+    export ND_STATE_DIR="$CASE_DIR/ctl-$plat"
+    mkdir -p "$ND_STATE_DIR"; chmod 700 "$ND_STATE_DIR"
+    # Past the cap and the cooldown, not yet at the retry: every pass escalates.
+    printf 'schema\tnice-dns-controller-state/1\ngeneration\t1\nboot_id\tboot-a\nupdated\t%s\nstarted\t%s\nroute\t-\noutage_since\t%s\noutage_restarts\t2\nlast_action\t-\nlast_action_at\t-\nrecovery_at\t%s\n' \
+      "$((now - 60))" "$((now - 7200))" "$((now - 3600))" "$((now - 600))" >"$ND_STATE_DIR/state.tsv"
+    chmod 600 "$ND_STATE_DIR/state.tsv"
+    ND_BOOT_ID=boot-a bash "$OB_TREE/health/nice-dns-health" tick >"$CASE_DIR/tick1" 2>&1
+    assert_match '^action	escalate$' "$(cat "$CASE_DIR/tick1")" "$plat: the pass escalates"
+    ND_BOOT_ID=boot-a bash "$OB_TREE/health/nice-dns-health" tick >"$CASE_DIR/tick2" 2>&1
+    assert_match '^action	escalate$' "$(cat "$CASE_DIR/tick2")" "$plat: and so does the next"
+    assert_eq 1 "$(find "$HOME" -name 'failure-*.log' | wc -l | tr -d ' ')" "$plat: one dump for the outage"
+    assert_match 'route:cloudflare-exit' "$(cat "$(find "$HOME" -name 'failure-*.log' | head -n 1)")" "$plat: it holds the observations"
+    find "$HOME" -name 'failure-*.log' -exec rm -f {} +
+    unset ND_STATE_DIR
+    rm -f "$FAKE/probe/"*
+  done
+}
+
+t_a_runtime_exec_failure_is_never_unbounds_fault() {
+  local plat
+  ob_setup linux
+  export ND_HEALTH_CMD_DEADLINE=1
+  for plat in $(ob_platforms); do
+    ob_platform "$plat"
+    # A warning before the error, as podman prints with its bus refused.
+    echo exec-error >"$FAKE/unbound_control"
+    ob_observe
+    ob_expect unbound indeterminate 'could not exec' "$plat: exit 125 with a warning first is the runtime's failure"
+    ob_unbound_reset
+    echo exec-error >"$FAKE/unbound_probe_rc"
+    ob_observe
+    ob_expect unbound indeterminate 'could not exec' "$plat: the same from the route probe"
+    ob_unbound_reset
+  done
+}
+
+t_the_first_escalation_dump_is_bounded() {
+  local g now t0
+  ob_setup linux
+  ob_tree
+  for g in 18531 18532 18533 853; do printf 'servfail\n' >"$FAKE/probe/$g"; done
+  now="$(date +%s)"
+  export ND_STATE_DIR="$CASE_DIR/ctl" ND_FAILURE_DUMP_S=2
+  mkdir -p "$ND_STATE_DIR"; chmod 700 "$ND_STATE_DIR"
+  printf 'schema\tnice-dns-controller-state/1\ngeneration\t1\nboot_id\tboot-a\nupdated\t%s\nstarted\t%s\nroute\t-\noutage_since\t%s\noutage_restarts\t2\nlast_action\t-\nlast_action_at\t-\nrecovery_at\t%s\n' \
+    "$((now - 60))" "$((now - 7200))" "$((now - 3600))" "$((now - 600))" >"$ND_STATE_DIR/state.tsv"
+  chmod 600 "$ND_STATE_DIR/state.tsv"
+  # The dump's own `logs` hangs, as on a wedged runtime; the observations do not use it.
+  printf '%s\n' 1 >"$FAKE/logs.hang"
+  t0=$SECONDS
+  ND_BOOT_ID=boot-a bash "$OB_TREE/health/nice-dns-health" tick >"$CASE_DIR/out" 2>&1
+  assert_match '^action	escalate$' "$(cat "$CASE_DIR/out")" "the pass escalates"
+  assert_eq 1 "$(( SECONDS - t0 <= 25 ))" "a hung dump does not hold the pass: $(( SECONDS - t0 )) s"
+  unset ND_STATE_DIR ND_FAILURE_DUMP_S
 }

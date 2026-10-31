@@ -384,6 +384,87 @@ t_refused_when_unbound_is_not_running() {
   assert_eq "$inc" "$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")" "reconcile touched nothing"
 }
 
+# A frozen Unbound accepts the control connection and never answers (mint
+# 2026-10-30): the change must end by itself, report it, and leave the previous
+# route in place.
+# The Mac's shared directory shows a renamed include as missing for a moment,
+# and Unbound exits on a reload that cannot open it (mac, 2026-10-30).
+t_reload_waits_until_the_container_sees_the_include() {
+  local d="$CASE_DIR/route-vis" rc
+  mkdir -p "$d"
+  printf 'new include\n' >"$d/forward-route.conf"
+  (
+    ND_ROUTE_DIR="$d"
+    nd_platform_unbound_exec() {
+      case "$1" in
+        cat)
+          echo cat >>"$d/calls"
+          [ "$(grep -c cat "$d/calls")" -gt 3 ] || return 1
+          cat "$d/forward-route.conf" ;;
+        unbound-control) echo reload >>"$d/calls"; echo ok ;;
+      esac
+    }
+    _nd_route_reload
+  ); rc=$?
+  assert_rc 0 "$rc" "the reload runs once the include is visible"
+  assert_eq "cat cat cat cat reload" "$(tr '\n' ' ' <"$d/calls" | sed 's/ $//')" "no reload while the include is missing"
+  rm -f "$d/calls"
+  (
+    ND_ROUTE_DIR="$d" ND_ROUTE_READBACK_SECONDS=1
+    nd_platform_unbound_exec() {
+      case "$1" in
+        cat) printf 'old include\n' ;;
+        unbound-control) echo reload >>"$d/calls"; echo ok ;;
+      esac
+    }
+    _nd_route_reload
+  ); rc=$?
+  assert_rc 1 "$rc" "an include that never shows fails the reload"
+  assert_no_path "$d/calls" "and no reload was sent"
+}
+
+# A tool the probe needs is missing: the check could not run, which is not a
+# route that failed (127 is indeterminate in lib/health.sh).
+t_probe_without_its_tools_says_it_could_not_run() {
+  local tool
+  rt_stack cloudflare-onion 1
+  for tool in dig timeout; do
+    rt_pm exec -u 0 "$ND_UNBOUND_CONTAINER" sh -c "mv \"\$(command -v $tool)\" /tmp/$tool.moved"
+    assert_rc 0 "$RT_RC" "$tool moved away: $RT_OUT"
+    rt_pm exec --user unbound "$ND_UNBOUND_CONTAINER" "$RT_START" probe-route signed.fixture.test
+    assert_rc 127 "$RT_RC" "probe-route without $tool: $RT_OUT"
+    assert_match "$tool is not in the image" "$RT_OUT" "the reason names $tool"
+    rt_pm exec -u 0 "$ND_UNBOUND_CONTAINER" sh -c "mv /tmp/$tool.moved /usr/bin/$tool"
+    assert_rc 0 "$RT_RC" "$tool restored: $RT_OUT"
+  done
+}
+
+rt_unbound_signal() {
+  rt_pm exec "$ND_UNBOUND_CONTAINER" sh -c 'for p in /proc/[0-9]*; do [ "$(cat "$p/comm" 2>/dev/null)" != unbound ] || kill -"$1" "${p#/proc/}" || exit 1; done' sh "$1"
+}
+
+t_frozen_unbound_does_not_hold_a_route_change() {
+  local inc start el
+  rt_stack cloudflare-onion 1
+  inc="$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")"
+  # The daemon, not the container's first process (the start script).
+  rt_unbound_signal STOP
+  assert_rc 0 "$RT_RC" "Unbound frozen: $RT_OUT"
+  start="$(date +%s)"
+  ND_RECOVERY_CMD_DEADLINE=3 rt_call apply_route quad9-exit 2
+  el=$(( $(date +%s) - start ))
+  rt_unbound_signal CONT
+  assert_rc 3 "$RT_RRC" "the change escalates: $RT_RES"
+  assert_eq escalate "$(rt_f result)" "result"
+  # Four timed-out control calls (first readback, two reloads, last readback)
+  # at 3 s plus the 1 s kill grace, and two check-route execs.
+  [ "$el" -le 30 ] || fail "the frozen Unbound held the change for ${el}s"
+  assert_eq "$inc" "$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")" "the previous include is back"
+  rt_call reconcile_route
+  assert_rc 0 "$RT_RRC" "reconcile applies the desired route after the thaw: $RT_RES"
+  assert_eq "quad9-exit	2	127.0.0.1" "$(route_readback)" "the desired route runs after the thaw"
+}
+
 t_unsafe_route_directory_refused() {
   local real="$CASE_DIR/real-route"
   rt_setup

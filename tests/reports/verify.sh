@@ -34,8 +34,9 @@
 #   entrypoint NAME pass|fail
 #   product  nice-dns|pi-hole-hardened SHA40        (the installed product;
 #            optional, at most one per repository)
-#   limit    WHAT CELL|- scope=sub-plan-N REASON     (something the run did
-#            not prove, and the sub-plan that owns it; CELL an observed cell)
+#   limit    WHAT CELL|- scope=sub-plan-N|scope=BL-N REASON  (something the
+#            run did not prove, and the sub-plan or backlog entry that owns it;
+#            CELL an observed cell)
 #   reuse    CELL RUN_ID SHA40                       (an observed cell carried
 #            from an earlier run, which passed all of it at nice-dns SHA40;
 #            DEC-009. At most once per cell, never this receipt's own run)
@@ -65,7 +66,7 @@ SIB="${NICE_DNS_SIBLINGS_DIR:-$(cd "$V_ROOT/.." && pwd -P)}"
 SCHEMA='nice-dns-receipt/1'
 REPOS='nice-dns tor-haproxy tor-socat hardened-unbound pi-hole-hardened'
 ARCH_REPOS='tor-haproxy tor-socat hardened-unbound pi-hole-hardened'
-RECEIPTS='baseline transport controller installers soak qualification'
+RECEIPTS='baseline transport controller installers soak qualification command-recovery'
 ENTRYPOINTS='install-deb.sh install-deb-hardened.sh install-mac.sh install-mac-hardened.sh'
 TAB="$(printf '\t')"
 
@@ -423,7 +424,7 @@ check_limits() {
   while IFS="$TAB" read -r _ w c sc r; do
     n=$((n + 1))
     printf '%s' "$w" | grep -Eq '^[a-z][a-z0-9-]*$' || err "$f: limit '$w' is not a lower-case name"
-    printf '%s' "$sc" | grep -Eq '^scope=sub-plan-[0-9]+$' || err "$f: limit $w scope '$sc' is not scope=sub-plan-N"
+    printf '%s' "$sc" | grep -Eq '^scope=(sub-plan-[0-9]+|BL-[0-9]+)$' || err "$f: limit $w scope '$sc' is not scope=sub-plan-N or scope=BL-N"
     [ -n "$r" ] || err "$f: limit $w ($c) gives no reason"
     if [ "$c" != - ]; then
       awk -F '\t' -v k="$c" '$1 == "cell" && $2 "/" $3 "/" $4 == k && $7 == "observed" { f = 1 } END { exit !f }' "$f" \

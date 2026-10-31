@@ -136,21 +136,98 @@ nd_platform_restart_proxy() {
   nd_bounded "$2" "$3/svc" "$3/svc.err" systemctl --user restart "$1.service"
 }
 
+# nd_platform_restart_unbound <deadline> <tmp>: Unbound's service alone;
+# pi-hole only Wants= it and the proxy does not depend on it, so both keep
+# running. ExecStartPre=route-start finds the tick's lock busy and keeps the
+# persisted route, which is the wanted result on a warm proxy (BL-039 item 2).
+nd_platform_restart_unbound() {
+  nd_bounded "$1" "$2/svc" "$2/svc.err" systemctl --user restart unbound.service
+}
+
+# nd_platform_restart_stack <deadline> <tmp>: the whole pod. Each member has
+# BindsTo= on it, and it Wants= each member, so all three stop and start with it.
+nd_platform_restart_stack() {
+  nd_bounded "$1" "$2/svc" "$2/svc.err" systemctl --user restart nice-dns-pod.service
+}
+
+# nd_platform_wait_restarted <deadline>: the restart above is done when
+# systemctl returns.
+nd_platform_wait_restarted() { return 0; }
+
 # nd_platform_runtime_repairs: the runtime faults nd_platform_repair_runtime
 # can repair here; the policy escalates any other (ND_POLICY_RUNTIME_REPAIRS).
 nd_platform_runtime_repairs() { printf 'containers-missing\n'; }
 
-# nd_platform_repair_runtime <fault> <deadline> <tmp>: 0 issued; 3 no repair
-# exists for this fault here. Rootless podman has no daemon to restart, so a
-# runtime that does not answer is escalated, not repaired (it is not in
-# nd_platform_runtime_repairs). Missing containers are started through
-# pi-hole.service, whose Wants= pulls unbound and the proxy; running units are
-# left alone.
+# nd_platform_repair_runtime <fault> <deadline> <tmp> [missing name...]: 0
+# issued; 3 no repair exists for this fault here. Rootless podman has no daemon
+# to restart, so a runtime that does not answer is escalated, not repaired (it
+# is not in nd_platform_runtime_repairs). Missing containers are started by name:
+# their failed state is cleared first, and running units are left alone. Starting
+# pi-hole.service to pull the others through Wants= did nothing while Pi-hole ran
+# (214 times on mint, 2026-10-29). With no usable name (no variant is known) that
+# start is still the only thing to try.
+# A unit that exited 126 or 125 means podman could not start it. Exit 126 with
+# "systemd/private: connection refused" kept a proxy down for 20 hours until a
+# reboot; reproduced on mint with a stale socket, and a re-exec makes the manager
+# bind it again. Exit 125 ("pod cgroup is not set") follows when podman's tmp went
+# too and it reset its state; only a pod restart clears that. Neither needs a
+# reboot (2026-10-30). Exit 125 has persistent causes as well (an image that cannot
+# be pulled), and a pod restart costs a running Pi-hole its service, so it runs at
+# most once per ND_POLICY_RETRY_S (1800 s) within a boot: a new boot or a clock that
+# moved back forgets the last one, as the policy's timers do, or a dead RTC could
+# hold the repair that DNS, and so NTP, needs. The whole repair spends at most twice
+# <deadline>, so it stays inside the tick's timeout and the lock's lease. What it
+# did is left in <tmp>/rep.note for the journal.
 nd_platform_repair_runtime() {
-  case "$1" in
-    containers-missing) nd_bounded "$2" "$3/rep" "$3/rep.err" systemctl --user start pi-hole.service ;;
-    *) return 3 ;;
-  esac
+  local fault="$1" dl="$2" tmp="$3" n rc=0 named=0 stuck=0 end now mark last b boot
+  shift 3
+  [ "$fault" = containers-missing ] || return 3
+  end=$(( $(date +%s) + dl * 2 ))
+  # _nd_rep_left [most]: the seconds this repair may still spend on one call.
+  _nd_rep_left() {
+    local l=$(( end - $(date +%s) ))
+    [ "$l" -le "${1:-$dl}" ] || l="${1:-$dl}"
+    [ "$l" -gt 0 ] || l=0
+    printf '%s\n' "$l"
+  }
+  for n in "$@"; do
+    case "$n" in pi-hole|unbound|tor-haproxy|tor-socat) ;; *) continue ;; esac
+    [ "$(_nd_rep_left 5)" -gt 0 ] || break
+    nd_bounded "$(_nd_rep_left 5)" "$tmp/rep" "$tmp/rep.err" systemctl --user show -p ExecMainStatus --value "$n.service"
+    case "$(head -n 1 "$tmp/rep" 2>/dev/null)" in 125|126) stuck=1 ;; esac
+  done
+  if [ "$stuck" = 1 ] && [ "$(_nd_rep_left 15)" -gt 0 ]; then
+    nd_bounded "$(_nd_rep_left 15)" "$tmp/rep" "$tmp/rep.err" systemctl --user daemon-reexec
+    printf 'daemon-reexec (exit %s); ' "$?" >>"$tmp/rep.note"
+  fi
+  for n in "$@"; do
+    case "$n" in pi-hole|unbound|tor-haproxy|tor-socat) ;; *) continue ;; esac
+    named=1
+    [ "$(_nd_rep_left)" -gt 0 ] || { rc=124; break; }
+    nd_bounded "$(_nd_rep_left 5)" "$tmp/rep" "$tmp/rep.err" systemctl --user reset-failed "$n.service"
+    [ "$(_nd_rep_left)" -gt 0 ] || { rc=124; break; }
+    nd_bounded "$(_nd_rep_left)" "$tmp/rep" "$tmp/rep.err" systemctl --user start "$n.service" || rc=$?
+  done
+  [ "$named" = 1 ] || nd_bounded "$(_nd_rep_left)" "$tmp/rep" "$tmp/rep.err" systemctl --user start pi-hole.service || rc=$?
+  if [ "$rc" -ne 0 ] && [ "$stuck" = 1 ] && [ "$(_nd_rep_left)" -gt 0 ]; then
+    mark="$(nd_platform_state_dir)/pod-repair-at"; now="$(date +%s)"
+    boot="${ND_BOOT_ID:-$(nd_platform_boot_id)}"
+    last=0
+    if [ -f "$mark" ]; then
+      IFS=' ' read -r b last <"$mark" || true
+      case "$last" in ''|*[!0-9]*) last=0 ;; esac
+      if [ "$b" != "$boot" ] || [ "$last" -gt "$now" ]; then last=0; fi
+    fi
+    if [ $((now - last)) -ge "${ND_POLICY_RETRY_S:-1800}" ]; then
+      (umask 077 && printf '%s %s\n' "$boot" "$now" >"$mark")
+      rc=0
+      nd_bounded "$(_nd_rep_left)" "$tmp/rep" "$tmp/rep.err" systemctl --user restart nice-dns-pod.service || rc=$?
+      printf 'restart nice-dns-pod.service (exit %s); ' "$rc" >>"$tmp/rep.note"
+    else
+      printf 'pod restart held, last %s s ago; ' "$((now - last))" >>"$tmp/rep.note"
+    fi
+  fi
+  return "$rc"
 }
 
 # ─── Bridge operations (Sub-plan 3, Task 2.2; ARCH-07) ─────────────────────

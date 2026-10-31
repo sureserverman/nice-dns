@@ -17,6 +17,23 @@
 
 Your ISP sees encrypted Tor traffic — nothing else.
 
+## The `nice-dns` command
+
+Once installed, one command manages the stack on Linux and macOS, from any directory:
+
+```bash
+nice-dns install [haproxy|socat] [--hardened] [--branch B]   # from a checkout
+nice-dns reinstall [haproxy|socat] [--hardened|--standard] [--branch B] [--local]
+nice-dns restart
+nice-dns uninstall
+```
+
+- **`nice-dns install`** is for a checkout: `./nice-dns install`. A first install on a new machine uses the `curl` line below, which leaves `nice-dns` in `~/.local/bin`. If that directory is not on your `PATH`, the install's last line gives the full path and the line to add.
+- **`--branch`** always clones that branch, even from a checkout. `--hardened` needs a `pi-hole-hardened` checkout: next to your nice-dns checkout, or where the last hardened install found it, or in `~/.local/share/nice-dns/`.
+- **`nice-dns reinstall`** installs again with the recorded proxy, Pi-hole flavour and branch; options override them. It clones the branch first. If that fails because DNS is down, the running stack is untouched and `--local` uses the source kept at the last install.
+- **`nice-dns restart`** restarts the whole stack and waits for DNS to answer. It runs no DNS command itself; on macOS the stack's own start script re-pins DNS and bounces Mullvad, as it does whenever it rebuilds. Either way this costs a Tor bootstrap of a minute or more.
+- **`nice-dns uninstall`** removes the stack, gives host DNS back, then removes the command.
+
 ## Install
 
 Run as a **regular user** (no `sudo`). macOS needs macOS 26+ on Apple silicon and [Homebrew](https://brew.sh/).
@@ -127,6 +144,12 @@ refreshes the Tor bridges once a day, leaving out bridges that carry
 queries badly. See [health/README.md](health/README.md).
 
 ## Uninstall
+
+```bash
+nice-dns uninstall
+```
+
+Without the command, use the installer:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb.sh -o install-deb.sh && bash install-deb.sh uninstall

@@ -33,6 +33,7 @@ CHECK_RUNTIME_SHA256='62f80b955124c6f379dc0b71bae81d813d8ba0b64a4c45f5bc1b41a85a
 
 if [[ -f "$HERE/mac/check-runtime.sh" ]]; then
   # shellcheck source=mac/check-runtime.sh
+  # shellcheck disable=SC1091  # found at run time beside this script
   source "$HERE/mac/check-runtime.sh" || exit 1
 else
   _gate="$(mktemp)"
@@ -117,3 +118,4 @@ nd_install_macos_activate
 nd_install_finish
 
 echo "All done. DNS is set to 172.31.240.250 (pi-hole). Web UI: http://172.31.240.250"
+nd_install_command_notice

@@ -420,8 +420,10 @@ cmd_run() {
 # (lib/policy.sh) with one state, one lock, one cooldown and one restart cap
 # decides every action, whichever command a scheduler calls:
 #   * a full outage restarts Tor after the startup allowance plus a 5-minute
-#     grace, observed in the same pass, outside a 5-minute cooldown, at most
-#     twice per outage (then it escalates); a usable route prevents it;
+#     grace, observed in the same pass, outside a 5-minute cooldown, twice per
+#     outage; then the stack restarts every 30 minutes and the passes between
+#     escalate; a usable route prevents it;
+#   * a failing Unbound restarts on its own evidence (lib/policy.sh);
 #   * the restart is request_recovery (the proxy image's acknowledged
 #     restart) and, when that is not acknowledged, one service restart
 #     (nd_recovery_restart_tor);
@@ -435,7 +437,7 @@ cmd_run() {
 # The scheduled pass has no environment of its own, so the policy timers can
 # also come from $HEALTH_LIB_ROOT_INSTALLED/tunables.tsv (data, never
 # sourced): lines "ND_POLICY_STARTUP_S|ND_POLICY_GRACE_S|ND_POLICY_COOLDOWN_S|
-# ND_POLICY_LADDER_S <TAB> 1..86400", in a regular file that health_path_safe accepts (owned by
+# ND_POLICY_LADDER_S|ND_POLICY_RETRY_S <TAB> 1..86400", in a regular file that health_path_safe accepts (owned by
 # this user or root, not group- or world-writable). Anything else refuses the whole file (the defaults stay)
 # and says so on stderr. The environment wins over the file. The live gate
 # sets 30 s here in its extra configurations (Sub-plan 3 Task 2.3).
@@ -444,7 +446,7 @@ load_tunables() {
   [ -e "$f" ] || [ -L "$f" ] || return 0
   if ! health_path_safe "$f" f; then echo "$SCRIPT_NAME: tunables refused: $HEALTH_LIB_ERROR; ignored" >&2; return 0; fi
   bad="$(awk -F '\t' 'NF == 0 || /^#/ { next }
-    NF != 2 || $1 !~ /^ND_POLICY_(STARTUP|GRACE|COOLDOWN|LADDER)_S$/ || $2 !~ /^[1-9][0-9]{0,4}$/ || $2 > 86400 { print NR; exit }' "$f")"
+    NF != 2 || $1 !~ /^ND_POLICY_(STARTUP|GRACE|COOLDOWN|LADDER|RETRY)_S$/ || $2 !~ /^[1-9][0-9]{0,4}$/ || $2 > 86400 { print NR; exit }' "$f")"
   if [ -n "$bad" ]; then echo "$SCRIPT_NAME: tunables $f line $bad is not an allowed timer; ignored" >&2; return 0; fi
   while IFS="$(printf '\t')" read -r k v; do
     case "$k" in
@@ -452,9 +454,10 @@ load_tunables() {
       ND_POLICY_GRACE_S) [ -n "${ND_POLICY_GRACE_S:-}${NICE_DNS_RESTART_GRACE_SECS:-}" ] || ND_POLICY_GRACE_S="$v" ;;
       ND_POLICY_COOLDOWN_S) [ -n "${ND_POLICY_COOLDOWN_S:-}" ] || ND_POLICY_COOLDOWN_S="$v" ;;
       ND_POLICY_LADDER_S) [ -n "${ND_POLICY_LADDER_S:-}" ] || ND_POLICY_LADDER_S="$v" ;;
+      ND_POLICY_RETRY_S) [ -n "${ND_POLICY_RETRY_S:-}" ] || ND_POLICY_RETRY_S="$v" ;;
     esac
   done <"$f"
-  export ND_POLICY_STARTUP_S ND_POLICY_COOLDOWN_S ND_POLICY_LADDER_S 2>/dev/null
+  export ND_POLICY_STARTUP_S ND_POLICY_COOLDOWN_S ND_POLICY_LADDER_S ND_POLICY_RETRY_S 2>/dev/null
   return 0
 }
 load_tunables
@@ -896,9 +899,10 @@ cmd_status() {
   echo "=== Install ==="
   install_report || true
   echo
+  # The controller's own lines: a failing unit's start attempts must not hide them.
   echo "=== Last 5 health.log entries ==="
   if [ -f "$ROLL_LOG" ]; then
-    tail -5 "$ROLL_LOG"
+    grep -v ' ROUTE-START ' "$ROLL_LOG" | tail -5
   else
     echo "  (no runs yet)"
   fi
@@ -1049,7 +1053,11 @@ cmd_route_start() {
   fi
   mkdir -p "$LOG_DIR"
   out="$(start_route)"; rc=$?
-  log_to_file "$(ts) ROUTE-START $(printf '%s\n' "$out" | awk -F '\t' '$1 == "result" || $1 == "route" || $1 == "generation" { printf "%s%s=%s", s, $1, $2; s = " " }')"
+  # A busy lock means nothing was done, and a unit that cannot start comes back
+  # every few seconds: a line each would push the controller out of the log.
+  if ! printf '%s\n' "$out" | grep -q '^result	busy$'; then
+    log_to_file "$(ts) ROUTE-START $(printf '%s\n' "$out" | awk -F '\t' '$1 == "result" || $1 == "route" || $1 == "generation" { printf "%s%s=%s", s, $1, $2; s = " " }')"
+  fi
   printf '%s\n' "$out"
   return "$rc"
 }
@@ -1073,6 +1081,34 @@ e="$(get entrypoint)" i="$(get interpreter)"
 exit 0
 LAUNCHER
   chmod 0755 "$f.new" && mv -f "$f.new" "$f"
+}
+
+# dump_first_escalation <observations> <tick output>: the first escalation of an
+# outage writes one failure dump, so a long outage leaves evidence while it lasts
+# (none existed for the 2026-10-30 windows on mint).
+dump_first_escalation() {
+  local t name verdict
+  [ "$(printf '%s\n' "$2" | awk -F '\t' '$1 == "action" { print $2; exit }')" = escalate ] || return 0
+  nd_recovery_first_escalation || return 0
+  HEALTH_OBS="$(cat "$1")"
+  CHECK_DETAIL=""
+  FAILED_CHECKS=()
+  INDETERMINATE_CHECKS=()
+  while IFS=$'\t' read -r _ name verdict _; do
+    case "$verdict" in
+      unhealthy) FAILED_CHECKS+=("$name") ;;
+      indeterminate) INDETERMINATE_CHECKS+=("$name") ;;
+    esac
+  done <"$1"
+  # Bounded: the dump runs the runtime's own commands, which are what hang on a
+  # wedged host, and a hung dump would hold the controller for the whole outage.
+  t="$(mktemp "${TMPDIR:-/tmp}/nice-dns-dump.XXXXXX")" || return 0
+  if nd_bounded "${ND_FAILURE_DUMP_S:-60}" "$t" "$t.err" write_failure_dump "$(ts)"; then
+    log_to_file "$(ts) ESCALATED first of this outage -> $(cat "$t")"
+  else
+    log_to_file "$(ts) ESCALATED first of this outage; the failure dump did not finish within ${ND_FAILURE_DUMP_S:-60} s"
+  fi
+  rm -f "$t" "$t.err"
 }
 
 # tick [--shadow]: one controller pass (lib/recovery.sh nd_recovery_tick):
@@ -1102,6 +1138,7 @@ cmd_tick() {
   fi
   report_security_drift "$o"
   out="$(nd_recovery_tick "$mode" "$o")"; rc=$?
+  [ "$mode" != active ] || dump_first_escalation "$o" "$out"
   rm -f "$o"
   log_to_file "$(ts) TICK $mode $(printf '%s\n' "$out" | awk -F '\t' '{ printf "%s%s=%s", s, $1, $2; s = " " }')"
   printf '%s\n' "$out"
@@ -1109,8 +1146,10 @@ cmd_tick() {
 }
 
 # bridges-refresh: evaluate the bridge pool with the proxy image's
-# bridge-eval and adopt a changed set at the proxy's next start
-# (lib/recovery.sh nd_bridges_refresh; the daily schedule calls it).
+# bridge-eval and adopt a changed set: at once, through a proxy restart, when the
+# running proxy uses a bridge the set leaves out; otherwise when the proxy
+# restarts for another reason (lib/recovery.sh nd_bridges_refresh; the daily
+# schedule calls it).
 cmd_bridges_refresh() {
   local out rc v t c
   if ! load_health_libs; then echo "$SCRIPT_NAME: not loading the health libraries: $HEALTH_LIB_ERROR" >&2; return 2; fi
@@ -1142,7 +1181,9 @@ Usage: $SCRIPT_NAME <command>
   self-check  Check that this copy's libraries load (no stack contact).
   bridges-refresh
               Evaluate the bridge pool (the proxy image's bridge-eval) and
-              adopt a changed set at the proxy's next start (daily schedule).
+              adopt a changed set (daily schedule): at once, through a proxy
+              restart, when the running proxy uses a bridge the set leaves out;
+              otherwise when the proxy restarts for another reason.
   uninstall   Remove the schedule, bundle, entrypoint, logs and controller state
               that install recorded, and nothing else.
   start       (Re)start the timer / LaunchAgent.

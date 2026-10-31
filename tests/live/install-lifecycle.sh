@@ -287,7 +287,7 @@ il_check_deployed() {
 }
 
 il_agents() { il_sec "$1" schedules | awk -F '\t' '$1 == "agent" { print $2 }' | LC_ALL=C sort; }
-IL_OWNED_AGENTS='org.nice-dns.start-container org.nice-dns.health org.nice-dns.health-bridges org.nice-dns.bridge-eval'
+IL_OWNED_AGENTS='org.nice-dns.start-container org.nice-dns.health org.nice-dns.health-bridges org.nice-dns.bridge-eval org.nice-dns.debug-monitor'
 il_unowned_agents() { il_agents "$1" | while IFS= read -r x; do case " $IL_OWNED_AGENTS " in *" $x "*) ;; *) printf '%s\n' "$x" ;; esac; done; }
 
 # ─────────────────────────── steps ───────────────────────────────────────────
@@ -394,7 +394,7 @@ il_assert_uninstalled() {
     # Legacy record: every pinned service back to Empty (DHCP).
     assert_eq "" "$(il_sec "$r" dns | awk -F '\t' 'NF >= 2 && $2 ~ /172\.31\.240\.250/')" "no network service points at the stack any more"
     assert_eq "" "$(il_sec "$r" dns | awk -F '\t' 'NF >= 2 && $2 !~ /^There aren.t any DNS Servers set on /')" "every service is back to no servers set (DHCP), the state recorded before nice-dns"
-    assert_eq "" "$(il_agents "$r" | grep -E '^org\.nice-dns\.(start-container|health|health-bridges|bridge-eval)$')" "the owned agents are gone"
+    assert_eq "" "$(il_agents "$r" | grep -E '^org\.nice-dns\.(start-container|health|health-bridges|bridge-eval|debug-monitor)$')" "the owned agents are gone"
     assert_eq "" "$(comm -23 <(il_unowned_agents "$b") <(il_agents "$r"))" "an agent nice-dns does not own is left alone"
   fi
 }

@@ -15,7 +15,8 @@
 #   schema  nice-dns-decision/1
 #   action  no-op | switch-route | refresh-bridges | restart-component |
 #           repair-runtime | escalate
-#   target  a route id (switch-route), tor or proxy (restart-component), the runtime
+#   target  a route id (switch-route), tor, proxy, unbound or stack
+#           (restart-component), the runtime
 #           fault (repair-runtime), or -
 #   reason  one line
 # followed by the proposed next state (nice-dns-controller-state/1, without a
@@ -51,6 +52,22 @@
 #     default both; the tick sets it from nd_platform_runtime_repairs);
 #     otherwise it escalates. An indeterminate runtime is no evidence of a
 #     fault.
+#     After ND_POLICY_RUNTIME_REPAIR_MAX (3) repairs of containers-missing with
+#     no healthy reading, whatever the routes say, the stack restarts: at once,
+#     then every ND_POLICY_RETRY_S, escalating on the passes between. runtime-down
+#     keeps its repair, because a stack restart needs the runtime.
+#   * Unbound's own health, after runtime faults and before route selection. An
+#     unbound observation with a control: reason counts always; a route: reason
+#     counts only with an identity route healthy in the same pass, since otherwise
+#     the probe is telling the truth about the upstream. Indeterminate or absent
+#     changes nothing and acts on nothing. Healthy clears unbound_fail, and clears
+#     unbound_restarts once ND_POLICY_RETRY_S has passed since the last restart. At
+#     ND_POLICY_UNBOUND_FAILS (3) in a row, outside the startup allowance and the
+#     cooldown, Unbound restarts (target unbound). After
+#     ND_POLICY_UNBOUND_MAX_RESTARTS (2) it retries every ND_POLICY_RETRY_S (1800).
+#     Past the ladder's cap in a full outage the stack restart covers it instead.
+#     The controller owns this restart: no quadlet restarts on health, since a
+#     health-triggered restart looped and wiped Tor's bootstrap.
 #   * Route selection, when an identity route is healthy: the current route
 #     stays while its fail streak is under ND_POLICY_DEMOTE (2) and its
 #     unknown streak under ND_POLICY_STALE (5): a route without evidence is
@@ -68,7 +85,10 @@
 #     from the later of its start and the end of the startup allowance
 #     (ND_POLICY_STARTUP_S, 120), outside the cooldown (ND_POLICY_COOLDOWN_S,
 #     300 after the last restart or repair), at most ND_POLICY_MAX_RESTARTS (2)
-#     times per outage; then it escalates. The first restart of an outage is
+#     times per outage. Past that the whole stack restarts (target stack) every
+#     ND_POLICY_RETRY_S, and the passes between escalate: DEC-021 replaced the
+#     end of DEC-007's ladder, where it only escalated and a host stayed without
+#     DNS until a reboot. The first restart of an outage is
 #     Tor's (target tor: the image's in-image restart, falling back to the
 #     service); a later one is the proxy's (target proxy: the service restart
 #     directly), since the outage outlived a Tor restart. That later step also
@@ -86,11 +106,14 @@ nd_policy_decide() {
   local startup="${ND_POLICY_STARTUP_S:-120}" grace="${ND_POLICY_GRACE_S:-300}" cool="${ND_POLICY_COOLDOWN_S:-300}"
   local promote="${ND_POLICY_PROMOTE:-5}" demote="${ND_POLICY_DEMOTE:-2}" maxr="${ND_POLICY_MAX_RESTARTS:-2}"
   local stale="${ND_POLICY_STALE:-5}" ladder="${ND_POLICY_LADDER_S:-660}"
+  local ubfails="${ND_POLICY_UNBOUND_FAILS:-3}" ubmax="${ND_POLICY_UNBOUND_MAX_RESTARTS:-2}" retry="${ND_POLICY_RETRY_S:-1800}"
+  local rtmax="${ND_POLICY_RUNTIME_REPAIR_MAX:-3}" s_rtrep=0
   local repairs=" ${ND_POLICY_RUNTIME_REPAIRS:-runtime-down containers-missing} "
   local routes="${ND_ROUTES_FILE:-$ND_POLICY_LIB_DIR/../routes/providers.tsv}"
   local tab=$'\t' cr=$'\r' a b c d e rest i j n=0 v
   local -a rid=() rok=() rfail=() runk=() robs=()
   local s_boot=- s_updated=- s_started=- s_route=- s_out=- s_rest=0 s_la=- s_laat=- s_rec=- s_pgen=- p_gen="" fresh=0
+  local s_ubfail=0 s_ubrest=0 ub=- ub_reason="" ub_due=0
   local rt=- rt_reason="" compat_ok=0 valid=1 why="" notes=""
   local action=no-op target=- reason=""
 
@@ -125,6 +148,7 @@ nd_policy_decide() {
       boot_id) s_boot="$b" ;; updated) s_updated="$b" ;; started) s_started="$b" ;;
       route) s_route="$b" ;; outage_since) s_out="$b" ;; outage_restarts) s_rest="$b" ;;
       proxy_gen) s_pgen="$b" ;;
+      unbound_fail) s_ubfail="$b" ;; unbound_restarts) s_ubrest="$b" ;; runtime_repairs) s_rtrep="$b" ;;
       last_action) s_la="$b" ;; last_action_at) s_laat="$b" ;; recovery_at) s_rec="$b" ;;
       streak)
         i=0
@@ -135,6 +159,8 @@ nd_policy_decide() {
     esac
   done <"$stf"
   _nd_p_num "$s_rest" || s_rest=0
+  _nd_p_num "$s_ubfail" || s_ubfail=0
+  _nd_p_num "$s_ubrest" || s_ubrest=0
 
   # Observations.
   local first=1
@@ -158,6 +184,7 @@ nd_policy_decide() {
     case "$b" in
       runtime) rt="$c"; rt_reason="$e" ;;
       proxy) case "$c:$e" in healthy:generation:*) p_gen="${e#generation:}" ;; esac ;;
+      unbound) ub="$c"; ub_reason="$e" ;;
       route:*)
         i=0
         while [ "$i" -lt "$n" ]; do
@@ -172,7 +199,7 @@ nd_policy_decide() {
   # Boot and clock.
   if [ "$s_boot" != "$boot" ]; then
     [ "$s_boot" = - ] || notes="boot changed; timers restart; "
-    s_boot="$boot" s_started="$now" s_out=- s_rest=0 s_rec=- s_laat=-
+    s_boot="$boot" s_started="$now" s_out=- s_rest=0 s_rec=- s_laat=- s_ubfail=0 s_ubrest=0
     [ "$s_la" = - ] || s_la=-
     i=0; while [ "$i" -lt "$n" ]; do rok[i]=0; rfail[i]=0; runk[i]=0; i=$((i + 1)); done
     fresh=1
@@ -224,7 +251,36 @@ nd_policy_decide() {
       s_out="$now"
     fi
 
+    # Unbound's own health. A control failure is always its own; a route failure
+    # is its own only while an identity route answers (Unbound never selects
+    # compat), since otherwise the probe is telling the truth about the upstream.
+    # Indeterminate or absent changes nothing and acts on nothing. A healthy
+    # reading ends the streak; the restart count ends only a retry interval after
+    # the last restart, or a flapping probe would defeat the cap.
+    local ub_seen=0
+    case "$ub:$ub_reason" in
+      healthy:*)
+        s_ubfail=0
+        if ! _nd_p_num "$s_rec" || [ $((now - s_rec)) -ge "$retry" ]; then s_ubrest=0; fi ;;
+      unhealthy:control:*) s_ubfail=$((s_ubfail + 1)) ub_seen=1 ;;
+      unhealthy:route:*) if [ "$healthy_now" = 1 ]; then s_ubfail=$((s_ubfail + 1)) ub_seen=1; fi ;;
+    esac
+    if [ "$ub_seen" = 1 ] && [ "$s_ubfail" -ge "$ubfails" ]; then
+      if [ "$in_startup" = 1 ] || [ "$in_cool" = 1 ]; then
+        notes="${notes}Unbound failed $s_ubfail checks in a row, inside the startup allowance or cooldown; "
+      elif [ "$healthy_now" != 1 ] && [ "$unhealthy_now" = 1 ] && [ "$s_rest" -ge "$maxr" ]; then
+        # Past the ladder's cap the stack restart below covers Unbound as well.
+        # Both would be due at the same moment, and Unbound's would reset the timer.
+        notes="${notes}Unbound failed $s_ubfail checks in a row; the stack restart covers it; "
+      elif [ "$s_ubrest" -lt "$ubmax" ] || ! _nd_p_num "$s_rec" || [ $((now - s_rec)) -ge "$retry" ]; then
+        ub_due=1
+      else
+        notes="${notes}Unbound failed $s_ubfail checks in a row after $s_ubrest restarts; next restart ${retry} s after the last ($((now - s_rec)) s so far); "
+      fi
+    fi
+
     local rt_fault=""
+    [ "$rt" != healthy ] || s_rtrep=0
     if [ "$rt" = unhealthy ]; then
       case "$rt_reason" in
         cli-missing:*) rt_fault=cli-missing ;;
@@ -240,8 +296,23 @@ nd_policy_decide() {
     elif [ -n "$rt_fault" ]; then
       if [ "$in_startup" = 1 ]; then reason="runtime fault ($rt_fault) inside the startup allowance"
       elif [ "$in_cool" = 1 ]; then reason="runtime fault ($rt_fault) inside the recovery cooldown"
-      else action=repair-runtime target="$rt_fault" reason="runtime fault: $rt_reason"
+      elif [ "$rt_fault" = containers-missing ] && [ "$s_rtrep" -ge "$rtmax" ]; then
+        # Repairing by name for ever kept the stack restart below from ever being
+        # due: each repair resets recovery_at. The first restart comes at once,
+        # then one every $retry s, and the passes between journal the escalation.
+        if [ "$s_rtrep" -eq "$rtmax" ] || ! _nd_p_num "$s_rec" || [ $((now - s_rec)) -ge "$retry" ]; then
+          action=restart-component target=stack reason="containers stay missing after $rtmax repairs; restarting the stack: $rt_reason"
+          s_rtrep=$((s_rtrep + 1)) s_rec="$now"
+        else
+          action=escalate reason="containers stay missing after $rtmax repairs and a stack restart; next stack restart $retry s after the last ($((now - s_rec)) s so far): $rt_reason"
+        fi
+      else
+        action=repair-runtime target="$rt_fault" reason="runtime fault: $rt_reason"
+        [ "$rt_fault" != containers-missing ] || s_rtrep=$((s_rtrep + 1))
       fi
+    elif [ "$ub_due" = 1 ]; then
+      action=restart-component target=unbound reason="Unbound failed $s_ubfail checks in a row: $ub_reason"
+      s_ubfail=0 s_ubrest=$((s_ubrest + 1)) s_rec="$now"
     elif [ "$healthy_now" = 1 ]; then
       # Current route: an identity route whose fail streak is under demote.
       local cur=-1 best=-1 cand=-1
@@ -286,7 +357,16 @@ nd_policy_decide() {
       if [ "$in_startup" = 1 ]; then reason="full outage inside the startup allowance"
       elif [ $((now - from)) -lt "$grace" ]; then reason="full outage for $((now - s_out)) s; grace $grace s"
       elif [ "$in_cool" = 1 ]; then reason="full outage; inside the recovery cooldown"
-      elif [ "$s_rest" -ge "$maxr" ]; then action=escalate reason="full outage persists after $s_rest restarts (tor, then proxy)"
+      elif [ "$s_rest" -ge "$maxr" ]; then
+        # Past the cap the ladder is spent, but stopping here left hosts without
+        # DNS until a reboot (mint, 2026-10-30): the stack restarts every $retry s
+        # and the passes between journal the escalation.
+        if ! _nd_p_num "$s_rec" || [ $((now - s_rec)) -ge "$retry" ]; then
+          action=restart-component target=stack reason="full outage since $s_out persists after $s_rest restarts; restarting the stack"
+          s_rest=$((s_rest + 1)) s_rec="$now"
+        else
+          action=escalate reason="full outage persists after $s_rest restarts (tor, then proxy); next stack restart $retry s after the last ($((now - s_rec)) s so far)"
+        fi
       elif [ "$s_rest" -ge 1 ] && _nd_p_num "$s_rec" && [ $((now - s_rec)) -lt "$ladder" ]; then
         reason="full outage; waiting out the last restart's readiness window ($((now - s_rec)) of $ladder s)"
       elif [ "$s_rest" -ge 1 ]; then
@@ -310,6 +390,10 @@ nd_policy_decide() {
   printf 'schema\tnice-dns-decision/1\naction\t%s\ntarget\t%s\nreason\t%s\n' "$action" "$target" "$reason"
   printf 'schema\tnice-dns-controller-state/1\nboot_id\t%s\nupdated\t%s\nstarted\t%s\nroute\t%s\n' "$s_boot" "$s_updated" "$s_started" "$s_route"
   printf 'outage_since\t%s\noutage_restarts\t%s\nlast_action\t%s\nlast_action_at\t%s\nrecovery_at\t%s\nproxy_gen\t%s\n' "$s_out" "$s_rest" "$s_la" "$s_laat" "$s_rec" "$s_pgen"
+  # Only when non-zero: a bundle from before these rows refuses them (BL-036).
+  [ "$s_ubfail" = 0 ] || printf 'unbound_fail\t%s\n' "$s_ubfail"
+  [ "$s_ubrest" = 0 ] || printf 'unbound_restarts\t%s\n' "$s_ubrest"
+  [ "$s_rtrep" = 0 ] || printf 'runtime_repairs\t%s\n' "$s_rtrep"
   i=0
   while [ "$i" -lt "$n" ]; do
     printf 'streak\t%s\t%s\t%s\t%s\n' "${rid[i]}" "${rok[i]}" "${rfail[i]}" "${runk[i]}"

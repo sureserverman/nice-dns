@@ -1,0 +1,28 @@
+{
+ "baseline": {
+  "elapsed_s": 22.1,
+  "exit": 0,
+  "tail": "run_id=20261030T234158Z-5d436a8e artifacts=/home/user/.local/state/nice-dns-tests/runs/20261030T234158Z-5d436a8e\nPASS  t_an_installer_failure_is_the_commands_failure\nPASS  t_command_keeps_to_bash_32_syntax\nPASS  t_each_command_reaches_the_right_script\nPASS  t_failed_clone_names_local_and_changes_nothing\nPASS  t_installed_command_uses_the_kept_source\nPASS  t_installed_reinstall_clones_the_recorded_branch\nPASS  t_reinstall_and_restart_with_nothing_installed\nPASS  t_reinstall_flags_override_the_record\nPASS  t_reinstall_local_uses_the_snapshot_with_no_clone\nPASS  t_reinstall_refuses_an_unreadable_record\nPASS  t_reinstall_uses_the_recorded_choices\nPASS  t_restart_failure_is_reported_and_releases\nPASS  t_restart_releases_on_a_signal\nPASS  t_restart_runs_once_between_hold_and_release\nPASS  t_restart_waits_for_a_running_pass_and_gives_up_cleanly\nPASS  t_restart_without_an_answer_says_so_and_releases\nPASS  t_root_is_refused_with_the_installers_message\nPASS  t_unknown_commands_and_options_are_usage_errors\nPASS  t_unsupported_platform_is_refused\ngroup integration/nice-dns-cli: collected=19 passed=19 failed=0\ncollected=19 passed=19 failed=0\nresult=pass run_id=20261030T234158Z-5d436a8e artifacts=/home/user/.local/state/nice-dns-tests/runs/20261030T234158Z-5d436a8e"
+ },
+ "break_patch": "--- a/nice-dns\n+++ b/nice-dns\n@@ -156,7 +156,7 @@\n     return 1\n   fi\n   variant=\"${ND_CLI_VARIANT:-$(recorded_field \"$m\" variant)}\"\n-  flavour=\"${ND_CLI_PIHOLE:-$(recorded_field \"$m\" pihole)}\"\n+  flavour=\"${ND_CLI_PIHOLE:-standard}\"\n   branch=\"${ND_CLI_BRANCH:-$(recorded_field \"$m\" branch)}\"\n   case \"$variant\" in haproxy|socat) ;; *) err \"the record $m names no proxy variant; give haproxy or socat\"; return 1 ;; esac\n   case \"$flavour\" in standard|hardened) ;; *) err \"the record $m names no Pi-hole flavour; give --hardened or --standard\"; return 1 ;; esac\n",
+ "build": null,
+ "created": "2026-10-30T23:42:42+00:00",
+ "fingerprint": "00cb7b54b2ce539f434399049ff364870ce11aeb2b6b3a85355122bdcac63d8c",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "shell: nothing is built",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-10-30-nice-dns-command-and-unbound-recovery-plan.md",
+ "red": {
+  "elapsed_s": 22.1,
+  "exit": 1,
+  "tail": "run_id=20261030T234220Z-0ebf1d3d artifacts=/home/user/.local/state/nice-dns-tests/runs/20261030T234220Z-0ebf1d3d\nPASS  t_an_installer_failure_is_the_commands_failure\nPASS  t_command_keeps_to_bash_32_syntax\nPASS  t_each_command_reaches_the_right_script\nPASS  t_failed_clone_names_local_and_changes_nothing\nPASS  t_installed_command_uses_the_kept_source\nPASS  t_installed_reinstall_clones_the_recorded_branch\nPASS  t_reinstall_and_restart_with_nothing_installed\nFAIL  t_reinstall_flags_override_the_record (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261030T234220Z-0ebf1d3d/cases/integration-nice-dns-cli/t_reinstall_flags_override_the_record/case.log)\n      ASSERT FAIL: one flag leaves the rest recorded: expected [installer[checkout] install-deb-hardened.sh socat next] got [installer[checkout] install-deb.sh socat next]\nPASS  t_reinstall_local_uses_the_snapshot_with_no_clone\nPASS  t_reinstall_refuses_an_unreadable_record\nFAIL  t_reinstall_uses_the_recorded_choices (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261030T234220Z-0ebf1d3d/cases/integration-nice-dns-cli/t_reinstall_uses_the_recorded_choices/case.log)\n      ASSERT FAIL: Linux: the record reaches the hardened script: expected [installer[checkout] install-deb-hardened.sh socat dev] got [installer[checkout] install-deb.sh socat dev]\nPASS  t_restart_failure_is_reported_and_releases\nPASS  t_restart_releases_on_a_signal\nPASS  t_restart_runs_once_between_hold_and_release\nPASS  t_restart_waits_for_a_running_pass_and_gives_up_cleanly\nPASS  t_restart_without_an_answer_says_so_and_releases\nPASS  t_root_is_refused_with_the_installers_message\nPASS  t_unknown_commands_and_options_are_usage_errors\nPASS  t_unsupported_platform_is_refused\ngroup integration/nice-dns-cli: collected=19 passed=17 failed=2\ncollected=19 passed=17 failed=2\nresult=fail run_id=20261030T234220Z-0ebf1d3d artifacts=/home/user/.local/state/nice-dns-tests/runs/20261030T234220Z-0ebf1d3d"
+ },
+ "schema": 2,
+ "task": "2.3",
+ "test": "bash tests/run.sh integration nice-dns-cli",
+ "text": "`bash tests/run.sh integration nice-dns-cli` with new cases: a recorded socat + hardened + dev reaches the hardened script as `socat dev`; a flag overrides it; a failed clone exits non-zero, names `--local` and runs no installer; no generation gives the not-installed message",
+ "touched": [
+  "nice-dns"
+ ]
+}

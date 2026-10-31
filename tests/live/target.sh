@@ -55,7 +55,8 @@
 #                    :53 listeners, and the Pi-hole admin API asked
 #                    anonymously, with a wrong password and with the
 #                    deployment's (read on the target from its file, never
-#                    printed; the session is closed again).
+#                    printed; the session is closed again), and a salted id
+#                    of that password to compare across a reinstall.
 #   watch-dns        read-only: one row per 2 s of the host's resolver
 #                    settings for NICE_DNS_WATCH_SECS (10..3600, default 1800)
 #                    or until the caller hangs up; streamed.
@@ -180,6 +181,24 @@
 #                    images and the builder cache, so
 #                    an install and a proxy build have room (BL-024); keeps
 #                    vminit and everything a container uses. Linux: no-op
+#   freeze-unbound   SIGSTOP the unbound process in its container, which keeps
+#                    running with routes healthy; a detached timer thaws it
+#                    after NICE_DNS_FREEZE_MAX_SECS whatever happens here
+#   thaw-unbound     SIGCONT that process and cancel the timer
+#   stop-proxy       stop --component's own unit (macOS: its container) while
+#                    Pi-hole keeps running, as on 2026-10-29
+#   fresh-name       read-only: one fresh name through the client resolver;
+#                    after the identity, prints fresh_name, the name and the status
+#   command          run the nice-dns command: --mode restart|reinstall|uninstall
+#                    by its installed full path (reinstall --local: the branch
+#                    may not be published), --mode install --cell PROXY/standard
+#                    --source-sha SHA from this checkout's `git archive`, sent
+#                    inline. macOS runs it in the user's GUI context (BL-052:
+#                    an install from plain ssh leaves the runtime where the
+#                    start agent cannot see it)
+#   command-report   read-only: each container's start, the command and its
+#                    kept source, the image names, quadlets, agents, units and
+#                    root scripts, and whether each list could be read
 #   controller-report
 #                    read-only: the controller's install receipt, tick lines,
 #                    state and journals (active and shadow), the bridge set's
@@ -218,7 +237,7 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network freeze-unbound thaw-unbound stop-proxy fresh-name command command-report'
 FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
@@ -268,10 +287,10 @@ fi
 if [ -n "$has_sleep" ]; then
   [[ "$c_sleep" =~ ^[1-9][0-9]{1,2}$ ]] && [ "$c_sleep" -ge 30 ] && [ "$c_sleep" -le 600 ] || die "--after-sleep must be 30..600 (seconds)"
 fi
-case "$op" in install-cell|uninstall-cell) ;; *) [ -z "$i_cell$i_hsha" ] || die "--cell/--hardened-sha are only valid for install-cell and uninstall-cell" ;; esac
-case "$op" in install-cell|uninstall-cell|build-proxy|install-controller|install-agent|arm-prepare) ;; *) [ -z "$i_sha" ] || die "--source-sha is only valid for install-cell, uninstall-cell, build-proxy, install-controller, install-agent and arm-prepare" ;; esac
+case "$op" in install-cell|uninstall-cell) ;; command) [ -z "$i_hsha" ] || die "--hardened-sha is not valid for command" ;; *) [ -z "$i_cell$i_hsha" ] || die "--cell/--hardened-sha are only valid for install-cell, uninstall-cell and command" ;; esac
+case "$op" in install-cell|uninstall-cell|build-proxy|install-controller|install-agent|arm-prepare|command) ;; *) [ -z "$i_sha" ] || die "--source-sha is only valid for install-cell, uninstall-cell, build-proxy, install-controller, install-agent, arm-prepare and command" ;; esac
 case "$op" in fault-route|heal-route|route-apply) ;; *) [ -z "$i_route" ] || die "--route is only valid for fault-route, heal-route and route-apply" ;; esac
-case "$op" in install-controller|set-tunables|arm-set) ;; *) [ -z "$i_mode" ] || die "--mode is only valid for install-controller, set-tunables and arm-set" ;; esac
+case "$op" in install-controller|set-tunables|arm-set|command) ;; *) [ -z "$i_mode" ] || die "--mode is only valid for install-controller, set-tunables, arm-set and command" ;; esac
 case "$op" in arm-prepare) [[ "$i_ptag" =~ ^v[0-9]+(\.[0-9]+)*$ ]] || die "arm-prepare needs --proxy-tag vN[.N]" ;; *) [ -z "$i_ptag" ] || die "--proxy-tag is only valid for arm-prepare" ;; esac
 if [ "$op" = arm-set ]; then case "$i_mode" in baseline|candidate) ;; *) die "arm-set needs --mode baseline|candidate" ;; esac; fi
 if [ "$op" = arm-prepare ]; then
@@ -279,6 +298,16 @@ if [ "$op" = arm-prepare ]; then
   [ "$(git -C "$ND_CHECKOUT" cat-file -t "$i_sha" 2>/dev/null)" = commit ] || die "--source-sha $i_sha is not a commit in $ND_CHECKOUT"
 fi
 if [ "$op" = set-tunables ]; then case "$i_mode" in fast|default) ;; *) die "set-tunables needs --mode fast|default" ;; esac; fi
+if [ "$op" = command ]; then
+  case "$i_mode" in
+    install)
+      case "$i_cell" in haproxy/standard|socat/standard) ;; *) die "command --mode install needs --cell haproxy|socat/standard" ;; esac
+      [[ "$i_sha" =~ ^[0-9a-f]{40}$ ]] || die "command --mode install needs --source-sha <40-hex commit>"
+      [ "$(git -C "$ND_CHECKOUT" cat-file -t "$i_sha" 2>/dev/null)" = commit ] || die "--source-sha $i_sha is not a commit in $ND_CHECKOUT" ;;
+    restart|reinstall|uninstall) [ -z "$i_cell$i_sha" ] || die "--cell/--source-sha are only for command --mode install" ;;
+    *) die "command needs --mode install|restart|reinstall|uninstall" ;;
+  esac
+fi
 
 # ─── targets file (data only) ────────────────────────────────────────────────
 
@@ -327,12 +356,12 @@ load_targets "$targets"
 [ "$op" = validate ] && exit 0
 
 case "$op" in
-  sever-upstream|heal-upstream|freeze-upstream|thaw-upstream|build-proxy|recreate-proxy|fault-route|heal-route|thaw-on-request|arm-prepare|arm-set)
+  sever-upstream|heal-upstream|freeze-upstream|thaw-upstream|build-proxy|recreate-proxy|fault-route|heal-route|thaw-on-request|arm-prepare|arm-set|stop-proxy)
     case " $UPSTREAM_COMPONENTS " in
       *" $component "*) [ -n "$component" ] || die "--component is required" ;;
       *) die "component '$component' is not an upstream component (allowed: $UPSTREAM_COMPONENTS)" ;;
     esac ;;
-  *) [ -z "$component" ] || die "--component is only valid for sever/heal/freeze/thaw-upstream, build/recreate-proxy, fault/heal-route, thaw-on-request and arm-prepare/arm-set" ;;
+  *) [ -z "$component" ] || die "--component is only valid for sever/heal/freeze/thaw-upstream, build/recreate-proxy, fault/heal-route, thaw-on-request, arm-prepare/arm-set and stop-proxy" ;;
 esac
 case "$op" in
   fault-route|heal-route|route-apply)
@@ -482,6 +511,7 @@ remote_run() {
 build_payload() {
   if [ "$op" = collect ]; then remote_bundle || return 1; fi
   case "$op" in install-cell|uninstall-cell|install-controller|install-agent|arm-prepare) source_bundle || return 1 ;; esac
+  if [ "$op" = command ] && [ -n "$i_sha" ]; then source_bundle || return 1; fi
   if [ "$op" = build-proxy ]; then proxy_bundle || return 1; fi
   case "$op" in install-cell|uninstall-cell) [ -z "$i_hsha" ] || hardened_bundle || return 1 ;; esac
   remote_script
@@ -1130,7 +1160,7 @@ case "$NICE_DNS_OP" in
       printf 'section\tgeneration\n'
       g=$(cat "$sd/current" 2>/dev/null)
       printf 'current\t%s\n' "${g:-none}"
-      [ -n "$g" ] && awk -F '\t' '$1 ~ /^(generation|entrypoint|pihole|variant|source_commit|previous|rollback|replaces|image|credential|status)$/' "$sd/generations/$g/prepare.tsv" 2>/dev/null
+      [ -n "$g" ] && awk -F '\t' '$1 ~ /^(generation|entrypoint|pihole|variant|source_commit|previous|rollback|replaces|image|pulled|credential|status)$/' "$sd/generations/$g/prepare.tsv" 2>/dev/null
       printf 'section\trunning\n'
       for c in pi-hole unbound tor-haproxy tor-socat; do
         running "$c" && printf 'running\t%s\t%s\n' "$c" "$(image_of "$c")"
@@ -1155,6 +1185,8 @@ case "$NICE_DNS_OP" in
       fi
       printf 'section\tadmin\n'
       printf 'admin_secret_mode\t%s\n' "$(ls -ln "$pwf" 2>/dev/null | cut -c1-10)"
+      # An id to compare across a reinstall: salted, cut short, never the password.
+      if [ -s "$pwf" ]; then printf 'admin_secret_id\t%s\n' "$({ printf '%s' "$mid"; cat "$pwf"; } | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-16)"; fi
       printf 'anonymous\t%s\n' "$(curl -s -m 5 -o /dev/null -w '%{http_code}' "$base/api/stats/summary")"
       printf 'wrong\t%s\n' "$(curl -s -m 10 --data '{"password":"nd-live-wrong"}' "$base/api/auth" | grep -o '"valid":[a-z]*')"
       if [ -s "$pwf" ]; then
@@ -1690,6 +1722,111 @@ case "$NICE_DNS_OP" in
       printf 'section\tobserve\n'
       if t=$(health_tool); then "$t" observe </dev/null 2>&1; fi
     } | redact ;;
+  freeze-unbound)
+    [ "$plat" = macos ] && homebrew_path
+    running unbound || { echo "unbound is not running" >&2; exit 1; }
+    [ "$(ctl_exec unbound pgrep -x unbound | grep -c .)" = 1 ] || { echo "expected exactly one unbound process" >&2; exit 1; }
+    nohup sh -c 'sleep "$1"; "$2" exec unbound pkill -CONT -x unbound' nice-dns-unbound-watchdog \
+      "$NICE_DNS_FREEZE_MAX" "$C" </dev/null >/dev/null 2>&1 &
+    ctl_exec unbound pkill -STOP -x unbound || exit 1
+    s=$(ctl_exec unbound sh -c 'awk "{ print \$3 }" /proc/$(pgrep -x unbound)/stat')
+    printf 'unbound_state\t%s\n' "$s"
+    [ "$s" = T ] ;;
+  thaw-unbound)
+    [ "$plat" = macos ] && homebrew_path
+    # No container means nothing is frozen. A failed thaw keeps the timer, the
+    # only other thing that would ever thaw it.
+    if running unbound && ! ctl_exec unbound pkill -CONT -x unbound; then
+      echo "could not thaw unbound; its timer stays armed" >&2
+      exit 1
+    fi
+    pkill -f nice-dns-unbound-watchdog 2>/dev/null
+    printf 'thawed\n' ;;
+  stop-proxy)
+    if [ "$plat" = macos ]; then homebrew_path; ctl stop "$NICE_DNS_COMPONENT"
+    else systemctl --user stop "$NICE_DNS_COMPONENT.service"; fi ;;
+  fresh-name)
+    identity
+    n="nd-cr-$(date +%s)-$$.example.com"
+    st=$(dig "@${RESOLVER%#*}" -p "${RESOLVER#*#}" +time=10 +tries=1 "$n" A 2>/dev/null | awk '/status:/ { sub(/,.*/, "", $6); print $6; exit }')
+    printf 'fresh_name\t%s\t%s\n' "$n" "${st:-timeout}" ;;
+  command)
+    [ "$plat" = macos ] && homebrew_path
+    cli="$HOME/.local/bin/nice-dns"
+    set -- "$NICE_DNS_MODE"
+    case "$NICE_DNS_MODE" in
+      install)
+        mac_room || exit 2
+        [ -s "${ND_SOURCE_TGZ:-}" ] || { echo "install without the nice-dns source archive" >&2; exit 2; }
+        w=$(mktemp -d "$HOME/.nice-dns-harness-install.XXXXXX") || exit 1
+        trap 'rm -rf "$w"' EXIT
+        mkdir "$w/nice-dns" && tar -xzf "$ND_SOURCE_TGZ" -C "$w/nice-dns" || exit 1
+        rm -f "$ND_SOURCE_TGZ"
+        cli="$w/nice-dns/nice-dns"
+        set -- install "$NICE_DNS_PROXY" ;;
+      reinstall) mac_room || exit 2; set -- reinstall --local ;;
+    esac
+    printf 'command\t%s\t%s\nstarted_utc\t%s\n' "$cli" "$*" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if [ "$plat" = macos ]; then
+      sudo -n launchctl asuser "$(id -u)" sudo -n -u "$(id -un)" env HOME="$HOME" PATH="$PATH" bash "$cli" "$@" </dev/null 2>&1
+    else
+      bash "$cli" "$@" </dev/null 2>&1
+    fi
+    rc=$?
+    printf 'finished_utc\t%s\ncommand_exit\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc"
+    exit $rc ;;
+  command-report)
+    [ "$plat" = macos ] && homebrew_path
+    {
+      identity
+      printf 'now\t%s\n' "$(date +%s)"
+      printf 'section\tstarts\n'
+      for c in pi-hole unbound tor-haproxy tor-socat; do
+        s=$(started "$c")
+        [ -n "$s" ] && running "$c" && printf 'start\t%s\t%s\n' "$c" "$s"
+      done
+      printf 'section\tcommand\n'
+      if [ -x "$HOME/.local/bin/nice-dns" ]; then printf 'command\tpresent\n'; else printf 'command\tabsent\n'; fi
+      if [ -e "$HOME/.local/share/nice-dns/source" ]; then printf 'source\tpresent\n'; else printf 'source\tabsent\n'; fi
+      # listing: each list's exit, so an empty section can be told from one
+      # that could not be read.
+      printf 'section\timages\n'
+      if [ "$plat" = macos ]; then
+        l=$(ctl image list 2>/dev/null); lrc=$?
+        printf '%s\n' "$l" | awk 'NR > 1 && NF { print "image\t" $1 ":" $2 }'
+      else
+        l=$(ctl images --format '{{.Repository}}:{{.Tag}} {{.Digest}}' 2>/dev/null); lrc=$?
+        printf '%s\n' "$l" | awk 'NF { print "image\t" $1 "\t" $2 }'
+      fi
+      irc=$lrc
+      printf 'section\tquadlets\n'
+      if [ "$plat" = linux ]; then
+        for f in "$HOME/.config/containers/systemd/"*; do
+          [ -e "$f" ] || continue
+          printf 'quadlet\t%s\n' "$(basename "$f")"
+        done
+      fi
+      printf 'section\tagents\n'
+      if [ "$plat" = macos ]; then
+        for f in "$HOME/Library/LaunchAgents/"org.nice-dns.*; do
+          [ -e "$f" ] && printf 'agent_file\t%s\n' "$(basename "$f")"
+        done
+        l=$(launchctl list 2>/dev/null); lrc=$?
+        printf '%s\n' "$l" | awk '$3 ~ /^org\.nice-dns\./ { print "agent_loaded\t" $3 }'
+      fi
+      printf 'section\tunits\n'
+      if [ "$plat" = linux ]; then
+        l=$(systemctl --user list-units --plain --no-legend --all 'pi-hole*' 'unbound*' 'tor-*' 'nice-dns*' 2>/dev/null); lrc=$?
+        printf '%s\n' "$l" | awk 'NF { print "unit\t" $1 "\t" $3 "\t" $4 }'
+      fi
+      printf 'section\tlisting\nlisting\timages\t%s\nlisting\tschedules\t%s\n' "$irc" "$lrc"
+      printf 'section\tsbin\n'
+      if [ "$plat" = macos ]; then
+        for f in /usr/local/sbin/start-container* /usr/local/sbin/nice-dns-*; do
+          [ -e "$f" ] && printf 'sbin\t%s\n' "$(basename "$f")"
+        done
+      fi
+    } | redact ;;
   sever-upstream) ctl stop "$NICE_DNS_COMPONENT" ;;
   heal-upstream) ctl start "$NICE_DNS_COMPONENT" ;;
   restore)
@@ -1750,7 +1887,7 @@ case "$op" in
     } >"$STATE/receipt.tsv"
     log_op 0
     printf 'snapshot %s -> %s\n' "$alias_" "$STATE/snapshot.tsv" ;;
-  config|health|controller-report|lifecycle-report|route-report)
+  config|health|controller-report|lifecycle-report|route-report|command-report|fresh-name)
     # Read-only; the output starts with the identity lines, which are checked.
     preconnect_guards
     probe_identity "$op"
@@ -1774,7 +1911,7 @@ case "$op" in
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network|freeze-unbound|thaw-unbound|stop-proxy|command)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"
@@ -1786,6 +1923,8 @@ case "$op" in
       remote_run "NICE_DNS_OP=$op $INSTALL_ENV"; rc=$?
     elif [ "$op" = mark-state ]; then
       remote_run "NICE_DNS_OP=mark-state NICE_DNS_RUN_ID=$RUN_ID"; rc=$?
+    elif [ "$op" = command ]; then
+      remote_run "NICE_DNS_OP=command NICE_DNS_MODE=$i_mode NICE_DNS_PROXY=${i_cell%/*}"; rc=$?
     elif [ "$op" = capture-dns ]; then
       remote_run "NICE_DNS_OP=capture-dns NICE_DNS_COUNT=$c_count"; rc=$?
     elif [ "$op" = restore ]; then

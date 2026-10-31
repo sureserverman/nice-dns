@@ -48,6 +48,14 @@
 #                  route's port and TLS name (NXDOMAIN is working transport)
 #   route-table    only when the route table cannot be read (then no
 #                  route:<id> records are printed)
+#   unbound        Unbound's own health, read inside its container: its control
+#                  socket answers and its selected route resolves in a fresh
+#                  session (probe-route). Unhealthy reasons start with control:
+#                  or route:. A control call past its deadline is Unbound's own
+#                  failure only while a plain exec in the container still
+#                  answers (a frozen daemon, seen live 2026-10-30); otherwise,
+#                  and for an image without the tool (exit 126/127), the record
+#                  is indeterminate. Optional to the validator, like proxy
 # A NXDOMAIN reply is an answer: the transport worked. SERVFAIL and other
 # error rcodes are unhealthy. Probe names are fixed (pi.hole,
 # doubleclick.net, cloudflare.com and the probe's "." SOA); no client query
@@ -58,7 +66,8 @@
 # ND_HEALTH_DNS_DEADLINE (TIME*TRIES+2), ND_HEALTH_PROBE_DEADLINE (15; the
 # probe bounds itself at 10), ND_HEALTH_LOCAL_NAME, ND_HEALTH_FILTER_NAME,
 # ND_HEALTH_CACHE_NAME, ND_TOR_VARIANT (haproxy|socat, when none runs),
-# ND_ROUTES_FILE, ND_PLATFORM (linux|macos, default from uname).
+# ND_ROUTES_FILE, ND_PLATFORM (linux|macos, default from uname),
+# ND_HEALTH_UNBOUND_PROBE_DEADLINE (20; probe-route bounds itself at 15).
 # A deadline kills the command's whole process group; `<runtime> exec` stops
 # the local client only, and the in-container probe ends on its own timeout.
 
@@ -467,6 +476,57 @@ $rows
 EOF
 }
 
+# _nd_ub_exec_failed <rc>: the runtime failed to run the command, so it says
+# nothing about Unbound: podman's own exit 125, or an "Error:" line on any line of
+# stderr (podman may warn first; Apple container exits 1 with one).
+_nd_ub_exec_failed() {
+  [ "$1" = 125 ] || grep -q '^Error:' "$_ND_H_TMP/ub.err" 2>/dev/null
+}
+
+# _nd_obs_unbound: see the unbound record in the header. The route probes above
+# run in the proxy image, so they pass with Unbound broken; this one is the only
+# record that looks at Unbound itself.
+_nd_obs_unbound() {
+  local t0 dl rc why ctl=/usr/share/nice-dns/control.conf start=/usr/local/bin/nice-dns-unbound-start
+  t0="$(_nd_now_ms)"
+  if [ "$_ND_H_RT" != ok ]; then _nd_obs unbound indeterminate 0 "runtime not listed: Unbound cannot be checked"; return 0; fi
+  if ! grep -qxF unbound "$_ND_H_TMP/running"; then _nd_obs unbound indeterminate 0 "the unbound container is not running: the runtime record reports it"; return 0; fi
+  dl="$(_nd_deadline "${ND_HEALTH_CMD_DEADLINE:-10}")"
+  if [ "$dl" -le 0 ]; then _nd_obs unbound indeterminate 0 "deadline: observation budget spent"; return 0; fi
+  nd_bounded "$dl" "$_ND_H_TMP/ub.out" "$_ND_H_TMP/ub.err" nd_platform_unbound_exec unbound-control -c "$ctl" status; rc=$?
+  why="$(_nd_first_line "$_ND_H_TMP/ub.err")"
+  case "$rc" in
+    0) ;;
+    124)
+      # Did the check fail to run, or did the daemon fail to answer?
+      dl="$(_nd_deadline "${ND_HEALTH_CMD_DEADLINE:-10}")"
+      if [ "$dl" -gt 0 ] && nd_bounded "$dl" "$_ND_H_TMP/ub.out" "$_ND_H_TMP/ub.err" nd_platform_unbound_exec true; then
+        _nd_obs unbound unhealthy $(($(_nd_now_ms) - t0)) "control: no answer within the deadline while the container still runs commands"
+      else
+        _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "deadline: neither the control socket nor the container answered"
+      fi
+      return 0 ;;
+    126|127) _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "no unbound-control in the image (exit $rc)"; return 0 ;;
+    *) if _nd_ub_exec_failed "$rc"; then
+         _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "the runtime could not exec in unbound (exit $rc): $(grep -m 1 '^Error:' "$_ND_H_TMP/ub.err")"; return 0
+       fi
+       _nd_obs unbound unhealthy $(($(_nd_now_ms) - t0)) "control: exit $rc: $why"; return 0 ;;
+  esac
+  dl="$(_nd_deadline "${ND_HEALTH_UNBOUND_PROBE_DEADLINE:-20}")"
+  if [ "$dl" -le 0 ]; then _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "deadline: observation budget spent"; return 0; fi
+  nd_bounded "$dl" "$_ND_H_TMP/ub.out" "$_ND_H_TMP/ub.err" nd_platform_unbound_exec "$start" probe-route; rc=$?
+  case "$rc" in
+    0) _nd_obs unbound healthy $(($(_nd_now_ms) - t0)) "control and route answer" ;;
+    124) _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "deadline: probe-route gave no verdict within ${dl}s" ;;
+    126|127) _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "probe-route cannot run in the image (exit $rc): $(tail -n 1 "$_ND_H_TMP/ub.err" 2>/dev/null | tr '\t\n' '  ')" ;;
+    *) if _nd_ub_exec_failed "$rc"; then
+         _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "the runtime could not exec in unbound (exit $rc): $(grep -m 1 '^Error:' "$_ND_H_TMP/ub.err")"
+       else
+         _nd_obs unbound unhealthy $(($(_nd_now_ms) - t0)) "route: probe-route exit $rc: $(_nd_first_line "$_ND_H_TMP/ub.err")"
+       fi ;;
+  esac
+}
+
 # nd_health_observe [budget_seconds]: every observation, bounded by the
 # budget (default 60) and each command's own deadline.
 nd_health_observe() {
@@ -484,6 +544,7 @@ nd_health_observe() {
   _nd_obs_dns filtering "${ND_HEALTH_FILTER_NAME:-doubleclick.net}" sinkhole
   _nd_obs_dns local-cache "${ND_HEALTH_CACHE_NAME:-cloudflare.com}" answer
   _nd_obs_routes || rc=1
+  _nd_obs_unbound
   rm -rf "$_ND_H_TMP"
   return "$rc"
 }
@@ -498,7 +559,7 @@ nd_health_validate() {
     NR == 1 { if ($0 != "schema\tnice-dns-observations/1") bad("expected schema<TAB>nice-dns-observations/1"); next }
     /[\001-\010\013-\037\177\r]/ { bad("control character"); next }
     $1 != "obs" || NF != 5 { bad("expected obs<TAB>name<TAB>verdict<TAB>ms<TAB>reason"); next }
-    $2 !~ /^(runtime|proxy|dns-owner|install-drift|local-service|filtering|local-cache|route-table|route:[a-z0-9]+(-[a-z0-9]+)*)$/ { bad("unknown observation name"); next }
+    $2 !~ /^(runtime|proxy|unbound|dns-owner|install-drift|local-service|filtering|local-cache|route-table|route:[a-z0-9]+(-[a-z0-9]+)*)$/ { bad("unknown observation name"); next }
     $3 !~ /^(healthy|unhealthy|indeterminate)$/ { bad("unknown verdict"); next }
     $2 == "proxy" && $3 == "healthy" && $5 !~ /^generation:[0-9a-f]{16}$/ { bad("a healthy proxy record needs generation:<16 hex>"); next }
     $4 !~ /^[0-9]+$/ { bad("duration is not an integer"); next }

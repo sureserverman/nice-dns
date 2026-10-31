@@ -425,6 +425,7 @@ $(cat "$FAKE/build-cwd")"
       rm -rf "$IP_W/solo"; mkdir -p "$IP_W/solo" && cp "$IP_TREE/$ep.sh" "$IP_W/solo/"
       : >"$FAKE_LOG"; : >"$FAKE/build-cwd"
       printf '9999999999998888888888887777777777776666\n' >"$FAKE/git_head"
+      gens="$(find "$IP_HOME" -path '*nice-dns-install/generations/*' 2>/dev/null | LC_ALL=C sort)"
       ip_run "$IP_W/solo/$ep.sh" haproxy dev
       assert_match '^git clone (-q )?-b dev https://github\.com/sureserverman/nice-dns\.git ' "$(cat "$FAKE_LOG")" "$ep: clones the branch"
       if [ "$(ip_flavor "$ep")" = hardened ]; then
@@ -433,6 +434,11 @@ $(cat "$FAKE/build-cwd")"
         assert_nonzero "$IP_RC" "$ep solo: $IP_OUT"
         assert_match 'pi-hole-hardened' "$IP_OUT" "$ep solo: says what is missing"
         ip_assert_untouched "$ep solo"
+        # Before anything at all: live 2026-10-31, the refusal came after package
+        # updates, a generation directory and pre-* image tags.
+        assert_not_match 'Preparing generation' "$IP_OUT" "$ep solo: no generation is begun"
+        assert_eq "" "$(grep -E '^(sudo |apt|brew (update|upgrade|install)|podman |container )' "$FAKE_LOG" | cut -c1-200)" "$ep solo: no package or image command ran"
+        assert_eq "$gens" "$(find "$IP_HOME" -path '*nice-dns-install/generations/*' 2>/dev/null | LC_ALL=C sort)" "$ep solo: no new generation directory"
         exit 0
       fi
       assert_rc 0 "$IP_RC" "$ep solo: $IP_OUT"

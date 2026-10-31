@@ -248,6 +248,9 @@ nd_install_begin() {
   [ -d "${ND_INST_SRC:-}" ] || { _nd_inst_err "no source tree at '${ND_INST_SRC:-}'"; return 1; }
   ND_INST_TREE="$ND_INST_SRC"
   ND_INST_BASE_SIBLING=""
+  # Before anything changes: a late refusal had already updated packages, begun
+  # a generation and tagged images (live 2026-10-31).
+  if [ "$ND_INST_PIHOLE" = hardened ]; then _nd_inst_hardened_sibling_dir >/dev/null || return 1; fi
 
   # Source generation: the staged tree's commit and whether it has local
   # changes to tracked files (untracked files, such as locally built
@@ -432,6 +435,7 @@ _nd_inst_macos_volume() {
 
 # _nd_inst_route_dir: the platform adapter's route directory.
 _nd_inst_route_dir() {
+  # shellcheck disable=SC1090  # the platform adapter of the tree being installed
   ( . "${ND_INST_TREE:-$ND_INST_SRC}/lib/platform/$ND_INST_PLATFORM.sh" && nd_platform_route_dir )
 }
 
@@ -511,9 +515,111 @@ nd_install_finish() {
   local d="$ND_INST_STATE/generations/$ND_INST_GEN"
   _nd_inst_write_file "$d/activated" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
   _nd_inst_write_file "$ND_INST_STATE/current" "$ND_INST_GEN" || return 1
+  _nd_inst_publish_command
   _nd_inst_prune
   _nd_inst_sudo_keepalive_stop
   echo "▸ Generation $ND_INST_GEN is active (previous: $ND_INST_PREV)."
+}
+
+# The `nice-dns` command and the source it uses when it runs off a checkout
+# (WF-DNS-003). Published after a fully successful install, so a failed install
+# leaves the earlier copies; each arrives by rename, so a reader sees a whole
+# copy. Removed last by an uninstall that gave host DNS back: one that did not
+# is retried with this same command. The command's directory follows the
+# controller's rule (health/nice-dns-health pick_installed_bin).
+ND_INST_SOURCE_ITEMS="deb mac lib health routes release pihole pihole-hardened unbound scripts install-deb.sh install-deb-hardened.sh install-mac.sh install-mac-hardened.sh nice-dns"
+
+_nd_inst_source_dir() { printf '%s\n' "$HOME/.local/share/nice-dns/source"; }
+
+_nd_inst_command_fallback_dir() {
+  if [ "$ND_INST_PLATFORM" = linux ]; then
+    printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-health/bin"
+  else
+    printf '%s\n' "$HOME/Library/Logs/nice-dns-health/bin"
+  fi
+}
+
+_nd_inst_command_dir() {
+  local d="$HOME/.local/bin"
+  if { [ -d "$d" ] && [ -w "$d" ]; } || { [ ! -e "$d" ] && mkdir -p "$d" 2>/dev/null; }; then
+    printf '%s\n' "$d"
+    return 0
+  fi
+  d="$(_nd_inst_command_fallback_dir)"
+  mkdir -p "$d" && printf '%s\n' "$d"
+}
+
+# _nd_inst_publish_source: 1 with the earlier copy still in place.
+_nd_inst_publish_source() {
+  local dst base new old item
+  dst="$(_nd_inst_source_dir)"
+  base="$(dirname "$dst")"
+  mkdir -p "$base" || return 1
+  # An earlier publish cut off between its two renames left the kept copy aside.
+  if [ ! -e "$dst" ]; then
+    for old in "$base"/.source.*.old; do
+      [ -d "$old" ] && mv "$old" "$dst" && break
+    done
+  fi
+  rm -rf "$base"/.source.*
+  new="$(mktemp -d "$base/.source.XXXXXXXX")" || return 1
+  old="$new.old"
+  for item in $ND_INST_SOURCE_ITEMS; do
+    cp -Rp "$ND_INST_SRC/$item" "$new/" || { rm -rf "${new:?}"; return 1; }
+  done
+  chmod 755 "$new"
+  if [ -e "$dst" ]; then
+    mv "$dst" "$old" || { rm -rf "${new:?}"; return 1; }
+  fi
+  if ! mv "$new" "$dst"; then
+    [ ! -e "$old" ] || mv "$old" "$dst"
+    rm -rf "${new:?}"
+    return 1
+  fi
+  rm -rf "${old:?}"
+}
+
+_nd_inst_publish_command_file() {
+  local d new
+  d="$(_nd_inst_command_dir)" || return 1
+  new="$d/.nice-dns.new.$$"
+  cp "$ND_INST_SRC/nice-dns" "$new" && chmod 755 "$new" && mv -f "$new" "$d/nice-dns" && return 0
+  rm -f "$new"
+  return 1
+}
+
+# _nd_inst_publish_command: the stack is already running and pinned here, so a
+# failure says so and leaves the install standing.
+_nd_inst_publish_command() {
+  if ! _nd_inst_publish_source; then
+    echo "! Could not keep the source under $(_nd_inst_source_dir); the earlier copy stays." >&2
+    return 0
+  fi
+  _nd_inst_publish_command_file \
+    || echo "! Could not install the nice-dns command; the earlier copy stays." >&2
+  return 0
+}
+
+# nd_install_command_notice: an install's last output. When the command's
+# directory is not on the installer's PATH it gives the full path and the exact
+# line to add; no shell profile is edited.
+nd_install_command_notice() {
+  local d
+  d="$(_nd_inst_command_dir)" || return 0
+  [ -x "$d/nice-dns" ] || return 0
+  # shellcheck disable=SC2016  # $PATH is text for the reader's profile
+  case ":$PATH:" in
+    *":$d:"*) echo "Manage the stack with: nice-dns install|uninstall|reinstall|restart" ;;
+    *) printf 'Manage the stack with %s/nice-dns; to run it as nice-dns, add this line to your shell profile: export PATH="%s:$PATH"\n' "$d" "$d" ;;
+  esac
+}
+
+_nd_inst_command_remove() {
+  local dst
+  rm -f "$HOME/.local/bin/nice-dns" "$(_nd_inst_command_fallback_dir)/nice-dns"
+  dst="$(_nd_inst_source_dir)"
+  rm -rf "${dst:?}" "$(dirname "$dst")"/.source.*
+  rmdir "$(dirname "$dst")" 2>/dev/null || true
 }
 
 # _nd_inst_prune: removes the generation-tagged images of every generation
@@ -692,6 +798,7 @@ _nd_inst_owned_paths() {
       "$R/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6" "$R/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6"
     printf 'f\t%s\t644\troot\n' "$R/etc/systemd/system/custom-dns-deb.service" "$R/etc/NetworkManager/conf.d/90-nice-dns.conf" \
       "$R/etc/sysctl.d/99-nice-dns-disable-ipv6.conf" \
+      "$R/etc/sysctl.d/99-podman-privileged-ports.conf" \
       "$R/etc/systemd/system/NetworkManager-wait-online.service.d/10-wait-for-connectivity.conf"
   else
     for f in start-container health health-bridges bridge-eval; do
@@ -852,12 +959,14 @@ _nd_inst_release_controller() {
 }
 
 # nd_install_wait_ready: the new chain answers an ordinary query at the
-# address the host will be pinned to, within ND_INST_READY_TRIES x 5 s.
+# address the host will be pinned to, within ND_INST_READY_TRIES x 5 s. That is
+# a limit on the clock too: the probes take time on top of each pause, and 120
+# tries took 935 s (mint, 2026-10-31) while `restart` held the controller.
 nd_install_wait_ready() {
-  local i=0 addr
+  local i=0 addr limit=$((ND_INST_READY_TRIES * 5)) t0="$SECONDS"
   addr="$(_nd_inst_dns_addr)"
   echo "Waiting for the DNS chain to come up at $addr (Tor bootstrap takes 1-4 min)..."
-  while [ "$i" -lt "$ND_INST_READY_TRIES" ]; do
+  while [ "$i" -lt "$ND_INST_READY_TRIES" ] && [ $((SECONDS - t0)) -lt "$limit" ]; do
     if dig "@$addr" +time=3 +tries=1 +short "$ND_INST_PROBE_NAME" 2>/dev/null | grep -Eq '^[0-9.]+$' \
         && _nd_inst_route_probe; then
       echo "Chain is resolving, and Unbound resolves over its authenticated route."
@@ -876,10 +985,7 @@ nd_install_wait_ready() {
 # from this tree, so the probe must exist.
 _nd_inst_route_probe() {
   local rc=0
-  case "$ND_INST_PLATFORM" in
-    linux) podman exec --user unbound unbound /usr/local/bin/nice-dns-unbound-start probe-route . >/dev/null 2>&1 || rc=$? ;;
-    macos) "${CONTAINER_BIN:-container}" exec --user unbound unbound /usr/local/bin/nice-dns-unbound-start probe-route . >/dev/null 2>&1 || rc=$? ;;
-  esac
+  _nd_inst_route_call _nd_route_resolves >/dev/null 2>&1 || rc=$?
   # A rolled-back generation may predate probe-route (exit 126/127): its Pi-hole
   # answer is then all there is to go on.
   if [ "${ND_INST_PROBE_OPTIONAL:-0}" = 1 ] && { [ "$rc" = 126 ] || [ "$rc" = 127 ]; }; then rc=0; fi
@@ -921,7 +1027,7 @@ nd_install_verify_pin() {
     [ "$i" -lt "$tries" ] || { _nd_inst_err "the host resolver is not pinned after the pin"; return 1; }
     i=$((i + 1)); sleep 1
   done
-  ND_INST_READY_TRIES=6 nd_install_wait_ready >/dev/null || return 1
+  ND_INST_READY_TRIES=10 nd_install_wait_ready >/dev/null || return 1
 }
 
 # _nd_inst_begin_interruption: from here a failure rolls back.
@@ -1170,16 +1276,24 @@ _nd_inst_record_blocklist() {
   _nd_inst_manifest_row "$ND_INST_MANIFEST" blocklist allowlist "sha256:$sha"
 }
 
-# _nd_inst_hardened_sibling: the sibling pi-hole-hardened checkout the hardened
-# base is built from (it is not published; see the lock), with its commit
-# recorded. Refuses when there is none.
-_nd_inst_hardened_sibling() {
-  local sib c
-  sib="$(cd "$ND_INST_SRC/.." && pwd)/pi-hole-hardened"
+# _nd_inst_hardened_sibling_dir: the sibling pi-hole-hardened checkout the
+# hardened base is built from (it is not published; see the lock). Refuses when
+# there is none.
+_nd_inst_hardened_sibling_dir() {
+  local sib
+  # The `nice-dns` command names it when it runs off a clone or the kept source.
+  sib="${ND_INST_HARDENED_SIBLING:-$(cd "$ND_INST_SRC/.." && pwd)/pi-hole-hardened}"
   if [[ ! -f "$sib/Dockerfile" || ! -f "$sib/post-install.sh" ]]; then
     _nd_inst_err "the hardened base is not published (release/images.lock); clone https://github.com/sureserverman/pi-hole-hardened next to nice-dns/ ($sib) and run again"
     return 1
   fi
+  printf '%s\n' "$sib"
+}
+
+# _nd_inst_hardened_sibling: that checkout, with its commit recorded.
+_nd_inst_hardened_sibling() {
+  local sib c
+  sib="$(_nd_inst_hardened_sibling_dir)" || return 1
   c="$(git -C "$sib" rev-parse HEAD 2>/dev/null)" || c=""
   case "$c" in ''|*[!0-9a-f]*) c=unknown ;; esac
   _nd_inst_manifest_row "$ND_INST_MANIFEST" source hardened-base "$sib@$c" || return 1
@@ -1340,7 +1454,7 @@ APPARMOR
   fi
 
   echo 'net.ipv4.ip_unprivileged_port_start = 53' | \
-    sudo tee /etc/sysctl.d/99-podman-privileged-ports.conf >/dev/null
+    sudo tee "$ND_INST_ROOT/etc/sysctl.d/99-podman-privileged-ports.conf" >/dev/null
   sudo sysctl --system
 
   # Add UID/GID mappings for current user if missing. Accept any pre-existing
@@ -1500,6 +1614,8 @@ nd_install_linux_stop_stack() {
         "$HOME/.local/bin/nice-dns-warmup" \
         "$HOME/.config/nice-dns/warmup-domains.txt" \
         "$HOME/.config/containers/containers.conf.d/90-nice-dns-firewall.conf"
+  # rmdir, not rm -r: a drop-in the operator added there stays.
+  rmdir "$HOME/.config/containers/systemd/pi-hole.container.d" 2>/dev/null || true
   systemctl --user daemon-reload 2>/dev/null || true
 
   # Containers, network (images stay)
@@ -1905,6 +2021,11 @@ nd_install_linux_uninstall() {
   ep="$(_nd_inst_controller_entry)"
   if [ -n "$ep" ] && [ -f "$ep" ]; then bash "$ep" uninstall || true; fi
   systemctl --user daemon-reload 2>/dev/null || true
+  # A unit that failed stays listed as "not-found failed" after its file is gone.
+  for ref in nice-dns-pod nice-dns-network pi-hole unbound tor-haproxy tor-socat \
+             nice-dns-health nice-dns-health-bridges nice-dns-fetch-bridges; do
+    systemctl --user reset-failed "$ref.service" 2>/dev/null || true
+  done
   # The locally built images (localhost/unbound, localhost/pi-hole and the
   # hardened base), their generation tags, and the pulled tor images: those
   # are stored under their full docker.io/sureserver/... reference, which a
@@ -1949,6 +2070,7 @@ _nd_inst_uninstall_state() {
   _nd_inst_state_remove
   _nd_inst_pihole_credential_remove
   sd="$(nd_install_state_dir)" && rm -f "${sd:?}/current"
+  _nd_inst_command_remove
 }
 
 # _nd_inst_uninstall_verdict <dns_ok>: fails the uninstall when host DNS was
@@ -2271,10 +2393,20 @@ nd_install_macos_teardown() {
     launchctl unload "$_p" 2>/dev/null || true
     rm -f "$_p"
   done
+  # The debug monitor is set up by hand (mac/org.nice-dns.debug-monitor.plist),
+  # so a reinstall leaves it; an uninstall leaves no org.nice-dns.* agent. Its
+  # logs stay: they are the evidence it was run for.
+  if [ "$mode" = uninstall ]; then
+    _p="$HOME/Library/LaunchAgents/org.nice-dns.debug-monitor.plist"
+    launchctl unload "$_p" 2>/dev/null || true
+    rm -f "$_p"
+    sudo rm -f "$ND_INST_ROOT/usr/local/sbin/nice-dns-debug-monitor.sh"
+  fi
   sudo rm -f "$ND_INST_ROOT/etc/sudoers.d/start-container" \
              "$ND_INST_ROOT/usr/local/sbin/start-container.sh" \
              "$ND_INST_ROOT/usr/local/sbin/start-container-root.sh" \
-             "$ND_INST_ROOT/usr/local/sbin/nice-dns-bridge-eval.sh"
+             "$ND_INST_ROOT/usr/local/sbin/nice-dns-bridge-eval.sh" \
+             "$ND_INST_ROOT/usr/local/sbin/nice-dns-fetch-bridges.sh"
 
   # -- Podman-era purge (installs predating commit 7538f02) --------------
   # mac/mac-rules-persist.sh installed four root/user jobs that this script

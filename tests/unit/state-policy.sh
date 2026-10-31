@@ -18,7 +18,7 @@ sp_env() {
   export ND_STATE_DIR="$CASE_DIR/state" ND_BOOT_ID="boot-a" ND_PLATFORM=linux
   export ND_ROUTES_FILE="$NICE_DNS_ROOT/routes/providers.tsv"
   unset ND_STATE_LEASE_S ND_POLICY_STARTUP_S ND_POLICY_GRACE_S ND_POLICY_COOLDOWN_S ND_POLICY_LADDER_S ND_POLICY_RUNTIME_REPAIRS \
-    ND_POLICY_PROMOTE ND_POLICY_DEMOTE ND_POLICY_MAX_RESTARTS
+    ND_POLICY_PROMOTE ND_POLICY_DEMOTE ND_POLICY_MAX_RESTARTS ND_POLICY_UNBOUND_FAILS ND_POLICY_UNBOUND_MAX_RESTARTS ND_POLICY_RETRY_S ND_POLICY_RUNTIME_REPAIR_MAX
 }
 
 sp_libs() {
@@ -740,4 +740,331 @@ t_policy_never_emits_state_the_validator_refuses() {
   { cat "$ND_ROUTES_FILE"; printf 'Bad_Route\t18534\tx.example\tx\tidentity\n'; } >"$CASE_DIR/routes.tsv"
   ND_ROUTES_FILE="$CASE_DIR/routes.tsv" nd_policy_decide "$CASE_DIR/o" "$CASE_DIR/cur" $((SP_T0 + 60)) boot-a >/dev/null 2>"$CASE_DIR/err"
   assert_eq 2 "$?" "a route id state would refuse is refused: $(cat "$CASE_DIR/err")"
+}
+
+# ─────────────────────────── Unbound's own health ────────────────────────────
+
+# sp_ub <file> <verdict> <reason>: add an unbound record to an observation file.
+sp_ub() { printf 'obs\tunbound\t%s\t40\t%s\n' "$2" "$3" >>"$1"; }
+
+# sp_ub_start: routes healthy, a route selected, the startup allowance over;
+# $CASE_DIR/cur is the state and SP_NOW the next time. $CASE_DIR/ok holds healthy
+# routes with no unbound record.
+sp_ub_start() {
+  sp_libs
+  sp_obs "$CASE_DIR/ok" healthy healthy healthy healthy healthy
+  sp_decide "$CASE_DIR/ok" - "$SP_T0"
+  cp "$CASE_DIR/next" "$CASE_DIR/cur"
+  SP_NOW=$((SP_T0 + 600))
+}
+
+# sp_ub_pass <obs>: one pass a minute after the last; SP_ACTION and SP_TARGET.
+sp_ub_pass() {
+  SP_NOW=$((SP_NOW + 60))
+  sp_decide "$1" "$CASE_DIR/cur" "$SP_NOW"
+  cp "$CASE_DIR/next" "$CASE_DIR/cur"
+}
+
+# sp_missing_run <route verdict> <first> <last> <step>: passes with a container
+# missing; one "seconds action target" row per action, in SP_ACTIONS.
+sp_missing_run() {
+  local v="$1" t="$2" last="$3" step="$4"
+  sp_obs "$CASE_DIR/o" "${SP_RT:-missing}" "$v" "$v" "$v" "$v"
+  while [ "$t" -le "$last" ]; do
+    sp_steps "$CASE_DIR/o" "$t"
+    [ "$SP_ACTION" = no-op ] || SP_ACTIONS="$SP_ACTIONS$((t - SP_T0)) $SP_ACTION $SP_TARGET
+"
+    t=$((t + step))
+  done
+}
+
+# Live 2026-10-31 (decisions evaluator): the repair reset recovery_at every 300 s,
+# so a container that stayed missing never reached the stack restart.
+t_a_container_that_stays_missing_reaches_the_stack_restart() {
+  local v rows first_stack second_stack n
+  sp_libs
+  for v in unhealthy healthy; do
+    : >"$CASE_DIR/cur"; SP_ACTIONS=""
+    sp_missing_run "$v" "$SP_T0" $((SP_T0 + 4200)) 60
+    rows="$SP_ACTIONS"
+    assert_eq 3 "$(printf '%s' "$rows" | grep -c ' repair-runtime containers-missing$')" "routes $v: three repairs, then no more ($rows)"
+    first_stack="$(printf '%s' "$rows" | awk '$2 == "restart-component" && $3 == "stack" { print $1; exit }')"
+    second_stack="$(printf '%s' "$rows" | awk '$2 == "restart-component" && $3 == "stack" { n++; if (n == 2) { print $1; exit } }')"
+    assert_ne "" "$first_stack" "routes $v: the stack restarts ($rows)"
+    assert_eq "$(printf '%s' "$rows" | awk '$2 == "repair-runtime" { l = $1 } END { print l + 300 }')" "$first_stack" "routes $v: one cooldown after the last repair"
+    assert_eq 1800 "$((second_stack - first_stack))" "routes $v: then every ND_POLICY_RETRY_S"
+    n="$(printf '%s' "$rows" | awk -v a="$first_stack" -v b="$second_stack" '$2 == "escalate" && $1 > a && $1 < b { n++ } END { print n + 0 }')"
+    assert_match '^[1-9]' "$n" "routes $v: the passes between escalate"
+  done
+}
+
+t_a_healthy_runtime_reading_clears_the_repair_count() {
+  sp_libs
+  : >"$CASE_DIR/cur"; SP_ACTIONS=""
+  sp_missing_run unhealthy "$SP_T0" $((SP_T0 + 480)) 60
+  assert_eq 2 "$(sp_key "$CASE_DIR/cur" runtime_repairs)" "two repairs counted"
+  sp_obs "$CASE_DIR/o" healthy healthy healthy healthy healthy
+  sp_steps "$CASE_DIR/o" $((SP_T0 + 540))
+  assert_eq "" "$(sp_key "$CASE_DIR/cur" runtime_repairs)" "a healthy reading clears it, and the row goes"
+  SP_ACTIONS=""
+  sp_missing_run unhealthy $((SP_T0 + 600)) $((SP_T0 + 2400)) 60
+  assert_eq 3 "$(printf '%s' "$SP_ACTIONS" | grep -c ' repair-runtime containers-missing$')" "a new fault gets three repairs again ($SP_ACTIONS)"
+  sp_obs "$CASE_DIR/o" indeterminate unhealthy unhealthy unhealthy unhealthy
+  sp_steps "$CASE_DIR/o" $((SP_T0 + 2460))
+  assert_eq 4 "$(sp_key "$CASE_DIR/cur" runtime_repairs)" "an indeterminate reading holds the count"
+}
+
+# A stack restart needs the runtime that is reported down: it keeps its repair.
+t_runtime_down_keeps_its_repair_past_the_limit() {
+  sp_libs
+  : >"$CASE_DIR/cur"; SP_ACTIONS=""
+  SP_RT=down sp_missing_run unhealthy "$SP_T0" $((SP_T0 + 2400)) 60
+  assert_eq "" "$(printf '%s' "$SP_ACTIONS" | grep ' stack$' || true)" "no stack restart ($SP_ACTIONS)"
+  assert_match '^[1-9]' "$(printf '%s' "$SP_ACTIONS" | grep -c ' repair-runtime runtime-down$' | awk '$1 >= 5 { print $1 }')" "the repair goes on"
+}
+
+t_the_repair_count_passes_the_state_validator() {
+  sp_libs
+  : >"$CASE_DIR/cur"; SP_ACTIONS=""
+  sp_missing_run unhealthy "$SP_T0" $((SP_T0 + 180)) 60
+  assert_eq 1 "$(sp_key "$CASE_DIR/cur" runtime_repairs)" "one repair counted"
+  nd_state_init || fail "state init"
+  { cat "$CASE_DIR/cur"; printf 'generation\t1\n'; } >"$ND_STATE_DIR/state.tsv"
+  assert_match '^runtime_repairs	1$' "$(nd_state_load | grep '^runtime_repairs')" "lib/state.sh loads the row"
+  printf 'runtime_repairs\tx\n' >>"$ND_STATE_DIR/state.tsv"
+  nd_state_load >/dev/null 2>&1
+  assert_nonzero "$?" "and refuses one that is not a number"
+}
+
+t_unbound_failing_with_routes_healthy_restarts_it_on_the_third_pass() {
+  local r i
+  for r in 'control: exit 1: connection refused' 'route: probe-route exit 1'; do
+    sp_ub_start
+    cp "$CASE_DIR/ok" "$CASE_DIR/bad"; sp_ub "$CASE_DIR/bad" unhealthy "$r"
+    sp_ub_pass "$CASE_DIR/bad"; assert_eq no-op "$SP_ACTION" "$r: first failure"
+    sp_ub_pass "$CASE_DIR/bad"; assert_eq no-op "$SP_ACTION" "$r: second failure"
+    sp_ub_pass "$CASE_DIR/bad"
+    assert_eq restart-component "$SP_ACTION" "$r: third failure in a row"
+    assert_eq unbound "$SP_TARGET" "$r: the target is Unbound"
+    assert_match 'nbound' "$SP_REASON" "$r: the reason names Unbound"
+    assert_eq 1 "$(sp_key "$CASE_DIR/cur" unbound_restarts)" "$r: the restart is counted"
+    assert_eq "$SP_NOW" "$(sp_key "$CASE_DIR/cur" recovery_at)" "$r: it starts the cooldown"
+    assert_eq 0 "$(sp_key "$CASE_DIR/cur" outage_restarts)" "$r: the Tor ladder is not charged"
+  done
+}
+
+t_unbound_route_failure_in_a_full_outage_never_restarts_it() {
+  local i seen=0
+  sp_ub_start
+  sp_obs "$CASE_DIR/out" healthy unhealthy unhealthy unhealthy unhealthy
+  sp_ub "$CASE_DIR/out" unhealthy 'route: probe-route exit 1'
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    sp_ub_pass "$CASE_DIR/out"
+    [ "$SP_TARGET" = unbound ] && seen=1
+  done
+  assert_eq 0 "$seen" "the probe is telling the truth about the outage: Unbound is left alone"
+  assert_eq "" "$(sp_key "$CASE_DIR/cur" unbound_fail)" "and it is not counted against Unbound"
+  assert_ne 0 "$(sp_key "$CASE_DIR/cur" outage_restarts)" "the Tor ladder ran"
+}
+
+t_unbound_control_failure_in_a_full_outage_restarts_it() {
+  sp_ub_start
+  sp_obs "$CASE_DIR/out" healthy unhealthy unhealthy unhealthy unhealthy
+  sp_ub "$CASE_DIR/out" unhealthy 'control: no answer'
+  sp_ub_pass "$CASE_DIR/out"; sp_ub_pass "$CASE_DIR/out"; sp_ub_pass "$CASE_DIR/out"
+  assert_eq restart-component "$SP_ACTION" "a dead control socket is Unbound's own fault"
+  assert_eq unbound "$SP_TARGET" "even during a Tor outage"
+}
+
+t_unbound_startup_and_cooldown_hold_the_restart() {
+  sp_libs
+  sp_obs "$CASE_DIR/ok" healthy healthy healthy healthy healthy
+  cp "$CASE_DIR/ok" "$CASE_DIR/bad"; sp_ub "$CASE_DIR/bad" unhealthy 'control: exit 1'
+  sp_decide "$CASE_DIR/ok" - "$SP_T0"; cp "$CASE_DIR/next" "$CASE_DIR/cur"
+  sp_steps "$CASE_DIR/bad" $((SP_T0 + 10)) $((SP_T0 + 20)) $((SP_T0 + 30)) $((SP_T0 + 40))
+  assert_ne unbound "$SP_TARGET" "inside the startup allowance"
+  sp_steps "$CASE_DIR/bad" $((SP_T0 + 130))
+  assert_eq unbound "$SP_TARGET" "the allowance over, the streak acts"
+  sp_steps "$CASE_DIR/bad" $((SP_T0 + 190)) $((SP_T0 + 250)) $((SP_T0 + 310)) $((SP_T0 + 370))
+  assert_ne unbound "$SP_TARGET" "inside the cooldown (300 s from the restart)"
+  sp_steps "$CASE_DIR/bad" $((SP_T0 + 430))
+  assert_eq unbound "$SP_TARGET" "the cooldown over, a second restart"
+  assert_eq 2 "$(sp_key "$CASE_DIR/cur" unbound_restarts)" "two restarts"
+}
+
+t_unbound_retries_every_half_hour_after_two_restarts() {
+  local i last
+  sp_ub_start
+  cp "$CASE_DIR/ok" "$CASE_DIR/bad"; sp_ub "$CASE_DIR/bad" unhealthy 'control: exit 1'
+  # Two restarts, each after three failures and the cooldown.
+  for i in 1 2 3 4 5 6 7 8; do sp_ub_pass "$CASE_DIR/bad"; done
+  assert_eq 2 "$(sp_key "$CASE_DIR/cur" unbound_restarts)" "two restarts first"
+  last="$(sp_key "$CASE_DIR/cur" recovery_at)"
+  i=0
+  while [ "$(sp_key "$CASE_DIR/cur" unbound_restarts)" = 2 ] && [ "$i" -lt 60 ]; do
+    sp_ub_pass "$CASE_DIR/bad"; i=$((i + 1))
+    if [ "$SP_NOW" -lt $((last + 1800)) ]; then
+      assert_ne unbound "$SP_TARGET" "no restart before the retry interval ($((SP_NOW - last)) s)"
+      # Once the streak is met again, a pass held back by the interval says so.
+      if [ "$(sp_key "$CASE_DIR/cur" unbound_fail)" -ge 3 ]; then
+        assert_match 'Unbound failed' "$SP_REASON" "a waiting pass says so: it never stops silently"
+      fi
+    fi
+  done
+  assert_eq 3 "$(sp_key "$CASE_DIR/cur" unbound_restarts)" "a third restart at the retry interval"
+  assert_eq 1 "$(( $(sp_key "$CASE_DIR/cur" recovery_at) - last >= 1800 ))" "no sooner than 1800 s after the second"
+  last="$(sp_key "$CASE_DIR/cur" recovery_at)"
+  i=0
+  while [ "$(sp_key "$CASE_DIR/cur" unbound_restarts)" = 3 ] && [ "$i" -lt 60 ]; do sp_ub_pass "$CASE_DIR/bad"; i=$((i + 1)); done
+  assert_eq 4 "$(sp_key "$CASE_DIR/cur" unbound_restarts)" "and again"
+  assert_eq 1 "$(( $(sp_key "$CASE_DIR/cur" recovery_at) - last >= 1800 ))" "at the same interval"
+}
+
+t_unbound_healthy_reading_clears_both_counters_and_indeterminate_holds() {
+  sp_ub_start
+  cp "$CASE_DIR/ok" "$CASE_DIR/bad"; sp_ub "$CASE_DIR/bad" unhealthy 'control: exit 1'
+  cp "$CASE_DIR/ok" "$CASE_DIR/good"; sp_ub "$CASE_DIR/good" healthy 'control and route answer'
+  cp "$CASE_DIR/ok" "$CASE_DIR/idk"; sp_ub "$CASE_DIR/idk" indeterminate 'deadline: nothing answered'
+  sp_ub_pass "$CASE_DIR/bad"; sp_ub_pass "$CASE_DIR/bad"
+  assert_eq 2 "$(sp_key "$CASE_DIR/cur" unbound_fail)" "two failures counted"
+  sp_ub_pass "$CASE_DIR/idk"
+  assert_eq 2 "$(sp_key "$CASE_DIR/cur" unbound_fail)" "indeterminate changes nothing"
+  assert_eq no-op "$SP_ACTION" "and acts on nothing"
+  sp_ub_pass "$CASE_DIR/ok"
+  assert_eq 2 "$(sp_key "$CASE_DIR/cur" unbound_fail)" "an older image with no record changes nothing"
+  sp_ub_pass "$CASE_DIR/good"
+  assert_eq "" "$(sp_key "$CASE_DIR/cur" unbound_fail)" "a healthy reading clears the streak"
+  sp_ub_pass "$CASE_DIR/bad"; sp_ub_pass "$CASE_DIR/bad"; sp_ub_pass "$CASE_DIR/bad"
+  assert_eq 1 "$(sp_key "$CASE_DIR/cur" unbound_restarts)" "a restart"
+  sp_ub_pass "$CASE_DIR/good"
+  assert_eq 1 "$(sp_key "$CASE_DIR/cur" unbound_restarts)" "a healthy reading right after a restart keeps the count: a flap is not a cure"
+  SP_NOW=$((SP_NOW + 1800))
+  sp_ub_pass "$CASE_DIR/good"
+  assert_eq "" "$(sp_key "$CASE_DIR/cur" unbound_restarts)" "healthy a retry interval after the last restart clears it"
+}
+
+t_unbound_new_boot_clears_the_counters() {
+  sp_ub_start
+  cp "$CASE_DIR/ok" "$CASE_DIR/bad"; sp_ub "$CASE_DIR/bad" unhealthy 'control: exit 1'
+  sp_ub_pass "$CASE_DIR/bad"; sp_ub_pass "$CASE_DIR/bad"
+  sp_decide "$CASE_DIR/ok" "$CASE_DIR/cur" $((SP_NOW + 60)) boot-b
+  assert_eq "" "$(sp_key "$CASE_DIR/next" unbound_fail)" "a new boot restarts the streak"
+}
+
+t_unbound_state_rows_exist_only_when_non_zero() {
+  local tok
+  sp_ub_start
+  sp_ub_pass "$CASE_DIR/ok"
+  assert_eq 0 "$(grep -c '^runtime_repairs' "$CASE_DIR/cur")" "nor a zero repair count"
+  assert_eq 0 "$(grep -c '^unbound_' "$CASE_DIR/cur")" "a zero-counter state has no new rows (BL-036: a rollback refuses rows it does not know)"
+  cp "$CASE_DIR/ok" "$CASE_DIR/bad"; sp_ub "$CASE_DIR/bad" unhealthy 'control: exit 1'
+  sp_ub_pass "$CASE_DIR/bad"
+  assert_eq 1 "$(sp_key "$CASE_DIR/cur" unbound_fail)" "a non-zero counter is written"
+  nd_state_init || fail "init"
+  tok="$(nd_state_lock)" || fail "lock"
+  nd_state_commit "$tok" 0 "$CASE_DIR/cur" >/dev/null; assert_rc 0 $? "lib/state.sh accepts the new rows"
+  assert_eq 1 "$(nd_state_load | awk -F '\t' '$1 == "unbound_fail" { print $2 }')" "and loads them back"
+  printf 'unbound_fail\tnope\n' >>"$CASE_DIR/cur"
+  nd_state_commit "$tok" 1 "$CASE_DIR/cur" >/dev/null 2>&1; assert_rc 2 $? "a bad value is refused"
+  nd_state_unlock "$tok"
+}
+
+# ─────────────────────────── past the restart cap ────────────────────────────
+
+t_full_outage_past_the_cap_restarts_the_stack_every_half_hour() {
+  local i last n=0 esc=0
+  sp_ub_start
+  sp_obs "$CASE_DIR/out" healthy unhealthy unhealthy unhealthy unhealthy
+  i=0
+  while [ "$(sp_key "$CASE_DIR/cur" outage_restarts)" != 2 ] && [ "$i" -lt 60 ]; do sp_ub_pass "$CASE_DIR/out"; i=$((i + 1)); done
+  assert_eq proxy "$SP_TARGET" "the ladder before the cap is unchanged: Tor, then the proxy"
+  last="$(sp_key "$CASE_DIR/cur" recovery_at)"
+  i=0
+  while [ "$SP_TARGET" != stack ] && [ "$i" -lt 60 ]; do
+    sp_ub_pass "$CASE_DIR/out"; i=$((i + 1))
+    [ "$SP_ACTION" = escalate ] && esc=$((esc + 1))
+  done
+  assert_eq stack "$SP_TARGET" "past the cap, the stack restarts"
+  assert_eq restart-component "$SP_ACTION" "as a restart"
+  assert_eq 1 "$(( SP_NOW - last >= 1800 ))" "restart 3 lands no sooner than 1800 s after restart 2 ($((SP_NOW - last)) s)"
+  assert_eq 1 "$(( esc > 0 ))" "other passes still journal the escalation"
+  last="$SP_NOW"
+  i=0
+  sp_ub_pass "$CASE_DIR/out"
+  while [ "$SP_TARGET" != stack ] && [ "$i" -lt 60 ]; do sp_ub_pass "$CASE_DIR/out"; i=$((i + 1)); done
+  assert_eq stack "$SP_TARGET" "and again"
+  assert_eq 1 "$(( SP_NOW - last >= 1800 && SP_NOW - last <= 1860 ))" "at that interval ($((SP_NOW - last)) s)"
+  sp_ub_pass "$CASE_DIR/ok"
+  assert_eq 0 "$(sp_key "$CASE_DIR/cur" outage_restarts)" "a healthy route clears the count"
+  assert_eq - "$(sp_key "$CASE_DIR/cur" outage_since)" "and the outage"
+}
+
+t_unbound_flapping_probe_cannot_defeat_the_restart_cap() {
+  local i n=0
+  sp_ub_start
+  cp "$CASE_DIR/ok" "$CASE_DIR/bad"; sp_ub "$CASE_DIR/bad" unhealthy 'route: probe-route exit 1'
+  cp "$CASE_DIR/ok" "$CASE_DIR/good"; sp_ub "$CASE_DIR/good" healthy 'control and route answer'
+  # F F F H, for 60 passes (an hour): at most 2 restarts plus one per retry interval.
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    sp_ub_pass "$CASE_DIR/bad"; [ "$SP_TARGET" = unbound ] && n=$((n + 1))
+    sp_ub_pass "$CASE_DIR/bad"; [ "$SP_TARGET" = unbound ] && n=$((n + 1))
+    sp_ub_pass "$CASE_DIR/bad"; [ "$SP_TARGET" = unbound ] && n=$((n + 1))
+    sp_ub_pass "$CASE_DIR/good"
+  done
+  assert_eq 1 "$(( n <= 4 ))" "an hour of flapping restarted Unbound $n times"
+}
+
+t_unbound_retry_does_not_starve_the_stack_restart() {
+  local i stack=0
+  sp_ub_start
+  sp_obs "$CASE_DIR/out" healthy unhealthy unhealthy unhealthy unhealthy
+  sp_ub "$CASE_DIR/out" unhealthy 'control: no answer'
+  for i in $(seq 1 150); do
+    sp_ub_pass "$CASE_DIR/out"
+    if [ "$SP_TARGET" = stack ]; then stack=$((stack + 1)); fi
+    # Past the ladder's cap a stack restart covers Unbound as well.
+    if [ "$SP_TARGET" = unbound ] && [ "$(sp_key "$CASE_DIR/cur" outage_restarts)" -ge 2 ]; then
+      fail "past the cap the stack is what restarts, not Unbound (pass $i)"
+    fi
+  done
+  assert_eq 1 "$(( stack >= 2 ))" "the stack restarts during a long outage with a dead control socket: $stack"
+}
+
+t_unbound_acts_only_on_a_failure_seen_in_this_pass() {
+  sp_ub_start
+  cp "$CASE_DIR/ok" "$CASE_DIR/bad"; sp_ub "$CASE_DIR/bad" unhealthy 'control: exit 1'
+  cp "$CASE_DIR/ok" "$CASE_DIR/idk"; sp_ub "$CASE_DIR/idk" indeterminate 'deadline: nothing answered'
+  sp_ub_pass "$CASE_DIR/bad"; sp_ub_pass "$CASE_DIR/bad"; sp_ub_pass "$CASE_DIR/bad"
+  assert_eq unbound "$SP_TARGET" "the first restart"
+  sp_ub_pass "$CASE_DIR/bad"; sp_ub_pass "$CASE_DIR/bad"; sp_ub_pass "$CASE_DIR/bad"
+  assert_ne unbound "$SP_TARGET" "the streak is met again inside the cooldown"
+  SP_NOW=$((SP_NOW + 300))
+  sp_ub_pass "$CASE_DIR/idk"
+  assert_ne unbound "$SP_TARGET" "an indeterminate pass acts on nothing, even with the streak met"
+  sp_ub_pass "$CASE_DIR/ok"
+  assert_ne unbound "$SP_TARGET" "nor does a pass with no reading"
+  sp_ub_pass "$CASE_DIR/bad"
+  assert_eq unbound "$SP_TARGET" "a failure seen in this pass does"
+}
+
+t_unbound_route_failure_with_only_compat_answering_is_not_counted() {
+  sp_ub_start
+  sp_obs "$CASE_DIR/cmp" healthy unhealthy unhealthy unhealthy healthy
+  sp_ub "$CASE_DIR/cmp" unhealthy 'route: probe-route exit 1'
+  sp_ub_pass "$CASE_DIR/cmp"; sp_ub_pass "$CASE_DIR/cmp"; sp_ub_pass "$CASE_DIR/cmp"; sp_ub_pass "$CASE_DIR/cmp"
+  assert_eq "" "$(sp_key "$CASE_DIR/cur" unbound_fail)" "compat is never selected, so it says nothing about Unbound's route"
+}
+
+t_unbound_past_the_cap_with_routes_unknown_is_still_restarted() {
+  local now
+  sp_ub_start
+  now=$((SP_NOW + 7200))
+  # Past the cap, no route observed, control dead: the stack restart cannot act
+  # on this pass, so Unbound's own rule must.
+  sp_obs "$CASE_DIR/idk" healthy indeterminate indeterminate indeterminate indeterminate
+  sp_ub "$CASE_DIR/idk" unhealthy 'control: exit 1'
+  awk -F '\t' -v n="$now" 'BEGIN { OFS = "\t" } $1 == "outage_since" { $2 = n - 3600 } $1 == "outage_restarts" { $2 = 2 } { print }' "$CASE_DIR/cur" >"$CASE_DIR/cur.2" && mv "$CASE_DIR/cur.2" "$CASE_DIR/cur"
+  SP_NOW="$now"
+  sp_ub_pass "$CASE_DIR/idk"; sp_ub_pass "$CASE_DIR/idk"; sp_ub_pass "$CASE_DIR/idk"
+  assert_eq unbound "$SP_TARGET" "a dead control socket is not left to a stack restart that cannot run"
 }

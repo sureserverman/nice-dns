@@ -38,6 +38,8 @@ installers	integration	dns-transaction
 installers	integration	release-inputs
 installers	integration	installers-interaction
 installers	integration	installers-persistence
+installers	integration	nice-dns-cli
+installers	integration	command-recovery-dryrun
 qualification	unit	harness-contracts
 qualification	unit	qualification-coverage
 qualification	unit	soak-verdict
