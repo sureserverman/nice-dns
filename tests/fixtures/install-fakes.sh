@@ -443,6 +443,7 @@ if [ -n "${FAKE_ROOT:-}" ]; then
   m="deploy $(cat "$FAKE/git_head")"
   q="$HOME/.config/containers/systemd"; mkdir -p "$q"
   for f in nice-dns.network nice-dns.pod unbound.container pi-hole.container "tor-$1.container"; do printf '%s %s\n' "$f" "$m" >"$q/$f"; done
+  mkdir -p "$q/pi-hole.container.d"; printf 'drop-in %s\n' "$m" >"$q/pi-hole.container.d/50-nice-dns-caps.conf"
   rf="${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns/unbound-route/forward-route.conf"
   if [ -f "$rf" ]; then r="$(sed -n 's/.*"\(route=[^"]*\)".*/\1/p' "$rf")"; else r=route-absent; fi
   printf 'persistent-podman.sh %s\n' "$r" >>"$FAKE/unbound-starts"

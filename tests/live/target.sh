@@ -1159,7 +1159,7 @@ case "$NICE_DNS_OP" in
       printf 'section\tgeneration\n'
       g=$(cat "$sd/current" 2>/dev/null)
       printf 'current\t%s\n' "${g:-none}"
-      [ -n "$g" ] && awk -F '\t' '$1 ~ /^(generation|entrypoint|pihole|variant|source_commit|previous|rollback|replaces|image|credential|status)$/' "$sd/generations/$g/prepare.tsv" 2>/dev/null
+      [ -n "$g" ] && awk -F '\t' '$1 ~ /^(generation|entrypoint|pihole|variant|source_commit|previous|rollback|replaces|image|pulled|credential|status)$/' "$sd/generations/$g/prepare.tsv" 2>/dev/null
       printf 'section\trunning\n'
       for c in pi-hole unbound tor-haproxy tor-socat; do
         running "$c" && printf 'running\t%s\t%s\n' "$c" "$(image_of "$c")"
@@ -1785,7 +1785,7 @@ case "$NICE_DNS_OP" in
       if [ -e "$HOME/.local/share/nice-dns/source" ]; then printf 'source\tpresent\n'; else printf 'source\tabsent\n'; fi
       printf 'section\timages\n'
       if [ "$plat" = macos ]; then ctl image list 2>/dev/null | awk 'NR > 1 { print "image\t" $1 ":" $2 }'
-      else ctl images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | awk '{ print "image\t" $0 }'; fi
+      else ctl images --format '{{.Repository}}:{{.Tag}} {{.Digest}}' 2>/dev/null | awk '{ print "image\t" $1 "\t" $2 }'; fi
       printf 'section\tquadlets\n'
       if [ "$plat" = linux ]; then
         for f in "$HOME/.config/containers/systemd/"*; do

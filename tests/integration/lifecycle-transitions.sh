@@ -230,6 +230,7 @@ t_command_and_source_follow_the_install() {
         assert_match '^systemctl --user reset-failed nice-dns-pod\.service$' "$(cat "$FAKE_LOG")" "$ep: for the pod too"
         assert_eq 1024 "$(cat "$FAKE_ROOT/.sysctl/net.ipv4.ip_unprivileged_port_start")" "$ep: the uninstall gives the low-port limit back"
         assert_no_path "$FAKE_ROOT/etc/sysctl.d/99-podman-privileged-ports.conf" "$ep: and removes its file"
+        assert_no_path "$IP_HOME/.config/containers/systemd/pi-hole.container.d" "$ep: and the Pi-hole drop-in's directory"
       fi
       if [ "$plat" = macos ]; then
         assert_no_path "$IP_HOME/Library/LaunchAgents/org.nice-dns.debug-monitor.plist" "$ep: the uninstall removes the debug monitor's agent"

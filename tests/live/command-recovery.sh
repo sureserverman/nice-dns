@@ -53,9 +53,10 @@ CR_POLL="${CR_POLL:-30}"
 # ND_POLICY_COOLDOWN_S (300): a fault is not injected inside the last action's
 # cooldown, or the wait below would measure the cooldown.
 CR_QUIET="${CR_QUIET:-310}"
-# The installer's own images, named as each runtime lists them. Not the bases
-# the builds pull (pihole/pihole, sureserver/hardened-unbound), and not vminit.
-CR_STACK_IMAGES='^(localhost/)?(pi-hole|unbound|pi-hole-hardened-base|pihole-base|unbound-base|tor-haproxy|tor-socat):|^(docker\.io/)?sureserver/(tor-haproxy|tor-socat|pi-hole-hardened):'
+# The installer's own tags, named as each runtime lists them. Not a versioned
+# proxy tag or nd-arm-*: the tuning harness pulled those (arm-prepare; mint
+# 2026-10-31), and the install pulls by digest (cr_pulled_left checks those).
+CR_STACK_IMAGES='^(localhost/)?(pi-hole|unbound|pi-hole-hardened-base|pihole-base|unbound-base|tor-haproxy|tor-socat):|^(docker\.io/)?sureserver/(tor-haproxy|tor-socat|pi-hole-hardened):latest$'
 # shellcheck disable=SC2034 # read by il_each
 IL_FIRST_STEPS=cr_before
 
@@ -163,6 +164,22 @@ cr_command() {
   local a="$1" label="$2"
   shift 2
   il_t "$a" command --mode "$@" >"$(il_dir "$a")/cmd-$label.log" 2>&1
+}
+
+# cr_pulled_left <report with the generation> <report after the uninstall>: the
+# digests that generation pulled and that are still there with no name. One that
+# another tag also holds is not the install's to remove (the receipt lists every
+# image left, so it stays visible). Podman lists an unnamed digest as
+# <none>:<none>, or repo:<none> when the digest was pulled by name; Apple's
+# runtime as repo:<none>.
+cr_pulled_left() {
+  local ref repo
+  for ref in $(il_sec "$1" generation | awk -F '\t' '$1 == "pulled" { print $3 }'); do
+    repo="${ref%@*}"
+    il_sec "$2" images | awk -F '\t' -v r="${repo#docker.io/}" -v dg="${ref#*@}" -v ref="$ref" '
+      { n = $2; sub(/^docker\.io\//, "", n) }
+      n == r ":<none>" || ($2 == "<none>:<none>" && $3 == dg) { print ref }'
+  done
 }
 
 # ─────────────────────────── steps ───────────────────────────────────────────
@@ -288,6 +305,8 @@ cr_uninstall() {
   assert_eq absent "$(il_val "$r" command source)" "the kept source is gone"
   left="$(il_sec "$r" images | cut -f2 | grep -E "$CR_STACK_IMAGES" | tr '\n' ' ')"
   assert_eq "" "$left" "no image of the stack is left"
+  assert_ne "" "$(il_sec "$d/after-reinstall.tsv" generation | awk -F '\t' '$1 == "pulled"')" "the generation names the digests it pulled"
+  assert_eq "" "$(cr_pulled_left "$d/after-reinstall.tsv" "$r" | tr '\n' ' ')" "no digest the install pulled is left unnamed"
   left="$(il_sec "$r" quadlets | cut -f2 | grep -E '^(nice-dns\.|pi-hole\.|unbound\.|tor-haproxy\.|tor-socat\.)' | tr '\n' ' ')"
   assert_eq "" "$left" "no quadlet is left"
   assert_eq "" "$(il_sec "$r" agents | tr '\n' ' ')" "no org.nice-dns.* agent is left, the debug monitor included"

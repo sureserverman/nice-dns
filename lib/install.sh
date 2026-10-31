@@ -1602,6 +1602,8 @@ nd_install_linux_stop_stack() {
         "$HOME/.local/bin/nice-dns-warmup" \
         "$HOME/.config/nice-dns/warmup-domains.txt" \
         "$HOME/.config/containers/containers.conf.d/90-nice-dns-firewall.conf"
+  # rmdir, not rm -r: a drop-in the operator added there stays.
+  rmdir "$HOME/.config/containers/systemd/pi-hole.container.d" 2>/dev/null || true
   systemctl --user daemon-reload 2>/dev/null || true
 
   # Containers, network (images stay)

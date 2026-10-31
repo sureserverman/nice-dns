@@ -90,9 +90,22 @@ t_each_seeded_defect_is_caught() {
     crd_catches command-left $before_faults cr_fault_unbound cr_fault_proxy cr_restart cr_reinstall cr_uninstall
     crd_catches source-left $before_faults cr_fault_unbound cr_fault_proxy cr_restart cr_reinstall cr_uninstall
     crd_catches image-left $before_faults cr_fault_unbound cr_fault_proxy cr_restart cr_reinstall cr_uninstall
+    crd_catches digest-left $before_faults cr_fault_unbound cr_fault_proxy cr_restart cr_reinstall cr_uninstall
     crd_catches quadlet-left $before_faults cr_fault_unbound cr_fault_proxy cr_restart cr_reinstall cr_uninstall
     crd_catches unit-left $before_faults cr_fault_unbound cr_fault_proxy cr_restart cr_reinstall cr_uninstall
   }
+}
+
+# What the tuning harness leaves on a target is not a defect of the uninstall.
+t_harness_images_do_not_fail_the_uninstall() {
+  local s out
+  out="$(
+    crd_world "$CASE_DIR/harness"
+    printf 'harness-tags\n' >"$IL_FAKE_DIR/break"
+    for s in $CR_STEPS; do ( il_each "$s" ) >"$CASE_DIR/harness-$s.log" 2>&1 || { echo "failed:$s"; exit 0; }; done
+    echo passed
+  )"
+  assert_eq passed "$out" "a versioned proxy tag left behind passes"
 }
 
 # A failed platform runs no more of the scenario, but still ends on a stack.

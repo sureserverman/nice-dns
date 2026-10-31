@@ -14,6 +14,8 @@
 #   command-left      uninstall leaves the command
 #   source-left       uninstall leaves the kept source
 #   image-left        uninstall leaves an image of the stack
+#   digest-left       uninstall leaves a pulled digest with no name
+#   harness-tags      a versioned proxy tag stays, as the tuning harness leaves (no defect)
 #   quadlet-left      uninstall leaves a quadlet
 #   unit-left         uninstall leaves a not-found failed unit
 # Nothing here touches the host.
@@ -87,6 +89,11 @@ case "$op" in
     fi
     printf 'section\timages\nimage\tpihole/pihole:<none>\n'
     if [ "$inst" = 1 ] || [ "$brk" = image-left ]; then printf 'image\tlocalhost/unbound:latest\n'; fi
+    if [ "$brk" = digest-left ]; then
+      if [ "$plat" = linux ]; then printf 'image\t<none>:<none>\tsha256:abc\n'
+      else printf 'image\tsureserver/tor-%s:<none>\n' "$(cat "$S/proxy")"; fi
+    fi
+    if [ "$brk" = harness-tags ]; then printf 'image\tdocker.io/sureserver/tor-haproxy:v2.13\tsha256:def\n'; fi
     printf 'section\tquadlets\n'
     if [ "$plat" = linux ] && { [ "$inst" = 1 ] || [ "$brk" = quadlet-left ]; }; then printf 'quadlet\tunbound.container\n'; fi
     printf 'section\tagents\n'

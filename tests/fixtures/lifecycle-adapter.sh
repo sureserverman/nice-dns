@@ -69,6 +69,7 @@ report() {
     printf 'image\tunbound\tlocalhost/unbound:gen-%s\tu%063d\n' "$gen" "$gen"
     printf 'image\tpi-hole\tlocalhost/pi-hole:gen-%s\tp%063d\n' "$gen" "$gen"
     printf 'image\tproxy\tlocalhost/tor-%s:gen-%s\tt%063d\n' "$proxy" "$gen" "$gen"
+    printf 'pulled\tproxy\tdocker.io/sureserver/tor-%s@sha256:abc\n' "$proxy"
   else printf 'current\tnone\n'; fi
   printf 'section\trunning\n'
   if [ "$inst" != 0 ]; then
