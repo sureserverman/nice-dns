@@ -194,6 +194,13 @@ t_command_and_source_follow_the_install() {
       out="$(printf '%s\n' "$IP_OUT" | tail -n 1)"
       assert_not_match 'export PATH' "$IP_OUT" "$ep: on PATH, no notice"
       assert_match 'nice-dns install\|uninstall\|reinstall\|restart' "$out" "$ep: it points to the command"
+      if [ "$plat" = macos ]; then
+        # The debug monitor, put there by hand: a reinstall keeps it, an uninstall does not.
+        echo monitor >"$IP_HOME/Library/LaunchAgents/org.nice-dns.debug-monitor.plist"
+        echo monitor >"$FAKE_ROOT/usr/local/sbin/nice-dns-debug-monitor.sh"
+        lt_step "$ep" "$ep: reinstall beside the debug monitor" ok socat
+        assert_file "$IP_HOME/Library/LaunchAgents/org.nice-dns.debug-monitor.plist" "$ep: a reinstall keeps the debug monitor"
+      fi
 
       # A publish cut off between its two renames: the next one recovers it.
       mkdir "$IP_HOME/.local/share/nice-dns/.source.stale"
@@ -223,6 +230,10 @@ t_command_and_source_follow_the_install() {
         assert_match '^systemctl --user reset-failed nice-dns-pod\.service$' "$(cat "$FAKE_LOG")" "$ep: for the pod too"
         assert_eq 1024 "$(cat "$FAKE_ROOT/.sysctl/net.ipv4.ip_unprivileged_port_start")" "$ep: the uninstall gives the low-port limit back"
         assert_no_path "$FAKE_ROOT/etc/sysctl.d/99-podman-privileged-ports.conf" "$ep: and removes its file"
+      fi
+      if [ "$plat" = macos ]; then
+        assert_no_path "$IP_HOME/Library/LaunchAgents/org.nice-dns.debug-monitor.plist" "$ep: the uninstall removes the debug monitor's agent"
+        assert_no_path "$FAKE_ROOT/usr/local/sbin/nice-dns-debug-monitor.sh" "$ep: and its script"
       fi
     ) || exit 1
   done

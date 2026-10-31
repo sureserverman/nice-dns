@@ -2379,6 +2379,15 @@ nd_install_macos_teardown() {
     launchctl unload "$_p" 2>/dev/null || true
     rm -f "$_p"
   done
+  # The debug monitor is set up by hand (mac/org.nice-dns.debug-monitor.plist),
+  # so a reinstall leaves it; an uninstall leaves no org.nice-dns.* agent. Its
+  # logs stay: they are the evidence it was run for.
+  if [ "$mode" = uninstall ]; then
+    _p="$HOME/Library/LaunchAgents/org.nice-dns.debug-monitor.plist"
+    launchctl unload "$_p" 2>/dev/null || true
+    rm -f "$_p"
+    sudo rm -f "$ND_INST_ROOT/usr/local/sbin/nice-dns-debug-monitor.sh"
+  fi
   sudo rm -f "$ND_INST_ROOT/etc/sudoers.d/start-container" \
              "$ND_INST_ROOT/usr/local/sbin/start-container.sh" \
              "$ND_INST_ROOT/usr/local/sbin/start-container-root.sh" \

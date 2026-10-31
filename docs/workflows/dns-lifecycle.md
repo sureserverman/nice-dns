@@ -888,8 +888,8 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   closed). When a first install's DNS restore does not complete, it says
   that host DNS was not given back and keeps the record for a retry
   (manifest status `rolled-back-dns-not-restored`).
-- Uninstall removes the stack, images, bridge service and controller and
-  gives back the recorded DNS state
+- Uninstall removes the stack, images, bridge service, controller and, on
+  macOS, a debug monitor set up by hand, and gives back the recorded DNS state
   (lib/install.sh:2001-2060,
   lib/install.sh:2510-2519;
   deb/custom-dns-deb:459-563, mac/start-container-root.sh:222-255).

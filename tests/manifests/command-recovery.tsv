@@ -1,0 +1,26 @@
+# Receipt manifest: command-recovery. Parsed as data by tests/reports/verify.sh (never sourced).
+# Rows (tab-separated):
+#   platforms all                            the receipt holds an observed cell on every platform
+#   scenario  <id>  per-cell|global  <meaning>
+#   content   <id>  <ERE>                    the scenario's artifact has a line matching ERE
+# One observed cell per platform: its fault scenarios show a new container
+# generation, a ready journal row and an answered fresh name.
+platforms	all
+scenario	CR-UNBOUND	per-cell	Unbound frozen with routes healthy: restarted alone with no human action
+scenario	CR-PROXY	per-cell	the proxy stopped with Pi-hole running: repaired with no human action
+scenario	CR-RESTART	per-cell	nice-dns restart gives every container a new start and DNS answers
+scenario	CR-REINSTALL	per-cell	nice-dns reinstall keeps the admin password, the lists and the Tor data
+scenario	CR-UNINSTALL	per-cell	nice-dns uninstall leaves no image, quadlet, agent, command or kept source
+scenario	CR-INSTALL	per-cell	nice-dns install from a checkout, over a stack and after an uninstall
+content	CR-UNBOUND	^journal	[0-9]+	[^	]+	unbound	ready
+content	CR-UNBOUND	^generation_changed	yes$
+content	CR-UNBOUND	^fresh_during_fault	(SERVFAIL|REFUSED|timeout|no-answer)$
+content	CR-UNBOUND	^fresh_name	[^	]+	(NOERROR|NXDOMAIN)$
+content	CR-PROXY	^journal	[0-9]+	[^	]+	runtime	ready
+content	CR-PROXY	^generation_changed	yes$
+content	CR-PROXY	^fresh_during_fault	(SERVFAIL|REFUSED|timeout|no-answer)$
+content	CR-PROXY	^fresh_name	[^	]+	(NOERROR|NXDOMAIN)$
+content	CR-RESTART	^result	pass$
+content	CR-REINSTALL	^result	pass$
+content	CR-UNINSTALL	^result	pass$
+content	CR-INSTALL	^result	pass$

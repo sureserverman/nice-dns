@@ -65,7 +65,7 @@ SIB="${NICE_DNS_SIBLINGS_DIR:-$(cd "$V_ROOT/.." && pwd -P)}"
 SCHEMA='nice-dns-receipt/1'
 REPOS='nice-dns tor-haproxy tor-socat hardened-unbound pi-hole-hardened'
 ARCH_REPOS='tor-haproxy tor-socat hardened-unbound pi-hole-hardened'
-RECEIPTS='baseline transport controller installers soak qualification'
+RECEIPTS='baseline transport controller installers soak qualification command-recovery'
 ENTRYPOINTS='install-deb.sh install-deb-hardened.sh install-mac.sh install-mac-hardened.sh'
 TAB="$(printf '\t')"
 

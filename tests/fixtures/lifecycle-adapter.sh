@@ -99,6 +99,7 @@ report() {
   printf 'section\tadmin\n'
   if [ "$inst" = 1 ]; then
     printf 'admin_secret_mode\t-rw-------\n'
+    printf 'admin_secret_id\t%s\n' "$(get secret aaaa)"
     printf 'anonymous\t%s\n' "$([ "$brk" = admin-open ] && echo 200 || echo 401)"
     printf 'wrong\t"valid":false\nright\t"valid":true\n'
   else printf 'admin_secret_mode\t\nanonymous\t000\n'; fi
@@ -114,7 +115,7 @@ report() {
   printf 'section\tschedules\n'
   if [ "$plat" = macos ]; then
     [ "$inst" != 0 ] && printf 'agent\torg.nice-dns.start-container\nagent\torg.nice-dns.health\n'
-    printf 'agent\torg.nice-dns.debug-monitor\n'
+    printf 'agent\torg.nice-dns.operator-own\n'
   elif [ "$inst" != 0 ]; then printf 'unit\tnice-dns-health.timer\tenabled\n'; fi
 }
 

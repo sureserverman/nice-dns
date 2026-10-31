@@ -58,3 +58,5 @@ live	soak	tests/live/soak.sh	live
 live	soak-receipt	tests/live/soak-receipt.sh	live
 live	qualification-cells	tests/live/qualification-cells.sh	live
 live	qualification-receipt	tests/live/qualification-receipt.sh	live
+live	command-recovery	tests/live/command-recovery.sh	live
+integration	command-recovery-dryrun	tests/integration/command-recovery-dryrun.sh	local
