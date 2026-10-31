@@ -18,7 +18,7 @@ sp_env() {
   export ND_STATE_DIR="$CASE_DIR/state" ND_BOOT_ID="boot-a" ND_PLATFORM=linux
   export ND_ROUTES_FILE="$NICE_DNS_ROOT/routes/providers.tsv"
   unset ND_STATE_LEASE_S ND_POLICY_STARTUP_S ND_POLICY_GRACE_S ND_POLICY_COOLDOWN_S ND_POLICY_LADDER_S ND_POLICY_RUNTIME_REPAIRS \
-    ND_POLICY_PROMOTE ND_POLICY_DEMOTE ND_POLICY_MAX_RESTARTS ND_POLICY_UNBOUND_FAILS ND_POLICY_UNBOUND_MAX_RESTARTS ND_POLICY_RETRY_S
+    ND_POLICY_PROMOTE ND_POLICY_DEMOTE ND_POLICY_MAX_RESTARTS ND_POLICY_UNBOUND_FAILS ND_POLICY_UNBOUND_MAX_RESTARTS ND_POLICY_RETRY_S ND_POLICY_RUNTIME_REPAIR_MAX
 }
 
 sp_libs() {
@@ -765,6 +765,77 @@ sp_ub_pass() {
   cp "$CASE_DIR/next" "$CASE_DIR/cur"
 }
 
+# sp_missing_run <route verdict> <first> <last> <step>: passes with a container
+# missing; one "seconds action target" row per action, in SP_ACTIONS.
+sp_missing_run() {
+  local v="$1" t="$2" last="$3" step="$4"
+  sp_obs "$CASE_DIR/o" "${SP_RT:-missing}" "$v" "$v" "$v" "$v"
+  while [ "$t" -le "$last" ]; do
+    sp_steps "$CASE_DIR/o" "$t"
+    [ "$SP_ACTION" = no-op ] || SP_ACTIONS="$SP_ACTIONS$((t - SP_T0)) $SP_ACTION $SP_TARGET
+"
+    t=$((t + step))
+  done
+}
+
+# Live 2026-10-31 (decisions evaluator): the repair reset recovery_at every 300 s,
+# so a container that stayed missing never reached the stack restart.
+t_a_container_that_stays_missing_reaches_the_stack_restart() {
+  local v rows first_stack second_stack n
+  sp_libs
+  for v in unhealthy healthy; do
+    : >"$CASE_DIR/cur"; SP_ACTIONS=""
+    sp_missing_run "$v" "$SP_T0" $((SP_T0 + 4200)) 60
+    rows="$SP_ACTIONS"
+    assert_eq 3 "$(printf '%s' "$rows" | grep -c ' repair-runtime containers-missing$')" "routes $v: three repairs, then no more ($rows)"
+    first_stack="$(printf '%s' "$rows" | awk '$2 == "restart-component" && $3 == "stack" { print $1; exit }')"
+    second_stack="$(printf '%s' "$rows" | awk '$2 == "restart-component" && $3 == "stack" { n++; if (n == 2) { print $1; exit } }')"
+    assert_ne "" "$first_stack" "routes $v: the stack restarts ($rows)"
+    assert_eq "$(printf '%s' "$rows" | awk '$2 == "repair-runtime" { l = $1 } END { print l + 300 }')" "$first_stack" "routes $v: one cooldown after the last repair"
+    assert_eq 1800 "$((second_stack - first_stack))" "routes $v: then every ND_POLICY_RETRY_S"
+    n="$(printf '%s' "$rows" | awk -v a="$first_stack" -v b="$second_stack" '$2 == "escalate" && $1 > a && $1 < b { n++ } END { print n + 0 }')"
+    assert_match '^[1-9]' "$n" "routes $v: the passes between escalate"
+  done
+}
+
+t_a_healthy_runtime_reading_clears_the_repair_count() {
+  sp_libs
+  : >"$CASE_DIR/cur"; SP_ACTIONS=""
+  sp_missing_run unhealthy "$SP_T0" $((SP_T0 + 480)) 60
+  assert_eq 2 "$(sp_key "$CASE_DIR/cur" runtime_repairs)" "two repairs counted"
+  sp_obs "$CASE_DIR/o" healthy healthy healthy healthy healthy
+  sp_steps "$CASE_DIR/o" $((SP_T0 + 540))
+  assert_eq "" "$(sp_key "$CASE_DIR/cur" runtime_repairs)" "a healthy reading clears it, and the row goes"
+  SP_ACTIONS=""
+  sp_missing_run unhealthy $((SP_T0 + 600)) $((SP_T0 + 2400)) 60
+  assert_eq 3 "$(printf '%s' "$SP_ACTIONS" | grep -c ' repair-runtime containers-missing$')" "a new fault gets three repairs again ($SP_ACTIONS)"
+  sp_obs "$CASE_DIR/o" indeterminate unhealthy unhealthy unhealthy unhealthy
+  sp_steps "$CASE_DIR/o" $((SP_T0 + 2460))
+  assert_eq 4 "$(sp_key "$CASE_DIR/cur" runtime_repairs)" "an indeterminate reading holds the count"
+}
+
+# A stack restart needs the runtime that is reported down: it keeps its repair.
+t_runtime_down_keeps_its_repair_past_the_limit() {
+  sp_libs
+  : >"$CASE_DIR/cur"; SP_ACTIONS=""
+  SP_RT=down sp_missing_run unhealthy "$SP_T0" $((SP_T0 + 2400)) 60
+  assert_eq "" "$(printf '%s' "$SP_ACTIONS" | grep ' stack$' || true)" "no stack restart ($SP_ACTIONS)"
+  assert_match '^[1-9]' "$(printf '%s' "$SP_ACTIONS" | grep -c ' repair-runtime runtime-down$' | awk '$1 >= 5 { print $1 }')" "the repair goes on"
+}
+
+t_the_repair_count_passes_the_state_validator() {
+  sp_libs
+  : >"$CASE_DIR/cur"; SP_ACTIONS=""
+  sp_missing_run unhealthy "$SP_T0" $((SP_T0 + 180)) 60
+  assert_eq 1 "$(sp_key "$CASE_DIR/cur" runtime_repairs)" "one repair counted"
+  nd_state_init || fail "state init"
+  { cat "$CASE_DIR/cur"; printf 'generation\t1\n'; } >"$ND_STATE_DIR/state.tsv"
+  assert_match '^runtime_repairs	1$' "$(nd_state_load | grep '^runtime_repairs')" "lib/state.sh loads the row"
+  printf 'runtime_repairs\tx\n' >>"$ND_STATE_DIR/state.tsv"
+  nd_state_load >/dev/null 2>&1
+  assert_nonzero "$?" "and refuses one that is not a number"
+}
+
 t_unbound_failing_with_routes_healthy_restarts_it_on_the_third_pass() {
   local r i
   for r in 'control: exit 1: connection refused' 'route: probe-route exit 1'; do
@@ -884,6 +955,7 @@ t_unbound_state_rows_exist_only_when_non_zero() {
   local tok
   sp_ub_start
   sp_ub_pass "$CASE_DIR/ok"
+  assert_eq 0 "$(grep -c '^runtime_repairs' "$CASE_DIR/cur")" "nor a zero repair count"
   assert_eq 0 "$(grep -c '^unbound_' "$CASE_DIR/cur")" "a zero-counter state has no new rows (BL-036: a rollback refuses rows it does not know)"
   cp "$CASE_DIR/ok" "$CASE_DIR/bad"; sp_ub "$CASE_DIR/bad" unhealthy 'control: exit 1'
   sp_ub_pass "$CASE_DIR/bad"

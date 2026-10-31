@@ -73,7 +73,7 @@ t_a_well_behaved_target_passes_and_its_receipt_verifies() {
   bash "$NICE_DNS_ROOT/tests/reports/verify.sh" check "$r" >/dev/null 2>&1
   assert_rc 0 "$?" "the receipt verifies on its own"
   assert_match '^limit	mac-gui-context	-	scope=BL-052	' "$(grep -m1 'GUI context' "$r")" "the receipt says how the Mac commands ran"
-  assert_match 'limits=2' "$(bash "$NICE_DNS_ROOT/tests/reports/verify.sh" check "$r" 2>&1)" "and the verifier counts its limits"
+  assert_match 'limits=3' "$(bash "$NICE_DNS_ROOT/tests/reports/verify.sh" check "$r" 2>&1)" "and the verifier counts its limits"
 }
 
 t_each_seeded_defect_is_caught() {

@@ -93,7 +93,9 @@ every 30 minutes until a route answers, and the first escalation of the outage
 writes one failure dump. A missing container is started by name. If its unit last
 exited 125 or 126, podman could not start it, so the user service manager is
 re-executed first, and the pod restarts if that start still fails, at most once
-every 30 minutes. Every action is a row in `recovery.tsv`.
+every 30 minutes. After three repairs with no healthy reading, whatever the routes
+say, the whole stack restarts at once and then every 30 minutes, and the passes
+between log the escalation. Every action is a row in `recovery.tsv`.
 
 ## Bridge refresh
 

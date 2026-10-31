@@ -413,6 +413,7 @@ cr_receipt() {
     # What the run did not prove.
     printf 'limit\tmac-gui-context\t-\tscope=BL-052\tmacOS commands ran in the GUI context (launchctl asuser), not from plain ssh or Terminal\n'
     printf 'limit\treinstall-clone\t-\tscope=BL-055\treinstall ran with --local, the branch being unpublished; a clone is not proven here\n'
+    printf 'limit\tpast-cap-paths\t-\tscope=BL-057\tthe past-cap stack restart rests on the Stage 1 demo on short timers, and the stack restart for a container that stays missing on policy tests only\n'
   } >"$r"
   selected=" $(il_platforms) "
   : >"$CASE_DIR/cell-dirs.tsv"

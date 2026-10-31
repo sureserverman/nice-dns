@@ -523,6 +523,11 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   escalates at once (lib/policy.sh:288-289). Rootless Podman has no daemon
   to restart, so Linux escalates runtime-down. Before the pre-merge review
   it re-issued an unsupported repair every cooldown and never escalated.
+  Since 2026-10-31 (DEC-021) three repairs of missing containers with no
+  healthy reading lead to a stack restart, at once and then every 1800 s, and
+  the passes between escalate. Before that, each repair reset the cooldown, so a
+  container that stayed missing never reached the stack restart. runtime-down
+  keeps its repair: a stack restart needs the runtime.
 - Unbound (since 2026-10-30, DEC-021). The observation is lib/health.sh:489-528:
   a control call past its deadline is Unbound's own failure only while a plain
   exec in the container answers. Measured on mint with SIGSTOP: control hangs,

@@ -52,6 +52,10 @@
 #     default both; the tick sets it from nd_platform_runtime_repairs);
 #     otherwise it escalates. An indeterminate runtime is no evidence of a
 #     fault.
+#     After ND_POLICY_RUNTIME_REPAIR_MAX (3) repairs of containers-missing with
+#     no healthy reading, whatever the routes say, the stack restarts: at once,
+#     then every ND_POLICY_RETRY_S, escalating on the passes between. runtime-down
+#     keeps its repair, because a stack restart needs the runtime.
 #   * Unbound's own health, after runtime faults and before route selection. An
 #     unbound observation with a control: reason counts always; a route: reason
 #     counts only with an identity route healthy in the same pass, since otherwise
@@ -103,6 +107,7 @@ nd_policy_decide() {
   local promote="${ND_POLICY_PROMOTE:-5}" demote="${ND_POLICY_DEMOTE:-2}" maxr="${ND_POLICY_MAX_RESTARTS:-2}"
   local stale="${ND_POLICY_STALE:-5}" ladder="${ND_POLICY_LADDER_S:-660}"
   local ubfails="${ND_POLICY_UNBOUND_FAILS:-3}" ubmax="${ND_POLICY_UNBOUND_MAX_RESTARTS:-2}" retry="${ND_POLICY_RETRY_S:-1800}"
+  local rtmax="${ND_POLICY_RUNTIME_REPAIR_MAX:-3}" s_rtrep=0
   local repairs=" ${ND_POLICY_RUNTIME_REPAIRS:-runtime-down containers-missing} "
   local routes="${ND_ROUTES_FILE:-$ND_POLICY_LIB_DIR/../routes/providers.tsv}"
   local tab=$'\t' cr=$'\r' a b c d e rest i j n=0 v
@@ -143,7 +148,7 @@ nd_policy_decide() {
       boot_id) s_boot="$b" ;; updated) s_updated="$b" ;; started) s_started="$b" ;;
       route) s_route="$b" ;; outage_since) s_out="$b" ;; outage_restarts) s_rest="$b" ;;
       proxy_gen) s_pgen="$b" ;;
-      unbound_fail) s_ubfail="$b" ;; unbound_restarts) s_ubrest="$b" ;;
+      unbound_fail) s_ubfail="$b" ;; unbound_restarts) s_ubrest="$b" ;; runtime_repairs) s_rtrep="$b" ;;
       last_action) s_la="$b" ;; last_action_at) s_laat="$b" ;; recovery_at) s_rec="$b" ;;
       streak)
         i=0
@@ -275,6 +280,7 @@ nd_policy_decide() {
     fi
 
     local rt_fault=""
+    [ "$rt" != healthy ] || s_rtrep=0
     if [ "$rt" = unhealthy ]; then
       case "$rt_reason" in
         cli-missing:*) rt_fault=cli-missing ;;
@@ -290,7 +296,19 @@ nd_policy_decide() {
     elif [ -n "$rt_fault" ]; then
       if [ "$in_startup" = 1 ]; then reason="runtime fault ($rt_fault) inside the startup allowance"
       elif [ "$in_cool" = 1 ]; then reason="runtime fault ($rt_fault) inside the recovery cooldown"
-      else action=repair-runtime target="$rt_fault" reason="runtime fault: $rt_reason"
+      elif [ "$rt_fault" = containers-missing ] && [ "$s_rtrep" -ge "$rtmax" ]; then
+        # Repairing by name for ever kept the stack restart below from ever being
+        # due: each repair resets recovery_at. The first restart comes at once,
+        # then one every $retry s, and the passes between journal the escalation.
+        if [ "$s_rtrep" -eq "$rtmax" ] || ! _nd_p_num "$s_rec" || [ $((now - s_rec)) -ge "$retry" ]; then
+          action=restart-component target=stack reason="containers stay missing after $rtmax repairs; restarting the stack: $rt_reason"
+          s_rtrep=$((s_rtrep + 1)) s_rec="$now"
+        else
+          action=escalate reason="containers stay missing after $rtmax repairs and a stack restart; next stack restart $retry s after the last ($((now - s_rec)) s so far): $rt_reason"
+        fi
+      else
+        action=repair-runtime target="$rt_fault" reason="runtime fault: $rt_reason"
+        [ "$rt_fault" != containers-missing ] || s_rtrep=$((s_rtrep + 1))
       fi
     elif [ "$ub_due" = 1 ]; then
       action=restart-component target=unbound reason="Unbound failed $s_ubfail checks in a row: $ub_reason"
@@ -375,6 +393,7 @@ nd_policy_decide() {
   # Only when non-zero: a bundle from before these rows refuses them (BL-036).
   [ "$s_ubfail" = 0 ] || printf 'unbound_fail\t%s\n' "$s_ubfail"
   [ "$s_ubrest" = 0 ] || printf 'unbound_restarts\t%s\n' "$s_ubrest"
+  [ "$s_rtrep" = 0 ] || printf 'runtime_repairs\t%s\n' "$s_rtrep"
   i=0
   while [ "$i" -lt "$n" ]; do
     printf 'streak\t%s\t%s\t%s\t%s\n' "${rid[i]}" "${rok[i]}" "${rfail[i]}" "${runk[i]}"

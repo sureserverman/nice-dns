@@ -330,3 +330,27 @@ t_unbound_failing_with_routes_healthy_is_restarted_by_real_ticks() {
     ) || exit 1
   done
 }
+
+# The repair count survives a commit, and past it the real tick restarts the
+# stack through its handler.
+t_a_container_that_stays_missing_reaches_the_stack_through_real_ticks() {
+  local plat
+  for plat in linux macos; do
+    (
+      ci_env "$plat"
+      export ND_RECOVERY_SERVICE_S=3 ND_POLICY_STARTUP_S=1 ND_POLICY_COOLDOWN_S=1 ND_POLICY_RUNTIME_REPAIR_MAX=1
+      ci_seed cloudflare-exit -
+      grep -vx tor-haproxy "$FAKE/running" >"$FAKE/running.n" && mv "$FAKE/running.n" "$FAKE/running"
+      ci_tick
+      assert_eq unhealthy "$(ci_obs runtime)" "$plat: the fault is observed"
+      assert_eq repair-runtime "$(ci_get action "$CI_OUT")" "$plat: the first answer is the repair"
+      assert_eq 1 "$(ci_state runtime_repairs)" "$plat: the count survives the commit"
+      sleep 2
+      ci_tick
+      assert_eq restart-component "$(ci_get action "$CI_OUT")" "$plat: past the limit it acts on the stack"
+      assert_eq stack "$(ci_get target "$CI_OUT")" "$plat: not by name"
+      assert_match 'stack requested' "$(ci_journal)" "$plat: journalled: $(ci_journal)"
+      assert_eq 2 "$(ci_state runtime_repairs)" "$plat: counted"
+    ) || exit 1
+  done
+}
