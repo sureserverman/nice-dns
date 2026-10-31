@@ -2393,7 +2393,8 @@ nd_install_macos_teardown() {
   sudo rm -f "$ND_INST_ROOT/etc/sudoers.d/start-container" \
              "$ND_INST_ROOT/usr/local/sbin/start-container.sh" \
              "$ND_INST_ROOT/usr/local/sbin/start-container-root.sh" \
-             "$ND_INST_ROOT/usr/local/sbin/nice-dns-bridge-eval.sh"
+             "$ND_INST_ROOT/usr/local/sbin/nice-dns-bridge-eval.sh" \
+             "$ND_INST_ROOT/usr/local/sbin/nice-dns-fetch-bridges.sh"
 
   # -- Podman-era purge (installs predating commit 7538f02) --------------
   # mac/mac-rules-persist.sh installed four root/user jobs that this script

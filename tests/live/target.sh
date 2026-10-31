@@ -197,7 +197,8 @@
 #                    an install from plain ssh leaves the runtime where the
 #                    start agent cannot see it)
 #   command-report   read-only: each container's start, the command and its
-#                    kept source, the image names, quadlets, agents and units
+#                    kept source, the image names, quadlets, agents, units and
+#                    root scripts, and whether each list could be read
 #   controller-report
 #                    read-only: the controller's install receipt, tick lines,
 #                    state and journals (active and shadow), the bridge set's
@@ -1733,9 +1734,13 @@ case "$NICE_DNS_OP" in
     [ "$s" = T ] ;;
   thaw-unbound)
     [ "$plat" = macos ] && homebrew_path
+    # No container means nothing is frozen. A failed thaw keeps the timer, the
+    # only other thing that would ever thaw it.
+    if running unbound && ! ctl_exec unbound pkill -CONT -x unbound; then
+      echo "could not thaw unbound; its timer stays armed" >&2
+      exit 1
+    fi
     pkill -f nice-dns-unbound-watchdog 2>/dev/null
-    # A restart already replaced the frozen process, or there is no container.
-    ctl_exec unbound pkill -CONT -x unbound 2>/dev/null
     printf 'thawed\n' ;;
   stop-proxy)
     if [ "$plat" = macos ]; then homebrew_path; ctl stop "$NICE_DNS_COMPONENT"
@@ -1783,9 +1788,17 @@ case "$NICE_DNS_OP" in
       printf 'section\tcommand\n'
       if [ -x "$HOME/.local/bin/nice-dns" ]; then printf 'command\tpresent\n'; else printf 'command\tabsent\n'; fi
       if [ -e "$HOME/.local/share/nice-dns/source" ]; then printf 'source\tpresent\n'; else printf 'source\tabsent\n'; fi
+      # listing: each list's exit, so an empty section can be told from one
+      # that could not be read.
       printf 'section\timages\n'
-      if [ "$plat" = macos ]; then ctl image list 2>/dev/null | awk 'NR > 1 { print "image\t" $1 ":" $2 }'
-      else ctl images --format '{{.Repository}}:{{.Tag}} {{.Digest}}' 2>/dev/null | awk '{ print "image\t" $1 "\t" $2 }'; fi
+      if [ "$plat" = macos ]; then
+        l=$(ctl image list 2>/dev/null); lrc=$?
+        printf '%s\n' "$l" | awk 'NR > 1 && NF { print "image\t" $1 ":" $2 }'
+      else
+        l=$(ctl images --format '{{.Repository}}:{{.Tag}} {{.Digest}}' 2>/dev/null); lrc=$?
+        printf '%s\n' "$l" | awk 'NF { print "image\t" $1 "\t" $2 }'
+      fi
+      irc=$lrc
       printf 'section\tquadlets\n'
       if [ "$plat" = linux ]; then
         for f in "$HOME/.config/containers/systemd/"*; do
@@ -1798,11 +1811,20 @@ case "$NICE_DNS_OP" in
         for f in "$HOME/Library/LaunchAgents/"org.nice-dns.*; do
           [ -e "$f" ] && printf 'agent_file\t%s\n' "$(basename "$f")"
         done
-        launchctl list | awk '$3 ~ /^org\.nice-dns\./ { print "agent_loaded\t" $3 }'
+        l=$(launchctl list 2>/dev/null); lrc=$?
+        printf '%s\n' "$l" | awk '$3 ~ /^org\.nice-dns\./ { print "agent_loaded\t" $3 }'
       fi
       printf 'section\tunits\n'
       if [ "$plat" = linux ]; then
-        systemctl --user list-units --plain --no-legend --all 'pi-hole*' 'unbound*' 'tor-*' 'nice-dns*' 2>/dev/null | awk '{ print "unit\t" $1 "\t" $3 "\t" $4 }'
+        l=$(systemctl --user list-units --plain --no-legend --all 'pi-hole*' 'unbound*' 'tor-*' 'nice-dns*' 2>/dev/null); lrc=$?
+        printf '%s\n' "$l" | awk 'NF { print "unit\t" $1 "\t" $3 "\t" $4 }'
+      fi
+      printf 'section\tlisting\nlisting\timages\t%s\nlisting\tschedules\t%s\n' "$irc" "$lrc"
+      printf 'section\tsbin\n'
+      if [ "$plat" = macos ]; then
+        for f in /usr/local/sbin/start-container* /usr/local/sbin/nice-dns-*; do
+          [ -e "$f" ] && printf 'sbin\t%s\n' "$(basename "$f")"
+        done
       fi
     } | redact ;;
   sever-upstream) ctl stop "$NICE_DNS_COMPONENT" ;;

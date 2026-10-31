@@ -72,7 +72,8 @@ t_a_well_behaved_target_passes_and_its_receipt_verifies() {
   assert_file "$r" "the receipt exists"
   bash "$NICE_DNS_ROOT/tests/reports/verify.sh" check "$r" >/dev/null 2>&1
   assert_rc 0 "$?" "the receipt verifies on its own"
-  assert_match '^# limit: macOS commands ran in the GUI context' "$(grep -m1 'GUI context' "$r")" "the receipt says how the Mac commands ran"
+  assert_match '^limit	mac-gui-context	-	scope=BL-052	' "$(grep -m1 'GUI context' "$r")" "the receipt says how the Mac commands ran"
+  assert_match 'limits=2' "$(bash "$NICE_DNS_ROOT/tests/reports/verify.sh" check "$r" 2>&1)" "and the verifier counts its limits"
 }
 
 t_each_seeded_defect_is_caught() {
@@ -82,6 +83,7 @@ t_each_seeded_defect_is_caught() {
     crd_catches no-ready $before_faults cr_fault_unbound
     crd_catches no-ack $before_faults cr_fault_unbound
     crd_catches not-felt $before_faults cr_fault_unbound
+    crd_catches probe-broken $before_faults cr_fault_unbound
     crd_catches gen-unchanged $before_faults cr_fault_unbound
     crd_catches servfail $before_faults cr_fault_unbound
     crd_catches restart-partial $before_faults cr_fault_unbound cr_fault_proxy cr_restart
@@ -90,10 +92,61 @@ t_each_seeded_defect_is_caught() {
     crd_catches command-left $before_faults cr_fault_unbound cr_fault_proxy cr_restart cr_reinstall cr_uninstall
     crd_catches source-left $before_faults cr_fault_unbound cr_fault_proxy cr_restart cr_reinstall cr_uninstall
     crd_catches image-left $before_faults cr_fault_unbound cr_fault_proxy cr_restart cr_reinstall cr_uninstall
+    crd_catches images-empty $before_faults cr_fault_unbound cr_fault_proxy cr_restart cr_reinstall cr_uninstall
+    crd_catches sbin-left $before_faults cr_fault_unbound cr_fault_proxy cr_restart cr_reinstall cr_uninstall
     crd_catches digest-left $before_faults cr_fault_unbound cr_fault_proxy cr_restart cr_reinstall cr_uninstall
     crd_catches quadlet-left $before_faults cr_fault_unbound cr_fault_proxy cr_restart cr_reinstall cr_uninstall
     crd_catches unit-left $before_faults cr_fault_unbound cr_fault_proxy cr_restart cr_reinstall cr_uninstall
   }
+}
+
+# Past the plan's ten minutes a recovery does not count, however it ended.
+t_a_slow_recovery_fails() {
+  local out
+  out="$(
+    crd_world "$CASE_DIR/slow"
+    CR_ELAPSED_MAX=-1; export CR_ELAPSED_MAX
+    for s in cr_before cr_install; do ( il_each "$s" ) >/dev/null 2>&1 || { echo "setup-failed:$s"; exit 0; }; done
+    ( il_each cr_fault_unbound ) >"$CASE_DIR/slow.log" 2>&1 && { echo passed; exit 0; }
+    echo caught
+  )"
+  assert_eq caught "$out" "a recovery past the limit fails"
+}
+
+# The receipt itself refuses evidence that says the job was not done, whatever
+# the step printed last.
+t_the_receipt_checks_the_evidence_not_the_verdict() {
+  local d r f row t h s
+  (
+    crd_world "$CASE_DIR/forged"
+    for s in $CR_STEPS; do ( il_each "$s" ) >/dev/null 2>&1 || exit 1; done
+    ( cr_receipt ) >"$CASE_DIR/forged.log" 2>&1 || exit 1
+  ) || fail "setup: $(tail -n 5 "$CASE_DIR/forged.log" 2>/dev/null)"
+  r="$(for r in "$CASE_DIR"/forged/receipts/command-recovery/*/receipt.tsv; do printf '%s\n' "$r"; done | tail -1)"
+  d="$(dirname "$r")"
+  # file<TAB>sed: one edit each; the sha256 is fixed up, so only content can fail.
+  while IFS='|' read -r f row; do
+    cp -R "$d" "$d.m"
+    for t in "$d.m"/cells/*/"$f"; do
+      sed -i "$row" "$t"
+      h="$(sha256sum "$t" | cut -d' ' -f1)"
+      awk -F '\t' -v OFS='\t' -v f="${t#"$d.m"/}" -v h="$h" '$1 == "scenario" && $5 == f { $6 = h } { print }' "$d.m/receipt.tsv" >"$d.m/r" && mv "$d.m/r" "$d.m/receipt.tsv"
+    done
+    bash "$NICE_DNS_ROOT/tests/reports/verify.sh" check "$d.m/receipt.tsv" >/dev/null 2>&1
+    assert_nonzero "$?" "$f with [$row] does not verify"
+    rm -rf "$d.m"
+  done <<'EOF'
+cmd-uninstall.tsv|s/^command\tabsent$/command\tpresent/
+cmd-uninstall.tsv|s/^images_left\t0$/images_left\t1/
+cmd-uninstall.tsv|s/^sbin_left\t0$/sbin_left\t1/
+cmd-uninstall.tsv|s/^stack_images_before\t.*/stack_images_before\t0/
+cmd-uninstall.tsv|s/^listing\timages\t0$/listing\timages\t1/
+cmd-reinstall.tsv|s/^admin_secret\tkept$/admin_secret\tlost/
+cmd-restart.tsv|s/^all_new_start\tyes$/all_new_start\tno/
+cmd-install.tsv|s/^over_running_stack\tyes$/over_running_stack\tno/
+fault-unbound.tsv|s/^elapsed_s\t.*/elapsed_s\t900/
+fault-proxy.tsv|s/^fresh_during_fault\t.*/fresh_during_fault\tNOERROR/
+EOF
 }
 
 # What the tuning harness leaves on a target is not a defect of the uninstall.

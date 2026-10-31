@@ -14,6 +14,9 @@
 #   command-left      uninstall leaves the command
 #   source-left       uninstall leaves the kept source
 #   image-left        uninstall leaves an image of the stack
+#   images-empty      the image list cannot be read after the uninstall
+#   sbin-left         uninstall leaves a root script (macOS)
+#   probe-broken      fresh-name cannot run during a fault
 #   digest-left       uninstall leaves a pulled digest with no name
 #   harness-tags      a versioned proxy tag stays, as the tuning harness leaves (no defect)
 #   quadlet-left      uninstall leaves a quadlet
@@ -67,6 +70,7 @@ case "$op" in
   stop-proxy) fault_rows runtime ;;
   set-tunables) printf 'tunables\t%s\n' "$mode" ;;
   fresh-name)
+    if [ "$(get felt no)" = yes ] && [ "$brk" = probe-broken ]; then rm -f "$S/felt"; echo "target.sh: target reported no machine id" >&2; exit 2; fi
     if [ "$(get felt no)" = yes ]; then st=SERVFAIL; rm -f "$S/felt"
     elif [ "$(get answering yes)" = yes ]; then st=NXDOMAIN; else st=SERVFAIL; fi
     printf 'fresh_name\tnd-cr-%s.example.com\t%s\n' "$(now)" "$st" ;;
@@ -87,7 +91,9 @@ case "$op" in
       printf 'command\t%s\n' "$([ "$brk" = command-left ] && echo present || echo absent)"
       printf 'source\t%s\n' "$([ "$brk" = source-left ] && echo present || echo absent)"
     fi
-    printf 'section\timages\nimage\tpihole/pihole:<none>\n'
+    printf 'section\timages\n'
+    empty=0
+    if [ "$inst" != 1 ] && [ "$brk" = images-empty ]; then empty=1; else printf 'image\tpihole/pihole:<none>\n'; fi
     if [ "$inst" = 1 ] || [ "$brk" = image-left ]; then printf 'image\tlocalhost/unbound:latest\n'; fi
     if [ "$brk" = digest-left ]; then
       if [ "$plat" = linux ]; then printf 'image\t<none>:<none>\tsha256:abc\n'
@@ -99,7 +105,10 @@ case "$op" in
     printf 'section\tagents\n'
     if [ "$plat" = macos ] && [ "$brk" = monitor-left ]; then printf 'agent_file\torg.nice-dns.debug-monitor.plist\n'; fi
     printf 'section\tunits\n'
-    if [ "$plat" = linux ] && [ "$brk" = unit-left ]; then printf 'unit\tunbound.service\tfailed\tfailed\n'; fi ;;
+    if [ "$plat" = linux ] && [ "$brk" = unit-left ]; then printf 'unit\tunbound.service\tfailed\tfailed\n'; fi
+    printf 'section\tlisting\nlisting\timages\t%s\nlisting\tschedules\t0\n' "$empty"
+    printf 'section\tsbin\n'
+    if [ "$plat" = macos ] && [ "$brk" = sbin-left ]; then printf 'sbin\tnice-dns-fetch-bridges.sh\n'; fi ;;
   command)
     case "$mode" in
       install)

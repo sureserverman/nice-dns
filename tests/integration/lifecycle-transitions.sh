@@ -235,6 +235,10 @@ t_command_and_source_follow_the_install() {
       if [ "$plat" = macos ]; then
         assert_no_path "$IP_HOME/Library/LaunchAgents/org.nice-dns.debug-monitor.plist" "$ep: the uninstall removes the debug monitor's agent"
         assert_no_path "$FAKE_ROOT/usr/local/sbin/nice-dns-debug-monitor.sh" "$ep: and its script"
+        # Every root script mac/persist.sh installs goes with the uninstall.
+        for f in $(sed -n 's#.*sudo install -m 755 .* /usr/local/sbin/\([a-z-]*\.sh\)$#\1#p' "$NICE_DNS_ROOT/mac/persist.sh"); do
+          assert_no_path "$FAKE_ROOT/usr/local/sbin/$f" "$ep: the uninstall removes $f"
+        done
       fi
     ) || exit 1
   done

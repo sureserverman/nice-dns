@@ -577,7 +577,7 @@ dt_ep_of() { if [ "$1" = linux ]; then echo install-deb; else echo install-mac; 
 #   macos: fresh (Wi-Fi 192.168.1.1, Ethernet 9.9.9.9 149.112.112.112,
 #          Thunderbolt Bridge empty), legacy (every service pinned)
 dt_world() {
-  local ep="$1" st="$2" r
+  local ep="$1" st="$2" r k s
   ip_env "$ep"
   FAKE_ROOT="$IP_W/root"; r="$FAKE_ROOT"
   mkdir -p "$r/etc" "$r/etc/sysctl.d" "$r/.systemd" "$r/.sysctl" "$r/run/systemd/resolve" "$r/usr/bin" "$r/usr/local/sbin"
