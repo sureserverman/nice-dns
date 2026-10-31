@@ -1,11 +1,11 @@
 {
- "created": "2026-10-31T03:52:05+00:00",
- "fingerprint": "e119b2bb20f0ae9bdf65c250915e94181fd9a2c3f90680b50016ac5026243e91",
+ "created": "2026-10-31T08:53:03+00:00",
+ "fingerprint": "45ae24147563c015b1a01a41f6f75a3dad95be42fc944631d4e5d8a76a756497",
  "index": 1,
  "kind": "claim-deviation",
  "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-10-30-nice-dns-command-and-unbound-recovery-plan.md",
  "schema": 2,
  "task": "3.1",
  "text": "`bash -n tests/live/command-recovery.sh && shellcheck tests/live/command-recovery.sh && bash tests/live/command-recovery.sh --dry-run` prints every step in order and touches no target",
- "why": "The task's product is a test, so prove-claim refuses a break in it. Mutation evidence instead: integration/command-recovery-dryrun seeds 13 defects and each fails the step meant to catch it (6/6 cases pass). The first live run later found fresh-name refused by the real adapter, which the fake could not show; target-guards now covers that class."
+ "why": "The task's product is a test, so prove-claim refuses a break in it. Mutation evidence at 05d906b: integration/command-recovery-dryrun, 9 of 9 cases, seeds 15 defects and each fails the step meant to catch it, and a case edits each receipt row and sees the receipt refused."
 }
