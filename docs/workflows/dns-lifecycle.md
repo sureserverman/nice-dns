@@ -6,7 +6,7 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the
 - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)
   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.
 - Baseline source: this repository at commit
-  `3ad95630ecfd4a135781ea93983112569044d2ac`. Citations are `path:line` at that commit.
+  `4ab0029b431219dc792d3cc2f9f3481e136adee7`. Citations are `path:line` at that commit.
   The eight-cell baseline receipt measured b85bc9b. The document was first
   written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,
   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02
@@ -123,7 +123,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   (pihole/etc/pihole.toml:12-14). The Linux quadlet sets
   `DNS1=127.0.0.1#5335` (deb/quadlet/pi-hole.container:39).
 - On macOS the installer and LaunchAgent override the upstream to
-  `172.31.240.251#5335` (lib/install.sh:2652-2653, mac/start-container.sh:500-501).
+  `172.31.240.251#5335` (lib/install.sh:2654-2655, mac/start-container.sh:500-501).
 - Pi-hole query logging is off in the shipped config
   (pihole/etc/pihole.toml:197). dnsmasq `log-queries` is commented out
   (pihole/etc/dnsmasq.conf:48). baseline: unverified at runtime for both
@@ -164,12 +164,12 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   file and renames it, after the route directory is checked and seeded, so
   the directory never holds a unit with an unfilled placeholder) and both
   macOS launch paths
-  (lib/install.sh:2665, mac/start-container.sh:512), the same directory
+  (lib/install.sh:2667, mac/start-container.sh:512), the same directory
   the controller manages (lib/platform/linux.sh:18,
   lib/platform/macos.sh:22). The installers seed it before Unbound first
   starts with an identity route, cloudflare-exit at generation 1, never the
-  compat route (lib/recovery.sh:487-499, lib/install.sh:1981,
-  lib/install.sh:2498); an include already there is the controller's and
+  compat route (lib/recovery.sh:487-499, lib/install.sh:1983,
+  lib/install.sh:2500); an include already there is the controller's and
   is kept [PRIV-ROUTE-IDENTITY]. Since Sub-plan 5 Task 1.4 every launch
   path that starts Unbound first runs the controller's launcher
   `<controller root>/route-start`: the quadlet's ExecStartPre
@@ -178,7 +178,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   deb/persistent-podman.sh:129 drop the line with a warning when the path
   cannot go into a unit), the macOS agent before it creates
   Unbound (mac/start-container.sh:477, called at mac/start-container.sh:508)
-  and the macOS installer's first run (lib/install.sh:2659). The launcher is
+  and the macOS installer's first run (lib/install.sh:2661). The launcher is
   written at install before any schedule (health/nice-dns-health:758,
   health/nice-dns-health:1064) and runs `route-start`, which acts only for an
   active install (health/nice-dns-health:1043-1045). Under the controller's
@@ -229,8 +229,8 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   through Pi-hole. The run writes the transport receipt
   (`bash tests/run.sh receipt transport`) [EVD-FAILURES-COUNTED].
 - The macOS installers edit the build copies: unbound.conf binds 0.0.0.0 and
-  allows 172.31.240.248/29 (lib/install.sh:2249-2252), and the route include
-  forwards to `172.31.240.252@853` (lib/install.sh:2255-2256).
+  allows 172.31.240.248/29 (lib/install.sh:2251-2254), and the route include
+  forwards to `172.31.240.252@853` (lib/install.sh:2257-2258).
 - Provider identity is bound per route. Each proxy listener names one
   provider and one TLS name (routes/providers.tsv:14-17, DEC-001), and the
   default route authenticates `tor.cloudflare-dns.com`
@@ -265,7 +265,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   [SEC-DNSSEC-SIGNED] [SEC-DNSSEC-UNSIGNED] [SEC-DNSSEC-BOGUS].
   Since Sub-plan 4 Task 2.2 /var/lib/unbound is the volume
   nice-dns-unbound-anchor on both platforms (deb/quadlet/unbound.container:21,
-  lib/install.sh:2664, mac/start-container.sh:511), so a new container keeps
+  lib/install.sh:2666, mac/start-container.sh:511), so a new container keeps
   the anchor's RFC 5011 state; until then each one re-seeded from the image.
 - Resolver management is a Unix socket, `/run/unbound/control.sock`, with
   `control-use-cert: no` and no TCP listener or key files
@@ -279,13 +279,13 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
 - Unbound does not use IPv6 (`do-ip6: no`, unbound/etc/unbound.conf:19).
   Linux installs disable IPv6 through a sysctl.d drop-in for `all`,
   `default` and `lo`, then switch off every existing device
-  (lib/install.sh:1698-1718). That alone did not hold: NetworkManager's
+  (lib/install.sh:1700-1720). That alone did not hold: NetworkManager's
   activation of a profile with `ipv6.method auto` set the NIC back to 0 on
   every boot (measured 2026-10-12, BL-050). Since the 2026-10-12 Mullvad
   findings plan an owned NetworkManager dispatcher hook,
   `91-nice-dns-ipv6`, with a copy in `pre-up.d`, sets the activating
   device's own `disable_ipv6` to 1 on pre-up, up and reapply
-  (lib/install.sh:1691-1693, deb/91-nice-dns-ipv6:45-65). It skips `lo` and
+  (lib/install.sh:1693-1695, deb/91-nice-dns-ipv6:45-65). It skips `lo` and
   Mullvad's `*-mullvad` tunnel, which `default` already covers.
   NetworkManager sends pre-up only after it set up IP, and the Stage 3 gate's
   strict capture (2026-10-12) held 5 frames from the NIC across a boot,
@@ -293,7 +293,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   duplicate-address check from `::`. So the install also sets
   `ipv6.method disabled` on each Ethernet and Wi-Fi profile stored on disk
   (a keyfile under /etc, or a netplan profile), and NetworkManager then keeps
-  the device's IPv6 off itself (lib/install.sh:1719-1726,
+  the device's IPv6 off itself (lib/install.sh:1721-1728,
   deb/custom-dns-deb:188-265). On the netplan VM NetworkManager kept the
   change in /etc/netplan/90-NM-<uuid>.yaml; after a reboot the profile still
   read `disabled`, and the strict capture across the reboot, `nmcli
@@ -307,7 +307,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   case on a host whose NIC has no stored profile (NetworkManager's "Wired
   connection 1"); turning it into a stored one is not done. No install path
   writes `ipv6.disable=1`; the grub drop-in earlier versions shipped is
-  removed (lib/install.sh:1728-1740).
+  removed (lib/install.sh:1730-1742).
 - The Linux pod publishes DNS and the admin UI on the host loopback only:
   127.0.0.1:53 TCP/UDP and 127.0.0.1:8880 (deb/quadlet/nice-dns.pod:17-19)
   [SEC-LISTENERS]. Until Sub-plan 4 Task 2.1 it published :53 with no host
@@ -815,7 +815,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   `legacy`: its state before nice-dns is unknown [SEC-OWNED-RESTORE].
   Since the 2026-10-12 Mullvad findings plan a Linux first install also
   records each device's own `disable_ipv6` in `ipv6-devices.tsv` beside the
-  record, only while no nice-dns switch is in force (lib/install.sh:1683-1690,
+  record, only while no nice-dns switch is in force (lib/install.sh:1685-1692,
   deb/91-nice-dns-ipv6:52-64). The hook and its `pre-up.d` copy are owned
   files (deb/custom-dns-deb:57-66), and the restore gives each recorded
   device its value back after the hook is gone
@@ -834,7 +834,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   rolls back gives back what its own profile step changed, and the record
   as it was before it; a profile the previous deployment had disabled stays
   so. Every profile step starts with no undo list, and a successful install
-  drops its own, so a later rollback never undoes an earlier install (lib/install.sh:1084-1089, deb/custom-dns-deb:278-318, lib/install.sh:1989-1992). On a netplan host NetworkManager keeps the change in
+  drops its own, so a later rollback never undoes an earlier install (lib/install.sh:1084-1089, deb/custom-dns-deb:278-318, lib/install.sh:1991-1994). On a netplan host NetworkManager keeps the change in
   /etc/netplan/90-NM-<uuid>.yaml: the method comes back, the file is
   rewritten by NetworkManager, not restored byte for byte.
   On a `legacy` host the Linux record also lists the NetworkManager
@@ -855,25 +855,25 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   not touched, so it fails closed until the new stack answers (on a Linux
   host whose Mullvad the preparation switched to its default DNS, Mullvad's
   resolver holds until the pin instead; step 6)
-  (lib/install.sh:1587-1613). The controller's
+  (lib/install.sh:1587-1615). The controller's
   schedules are held for the transaction (lib/install.sh:925-943).
   macOS builds run in the interruption window (`container build` wedges a
   running dnsnet), without `--pull`; their bases are pulled in preparation
-  (lib/install.sh:57, lib/install.sh:2282-2290).
+  (lib/install.sh:57, lib/install.sh:2284-2292).
   The builds and the volume hand-over run containers on the default
   network, after which Apple's runtime brings dnsnet containers up with
   their interfaces down, so the runtime is restarted before dnsnet and the
-  stack start (lib/install.sh:2600-2615). A macOS rollback stops the builder
+  stack start (lib/install.sh:2602-2617). A macOS rollback stops the builder
   and restarts the runtime the same way before a previous stack comes back,
   and starts the runtime again if that restart failed
-  (lib/install.sh:2469-2475, lib/install.sh:1068, lib/install.sh:1069-1078).
+  (lib/install.sh:2471-2477, lib/install.sh:1068, lib/install.sh:1069-1078).
 - The resolver is pinned only after the new stack answers an ordinary query
   at the pinned address and Unbound resolves over its authenticated route
   (lib/install.sh:960-975,
   lib/install.sh:981-988), and after the installed
   controller passes its self-check (lib/install.sh:1006-1012).
-  Linux: lib/install.sh:1974-1994. macOS:
-  lib/install.sh:2489-2514; `mac/persist.sh` loads the
+  Linux: lib/install.sh:1976-1996. macOS:
+  lib/install.sh:2491-2516; `mac/persist.sh` loads the
   start-container agent, whose first run pins every service, only after the
   controller installed and its installed copy passed its self-check
   (mac/persist.sh:58-81). The pin is
@@ -890,8 +890,8 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   (manifest status `rolled-back-dns-not-restored`).
 - Uninstall removes the stack, images, bridge service, controller and, on
   macOS, a debug monitor set up by hand, and gives back the recorded DNS state
-  (lib/install.sh:2001-2060,
-  lib/install.sh:2519-2528;
+  (lib/install.sh:2003-2062,
+  lib/install.sh:2521-2530;
   deb/custom-dns-deb:459-563, mac/start-container-root.sh:222-255).
   The Linux helper puts resolv.conf back first and whole (a new file or
   link renamed over it) while `dns=none` still holds NetworkManager off it;
@@ -899,7 +899,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   stays (deb/custom-dns-deb:453-457). The macOS helper tries every
   service and keeps the record when one fails. A restore that did not
   complete fails the uninstall, which says so after removing the rest
-  (lib/install.sh:2064-2069).
+  (lib/install.sh:2066-2071).
   On macOS every change of the host resolver, the pin (`post`) and a
   restore (complete or not), ends with a flush of the system DNS cache:
   getaddrinfo otherwise kept failing names for about 80 s after the stack
@@ -930,7 +930,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   prompting until the install ends, so a late rollback can still use sudo
   (lib/install.sh:728-737). NetworkManager's `dns=dnsmasq` is overridden by
   the owned `90-nice-dns.conf` drop-in, never by editing NetworkManager.conf
-  (lib/install.sh:2073-2095). On a host where the user had no
+  (lib/install.sh:2075-2097). On a host where the user had no
   subordinate id ranges, preparation runs `podman system migrate` for the
   ranges it added and names any running container that stops
   (lib/install.sh:1466-1474).
@@ -946,7 +946,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   (lib/install.sh:1175-1226) and, with cosign, the
   signatures (lib/install.sh:1235-1263). The
   quadlet still names `:latest` (deb/quadlet/tor-haproxy.container:14), which activation
-  points at the locked image (lib/install.sh:2132-2141).
+  points at the locked image (lib/install.sh:2134-2143).
   Each generation's manifest records the source commit, the local image
   ids, the locked references and the signature results
   (lib/install.sh:242-304).
@@ -964,29 +964,29 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   `pre`/`post` (mac/start-container-root.sh:268-272). That is VPN state the
   installer does not own (ARCH-06); the installer itself never calls `pre`.
 - Linux drives Mullvad's DNS setting since the 2026-10-12 Mullvad findings
-  plan (BL-048, DEC-019; lib/install.sh:1743-1761). Connected Mullvad
+  plan (BL-048, DEC-019; lib/install.sh:1745-1763). Connected Mullvad
   rewrote the pin within milliseconds unless its setting was custom
   127.0.0.1, and with that setting and nothing answering the host had no DNS
   (measured 2026-10-12, Mullvad 2026.3). With `mullvad` installed, once the
   source is staged (install-deb.sh:64, install-deb-hardened.sh:85) the
   install reads `mullvad dns get` and refuses (exit 1) on output it does not
-  know (lib/install.sh:1772-1785). It records the setting it found and the
+  know (lib/install.sh:1774-1787). It records the setting it found and the
   one from before nice-dns in `generations/<gen>/mullvad-dns.tsv`, 0600. A
   found custom 127.0.0.1 inherits the previous generation's earlier setting
   or, with no record, stands in as Mullvad's default. It switches to the
   default only when the setting is loopback-only custom, no nice-dns stack
-  runs and none of its servers answers (lib/install.sh:1874-1905). After
-  the pin it sets custom 127.0.0.1 (lib/install.sh:1909-1914, called at
-  lib/install.sh:1969); the pin check then retries up to 5 times, 1 s
+  runs and none of its servers answers (lib/install.sh:1876-1907). After
+  the pin it sets custom 127.0.0.1 (lib/install.sh:1911-1916, called at
+  lib/install.sh:1971); the pin check then retries up to 5 times, 1 s
   apart (lib/install.sh:1014-1026). A failed preparation, including a signal,
   and a rollback put back the setting the install found
-  (lib/install.sh:1838-1850, lib/install.sh:1090-1093). Uninstall restores
+  (lib/install.sh:1840-1852, lib/install.sh:1090-1093). Uninstall restores
   the setting from before nice-dns while it is still custom 127.0.0.1, and
   otherwise leaves the owner's setting alone; with no record it sets the
   default. A setting or record it cannot read fails the uninstall
-  (lib/install.sh:1921-1942, called at lib/install.sh:2032). If the host
+  (lib/install.sh:1923-1944, called at lib/install.sh:2034). If the host
   then does not resolve, it names `mullvad reconnect`
-  (lib/install.sh:1948-1953). Whether the resolver record taken while
+  (lib/install.sh:1950-1955). Whether the resolver record taken while
   Mullvad was connected resolves after an uninstall with Mullvad
   disconnected is baseline: unverified [SEC-OWNED-RESTORE]
   [PRIV-NO-HOST-PUBLIC].
@@ -1005,7 +1005,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   secret `nice-dns-pihole-webpassword` (lib/install.sh:366), which the
   quadlet mounts for uid 1000 (deb/quadlet/pi-hole.container:33-34).
   macOS mounts the directory read-only at /run/secrets at both launch
-  sites (lib/install.sh:2642-2655, mac/start-container.sh:490-503). Both
+  sites (lib/install.sh:2644-2657, mac/start-container.sh:490-503). Both
   images read it through `WEBPASSWORD_FILE` and refuse to start when it is
   missing, unreadable or empty (pihole/nd-start.sh:30-38; the
   hardened base's start.sh, pi-hole-hardened 4574d52). Uninstall removes
@@ -1017,7 +1017,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   (deb/quadlet/pi-hole-standard.conf:13-14); the hardened image keeps
   NET_BIND_SERVICE with no-new-privileges
   (deb/quadlet/pi-hole-hardened.conf:11-13). macOS runs the standard set for
-  both (lib/install.sh:2647). pihole-FTL runs as uid 1000 in both. Pi-hole's
+  both (lib/install.sh:2649). pihole-FTL runs as uid 1000 in both. Pi-hole's
   NTP server and client are off (pihole/etc/pihole.toml:492, 502, 515), so
   it listens on :53, :80 and :443 only (tests/integration/deployment-security.sh)
   [SEC-LEAST-PRIV] [SEC-LISTENERS].
@@ -1038,22 +1038,22 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   upgrades; only uninstall removes it (lib/install.sh:480-506), and only
   once host DNS was given back: a failed or interrupted restore keeps the
   state, the admin password and the current-generation marker for the retry
-  or a reinstall (lib/install.sh:2053-2060, called at lib/install.sh:2042 and
-  lib/install.sh:2526) [SEC-OWNED-RESTORE]. Tor state: the Linux volume
+  or a reinstall (lib/install.sh:2055-2062, called at lib/install.sh:2044 and
+  lib/install.sh:2528) [SEC-OWNED-RESTORE]. Tor state: the Linux volume
   nice-dns-tor-<proxy> (deb/quadlet/tor-haproxy.container:20,
   deb/quadlet/tor-socat.container:16), on macOS
   ~/.local/state/nice-dns/tor-<proxy>, now mounted by the installer's run
-  too (lib/install.sh:2670, mac/start-container.sh:543). The root anchor:
+  too (lib/install.sh:2672, mac/start-container.sh:543). The root anchor:
   WF-DNS-001. The operator's Pi-hole lists (user decision: lists survive,
   configuration comes from the image): gravity.db on the volume
   nice-dns-pihole-lists (pihole/etc/pihole.toml:946,
-  deb/quadlet/pi-hole.container:19, lib/install.sh:2645,
+  deb/quadlet/pi-hole.container:19, lib/install.sh:2647,
   mac/start-container.sh:493). Each image keeps its build's gravity.db as a
   seed; pihole/nd-start.sh uses the volume as it is while the seed ids
   match and otherwise carries the operator's rows into the new seed
   (pihole/nd-start.sh:47, pihole/merge-lists.sql), keeping the previous
   file. macOS creates its volumes and hands them to the image's user in the
-  interruption window (lib/install.sh:407-422, lib/install.sh:2497):
+  interruption window (lib/install.sh:407-422, lib/install.sh:2499):
   Apple's volumes start root-owned and empty. Checked per entrypoint by
   tests/integration/lifecycle-transitions.sh, whose failed steps must leave
   the previous deployment exactly as it was [SEC-OWNED-RESTORE].
@@ -1218,8 +1218,8 @@ Sources: ARCH-07, design "Bridge lifecycle".
   and keeps the cache (mac/start-container.sh:128-130). Tor's DataDirectory
   persists (mac/start-container.sh:42, mac/start-container.sh:543).
 - The macOS installers run the fetcher without `--force`
-  (lib/install.sh:2338). They require at least three bridges
-  (lib/install.sh:2358-2361). Since Sub-plan 4 Task 1.1 both pass every
+  (lib/install.sh:2340). They require at least three bridges
+  (lib/install.sh:2360-2363). Since Sub-plan 4 Task 1.1 both pass every
   BRIDGEn to the proxy; the hardened one used to pass only BRIDGE1 and
   BRIDGE2.
 
