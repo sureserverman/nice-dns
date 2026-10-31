@@ -352,6 +352,30 @@ t_route_start_launcher_demotes_an_onion_only_when_active() {
       assert_rc 0 "$SC_RC" "$plat: active: $SC_OUT"
       assert_eq "cloudflare-exit	5" "$(info)" "$plat: an active controller demotes the onion to the exit at the next generation"
       assert_match 'ROUTE-START result=applied route=cloudflare-exit generation=5' "$(cat "$(dirname "$SC_ROOT")/../Logs/nice-dns-health/health.log" "$XDG_STATE_HOME/nice-dns-health/health.log" 2>/dev/null)" "$plat: the controller log records it"
+      # Live 2026-10-31: a unit that cannot start retried every few seconds, and
+      # its busy lines filled status's view of the controller.
+      local lg n holder
+      lg="$(ls "$(dirname "$SC_ROOT")/../Logs/nice-dns-health/health.log" "$XDG_STATE_HOME/nice-dns-health/health.log" 2>/dev/null | head -1)"
+      # Only an onion include takes the lock.
+      rm -f "$(ND_PLATFORM="$plat" bash -c '. "$1/lib/platform/'"$plat"'.sh" && nd_platform_route_dir' _ "$SC_TREE")"/forward-route.conf \
+        "$(ND_PLATFORM="$plat" bash -c '. "$1/lib/platform/'"$plat"'.sh" && nd_platform_route_dir' _ "$SC_TREE")"/desired.tsv
+      seed
+      # Held by a live process: a dead holder's lock is reclaimed.
+      ND_PLATFORM="$plat" bash -c '. "$1/lib/state.sh" && nd_state_init && nd_state_lock >"$2" && mv "$2" "$2.ok" && sleep 30' _ "$SC_TREE" "$CASE_DIR/tok-$plat" &
+      holder=$!
+      n=0; until [ -f "$CASE_DIR/tok-$plat.ok" ] || [ "$n" -ge 50 ]; do n=$((n + 1)); sleep 0.1; done
+      assert_file "$CASE_DIR/tok-$plat.ok" "$plat: the lock is held"
+      n="$(grep -c ROUTE-START "$lg")"
+      sc_launch
+      assert_rc 0 "$SC_RC" "$plat: busy: $SC_OUT"
+      assert_match 'busy' "$SC_OUT" "$plat: the lock was held"
+      assert_eq "$n" "$(grep -c ROUTE-START "$lg")" "$plat: a busy lock logs nothing"
+      pkill -P "$holder" 2>/dev/null; kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+      printf '2026-10-31T00:00:00+0000 TICK active action=no-op target=- result=none generation=1\n' >>"$lg"
+      for n in 1 2 3 4 5 6; do printf '2026-10-31T00:00:0%s+0000 ROUTE-START result=kept route=x generation=1\n' "$n" >>"$lg"; done
+      sc_cli "$SC_BIN" status
+      assert_match 'TICK active action=no-op' "$SC_OUT" "$plat: status still shows the controller"
+      assert_not_match 'result=kept route=x' "$SC_OUT" "$plat: not the start attempts"
       # A receipt the launcher must not trust, or cannot use: nothing runs,
       # and it still succeeds (Tier-1 review S6). The onion is back first.
       rm -f "$(ND_PLATFORM="$plat" bash -c '. "$1/lib/platform/'"$plat"'.sh" && nd_platform_route_dir' _ "$SC_TREE")"/forward-route.conf \

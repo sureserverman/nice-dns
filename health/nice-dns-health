@@ -899,9 +899,10 @@ cmd_status() {
   echo "=== Install ==="
   install_report || true
   echo
+  # The controller's own lines: a failing unit's start attempts must not hide them.
   echo "=== Last 5 health.log entries ==="
   if [ -f "$ROLL_LOG" ]; then
-    tail -5 "$ROLL_LOG"
+    grep -v ' ROUTE-START ' "$ROLL_LOG" | tail -5
   else
     echo "  (no runs yet)"
   fi
@@ -1052,7 +1053,11 @@ cmd_route_start() {
   fi
   mkdir -p "$LOG_DIR"
   out="$(start_route)"; rc=$?
-  log_to_file "$(ts) ROUTE-START $(printf '%s\n' "$out" | awk -F '\t' '$1 == "result" || $1 == "route" || $1 == "generation" { printf "%s%s=%s", s, $1, $2; s = " " }')"
+  # A busy lock means nothing was done, and a unit that cannot start comes back
+  # every few seconds: a line each would push the controller out of the log.
+  if ! printf '%s\n' "$out" | grep -q '^result	busy$'; then
+    log_to_file "$(ts) ROUTE-START $(printf '%s\n' "$out" | awk -F '\t' '$1 == "result" || $1 == "route" || $1 == "generation" { printf "%s%s=%s", s, $1, $2; s = " " }')"
+  fi
   printf '%s\n' "$out"
   return "$rc"
 }

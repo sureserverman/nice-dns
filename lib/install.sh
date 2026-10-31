@@ -248,6 +248,9 @@ nd_install_begin() {
   [ -d "${ND_INST_SRC:-}" ] || { _nd_inst_err "no source tree at '${ND_INST_SRC:-}'"; return 1; }
   ND_INST_TREE="$ND_INST_SRC"
   ND_INST_BASE_SIBLING=""
+  # Before anything changes: a late refusal had already updated packages, begun
+  # a generation and tagged images (live 2026-10-31).
+  if [ "$ND_INST_PIHOLE" = hardened ]; then _nd_inst_hardened_sibling_dir >/dev/null || return 1; fi
 
   # Source generation: the staged tree's commit and whether it has local
   # changes to tracked files (untracked files, such as locally built
@@ -1271,17 +1274,24 @@ _nd_inst_record_blocklist() {
   _nd_inst_manifest_row "$ND_INST_MANIFEST" blocklist allowlist "sha256:$sha"
 }
 
-# _nd_inst_hardened_sibling: the sibling pi-hole-hardened checkout the hardened
-# base is built from (it is not published; see the lock), with its commit
-# recorded. Refuses when there is none.
-_nd_inst_hardened_sibling() {
-  local sib c
+# _nd_inst_hardened_sibling_dir: the sibling pi-hole-hardened checkout the
+# hardened base is built from (it is not published; see the lock). Refuses when
+# there is none.
+_nd_inst_hardened_sibling_dir() {
+  local sib
   # The `nice-dns` command names it when it runs off a clone or the kept source.
   sib="${ND_INST_HARDENED_SIBLING:-$(cd "$ND_INST_SRC/.." && pwd)/pi-hole-hardened}"
   if [[ ! -f "$sib/Dockerfile" || ! -f "$sib/post-install.sh" ]]; then
     _nd_inst_err "the hardened base is not published (release/images.lock); clone https://github.com/sureserverman/pi-hole-hardened next to nice-dns/ ($sib) and run again"
     return 1
   fi
+  printf '%s\n' "$sib"
+}
+
+# _nd_inst_hardened_sibling: that checkout, with its commit recorded.
+_nd_inst_hardened_sibling() {
+  local sib c
+  sib="$(_nd_inst_hardened_sibling_dir)" || return 1
   c="$(git -C "$sib" rev-parse HEAD 2>/dev/null)" || c=""
   case "$c" in ''|*[!0-9a-f]*) c=unknown ;; esac
   _nd_inst_manifest_row "$ND_INST_MANIFEST" source hardened-base "$sib@$c" || return 1
