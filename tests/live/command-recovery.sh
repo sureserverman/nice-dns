@@ -97,7 +97,7 @@ cr_settled() {
       && [ "$(cr_obs "$r" runtime)" = healthy ] && cr_fresh "$a" "$(date +%s)" >/dev/null; then
       return 0
     fi
-    [ "$(date +%s)" -lt "$end" ] || fail "$a did not settle within ${CR_SETTLE_MAX}s: $(il_sec "$r" observe | tr '\n' ' ')"
+    [ "$(date +%s)" -lt "$end" ] || fail "$a did not settle within ${CR_SETTLE_MAX}s: $(il_sec "$r" observe | cut -f2,3 | tr '\n' ' '); last op: $(grep -v level=warning "$(il_dir "$a")/ops.log" | tail -n 2 | tr '\n' ' ')"
     sleep "$CR_POLL"
   done
 }

@@ -188,7 +188,7 @@
 #   stop-proxy       stop --component's own unit (macOS: its container) while
 #                    Pi-hole keeps running, as on 2026-10-29
 #   fresh-name       read-only: one fresh name through the client resolver;
-#                    prints fresh_name, the name and the status
+#                    after the identity, prints fresh_name, the name and the status
 #   command          run the nice-dns command: --mode restart|reinstall|uninstall
 #                    by its installed full path (reinstall --local: the branch
 #                    may not be published), --mode install --cell PROXY/standard
@@ -1741,6 +1741,7 @@ case "$NICE_DNS_OP" in
     if [ "$plat" = macos ]; then homebrew_path; ctl stop "$NICE_DNS_COMPONENT"
     else systemctl --user stop "$NICE_DNS_COMPONENT.service"; fi ;;
   fresh-name)
+    identity
     n="nd-cr-$(date +%s)-$$.example.com"
     st=$(dig "@${RESOLVER%#*}" -p "${RESOLVER#*#}" +time=10 +tries=1 "$n" A 2>/dev/null | awk '/status:/ { sub(/,.*/, "", $6); print $6; exit }')
     printf 'fresh_name\t%s\t%s\n' "$n" "${st:-timeout}" ;;
