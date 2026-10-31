@@ -432,6 +432,7 @@ _nd_inst_macos_volume() {
 
 # _nd_inst_route_dir: the platform adapter's route directory.
 _nd_inst_route_dir() {
+  # shellcheck disable=SC1090  # the platform adapter of the tree being installed
   ( . "${ND_INST_TREE:-$ND_INST_SRC}/lib/platform/$ND_INST_PLATFORM.sh" && nd_platform_route_dir )
 }
 
