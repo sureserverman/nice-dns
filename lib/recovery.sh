@@ -18,6 +18,8 @@
 #                                         unreachable): the only Tor restart path
 #   nd_recovery_restart_unbound <request_id>
 #                                         restart Unbound (macOS: the stack)
+#   nd_recovery_restart_pihole <request_id>
+#                                         restart Pi-hole (macOS: the stack)
 #   nd_recovery_restart_stack <request_id>
 #                                         restart the whole stack
 #   repair_runtime <fault> <request_id> [name...]
@@ -792,6 +794,10 @@ _nd_rec_restart_verified() {
 
 nd_recovery_restart_unbound() { _nd_rec_restart_verified "${1:-}" unbound unbound nd_platform_restart_unbound; }
 
+# nd_recovery_restart_pihole: acknowledged by a new Pi-hole container start,
+# ready when local-service answers again (DEC-006).
+nd_recovery_restart_pihole() { _nd_rec_restart_verified "${1:-}" pi-hole pi-hole nd_platform_restart_pihole; }
+
 # nd_recovery_restart_stack: every member restarts; the proxy's new start is the
 # acknowledgement, because the ladder's outage is what this answers.
 nd_recovery_restart_stack() { _nd_rec_restart_verified "${1:-}" stack "" nd_platform_restart_stack; }
@@ -896,6 +902,7 @@ nd_recovery_apply() {
         tor) nd_recovery_restart_tor "$id"; return $? ;;
         proxy) nd_recovery_restart_service "$id"; return $? ;;
         unbound) nd_recovery_restart_unbound "$id"; return $? ;;
+        pi-hole) nd_recovery_restart_pihole "$id"; return $? ;;
         stack) nd_recovery_restart_stack "$id"; return $? ;;
         *) nd_recovery_journal "$id" controller refused "no restart for component '$target'"; return 2 ;;
       esac ;;
@@ -926,6 +933,7 @@ nd_recovery_apply() {
 #                     uncorroborated".
 #   runtime           the runtime observation is healthy
 #   unbound           the unbound observation is healthy
+#   pi-hole           local-service is healthy (Pi-hole answers pi.hole)
 _nd_rec_readiness() {
   local f d row id comp at ok det age ids
   d="$(nd_platform_state_dir)"; f="$d/recovery.tsv"
@@ -953,6 +961,8 @@ _nd_rec_readiness() {
         fi ;;
       runtime|unbound)
         awk -F '\t' -v n="$comp" '$1 == "obs" && $2 == n && $3 == "healthy" { f = 1 } END { exit !f }' "$1" && ok=1 ;;
+      pi-hole)
+        awk -F '\t' '$1 == "obs" && $2 == "local-service" && $3 == "healthy" { f = 1 } END { exit !f }' "$1" && ok=1 ;;
     esac
     age=$(( $2 - at ))
     if [ "$ok" = 1 ]; then nd_recovery_journal "$id" "$comp" ready "observed working ${age}s after the acknowledgement$det"

@@ -1173,3 +1173,78 @@ t_the_linux_adapter_lists_containers_paused_or_running() {
     assert_match 'containers-paused' "$(nd_platform_runtime_repairs)" "the Linux adapter repairs a paused container"
   ) || exit 1
 }
+
+# ─────────────────────────── fakes: Pi-hole restart ─────────────────────────
+
+# ra_ph_obs <file> <local-service verdict> [container verdict]: routes healthy,
+# with Pi-hole's records.
+ra_ph_obs() {
+  ra_obs "$1" healthy
+  printf 'obs\tcontainer:pi-hole\t%s\t20\t%s restarts 0\n' "${3:-healthy}" "$( [ "${3:-healthy}" = healthy ] && echo 'running: health healthy' || echo 'unhealthy: FTL is not answering')" >>"$1"
+  printf 'obs\tlocal-service\t%s\t4\tpi.hole\n' "$2" >>"$1"
+}
+
+t_pihole_restart_journals_requested_acknowledged_ready() {
+  local plat out rc
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      : >"$FAKE/restart_changes"
+      ra_dec pi-hole
+      out="$(nd_recovery_apply "$CASE_DIR/dec" ra-ph1 7)"; rc=$?
+      assert_rc 0 "$rc" "$plat: a new Pi-hole generation is the acknowledgement: $out"
+      assert_eq acknowledged "$(ra_field result "$out")" "$plat: result"
+      assert_eq pi-hole "$(ra_field component "$out")" "$plat: component"
+      assert_eq "$(printf 'pi-hole requested\npi-hole acknowledged')" "$(ra_journal)" "$plat: no readiness in the acknowledging call"
+      if [ "$plat" = linux ]; then
+        assert_eq 1 "$(grep -c '^systemctl --user restart pi-hole.service$' "$FAKE_LOG")" "linux: Pi-hole alone, once"
+        assert_eq 1 "$(grep -c '^systemctl ' "$FAKE_LOG")" "linux: no other unit is touched"
+        assert_match 'inspect .* pi-hole$' "$(grep '^podman inspect' "$FAKE_LOG" | head -n 1)" "linux: the generation read is Pi-hole's"
+      else
+        assert_eq 1 "$(grep -c '^launchctl kickstart -k gui/[0-9]*/org.nice-dns.start-container$' "$FAKE_LOG")" "macos: the stack's kickstart, once"
+        assert_file "$HOME/.local/state/nice-dns/restart-requested" "macos: asks the agent to rebuild"
+      fi
+      # Readiness is a later observation of Pi-hole answering pi.hole.
+      ra_ph_obs "$CASE_DIR/obs" unhealthy
+      _nd_rec_readiness "$CASE_DIR/obs" "$(date +%s)"
+      assert_eq "$(printf 'pi-hole requested\npi-hole acknowledged')" "$(ra_journal)" "$plat: still failing, not ready"
+      ra_ph_obs "$CASE_DIR/obs" healthy
+      _nd_rec_readiness "$CASE_DIR/obs" "$(date +%s)"
+      assert_eq "$(printf 'pi-hole requested\npi-hole acknowledged\npi-hole ready')" "$(ra_journal)" "$plat: ready once local-service answers"
+    ) || exit 1
+  done
+}
+
+t_pihole_restart_without_a_new_generation_is_not_acknowledged() {
+  local plat out rc
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      ra_dec pi-hole
+      out="$(nd_recovery_apply "$CASE_DIR/dec" ra-ph2 7)"; rc=$?
+      assert_rc 1 "$rc" "$plat: an unchanged generation fails: $out"
+      assert_eq not-acknowledged "$(ra_field result "$out")" "$plat: result"
+      assert_eq "$(printf 'pi-hole requested\npi-hole not-acknowledged')" "$(ra_journal)" "$plat: journal"
+    ) || exit 1
+  done
+}
+
+t_pihole_restart_is_refused_without_the_lock_and_in_shadow() {
+  local plat out rc i
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      : >"$FAKE/restart_changes"
+      ra_dec pi-hole
+      out="$(ND_RECOVERY_LOCK_TOKEN=not-the-holder nd_recovery_apply "$CASE_DIR/dec" ra-ph4 7)"; rc=$?
+      assert_rc 5 "$rc" "$plat: a lost lock stops it: $out"
+      assert_eq "" "$(grep -E '^(systemctl|launchctl)' "$FAKE_LOG")" "$plat: nothing was restarted"
+      export ND_POLICY_STARTUP_S=0
+      ra_ph_obs "$CASE_DIR/obs" unhealthy unhealthy
+      for i in 1 2 3; do out="$(nd_recovery_tick shadow "$CASE_DIR/obs")"; done
+      assert_eq pi-hole "$(ra_field target "$out")" "$plat: shadow decides the restart"
+      assert_eq shadow "$(ra_field result "$out")" "$plat: and only records it"
+      assert_eq "" "$(grep -E '^(systemctl|launchctl)' "$FAKE_LOG")" "$plat: shadow runs no restart"
+    ) || exit 1
+  done
+}

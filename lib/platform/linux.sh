@@ -181,6 +181,14 @@ nd_platform_restart_unbound() {
   nd_bounded "$1" "$2/svc" "$2/svc.err" systemctl --user restart unbound.service
 }
 
+# nd_platform_restart_pihole <deadline> <tmp>: Pi-hole's service alone; nothing
+# depends on it but the pod's Wants=, which a restart does not propagate (mint,
+# 2026-11-05). The controller owns this restart: the quadlet is
+# HealthOnFailure=none (DEC-021, WF-DNS-002).
+nd_platform_restart_pihole() {
+  nd_bounded "$1" "$2/svc" "$2/svc.err" systemctl --user restart pi-hole.service
+}
+
 # nd_platform_restart_stack <deadline> <tmp>: the whole pod. Each member has
 # BindsTo= on it, and it Wants= each member, so all three stop and start with it.
 nd_platform_restart_stack() {

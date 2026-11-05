@@ -256,6 +256,10 @@ nd_platform_restart_proxy() {
 # a Tor bootstrap.
 nd_platform_restart_unbound() { nd_platform_restart_proxy unbound "$1" "$2"; }
 
+# nd_platform_restart_pihole <deadline> <tmp>: the same kickstart, until a
+# per-container restart on Apple container is qualified (Sub-plan 1 Task 3.2).
+nd_platform_restart_pihole() { nd_platform_restart_proxy pi-hole "$1" "$2"; }
+
 # nd_platform_restart_stack <deadline> <tmp>: the same kickstart.
 nd_platform_restart_stack() { nd_platform_restart_proxy "" "$1" "$2"; }
 

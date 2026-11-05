@@ -1,0 +1,35 @@
+{
+ "baseline": {
+  "elapsed_s": 224.1,
+  "exit": 0,
+  "tail": "PASS  t_hung_runtime_is_bounded_and_cleaned\nPASS  t_image_restart_request_is_acknowledged_with_new_generation\nPASS  t_image_silence_is_not_acknowledged\nPASS  t_lost_lock_stops_every_action_before_it_changes_anything\nPASS  t_macos_agent_refetches_bridges_only_without_a_usable_set\nPASS  t_macos_restart_rebuilds_even_when_the_cache_answers\nPASS  t_macos_stopped_container_has_no_generation\nPASS  t_missing_container_is_started_by_name\nPASS  t_no_code_path_writes_the_unacknowledged_flag\nPASS  t_pihole_restart_is_refused_without_the_lock_and_in_shadow\nPASS  t_pihole_restart_journals_requested_acknowledged_ready\nPASS  t_pihole_restart_without_a_new_generation_is_not_acknowledged\nPASS  t_proxy_restart_goes_straight_to_the_service_restart\nPASS  t_readiness_is_per_request_and_corroborated_by_unbound\nPASS  t_request_write_is_never_an_acknowledgement\nPASS  t_route_switch_is_applied_without_touching_tor\nPASS  t_runtime_repair_acts_only_on_its_fault\nPASS  t_shadow_route_decision_writes_nothing_to_stderr\nPASS  t_stack_restart_brings_back_a_missing_proxy\nPASS  t_stack_restart_is_acknowledged_by_a_new_generation\nPASS  t_the_linux_adapter_lists_containers_paused_or_running\nPASS  t_the_pod_restart_repair_is_rate_limited\nPASS  t_tick_active_records_request_acknowledgement_then_readiness\nPASS  t_tick_readiness_times_out_as_not_ready\nPASS  t_tick_records_a_route_only_once_applied\nPASS  t_tick_records_a_route_that_already_runs\nPASS  t_tick_shadow_records_but_never_acts\nPASS  t_tick_skips_while_another_pass_holds_the_lock\nPASS  t_two_processes_racing_one_tick_wins\nPASS  t_unbound_probe_route_is_bounded\nPASS  t_unbound_restart_is_refused_without_the_lock_and_in_shadow\nPASS  t_unbound_restart_journals_requested_acknowledged_ready\nPASS  t_unbound_restart_without_a_new_generation_is_not_acknowledged\nPASS  t_unbound_without_probe_tool_is_ready_uncorroborated_on_both_platforms\nPASS  t_unreachable_proxy_gets_the_verified_service_restart\nPASS  t_unsupported_image_falls_back_once_to_a_verified_service_restart\nPASS  t_waits_are_bounded_in_wall_clock_seconds\ngroup integration/recovery-actions: collected=45 passed=45 failed=0\ncollected=45 passed=45 failed=0\nresult=pass run_id=20261105T161337Z-962ad4ed artifacts=/home/user/.local/state/nice-dns-tests/runs/20261105T161337Z-962ad4ed"
+ },
+ "break_patch": "--- a/lib/platform/linux.sh\n+++ b/lib/platform/linux.sh\n@@ -46,7 +46,7 @@\n   bin=\"$(nd_platform_runtime_bin)\" || return 3\n   # Paused containers too: plain `ps` leaves them out, and a paused one read as\n   # missing (BL-053); its own container:<name> record says paused.\n-  nd_bounded \"$1\" \"$2.raw\" \"$2.err\" \"$bin\" ps -a --filter status=running --filter status=paused --format '{{.Names}}'\n+  nd_bounded \"$1\" \"$2.raw\" \"$2.err\" \"$bin\" ps --format '{{.Names}}'\n   rc=$?\n   case \"$rc\" in 0) ;; 124) return 124 ;; *) [ -s \"$2.err\" ] || printf 'podman ps exited %s\\n' \"$rc\" >\"$2.err\"; return 4 ;; esac\n   grep -E '^[A-Za-z0-9][A-Za-z0-9_.-]*$' \"$2.raw\" >\"$2\"\n",
+ "build": null,
+ "created": "2026-11-05T16:20:34+00:00",
+ "fingerprint": "7b0df49ba7ffb096cc13136453458fd64276114c68b349cd39d316f8c63fdf4f",
+ "index": 4,
+ "kind": "claim",
+ "named_break": "the old reason comes back",
+ "no_build_reason": "shell library sourced by the test",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-01-restart-policy-plan.md",
+ "red": {
+  "elapsed_s": 224.4,
+  "exit": 1,
+  "tail": "PASS  t_image_silence_is_not_acknowledged\nPASS  t_lost_lock_stops_every_action_before_it_changes_anything\nPASS  t_macos_agent_refetches_bridges_only_without_a_usable_set\nPASS  t_macos_restart_rebuilds_even_when_the_cache_answers\nPASS  t_macos_stopped_container_has_no_generation\nPASS  t_missing_container_is_started_by_name\nPASS  t_no_code_path_writes_the_unacknowledged_flag\nPASS  t_pihole_restart_is_refused_without_the_lock_and_in_shadow\nPASS  t_pihole_restart_journals_requested_acknowledged_ready\nPASS  t_pihole_restart_without_a_new_generation_is_not_acknowledged\nPASS  t_proxy_restart_goes_straight_to_the_service_restart\nPASS  t_readiness_is_per_request_and_corroborated_by_unbound\nPASS  t_request_write_is_never_an_acknowledgement\nPASS  t_route_switch_is_applied_without_touching_tor\nPASS  t_runtime_repair_acts_only_on_its_fault\nPASS  t_shadow_route_decision_writes_nothing_to_stderr\nPASS  t_stack_restart_brings_back_a_missing_proxy\nPASS  t_stack_restart_is_acknowledged_by_a_new_generation\nFAIL  t_the_linux_adapter_lists_containers_paused_or_running (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261105T161722Z-34ffffd2/cases/integration-recovery-actions/t_the_linux_adapter_lists_containers_paused_or_running/case.log)\n      ASSERT FAIL: a paused container is not missing (BL-053): /status=running.*status=paused/ not found in:\n      podman ps --format {{.Names}}\nPASS  t_the_pod_restart_repair_is_rate_limited\nPASS  t_tick_active_records_request_acknowledgement_then_readiness\nPASS  t_tick_readiness_times_out_as_not_ready\nPASS  t_tick_records_a_route_only_once_applied\nPASS  t_tick_records_a_route_that_already_runs\nPASS  t_tick_shadow_records_but_never_acts\nPASS  t_tick_skips_while_another_pass_holds_the_lock\nPASS  t_two_processes_racing_one_tick_wins\nPASS  t_unbound_probe_route_is_bounded\nPASS  t_unbound_restart_is_refused_without_the_lock_and_in_shadow\nPASS  t_unbound_restart_journals_requested_acknowledged_ready\nPASS  t_unbound_restart_without_a_new_generation_is_not_acknowledged\nPASS  t_unbound_without_probe_tool_is_ready_uncorroborated_on_both_platforms\nPASS  t_unreachable_proxy_gets_the_verified_service_restart\nPASS  t_unsupported_image_falls_back_once_to_a_verified_service_restart\nPASS  t_waits_are_bounded_in_wall_clock_seconds\ngroup integration/recovery-actions: collected=45 passed=44 failed=1\ncollected=45 passed=44 failed=1\nresult=fail run_id=20261105T161722Z-34ffffd2 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261105T161722Z-34ffffd2"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "2.2",
+ "test": "bash tests/run.sh unit state-policy && bash tests/run.sh integration recovery-actions",
+ "text": "a paused unbound is not reported `containers-missing` (red if the old reason comes back)",
+ "touched": [
+  "lib/platform/linux.sh"
+ ],
+ "touched_blobs": {
+  "lib/platform/linux.sh": "0ec37323c24fe6520482a5483fd2ba16841e0f15"
+ },
+ "witness_blobs": {
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}
