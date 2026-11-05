@@ -45,11 +45,10 @@ HealthRetries=5
 # 90s gives pihole-FTL plenty of time to initialize. Gravity is pre-built
 # in the image so no first-start gravity download is required.
 HealthStartPeriod=90s
-# Health reports; it never restarts (see tor-haproxy.container: the
-# nice-dns-health controller is the one restart owner, DEC-021,
-# WF-DNS-002). A second owner here would race the controller's restart
-# ladder (lib/policy.sh). A process that exits is still restarted by
-# Restart= below.
+# Health reports; it never restarts. Restarts on health belong to the
+# nice-dns-health controller alone (DEC-021, WF-DNS-002); a second owner
+# here would race it (see tor-haproxy.container). A process that exits non-zero or on a
+# signal is still restarted by Restart= below.
 HealthOnFailure=none
 
 [Service]

@@ -309,8 +309,11 @@ write_failure_dump() {
         if [ "$IS_LINUX" -eq 1 ]; then
           echo "=== $rt inspect $c (state) ==="
           "$rt" inspect "$c" --format \
-            '  status={{.State.Status}} health={{if .State.Healthcheck}}{{.State.Healthcheck.Status}}{{else}}none{{end}} restarts={{.RestartCount}} pid={{.State.Pid}}' 2>&1 \
+            '  status={{.State.Status}} health={{if .State.Healthcheck}}{{.State.Healthcheck.Status}}{{else}}none{{end}} pid={{.State.Pid}}' 2>&1 \
             | sed 's/^/  /'
+          # The unit's count: quadlet's --replace --rm makes each systemd
+          # restart a new container, so podman's RestartCount stays 0.
+          echo "    unit restarts=$(systemctl --user show -p NRestarts --value "$c.service" 2>&1)"
           echo "=== $rt logs --tail 50 $c ==="
           "$rt" logs --tail 50 "$c" 2>&1 | sed 's/^/  /'
         else

@@ -27,10 +27,16 @@
 #                  state (platform adapter). healthy "running: health H
 #                  restarts N" (H healthy, starting or none); unhealthy
 #                  "unhealthy: <last check output> restarts N", "paused
-#                  restarts N" or "exited: rc X restarts N" (X is ? on
-#                  macOS); indeterminate when unread ("restarts ?"). Every
-#                  reason ends with the restart count, which the restart
-#                  policy reads. Optional to the validator, like proxy
+#                  restarts N" or "exited: rc X restarts N" for exited,
+#                  stopped or dead (X is ? on macOS); indeterminate
+#                  "transient: state S restarts N" for any other state (on
+#                  the way up or down), or unread ("restarts ?", with the
+#                  runtime's error). Every reason ends with the restart
+#                  count (Linux: the unit's NRestarts; macOS: the
+#                  controller's restarts.tsv), which the restart policy
+#                  reads from the reason's last words: a check output may
+#                  itself say "restarts". Optional to the validator, like
+#                  proxy
 #   proxy          the Tor proxy container's generation, "generation:<16 hex>"
 #                  (a hash that changes when the proxy restarts or is
 #                  recreated; indeterminate when unreadable). Optional to
@@ -273,8 +279,9 @@ _nd_obs_proxy() {
 # nd_platform_container_state. Every reason ends "restarts N" (the restart
 # policy reads the count there; "restarts ?" when the state was not read).
 _nd_obs_container() {
-  local c="$1" t0 dl rc line st h r x d
+  local c="$1" t0 dl rc line st h r x d e what
   t0="$(_nd_now_ms)"
+  rm -f "$_ND_H_TMP/cst.err"
   if [ "$_ND_H_RT" != ok ]; then
     _nd_obs "container:$c" indeterminate 0 "runtime not listed: no state for $c restarts ?"; return 0
   fi
@@ -284,7 +291,9 @@ _nd_obs_container() {
   case "$rc" in
     0) ;;
     124) _nd_obs "container:$c" indeterminate $(($(_nd_now_ms) - t0)) "deadline: the state of $c gave no answer within ${dl}s restarts ?"; return 0 ;;
-    *) _nd_obs "container:$c" indeterminate $(($(_nd_now_ms) - t0)) "unknown: the state of $c is not readable (exit $rc) restarts ?"; return 0 ;;
+    *) e="$(head -n 1 "$_ND_H_TMP/cst.err" 2>/dev/null | tr -d '\000-\037\177' | cut -c1-120)"
+       if [ "$rc" = 5 ]; then what="the restart count of $c"; else what="the state of $c"; fi
+       _nd_obs "container:$c" indeterminate $(($(_nd_now_ms) - t0)) "unknown: $what is not readable (exit $rc${e:+: $e}) restarts ?"; return 0 ;;
   esac
   IFS="$_ND_H_TAB" read -r st h r x d <<EOF
 $line
@@ -303,8 +312,10 @@ EOF
       _nd_obs "container:$c" indeterminate $(($(_nd_now_ms) - t0)) "unknown: running with health '$h' restarts $r" ;;
     paused:*)
       _nd_obs "container:$c" unhealthy $(($(_nd_now_ms) - t0)) "paused restarts $r" ;;
-    *)
+    exited:*|stopped:*|dead:*)
       _nd_obs "container:$c" unhealthy $(($(_nd_now_ms) - t0)) "exited: rc $x restarts $r" ;;
+    *)
+      _nd_obs "container:$c" indeterminate $(($(_nd_now_ms) - t0)) "transient: state $st restarts $r" ;;
   esac
 }
 

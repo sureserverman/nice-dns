@@ -223,6 +223,13 @@ STUB
 me="$(basename "$0")"
 l="$me"; for a in "$@"; do l="$l $a"; done; printf '%s\n' "$l" >>"$FAKE_LOG"
 case "$me $*" in
+  # A unit's restart count (nd_platform_container_state): $FAKE/nrestarts_<unit>,
+  # 0 without one; $FAKE/nrestarts.fail is a manager that does not answer.
+  "systemctl --user show -p NRestarts --value "*)
+    for u in "$@"; do :; done
+    if [ -f "$FAKE/nrestarts.fail" ]; then echo "Failed to connect to bus: No such file or directory" >&2; exit 1; fi
+    cat "$FAKE/nrestarts_$u" 2>/dev/null || echo 0
+    exit 0 ;;
   "systemctl --user restart "*|"launchctl kickstart -k "*)
     [ -f "$FAKE/restart_changes" ] && echo "restarted-$(date +%s)-$$" >"$FAKE/started" ;;
 esac

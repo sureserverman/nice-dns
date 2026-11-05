@@ -127,19 +127,29 @@ nd_platform_container_generation() {
 }
 
 # nd_platform_container_state <container> <deadline> <tmp>: one line
-# "status<TAB>health<TAB>restarts<TAB>exit_code<TAB>detail" from podman
-# inspect. health is none without a health check; detail is the last health
-# check's output on one line (cut to 120 characters; empty without a log).
-# 3 no CLI; 124 deadline; 1 inspect failed or its output did not parse.
+# "status<TAB>health<TAB>restarts<TAB>exit_code<TAB>detail". The status,
+# health, exit code and detail come from podman inspect: health is none
+# without a health check; detail is the last health check's output on one
+# line (cut to 120 characters; empty without a log). The restart count is
+# the container unit's NRestarts: quadlet runs each container with
+# --replace --rm, so a systemd restart is a new container and podman's own
+# RestartCount stays 0. NRestarts counts automatic restarts and starts again
+# from 0 when the unit is started or restarted by hand. 3 no CLI; 124
+# deadline; 1 inspect failed or its output did not parse; 5 the restart
+# count could not be read. On 1 and 5, <tmp>/cst.err holds the reason.
 nd_platform_container_state() {
-  local bin rc
+  local bin rc n
   bin="$(nd_platform_runtime_bin)" || return 3
   nd_bounded "$2" "$3/cst" "$3/cst.err" "$bin" inspect -f '{{.State.Status}} {{if .State.Healthcheck}}{{.State.Healthcheck.Status}}{{else}}none{{end}} {{.RestartCount}} {{.State.ExitCode}}{{if .State.Healthcheck}}{{range .State.Healthcheck.Log}}
 @@nd-health-log@@ {{.Output}}{{end}}{{end}}' "$1"; rc=$?
   case "$rc" in 0) ;; 124) return 124 ;; *) return 1 ;; esac
-  awk 'NR == 1 {
+  nd_bounded "$2" "$3/cst.nr" "$3/cst.err" systemctl --user show -p NRestarts --value "$1.service"; rc=$?
+  case "$rc" in 0) ;; 124) return 124 ;; *) return 5 ;; esac
+  n="$(head -n 1 "$3/cst.nr")"
+  case "$n" in ''|*[!0-9]*) printf 'NRestarts of %s.service is not a number\n' "$1" >"$3/cst.err"; return 5 ;; esac
+  awk -v n="$n" 'NR == 1 {
          if ($0 !~ /^[a-z]+ [a-z]* [0-9]+ -?[0-9]+$/) { bad = 1; exit }
-         st = $1; if (NF == 4) { h = $2; r = $3; x = $4 } else { h = "none"; r = $2; x = $3 }
+         st = $1; if (NF == 4) { h = $2; x = $4 } else { h = "none"; x = $3 }
          next
        }
        /^@@nd-health-log@@ / { d = substr($0, 19); next }
@@ -147,8 +157,8 @@ nd_platform_container_state() {
        END {
          if (bad || st == "") exit 1
          gsub(/[[:cntrl:]]/, " ", d); gsub(/  +/, " ", d); sub(/^ /, "", d); sub(/ $/, "", d)
-         printf "%s\t%s\t%s\t%s\t%s\n", st, h, r, x, substr(d, 1, 120)
-       }' "$3/cst"
+         printf "%s\t%s\t%s\t%s\t%s\n", st, h, n, x, substr(d, 1, 120)
+       }' "$3/cst" || { printf 'podman inspect printed no state line for %s\n' "$1" >"$3/cst.err"; return 1; }
 }
 
 # nd_platform_restart_scope: what nd_platform_restart_proxy restarts.

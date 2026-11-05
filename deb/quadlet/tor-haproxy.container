@@ -57,7 +57,8 @@ EnvironmentFile=%h/.config/nice-dns/bridges.env
 # restarted Unbound and Pi-hole instead. Since Sub-plan 3 the nice-dns-health
 # controller is the one actor that restarts Tor or this service, with its
 # grace, cooldown and restart ladder (lib/policy.sh); a second owner here
-# would race it. A process that exits is still restarted by Restart= below.
+# would race it. A process that exits non-zero or on a signal is still
+# restarted by Restart= below.
 # An image without the probe (published before Sub-plan 2) reports
 # unhealthy and nothing acts on it.
 HealthCmd=nice-dns-route-probe 853 tor.cloudflare-dns.com
