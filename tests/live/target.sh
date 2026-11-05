@@ -199,6 +199,8 @@
 #                    Linux: unpause it (a running one is left alone) and
 #                    cancel the timer
 #   stop-container   stop --component (Linux: its unit; macOS: the container)
+#   start-container  start it again (Linux: its unit; macOS: `container start`,
+#                    the same container with its environment)
 #   crash-container  Linux: crash the proxy --component --times N (1..9),
 #                    each ABRT at least --every S (20..300) seconds after it
 #                    runs again. The signal goes to tini's children: tini as
@@ -260,7 +262,7 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network freeze-unbound thaw-unbound stop-proxy fresh-name command command-report freeze-service thaw-service pause-container unpause-container stop-container crash-container stop-crash crash-report'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network freeze-unbound thaw-unbound stop-proxy fresh-name command command-report freeze-service thaw-service pause-container unpause-container stop-container start-container crash-container stop-crash crash-report'
 FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
@@ -394,7 +396,7 @@ case "$op" in
     esac ;;
   freeze-service|thaw-service)
     case "$component" in pi-hole|unbound) ;; *) die "$op needs --component pi-hole|unbound" ;; esac ;;
-  pause-container|unpause-container|stop-container)
+  pause-container|unpause-container|stop-container|start-container)
     case " $COMPONENTS " in
       *" $component "*) [ -n "$component" ] || die "--component is required" ;;
       *) die "component '$component' is not a stack component (allowed: $COMPONENTS)" ;;
@@ -404,7 +406,7 @@ case "$op" in
       *" $component "*) [ -n "$component" ] || die "--component is required" ;;
       *) die "crash-container crashes the proxy only (allowed: $UPSTREAM_COMPONENTS)" ;;
     esac ;;
-  *) [ -z "$component" ] || die "--component is only valid for sever/heal/freeze/thaw-upstream, build/recreate-proxy, fault/heal-route, thaw-on-request, arm-prepare/arm-set, stop-proxy, freeze/thaw-service, pause/unpause/stop-container and crash-container" ;;
+  *) [ -z "$component" ] || die "--component is only valid for sever/heal/freeze/thaw-upstream, build/recreate-proxy, fault/heal-route, thaw-on-request, arm-prepare/arm-set, stop-proxy, freeze/thaw-service, pause/unpause/stop/start-container and crash-container" ;;
 esac
 case "$op" in
   fault-route|heal-route|route-apply)
@@ -1919,9 +1921,10 @@ case "$NICE_DNS_OP" in
     st=$(ctl inspect "$c" --format '{{.State.Status}}')
     printf 'container_state\t%s\t%s\n' "$c" "$st"
     [ "$st" = paused ] ;;
-  stop-container)
-    if [ "$plat" = macos ]; then homebrew_path; ctl stop "$NICE_DNS_COMPONENT"
-    else systemctl --user stop "$NICE_DNS_COMPONENT.service"; fi ;;
+  stop-container|start-container)
+    v="${NICE_DNS_OP%-container}"
+    if [ "$plat" = macos ]; then homebrew_path; ctl "$v" "$NICE_DNS_COMPONENT" </dev/null
+    else systemctl --user "$v" "$NICE_DNS_COMPONENT.service"; fi ;;
   crash-container)
     [ "$plat" = linux ] || { echo "crash-container is Linux-only" >&2; exit 2; }
     c="$NICE_DNS_COMPONENT" f="$HOME/.nice-dns-crash.tsv"
@@ -2050,7 +2053,7 @@ case "$op" in
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network|freeze-unbound|thaw-unbound|stop-proxy|command|freeze-service|thaw-service|pause-container|unpause-container|stop-container|crash-container|stop-crash)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network|freeze-unbound|thaw-unbound|stop-proxy|command|freeze-service|thaw-service|pause-container|unpause-container|stop-container|start-container|crash-container|stop-crash)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"
