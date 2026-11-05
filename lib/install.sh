@@ -1436,7 +1436,7 @@ profile passt /usr/bin/passt{,.avx2} flags=(attach_disconnected) {
   @{PROC}/[0-9]*/ns/ r,
   @{PROC}/sys/net/** r,
   @{run}/user/@{uid}/containers/** rwlk,
-  # Standalone (non-pod) containers run with --userns=keep-id place their netns
+  # Standalone (non-pod) containers such as the bridge-eval job place their netns
   # under run/user/<uid>/netns/ rather than the containers/ subtree; pasta must
   # read that dir to enter the namespace. Without this, the host-side bridge-eval
   # "manage" job (nice-dns-fetch-bridges.service) dies with pasta "netns dir

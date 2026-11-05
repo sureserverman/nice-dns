@@ -103,6 +103,12 @@ t_changed_set_is_adopted_at_next_start_without_restart() {
       assert_eq "" "$(bl_restarts)" "$plat: no restart: the proxy reads it at its next start"
       assert_file "$ND_STATE_DIR/bridges.pending" "$plat: recorded as waiting for the proxy"
       assert_eq changed "$(bl_journal)" "$plat: journal"
+      if [ "$plat" = linux ]; then
+        # keep-id needs an ID-mapped image copy that podman 5.8 fails on native
+        # overlay when storage.conf names no driver (exit 125 on every refresh).
+        assert_match '^podman run --rm --user 0:0 ' "$(grep '^podman run ' "$FAKE_LOG")" "$plat: bridge-eval runs as the container's root"
+        assert_eq "" "$(grep -- '--userns=keep-id' "$FAKE_LOG")" "$plat: bridge-eval does not use keep-id"
+      fi
     ) || exit 1
   done
 }

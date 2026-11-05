@@ -42,6 +42,8 @@ t_real_persistent_podman_renders_its_units() {
       # systemd sees $$ as a literal $ (systemd.service(5), Command lines).
       assert_match "^ExecCondition=/usr/bin/sh -c 'n=\\\$\\\$\\(grep -cE \"\\^BRIDGE\\[0-9\\]\\+=obfs4 \" %h/\\.config/nice-dns/bridges\\.env 2>/dev/null\\); \\[ \"\\\$\\\$\\{n:-0\\}\" -lt 3 \\] \\|\\| exit 2'\$" "$(cat "$unit")" "$v: ExecCondition keeps its escaping and skips with exit 2"
       assert_match "docker\\.io/sureserver/tor-$v:latest" "$(cat "$unit")" "$v: the bridge unit runs this proxy's image"
+      assert_match '^ExecStart=/usr/bin/podman run --rm --user 0:0 ' "$(cat "$unit")" "$v: the bridge unit runs bridge-eval as the container's root"
+      assert_eq "" "$(grep -v '^#' "$unit" | grep -- '--userns=keep-id')" "$v: the bridge unit does not use keep-id (podman 5.8 exit 125)"
       assert_match '^ExecStart=/usr/bin/nm-online -q$' "$(cat "$FAKE_ROOT/etc/systemd/system/NetworkManager-wait-online.service.d/10-wait-for-connectivity.conf")" "$v: the wait-online drop-in"
       assert_file "$IP_HOME/.local/share/nice-dns-health/install.tsv" "$v: the real controller installed"
       pod="$(ip_first "$FAKE_LOG" '^systemctl --user restart nice-dns-pod\.service$')"

@@ -240,11 +240,15 @@ nd_platform_bridge_dir() { printf '%s\n' "${ND_BRIDGE_CONFIG_DIR:-${XDG_CONFIG_H
 # nd_platform_bridge_eval <variant> <candidate file name> <deadline> <tmp>:
 # the proxy image's bridge-eval in manage mode (the same flags as the boot
 # unit), writing its selection to <bridge dir>/<candidate>, never to
-# bridges.env. It updates the persistent pool itself.
+# bridges.env. It updates the persistent pool itself. It runs as the
+# container's root, which rootless podman maps to this user, so the pool stays
+# this user's. Not --userns=keep-id: on native overlay that needs an ID-mapped
+# copy of the image, which podman 5.8 fails (exit 125) when storage.conf names
+# no driver; the refresh failed that way on every run (2026-11-05).
 nd_platform_bridge_eval() {
   local d
   d="$(nd_platform_bridge_dir)"
-  nd_bounded "$3" "$4/eval" "$4/eval.err" podman run --rm --userns=keep-id --pull=missing \
+  nd_bounded "$3" "$4/eval" "$4/eval.err" podman run --rm --user 0:0 --pull=missing \
     -v "$d:/pool" --entrypoint /bin/bridge-eval "docker.io/sureserver/tor-$1:latest" \
     -pool /pool/bridge-pool.tsv -out "/pool/$2" -count 7 -window 150 -grace 20
 }

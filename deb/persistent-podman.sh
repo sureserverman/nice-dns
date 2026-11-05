@@ -202,14 +202,18 @@ ExecCondition=/usr/bin/sh -c 'n=\$\$(grep -cE "^BRIDGE[0-9]+=obfs4 " %h/.config/
 RemainAfterExit=yes
 # The ~150s usability probe + fetch; give it headroom.
 TimeoutStartSec=360
-# --userns=keep-id so files land owned by this user (systemd reads bridges.env
-# via EnvironmentFile=). --pull=missing: install-deb already pulled the image,
-# but recover if it was removed.
+# --user 0:0: the container's root is this user under rootless podman, so files
+# land owned by this user (systemd reads bridges.env via EnvironmentFile=); the
+# image's own user would map to a subordinate ID. Not --userns=keep-id: on
+# native overlay it needs an ID-mapped image copy, which podman 5.8 fails
+# (exit 125) when storage.conf names no driver (2026-11-05).
+# --pull=missing: install-deb already pulled the image, but recover if it was
+# removed.
 # -count 7, not 3: bridge COUNT dominates bootstrap time. Measured isolated and
 # alternated, one tor at a time (macOS, 2026-08-29 — the mechanism is tor's
 # parallel descriptor fetch, not runtime-specific, but it was not re-measured
 # here), 3 verified-alive bridges took a 141s median against 41s for 7.
-ExecStart=/usr/bin/podman run --rm --userns=keep-id --pull=missing \\
+ExecStart=/usr/bin/podman run --rm --user 0:0 --pull=missing \\
   -v %h/.config/nice-dns:/pool \\
   --entrypoint /bin/bridge-eval \\
   docker.io/sureserver/tor-${VARIANT}:latest \\
