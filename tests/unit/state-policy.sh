@@ -1421,6 +1421,89 @@ t_a_crash_loop_never_gets_a_controller_restart() {
   assert_ne repair-runtime "$SP_ACTION" "nor is a container restarting on its own started by name"
 }
 
+# sp_backoff_count <seconds since the first crash>: the unit's restart count
+# when the process dies 5 s after each start and systemd waits 3, 8, 19, 47,
+# 119, then 300 s (RestartSec=3s, RestartSteps=5, RestartMaxDelaySec=300s).
+sp_backoff_count() {
+  local el="$1" t=0 n=0 d
+  for d in 0 3 8 19 47 119; do
+    t=$((t + 5 + d)); [ "$t" -le "$el" ] || { echo "$n"; return; }; n=$((n + 1))
+  done
+  while :; do t=$((t + 305)); [ "$t" -le "$el" ] || break; n=$((n + 1)); done
+  echo "$n"
+}
+
+# Close-out 2026-11-05 (DEC-021, owner option 1): a crash loop that never ends
+# held the stack restart for ever. On the unit's 300 s back-off a rise comes
+# every 305 s, so one was always under 600 s old: one escalation, then 4 h of
+# no-op with no DNS. The hold now ends ND_POLICY_RETRY_S after the loop's first
+# rise; the stack restart follows DEC-021 and the loop escalates every retry.
+t_a_crash_loop_in_an_outage_is_held_at_most_a_retry_interval() {
+  local el t0 first=-1 last=-1 stacks=0 esc=0 gap_ok=1
+  sp_ub_start
+  sp_px_pass 0 unhealthy
+  t0="$SP_NOW"
+  for _ in $(seq 1 180); do
+    el=$((SP_NOW + 60 - t0))
+    sp_obs "$CASE_DIR/px" healthy unhealthy unhealthy unhealthy unhealthy
+    sp_cnt "$CASE_DIR/px" tor-haproxy "$(sp_backoff_count "$el")"
+    sp_ub_pass "$CASE_DIR/px"
+    case "$SP_ACTION:$SP_TARGET" in
+      restart-component:tor|restart-component:proxy) fail "the proxy restarts itself; the controller restarted $SP_TARGET at +$el s" ;;
+      restart-component:stack)
+        stacks=$((stacks + 1))
+        [ "$first" -ge 0 ] || first="$el"
+        [ "$last" -lt 0 ] || [ $((el - last)) -ge 1800 ] || gap_ok=0
+        last="$el" ;;
+      escalate:*) case "$SP_REASON" in *crash-loop:*) esc=$((esc + 1)) ;; esac ;;
+    esac
+  done
+  assert_ne -1 "$first" "past the hold the stack restarts (DEC-021)"
+  assert_eq 1 "$(( first >= 1800 ))" "not while the loop is under 1800 s old (first at +$first s)"
+  assert_eq 1 "$(( first <= 1800 + 300 + 120 ))" "but within the cooldown after it (first at +$first s)"
+  assert_eq 1 "$gap_ok" "one stack restart per 1800 s at most"
+  assert_eq 1 "$(( stacks >= 4 ))" "and one every 1800 s while the loop lasts ($stacks in 3 h)"
+  assert_eq 1 "$(( esc >= 5 ))" "the loop escalates every 1800 s, not once ($esc in 3 h)"
+  assert_ne "" "$(sp_key "$CASE_DIR/cur" crash_since_tor-haproxy)" "the loop's start is kept"
+}
+
+# The same loop seen as a missing container (dead between its starts): the
+# by-name repair stays held, the stack restart comes past the hold.
+t_a_missing_container_in_a_crash_loop_reaches_the_stack_restart() {
+  local el t0 first=-1
+  sp_ub_start
+  sp_px_pass 0
+  t0="$SP_NOW"
+  for _ in $(seq 1 60); do
+    el=$((SP_NOW + 60 - t0))
+    sp_obs "$CASE_DIR/mx" missing healthy healthy healthy healthy
+    awk -F '\t' '$2 == "runtime" { print "obs\truntime\tunhealthy\t5\tcontainers-missing: tor-haproxy (running: pi-hole unbound)"; next } { print }' "$CASE_DIR/mx" >"$CASE_DIR/mx.2"
+    sp_cnt "$CASE_DIR/mx.2" tor-haproxy "$(sp_backoff_count "$el")" indeterminate 'transient: state stopping'
+    sp_ub_pass "$CASE_DIR/mx.2"
+    case "$SP_ACTION:$SP_TARGET" in
+      repair-runtime:*) fail "a container restarting on its own was started by name at +$el s" ;;
+      restart-component:stack) [ "$first" -ge 0 ] || first="$el" ;;
+    esac
+  done
+  assert_ne -1 "$first" "past the hold the stack restarts (DEC-021)"
+  assert_eq 1 "$(( first >= 1800 && first <= 1800 + 300 + 120 ))" "at the end of the hold (first at +$first s)"
+}
+
+t_a_loop_start_row_passes_the_state_validator_and_clears() {
+  local tok n
+  sp_ub_start
+  for n in 0 1 2 3; do sp_px_pass "$n"; done
+  assert_ne "" "$(sp_key "$CASE_DIR/cur" crash_since_tor-haproxy)" "a loop keeps its start"
+  nd_state_init || fail "init"
+  tok="$(nd_state_lock)" || fail "lock"
+  nd_state_commit "$tok" 0 "$CASE_DIR/cur" >/dev/null; assert_rc 0 $? "lib/state.sh accepts crash_since: $(grep '^crash' "$CASE_DIR/cur" | tr '\n\t' '; ')"
+  awk -F '\t' '$1 != "crash_since_tor-haproxy"' "$CASE_DIR/cur" >"$CASE_DIR/cur.bad"; printf 'crash_since_tor-haproxy\tx\n' >>"$CASE_DIR/cur.bad"
+  nd_state_commit "$tok" 1 "$CASE_DIR/cur.bad" >/dev/null 2>&1; assert_rc 2 $? "a bad loop start is refused"
+  nd_state_unlock "$tok"
+  for n in 1 2 3 4 5 6 7 8 9 10; do sp_px_pass 3; done
+  assert_eq "" "$(sp_key "$CASE_DIR/cur" crash_since_tor-haproxy)" "a count stable for 600 s clears it"
+}
+
 t_a_stable_count_clears_the_loop_and_a_fall_is_a_new_baseline() {
   local n
   sp_ub_start

@@ -80,7 +80,16 @@
 #     start of it). ND_POLICY_CRASH_BURST (3) rises inside the window escalate
 #     "crash-loop: <c>", at most once per ND_POLICY_RETRY_S; the first escalation
 #     of a loop says so and the CLI writes one failure dump for it. A count stable
-#     for the window clears the loop. A lower count (a manual start resets
+#     for the window clears the loop. The hold ends ND_POLICY_RETRY_S after the
+#     loop's first rise (crash_since_<c>; DEC-021, owner 2026-11-05): from then
+#     the loop's rises no longer restart the cooldown, it no longer holds the
+#     stack, and it escalates again every ND_POLICY_RETRY_S while it lasts. The
+#     container is still never restarted by name: a missing one counts its
+#     repairs as spent and a crashing proxy counts the Tor ladder as spent, so
+#     either reaches the stack restart (first outside the cooldown, then every
+#     ND_POLICY_RETRY_S).
+#     Without that a loop on the unit's 300 s back-off held a full outage for
+#     ever after one escalation. A lower count (a manual start resets
 #     NRestarts), a first reading and a new boot are baselines, never rises. The
 #     unit's own back-off (RestartSteps=) is what slows the loop on Linux; Apple
 #     containers do not restart themselves, so on macOS the count stays 0 and the
@@ -168,6 +177,8 @@ nd_policy_decide() {
   # the window ("e1,e2"), the last escalation.
   local cwin="${ND_POLICY_CRASH_WINDOW_S:-600}" cburst="${ND_POLICY_CRASH_BURST:-3}"
   local -a cseen=(0 0 0 0) ccnt=(- - - -) crise=(- - - -) cesc=(- - - -) crn=(0 0 0 0)
+  # The first rise of each loop, and whether the loop has outlived its hold.
+  local -a csince=(- - - -) ccap=(0 0 0 0)
   local held=" " cr_due=-1 cr_first=0 boot_new=0
   local rt=- rt_reason="" compat_ok=0 valid=1 why="" notes=""
   local action=no-op target=- reason=""
@@ -211,6 +222,7 @@ nd_policy_decide() {
           case "$a" in
             "restart_seen_${cn[i]}") _nd_p_num "$b" && cseen[i]="$b" ;;
             "crash_esc_${cn[i]}") _nd_p_num "$b" && cesc[i]="$b" ;;
+            "crash_since_${cn[i]}") _nd_p_num "$b" && csince[i]="$b" ;;
             "crash_${cn[i]}") case "$b" in ''|*[!0-9,]*|,*|*,|*,,*) ;; *) crise[i]="$b" ;; esac ;;
           esac
           i=$((i + 1))
@@ -300,7 +312,7 @@ nd_policy_decide() {
   if [ "$s_boot" != "$boot" ]; then
     [ "$s_boot" = - ] || notes="boot changed; timers restart; "
     s_boot="$boot" s_started="$now" s_out=- s_rest=0 s_rec=- s_laat=- s_ubfail=0 s_ubrest=0 s_phfail=0 s_phrest=0
-    cpz=(0 0 0 0) cseen=(0 0 0 0) crise=(- - - -) cesc=(- - - -) boot_new=1 s_pzrep=0
+    cpz=(0 0 0 0) cseen=(0 0 0 0) crise=(- - - -) cesc=(- - - -) csince=(- - - -) boot_new=1 s_pzrep=0
     [ "$s_la" = - ] || s_la=-
     i=0; while [ "$i" -lt "$n" ]; do rok[i]=0; rfail[i]=0; runk[i]=0; i=$((i + 1)); done
     fresh=1
@@ -348,8 +360,11 @@ nd_policy_decide() {
     while [ "$i" -lt 4 ]; do
       if [ "${ccnt[i]}" != - ]; then
         if [ "$boot_new" = 0 ] && [ "${ccnt[i]}" -gt "${cseen[i]}" ]; then
+          # Past the hold a rise no longer restarts the cooldown, or the stack
+          # restart that ends the hold would never be due.
+          if [ "${crise[i]}" != - ] && _nd_p_num "${csince[i]}" && [ "$now" -ge "${csince[i]}" ] \
+             && [ $((now - csince[i])) -ge "$retry" ]; then :; else s_rec="$now"; fi
           if [ "${crise[i]}" = - ]; then crise[i]="$now"; else crise[i]="${crise[i]},$now"; fi
-          s_rec="$now"
           notes="${notes}${cn[i]} restart count rose to ${ccnt[i]}; "
         fi
         cseen[i]="${ccnt[i]}"
@@ -366,11 +381,24 @@ nd_policy_decide() {
       while [ "$k" -gt 8 ]; do rises="${rises#*,}"; k=$((k - 1)); done
       crn[i]="$k"
       if [ -z "$rises" ]; then
-        crise[i]=- cesc[i]=-
+        crise[i]=- cesc[i]=- csince[i]=-
       else
         crise[i]="$rises"
-        case "${cn[i]}" in tor-*) held="${held}tor proxy stack ${cn[i]} " ;; *) held="${held}${cn[i]} stack " ;; esac
-        if [ "$k" -ge "$cburst" ] && [ "$cr_due" -lt 0 ] \
+        # A loop starts at a rise with no other inside the window.
+        if [ "$rises" = "$now" ] || ! _nd_p_num "${csince[i]}" || [ "$now" -lt "${csince[i]}" ]; then
+          csince[i]="${rises%%,*}"
+        fi
+        [ $((now - csince[i])) -ge "$retry" ] && ccap[i]=1
+        # Past the hold the loop no longer holds the stack restart (DEC-021);
+        # the container itself is still never restarted by name.
+        if [ "${ccap[i]}" = 1 ]; then
+          case "${cn[i]}" in tor-*) held="${held}tor proxy ${cn[i]} " ;; *) held="${held}${cn[i]} " ;; esac
+        else
+          case "${cn[i]}" in tor-*) held="${held}tor proxy stack ${cn[i]} " ;; *) held="${held}${cn[i]} stack " ;; esac
+        fi
+        # Three rises in the window escalate; a loop already escalated, or past
+        # its hold, escalates again every retry interval while it lasts.
+        if { [ "$k" -ge "$cburst" ] || [ "${cesc[i]}" != - ] || [ "${ccap[i]}" = 1 ]; } && [ "$cr_due" -lt 0 ] \
            && { [ "${cesc[i]}" = - ] || [ $((now - cesc[i])) -ge "$retry" ] || [ "$now" -lt "${cesc[i]}" ]; }; then
           cr_due="$i"; [ "${cesc[i]}" = - ] && cr_first=1
         fi
@@ -488,14 +516,19 @@ nd_policy_decide() {
     elif [ "$cr_due" -ge 0 ]; then
       v=""; [ "$cr_first" = 1 ] && v="; first escalation of this loop"
       # Leads with crash-loop: (the CLI's dump reads it there); the notes follow.
-      action=escalate reason="crash-loop: ${cn[cr_due]} restarted ${crn[cr_due]} times in ${cwin} s (restarts ${cseen[cr_due]}); the controller adds no restart$v${notes:+; ${notes%; }}"
+      w="the controller adds no restart"
+      [ "${ccap[cr_due]}" = 1 ] && w="held over $retry s; the stack restart is no longer held (DEC-021)"
+      action=escalate reason="crash-loop: ${cn[cr_due]} restarted ${crn[cr_due]} times in ${cwin} s (restarts ${cseen[cr_due]}); $w$v${notes:+; ${notes%; }}"
       cesc[cr_due]="$now" notes=""
-    elif [ -n "$rt_held" ]; then
+    elif [ -n "$rt_held" ] && [ "${held#* stack }" != "$held" ]; then
       reason="${notes}runtime fault ($rt_fault) held: $rt_held is restarting on its own (crash-loop hold)"; notes=""
     elif [ -n "$rt_fault" ]; then
+      # A missing container past its loop's hold is still not started by name:
+      # its repairs count as spent, so it goes to the stack restart (DEC-021).
+      [ -z "$rt_held" ] || [ "$s_rtrep" -ge "$rtmax" ] || s_rtrep="$rtmax"
       if [ "$in_startup" = 1 ]; then reason="runtime fault ($rt_fault) inside the startup allowance"
       elif [ "$in_cool" = 1 ]; then reason="runtime fault ($rt_fault) inside the recovery cooldown"
-      elif [ "$rt_fault" = containers-missing ] && [ "$s_rtrep" -ge "$rtmax" ] && [ "$held" != " " ]; then
+      elif [ "$rt_fault" = containers-missing ] && [ "$s_rtrep" -ge "$rtmax" ] && [ "${held#* stack }" != "$held" ]; then
         reason="containers stay missing after $rtmax repairs; the stack restart is held: a container is restarting on its own (crash-loop hold:$held)"
       elif [ "$rt_fault" = containers-missing ] && [ "$s_rtrep" -ge "$rtmax" ]; then
         # Repairing by name for ever kept the stack restart below from ever being
@@ -567,17 +600,24 @@ nd_policy_decide() {
       if [ "$in_startup" = 1 ]; then reason="full outage inside the startup allowance"
       elif [ $((now - from)) -lt "$grace" ]; then reason="full outage for $((now - s_out)) s; grace $grace s"
       elif [ "$in_cool" = 1 ]; then reason="full outage; inside the recovery cooldown"
-      elif [ "$held" != " " ] && { [ "$s_rest" -ge "$maxr" ] || [ "${held#* tor }" != "$held" ]; }; then
+      elif [ "${held#* stack }" != "$held" ] && { [ "$s_rest" -ge "$maxr" ] || [ "${held#* tor }" != "$held" ]; }; then
         reason="full outage; a container is restarting on its own (crash-loop hold:$held)"
-      elif [ "$s_rest" -ge "$maxr" ]; then
+      elif [ "$s_rest" -ge "$maxr" ] || [ "${held#* tor }" != "$held" ]; then
         # Past the cap the ladder is spent, but stopping here left hosts without
         # DNS until a reboot (mint, 2026-10-30): the stack restarts every $retry s
-        # and the passes between journal the escalation.
-        if ! _nd_p_num "$s_rec" || [ $((now - s_rec)) -ge "$retry" ]; then
-          action=restart-component target=stack reason="full outage since $s_out persists after $s_rest restarts; restarting the stack"
+        # and the passes between journal the escalation. A proxy past its loop's
+        # hold spends the ladder too (its targets restart on their own): the
+        # first stack restart comes at once.
+        if [ "$s_rest" -lt "$maxr" ] || ! _nd_p_num "$s_rec" || [ $((now - s_rec)) -ge "$retry" ]; then
+          v="after $s_rest restarts"
+          [ "${held#* tor }" = "$held" ] || v="with the proxy restarting on its own past the crash-loop hold"
+          action=restart-component target=stack reason="full outage since $s_out persists $v; restarting the stack"
+          [ "$s_rest" -ge "$maxr" ] || s_rest="$maxr"
           s_rest=$((s_rest + 1)) s_rec="$now"
         else
-          action=escalate reason="full outage persists after $s_rest restarts (tor, then proxy); next stack restart $retry s after the last ($((now - s_rec)) s so far)"
+          v="after $s_rest restarts (tor, then proxy)"
+          [ "${held#* tor }" = "$held" ] || v="with the proxy restarting on its own past the crash-loop hold"
+          action=escalate reason="full outage persists $v; next stack restart $retry s after the last ($((now - s_rec)) s so far)"
         fi
       elif [ "$s_rest" -ge 1 ] && _nd_p_num "$s_rec" && [ $((now - s_rec)) -lt "$ladder" ]; then
         reason="full outage; waiting out the last restart's readiness window ($((now - s_rec)) of $ladder s)"
@@ -619,6 +659,7 @@ nd_policy_decide() {
     [ "${cseen[i]}" = 0 ] || printf 'restart_seen_%s\t%s\n' "${cn[i]}" "${cseen[i]}"
     [ "${crise[i]}" = - ] || printf 'crash_%s\t%s\n' "${cn[i]}" "${crise[i]}"
     [ "${cesc[i]}" = - ] || printf 'crash_esc_%s\t%s\n' "${cn[i]}" "${cesc[i]}"
+    [ "${csince[i]}" = - ] || printf 'crash_since_%s\t%s\n' "${cn[i]}" "${csince[i]}"
     i=$((i + 1))
   done
   i=0

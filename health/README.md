@@ -108,9 +108,13 @@ from 3 s towards 300 s (systemd 254+; on mint the first four were 3, 8, 19 and
 47 s). When a container's restart count rises, the controller treats it as a
 restart that already happened: the cooldown starts from it, and for 10 minutes
 nothing restarts that container or the stack. Three rises within 10 minutes
-escalate once, `crash-loop: <name>`, with one failure dump, then at most every
-30 minutes. A count stable for 10 minutes clears it. Apple containers do not
-restart themselves, so on macOS the count stays 0.
+escalate once, `crash-loop: <name>`, with one failure dump. A count stable for
+10 minutes clears it. The hold lasts at most 30 minutes from the loop's first
+rise. After that the loop no longer holds the stack: a full outage, or a
+container that stays missing, restarts the stack, then again every 30 minutes,
+and the loop escalates again every 30 minutes while it lasts. The looping
+container itself is never restarted by name. Apple containers do not restart
+themselves, so on macOS the count stays 0.
 
 A full outage restarts Tor, then the proxy. After that the whole stack restarts
 every 30 minutes until a route answers, and the first escalation of the outage
