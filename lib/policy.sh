@@ -15,7 +15,7 @@
 #   schema  nice-dns-decision/1
 #   action  no-op | switch-route | refresh-bridges | restart-component |
 #           repair-runtime | escalate
-#   target  a route id (switch-route), tor, proxy, unbound or stack
+#   target  a route id (switch-route), tor, proxy, unbound, pi-hole or stack
 #           (restart-component), the runtime
 #           fault (repair-runtime), or -
 #   reason  one line
@@ -68,6 +68,17 @@
 #     Past the ladder's cap in a full outage the stack restart covers it instead.
 #     The controller owns this restart: no quadlet restarts on health, since a
 #     health-triggered restart looped and wiped Tor's bootstrap.
+#   * Pi-hole's own health, after Unbound's and in the same shape (DEC-021). A
+#     pass fails Pi-hole when container:pi-hole or local-service is unhealthy; it
+#     is healthy when neither is unhealthy and one is healthy. Indeterminate or
+#     absent changes nothing and acts on nothing. Healthy clears pihole_fail, and
+#     clears pihole_restarts once ND_POLICY_RETRY_S has passed since the last
+#     restart. At ND_POLICY_PIHOLE_FAILS (3) in a row, outside the startup
+#     allowance and the cooldown, Pi-hole restarts (target pi-hole). After
+#     ND_POLICY_PIHOLE_MAX_RESTARTS (2) it retries every ND_POLICY_RETRY_S. Past
+#     the ladder's cap in a full outage the stack restart covers it instead. The
+#     controller owns this restart on both platforms: pi-hole.container is
+#     HealthOnFailure=none.
 #   * Route selection, when an identity route is healthy: the current route
 #     stays while its fail streak is under ND_POLICY_DEMOTE (2) and its
 #     unknown streak under ND_POLICY_STALE (5): a route without evidence is
@@ -114,6 +125,8 @@ nd_policy_decide() {
   local -a rid=() rok=() rfail=() runk=() robs=()
   local s_boot=- s_updated=- s_started=- s_route=- s_out=- s_rest=0 s_la=- s_laat=- s_rec=- s_pgen=- p_gen="" fresh=0
   local s_ubfail=0 s_ubrest=0 ub=- ub_reason="" ub_due=0
+  local phfails="${ND_POLICY_PIHOLE_FAILS:-3}" phmax="${ND_POLICY_PIHOLE_MAX_RESTARTS:-2}"
+  local s_phfail=0 s_phrest=0 ph_ct=- ph_ls=- ph_reason="" ph_due=0
   local rt=- rt_reason="" compat_ok=0 valid=1 why="" notes=""
   local action=no-op target=- reason=""
 
@@ -149,6 +162,7 @@ nd_policy_decide() {
       route) s_route="$b" ;; outage_since) s_out="$b" ;; outage_restarts) s_rest="$b" ;;
       proxy_gen) s_pgen="$b" ;;
       unbound_fail) s_ubfail="$b" ;; unbound_restarts) s_ubrest="$b" ;; runtime_repairs) s_rtrep="$b" ;;
+      pihole_fail) s_phfail="$b" ;; pihole_restarts) s_phrest="$b" ;;
       last_action) s_la="$b" ;; last_action_at) s_laat="$b" ;; recovery_at) s_rec="$b" ;;
       streak)
         i=0
@@ -161,6 +175,8 @@ nd_policy_decide() {
   _nd_p_num "$s_rest" || s_rest=0
   _nd_p_num "$s_ubfail" || s_ubfail=0
   _nd_p_num "$s_ubrest" || s_ubrest=0
+  _nd_p_num "$s_phfail" || s_phfail=0
+  _nd_p_num "$s_phrest" || s_phrest=0
 
   # Observations.
   local first=1
@@ -185,6 +201,8 @@ nd_policy_decide() {
       runtime) rt="$c"; rt_reason="$e" ;;
       proxy) case "$c:$e" in healthy:generation:*) p_gen="${e#generation:}" ;; esac ;;
       unbound) ub="$c"; ub_reason="$e" ;;
+      container:pi-hole) ph_ct="$c"; [ "$c" != unhealthy ] || ph_reason="container: $e" ;;
+      local-service) ph_ls="$c"; [ "$c" != unhealthy ] || [ -n "$ph_reason" ] || ph_reason="local-service: $e" ;;
       route:*)
         i=0
         while [ "$i" -lt "$n" ]; do
@@ -199,7 +217,7 @@ nd_policy_decide() {
   # Boot and clock.
   if [ "$s_boot" != "$boot" ]; then
     [ "$s_boot" = - ] || notes="boot changed; timers restart; "
-    s_boot="$boot" s_started="$now" s_out=- s_rest=0 s_rec=- s_laat=- s_ubfail=0 s_ubrest=0
+    s_boot="$boot" s_started="$now" s_out=- s_rest=0 s_rec=- s_laat=- s_ubfail=0 s_ubrest=0 s_phfail=0 s_phrest=0
     [ "$s_la" = - ] || s_la=-
     i=0; while [ "$i" -lt "$n" ]; do rok[i]=0; rfail[i]=0; runk[i]=0; i=$((i + 1)); done
     fresh=1
@@ -279,6 +297,27 @@ nd_policy_decide() {
       fi
     fi
 
+    # Pi-hole's own health, the same shape as Unbound's: either record failing
+    # counts, indeterminate or absent changes nothing.
+    local ph_seen=0
+    if [ "$ph_ct" = unhealthy ] || [ "$ph_ls" = unhealthy ]; then
+      s_phfail=$((s_phfail + 1)) ph_seen=1
+    elif [ "$ph_ct" = healthy ] || [ "$ph_ls" = healthy ]; then
+      s_phfail=0
+      if ! _nd_p_num "$s_rec" || [ $((now - s_rec)) -ge "$retry" ]; then s_phrest=0; fi
+    fi
+    if [ "$ph_seen" = 1 ] && [ "$s_phfail" -ge "$phfails" ]; then
+      if [ "$in_startup" = 1 ] || [ "$in_cool" = 1 ]; then
+        notes="${notes}Pi-hole failed $s_phfail checks in a row, inside the startup allowance or cooldown; "
+      elif [ "$healthy_now" != 1 ] && [ "$unhealthy_now" = 1 ] && [ "$s_rest" -ge "$maxr" ]; then
+        notes="${notes}Pi-hole failed $s_phfail checks in a row; the stack restart covers it; "
+      elif [ "$s_phrest" -lt "$phmax" ] || ! _nd_p_num "$s_rec" || [ $((now - s_rec)) -ge "$retry" ]; then
+        ph_due=1
+      else
+        notes="${notes}Pi-hole failed $s_phfail checks in a row after $s_phrest restarts; next restart ${retry} s after the last ($((now - s_rec)) s so far); "
+      fi
+    fi
+
     local rt_fault=""
     [ "$rt" != healthy ] || s_rtrep=0
     if [ "$rt" = unhealthy ]; then
@@ -313,6 +352,9 @@ nd_policy_decide() {
     elif [ "$ub_due" = 1 ]; then
       action=restart-component target=unbound reason="Unbound failed $s_ubfail checks in a row: $ub_reason"
       s_ubfail=0 s_ubrest=$((s_ubrest + 1)) s_rec="$now"
+    elif [ "$ph_due" = 1 ]; then
+      action=restart-component target=pi-hole reason="Pi-hole failed $s_phfail checks in a row: $ph_reason"
+      s_phfail=0 s_phrest=$((s_phrest + 1)) s_rec="$now"
     elif [ "$healthy_now" = 1 ]; then
       # Current route: an identity route whose fail streak is under demote.
       local cur=-1 best=-1 cand=-1
@@ -394,6 +436,8 @@ nd_policy_decide() {
   [ "$s_ubfail" = 0 ] || printf 'unbound_fail\t%s\n' "$s_ubfail"
   [ "$s_ubrest" = 0 ] || printf 'unbound_restarts\t%s\n' "$s_ubrest"
   [ "$s_rtrep" = 0 ] || printf 'runtime_repairs\t%s\n' "$s_rtrep"
+  [ "$s_phfail" = 0 ] || printf 'pihole_fail\t%s\n' "$s_phfail"
+  [ "$s_phrest" = 0 ] || printf 'pihole_restarts\t%s\n' "$s_phrest"
   i=0
   while [ "$i" -lt "$n" ]; do
     printf 'streak\t%s\t%s\t%s\t%s\n' "${rid[i]}" "${rok[i]}" "${rfail[i]}" "${runk[i]}"

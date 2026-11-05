@@ -18,7 +18,8 @@ sp_env() {
   export ND_STATE_DIR="$CASE_DIR/state" ND_BOOT_ID="boot-a" ND_PLATFORM=linux
   export ND_ROUTES_FILE="$NICE_DNS_ROOT/routes/providers.tsv"
   unset ND_STATE_LEASE_S ND_POLICY_STARTUP_S ND_POLICY_GRACE_S ND_POLICY_COOLDOWN_S ND_POLICY_LADDER_S ND_POLICY_RUNTIME_REPAIRS \
-    ND_POLICY_PROMOTE ND_POLICY_DEMOTE ND_POLICY_MAX_RESTARTS ND_POLICY_UNBOUND_FAILS ND_POLICY_UNBOUND_MAX_RESTARTS ND_POLICY_RETRY_S ND_POLICY_RUNTIME_REPAIR_MAX
+    ND_POLICY_PROMOTE ND_POLICY_DEMOTE ND_POLICY_MAX_RESTARTS ND_POLICY_UNBOUND_FAILS ND_POLICY_UNBOUND_MAX_RESTARTS ND_POLICY_RETRY_S ND_POLICY_RUNTIME_REPAIR_MAX \
+    ND_POLICY_PIHOLE_FAILS ND_POLICY_PIHOLE_MAX_RESTARTS
 }
 
 sp_libs() {
@@ -1067,4 +1068,153 @@ t_unbound_past_the_cap_with_routes_unknown_is_still_restarted() {
   SP_NOW="$now"
   sp_ub_pass "$CASE_DIR/idk"; sp_ub_pass "$CASE_DIR/idk"; sp_ub_pass "$CASE_DIR/idk"
   assert_eq unbound "$SP_TARGET" "a dead control socket is not left to a stack restart that cannot run"
+}
+
+# ─────────────────────────── Pi-hole's own health ────────────────────────────
+
+# sp_ph <file> <container verdict|-> <local-service verdict|->: add Pi-hole's
+# records (container:pi-hole, local-service) to an observation file.
+sp_ph() {
+  case "$2" in
+    healthy) printf 'obs\tcontainer:pi-hole\thealthy\t30\trunning: health healthy restarts 0\n' >>"$1" ;;
+    unhealthy) printf 'obs\tcontainer:pi-hole\tunhealthy\t30\tunhealthy: FTL is not answering restarts 0\n' >>"$1" ;;
+    indeterminate) printf 'obs\tcontainer:pi-hole\tindeterminate\t30\tdeadline: the state of pi-hole gave no answer within 5s restarts ?\n' >>"$1" ;;
+  esac
+  case "$3" in
+    healthy) printf 'obs\tlocal-service\thealthy\t4\tNOERROR pi.hole\n' >>"$1" ;;
+    unhealthy) printf 'obs\tlocal-service\tunhealthy\t4\tdig exit 9: no servers could be reached\n' >>"$1" ;;
+    indeterminate) printf 'obs\tlocal-service\tindeterminate\t10000\tdeadline: nothing answered\n' >>"$1" ;;
+  esac
+}
+
+# sp_ph_files: $CASE_DIR/phbad (the container check fails), phls (only
+# local-service fails), phgood (both healthy), phidk (both indeterminate), on
+# top of healthy routes.
+sp_ph_files() {
+  cp "$CASE_DIR/ok" "$CASE_DIR/phbad"; sp_ph "$CASE_DIR/phbad" unhealthy healthy
+  cp "$CASE_DIR/ok" "$CASE_DIR/phls"; sp_ph "$CASE_DIR/phls" healthy unhealthy
+  cp "$CASE_DIR/ok" "$CASE_DIR/phgood"; sp_ph "$CASE_DIR/phgood" healthy healthy
+  cp "$CASE_DIR/ok" "$CASE_DIR/phidk"; sp_ph "$CASE_DIR/phidk" indeterminate indeterminate
+}
+
+t_pihole_failing_restarts_it_on_the_third_pass() {
+  local f
+  for f in phbad phls; do
+    sp_ub_start; sp_ph_files
+    sp_ub_pass "$CASE_DIR/$f"; assert_eq no-op "$SP_ACTION" "$f: first failure"
+    sp_ub_pass "$CASE_DIR/$f"; assert_eq no-op "$SP_ACTION" "$f: second failure"
+    sp_ub_pass "$CASE_DIR/$f"
+    assert_eq restart-component "$SP_ACTION" "$f: third failure in a row"
+    assert_eq pi-hole "$SP_TARGET" "$f: the target is Pi-hole"
+    assert_match 'Pi-hole failed 3 checks' "$SP_REASON" "$f: the reason names Pi-hole"
+    assert_eq 1 "$(sp_key "$CASE_DIR/cur" pihole_restarts)" "$f: the restart is counted"
+    assert_eq "" "$(sp_key "$CASE_DIR/cur" pihole_fail)" "$f: the streak starts over"
+    assert_eq "$SP_NOW" "$(sp_key "$CASE_DIR/cur" recovery_at)" "$f: it starts the cooldown"
+    assert_eq 0 "$(sp_key "$CASE_DIR/cur" outage_restarts)" "$f: the Tor ladder is not charged"
+  done
+}
+
+t_pihole_startup_and_cooldown_hold_the_restart() {
+  sp_libs
+  sp_obs "$CASE_DIR/ok" healthy healthy healthy healthy healthy
+  sp_ph_files
+  sp_decide "$CASE_DIR/ok" - "$SP_T0"; cp "$CASE_DIR/next" "$CASE_DIR/cur"
+  sp_steps "$CASE_DIR/phbad" $((SP_T0 + 10)) $((SP_T0 + 20)) $((SP_T0 + 30)) $((SP_T0 + 40))
+  assert_ne pi-hole "$SP_TARGET" "inside the startup allowance"
+  assert_match 'Pi-hole failed 4 checks in a row, inside the startup allowance or cooldown' "$SP_REASON" "the journal says why it waits"
+  sp_steps "$CASE_DIR/phbad" $((SP_T0 + 130))
+  assert_eq pi-hole "$SP_TARGET" "the allowance over, the streak acts"
+  sp_steps "$CASE_DIR/phbad" $((SP_T0 + 190)) $((SP_T0 + 250)) $((SP_T0 + 310)) $((SP_T0 + 370))
+  assert_ne pi-hole "$SP_TARGET" "inside the cooldown (300 s from the restart)"
+  assert_match 'inside the startup allowance or cooldown' "$SP_REASON" "the journal says why it waits"
+  sp_steps "$CASE_DIR/phbad" $((SP_T0 + 430))
+  assert_eq pi-hole "$SP_TARGET" "the cooldown over, a second restart"
+  assert_eq 2 "$(sp_key "$CASE_DIR/cur" pihole_restarts)" "two restarts"
+}
+
+t_pihole_retries_every_half_hour_after_two_restarts() {
+  local i last
+  sp_ub_start; sp_ph_files
+  for i in 1 2 3 4 5 6 7 8; do sp_ub_pass "$CASE_DIR/phbad"; done
+  assert_eq 2 "$(sp_key "$CASE_DIR/cur" pihole_restarts)" "two restarts first"
+  last="$(sp_key "$CASE_DIR/cur" recovery_at)"
+  i=0
+  while [ "$(sp_key "$CASE_DIR/cur" pihole_restarts)" = 2 ] && [ "$i" -lt 60 ]; do
+    sp_ub_pass "$CASE_DIR/phbad"; i=$((i + 1))
+    if [ "$SP_NOW" -lt $((last + 1800)) ]; then
+      assert_ne pi-hole "$SP_TARGET" "no restart before the retry interval ($((SP_NOW - last)) s)"
+      if [ "$(sp_key "$CASE_DIR/cur" pihole_fail)" -ge 3 ]; then
+        if [ "$SP_NOW" -lt $((last + 300)) ]; then
+          assert_match 'Pi-hole failed .* inside the startup allowance or cooldown' "$SP_REASON" "a pass in the cooldown says so"
+        else
+          assert_match 'Pi-hole failed .* after 2 restarts; next restart 1800 s after the last' "$SP_REASON" "a pass held by the retry interval says so"
+        fi
+      fi
+    fi
+  done
+  assert_eq 3 "$(sp_key "$CASE_DIR/cur" pihole_restarts)" "a third restart at the retry interval"
+  assert_eq 1 "$(( $(sp_key "$CASE_DIR/cur" recovery_at) - last >= 1800 ))" "no sooner than 1800 s after the second"
+  last="$(sp_key "$CASE_DIR/cur" recovery_at)"
+  i=0
+  while [ "$(sp_key "$CASE_DIR/cur" pihole_restarts)" = 3 ] && [ "$i" -lt 60 ]; do sp_ub_pass "$CASE_DIR/phbad"; i=$((i + 1)); done
+  assert_eq 4 "$(sp_key "$CASE_DIR/cur" pihole_restarts)" "and again"
+  assert_eq 1 "$(( $(sp_key "$CASE_DIR/cur" recovery_at) - last >= 1800 ))" "at the same interval"
+}
+
+t_pihole_healthy_reading_clears_and_indeterminate_holds() {
+  sp_ub_start; sp_ph_files
+  sp_ub_pass "$CASE_DIR/phbad"; sp_ub_pass "$CASE_DIR/phls"
+  assert_eq 2 "$(sp_key "$CASE_DIR/cur" pihole_fail)" "either record counts toward one streak"
+  sp_ub_pass "$CASE_DIR/phidk"
+  assert_eq 2 "$(sp_key "$CASE_DIR/cur" pihole_fail)" "indeterminate changes nothing"
+  assert_eq no-op "$SP_ACTION" "and acts on nothing"
+  sp_ub_pass "$CASE_DIR/ok"
+  assert_eq 2 "$(sp_key "$CASE_DIR/cur" pihole_fail)" "no record changes nothing"
+  sp_ub_pass "$CASE_DIR/phgood"
+  assert_eq "" "$(sp_key "$CASE_DIR/cur" pihole_fail)" "a healthy reading clears the streak"
+  sp_ub_pass "$CASE_DIR/phbad"; sp_ub_pass "$CASE_DIR/phbad"; sp_ub_pass "$CASE_DIR/phbad"
+  assert_eq 1 "$(sp_key "$CASE_DIR/cur" pihole_restarts)" "a restart"
+  sp_ub_pass "$CASE_DIR/phgood"
+  assert_eq 1 "$(sp_key "$CASE_DIR/cur" pihole_restarts)" "healthy right after a restart keeps the count: a flap is not a cure"
+  SP_NOW=$((SP_NOW + 1800))
+  sp_ub_pass "$CASE_DIR/phgood"
+  assert_eq "" "$(sp_key "$CASE_DIR/cur" pihole_restarts)" "healthy a retry interval after the last restart clears it"
+}
+
+t_pihole_new_boot_clears_the_counters() {
+  sp_ub_start; sp_ph_files
+  sp_ub_pass "$CASE_DIR/phbad"; sp_ub_pass "$CASE_DIR/phbad"
+  assert_eq 2 "$(sp_key "$CASE_DIR/cur" pihole_fail)" "two failures"
+  sp_decide "$CASE_DIR/ok" "$CASE_DIR/cur" $((SP_NOW + 60)) boot-b
+  assert_eq "" "$(sp_key "$CASE_DIR/next" pihole_fail)" "a new boot restarts the streak"
+}
+
+t_pihole_in_a_full_outage_past_the_cap_is_left_to_the_stack_restart() {
+  local i
+  sp_ub_start
+  sp_obs "$CASE_DIR/out" healthy unhealthy unhealthy unhealthy unhealthy
+  sp_ph "$CASE_DIR/out" unhealthy unhealthy
+  for i in $(seq 1 150); do
+    sp_ub_pass "$CASE_DIR/out"
+    if [ "$SP_TARGET" = pi-hole ] && [ "$(sp_key "$CASE_DIR/cur" outage_restarts)" -ge 2 ]; then
+      fail "past the cap the stack is what restarts, not Pi-hole (pass $i)"
+    fi
+  done
+  assert_match '^[2-9]' "$(sp_key "$CASE_DIR/cur" outage_restarts)" "the stack restarts ran"
+}
+
+t_pihole_state_rows_exist_only_when_non_zero() {
+  local tok
+  sp_ub_start; sp_ph_files
+  sp_ub_pass "$CASE_DIR/phgood"
+  assert_eq 0 "$(grep -c '^pihole_' "$CASE_DIR/cur")" "a zero-counter state has no new rows (BL-036)"
+  sp_ub_pass "$CASE_DIR/phbad"
+  assert_eq 1 "$(sp_key "$CASE_DIR/cur" pihole_fail)" "a non-zero counter is written"
+  nd_state_init || fail "init"
+  tok="$(nd_state_lock)" || fail "lock"
+  nd_state_commit "$tok" 0 "$CASE_DIR/cur" >/dev/null; assert_rc 0 $? "lib/state.sh accepts the new rows"
+  assert_eq 1 "$(nd_state_load | awk -F '\t' '$1 == "pihole_fail" { print $2 }')" "and loads them back"
+  printf 'pihole_restarts\tnope\n' >>"$CASE_DIR/cur"
+  nd_state_commit "$tok" 1 "$CASE_DIR/cur" >/dev/null 2>&1; assert_rc 2 $? "a bad value is refused"
+  nd_state_unlock "$tok"
 }

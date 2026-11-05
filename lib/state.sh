@@ -46,6 +46,9 @@
 #                   non-zero
 #   runtime_repairs repairs of missing containers since the runtime was last
 #                   healthy, and the stack restart after them; only when non-zero
+#   pihole_fail     Pi-hole checks failed in a row; only when non-zero
+#   pihole_restarts restarts of Pi-hole since it was last healthy; only when
+#                   non-zero
 #   streak <route> <ok> <fail> <unknown>
 #                   consecutive healthy / unhealthy / not-healthy observations
 # Every other key appears exactly once; streak rows once per route; nothing else.
@@ -136,7 +139,7 @@ _nd_state_check() {
       else if (k == "updated" || k == "started" || k == "outage_since" || k == "last_action_at" || k == "recovery_at") ok = epoch(v)
       else if (k == "route") ok = v == "-" || rid(v)
       else if (k == "proxy_gen") ok = v == "-" || v ~ /^[0-9a-f]{16}$/
-      else if (k == "outage_restarts" || k == "unbound_fail" || k == "unbound_restarts" || k == "runtime_repairs") ok = num(v)
+      else if (k == "outage_restarts" || k == "unbound_fail" || k == "unbound_restarts" || k == "runtime_repairs" || k == "pihole_fail" || k == "pihole_restarts") ok = num(v)
       else if (k == "last_action") ok = v ~ /^(-|no-op|switch-route|refresh-bridges|restart-component|repair-runtime|escalate)$/
       else { bad("unknown key " k); next }
       if (!ok) bad("bad value for " k)
