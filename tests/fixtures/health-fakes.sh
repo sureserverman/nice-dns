@@ -68,7 +68,13 @@ case "$1" in
     [ "$me" = container ] || { echo "Error: unknown command \"$1\" for \"podman\"" >&2; exit 125; }
     if [ -f "$FAKE/rt.errexit0" ]; then echo "Error: XPC connection error: Connection invalid"; exit 0; fi
     if [ -f "$FAKE/rt.down" ]; then echo "Error: failed to connect to the container API server" >&2; exit 1; fi
-    case "${2:-}" in -a|--all) table all ;; *) table running ;; esac
+    # $FAKE/state.hang: `ls -a` (the container-state read) never answers.
+    case "${2:-}" in
+      -a|--all)
+        if [ -f "$FAKE/state.hang" ]; then sleep "$(cat "$FAKE/hang_secs")" & wait; exit 1; fi
+        table all ;;
+      *) table running ;;
+    esac
     exit 0 ;;
   exec)
     # `exec --user U C cmd...` (the Unbound container, run as unbound).
@@ -145,6 +151,18 @@ case "$1" in
       for n in "$@"; do :; done
       [ -f "$FAKE/image_$n" ] || { echo "Error: no such container $n" >&2; exit 125; }
       cat "$FAKE/image_$n"; exit 0 ;;
+    esac
+    # The container-state format (nd_platform_container_state): podman's
+    # output is $FAKE/state_<name>; $FAKE/state_<name>.fail is an inspect
+    # error, $FAKE/state.hang no answer; otherwise running, stopped or absent.
+    case "$*" in *'{{.RestartCount}}'*)
+      for n in "$@"; do :; done
+      if [ -f "$FAKE/state.hang" ]; then sleep "$(cat "$FAKE/hang_secs")" & wait; exit 1; fi
+      if [ -f "$FAKE/state_$n.fail" ]; then echo "Error: no such object: \"$n\"" >&2; exit 125; fi
+      if [ -f "$FAKE/state_$n" ]; then cat "$FAKE/state_$n"; exit 0; fi
+      if grep -qxF "$n" "$FAKE/running"; then echo 'running healthy 0 0'; exit 0; fi
+      if grep -qxF "$n" "$FAKE/stopped" 2>/dev/null; then echo 'exited none 0 0'; exit 0; fi
+      echo "Error: no such object: \"$n\"" >&2; exit 125 ;;
     esac
     printf 'id-1 %s running\n' "$(cat "$FAKE/started" 2>/dev/null || echo 2026-09-23T22:16:33Z)" ;;
   run)

@@ -22,6 +22,15 @@
 #                  proxy (tor-haproxy or tor-socat) run. Reasons start with
 #                  running: | cli-missing: | runtime-down: |
 #                  containers-missing: | deadline:
+#   container:<c>  one each for pi-hole, unbound and the Tor proxy (no proxy
+#                  record while no variant is known): the container's own
+#                  state (platform adapter). healthy "running: health H
+#                  restarts N" (H healthy, starting or none); unhealthy
+#                  "unhealthy: <last check output> restarts N", "paused
+#                  restarts N" or "exited: rc X restarts N" (X is ? on
+#                  macOS); indeterminate when unread ("restarts ?"). Every
+#                  reason ends with the restart count, which the restart
+#                  policy reads. Optional to the validator, like proxy
 #   proxy          the Tor proxy container's generation, "generation:<16 hex>"
 #                  (a hash that changes when the proxy restarts or is
 #                  recreated; indeterminate when unreadable). Optional to
@@ -258,6 +267,45 @@ _nd_obs_proxy() {
   # hashed to nothing, and the policy would read that as a restart).
   h="$(nd_generation_hash "$out")" || { _nd_obs proxy indeterminate $(($(_nd_now_ms) - t0)) "unknown: no sha256sum or shasum to hash the generation"; return 0; }
   _nd_obs proxy healthy $(($(_nd_now_ms) - t0)) "generation:$h"
+}
+
+# _nd_obs_container <name>: container:<name>, the container's own state from
+# nd_platform_container_state. Every reason ends "restarts N" (the restart
+# policy reads the count there; "restarts ?" when the state was not read).
+_nd_obs_container() {
+  local c="$1" t0 dl rc line st h r x d
+  t0="$(_nd_now_ms)"
+  if [ "$_ND_H_RT" != ok ]; then
+    _nd_obs "container:$c" indeterminate 0 "runtime not listed: no state for $c restarts ?"; return 0
+  fi
+  dl="$(_nd_deadline "${ND_HEALTH_CMD_DEADLINE:-10}")"
+  if [ "$dl" -le 0 ]; then _nd_obs "container:$c" indeterminate 0 "deadline: observation budget spent restarts ?"; return 0; fi
+  line="$(nd_platform_container_state "$c" "$dl" "$_ND_H_TMP")"; rc=$?
+  case "$rc" in
+    0) ;;
+    124) _nd_obs "container:$c" indeterminate $(($(_nd_now_ms) - t0)) "deadline: the state of $c gave no answer within ${dl}s restarts ?"; return 0 ;;
+    *) _nd_obs "container:$c" indeterminate $(($(_nd_now_ms) - t0)) "unknown: the state of $c is not readable (exit $rc) restarts ?"; return 0 ;;
+  esac
+  IFS="$_ND_H_TAB" read -r st h r x d <<EOF
+$line
+EOF
+  case "$st:$h:$r:$x" in
+    *[!a-z0-9?:-]*|:*|*::*|*:) _nd_obs "container:$c" indeterminate $(($(_nd_now_ms) - t0)) "unknown: unparseable state for $c restarts ?"; return 0 ;;
+  esac
+  case "$r" in *[!0-9]*) _nd_obs "container:$c" indeterminate $(($(_nd_now_ms) - t0)) "unknown: no restart count for $c restarts ?"; return 0 ;; esac
+  d="$(printf '%s' "$d" | tr -d '\000-\037\177' | cut -c1-120)"
+  case "$st:$h" in
+    running:healthy|running:starting|running:none)
+      _nd_obs "container:$c" healthy $(($(_nd_now_ms) - t0)) "running: health $h restarts $r" ;;
+    running:unhealthy)
+      _nd_obs "container:$c" unhealthy $(($(_nd_now_ms) - t0)) "unhealthy: ${d:-the health check fails} restarts $r" ;;
+    running:*)
+      _nd_obs "container:$c" indeterminate $(($(_nd_now_ms) - t0)) "unknown: running with health '$h' restarts $r" ;;
+    paused:*)
+      _nd_obs "container:$c" unhealthy $(($(_nd_now_ms) - t0)) "paused restarts $r" ;;
+    *)
+      _nd_obs "container:$c" unhealthy $(($(_nd_now_ms) - t0)) "exited: rc $x restarts $r" ;;
+  esac
 }
 
 # nd_generation_hash <generation line>: its 16-hex hash, as the proxy
@@ -537,6 +585,9 @@ nd_health_observe() {
   _ND_H_TMP="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-health.XXXXXX")" || { printf 'health.sh: cannot create a scratch directory\n' >&2; return 1; }
   printf 'schema\tnice-dns-observations/1\n'
   _nd_obs_runtime
+  _nd_obs_container pi-hole
+  _nd_obs_container unbound
+  [ -z "$_ND_H_PROXY" ] || _nd_obs_container "$_ND_H_PROXY"
   _nd_obs_proxy
   _nd_obs_dns_owner
   _nd_obs_install_drift
@@ -559,9 +610,10 @@ nd_health_validate() {
     NR == 1 { if ($0 != "schema\tnice-dns-observations/1") bad("expected schema<TAB>nice-dns-observations/1"); next }
     /[\001-\010\013-\037\177\r]/ { bad("control character"); next }
     $1 != "obs" || NF != 5 { bad("expected obs<TAB>name<TAB>verdict<TAB>ms<TAB>reason"); next }
-    $2 !~ /^(runtime|proxy|unbound|dns-owner|install-drift|local-service|filtering|local-cache|route-table|route:[a-z0-9]+(-[a-z0-9]+)*)$/ { bad("unknown observation name"); next }
+    $2 !~ /^(runtime|container:(pi-hole|unbound|tor-haproxy|tor-socat)|proxy|unbound|dns-owner|install-drift|local-service|filtering|local-cache|route-table|route:[a-z0-9]+(-[a-z0-9]+)*)$/ { bad("unknown observation name"); next }
     $3 !~ /^(healthy|unhealthy|indeterminate)$/ { bad("unknown verdict"); next }
     $2 == "proxy" && $3 == "healthy" && $5 !~ /^generation:[0-9a-f]{16}$/ { bad("a healthy proxy record needs generation:<16 hex>"); next }
+    $2 ~ /^container:/ && $5 !~ ($3 == "indeterminate" ? " restarts ([0-9]+|[?])$" : " restarts [0-9]+$") { bad("a container record ends with restarts <count>"); next }
     $4 !~ /^[0-9]+$/ { bad("duration is not an integer"); next }
     $5 == "" { bad("empty reason"); next }
     { if (seen[$2]++) bad("duplicate " $2); if ($2 ~ /^route/) routes++ }

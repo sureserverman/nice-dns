@@ -208,6 +208,29 @@ nd_platform_container_generation() {
        END { exit !f }' "$3/gen"
 }
 
+# nd_platform_container_state <container> <deadline> <tmp>: one line
+# "status<TAB>health<TAB>restarts<TAB>exit_code<TAB>" (the detail is empty).
+# The status is the STATE column of `container ls -a`: Apple container keeps
+# no health check, restart count or exit code (1.6.1), and `container inspect`
+# has only the same state while its JSON carries the proxy's BRIDGE
+# environment. So health is none, the exit code ?, and the restart count is
+# the controller's own, from <state dir>/restarts.tsv ("name<TAB>count"; no
+# file, no row or no number is 0). 3 no CLI; 124 deadline; 1 no answer or
+# no such container.
+nd_platform_container_state() {
+  local rc st n=0 f
+  _nd_mac_table "$2" "$3/cst" -a; rc=$?
+  case "$rc" in 0) ;; 3|124) return "$rc" ;; *) return 1 ;; esac
+  st="$(awk -F '\t' -v n="$1" '$1 == n { print $2; exit }' "$3/cst")"
+  case "$st" in ''|*[!a-z]*) return 1 ;; esac
+  f="$(nd_platform_state_dir)/restarts.tsv"
+  if [ -f "$f" ]; then
+    n="$(awk -F '\t' -v n="$1" '$1 == n { print $2; exit }' "$f")"
+    case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  fi
+  printf '%s\tnone\t%s\t?\t\n' "$st" "$n"
+}
+
 # nd_platform_restart_scope: what nd_platform_restart_proxy restarts.
 nd_platform_restart_scope() { printf 'stack\n'; }
 

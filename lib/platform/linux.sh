@@ -126,6 +126,31 @@ nd_platform_container_generation() {
   head -n 1 "$3/gen"
 }
 
+# nd_platform_container_state <container> <deadline> <tmp>: one line
+# "status<TAB>health<TAB>restarts<TAB>exit_code<TAB>detail" from podman
+# inspect. health is none without a health check; detail is the last health
+# check's output on one line (cut to 120 characters; empty without a log).
+# 3 no CLI; 124 deadline; 1 inspect failed or its output did not parse.
+nd_platform_container_state() {
+  local bin rc
+  bin="$(nd_platform_runtime_bin)" || return 3
+  nd_bounded "$2" "$3/cst" "$3/cst.err" "$bin" inspect -f '{{.State.Status}} {{if .State.Healthcheck}}{{.State.Healthcheck.Status}}{{else}}none{{end}} {{.RestartCount}} {{.State.ExitCode}}{{if .State.Healthcheck}}{{range .State.Healthcheck.Log}}
+@@nd-health-log@@ {{.Output}}{{end}}{{end}}' "$1"; rc=$?
+  case "$rc" in 0) ;; 124) return 124 ;; *) return 1 ;; esac
+  awk 'NR == 1 {
+         if ($0 !~ /^[a-z]+ [a-z]* [0-9]+ -?[0-9]+$/) { bad = 1; exit }
+         st = $1; if (NF == 4) { h = $2; r = $3; x = $4 } else { h = "none"; r = $2; x = $3 }
+         next
+       }
+       /^@@nd-health-log@@ / { d = substr($0, 19); next }
+       { d = d " " $0 }
+       END {
+         if (bad || st == "") exit 1
+         gsub(/[[:cntrl:]]/, " ", d); gsub(/  +/, " ", d); sub(/^ /, "", d); sub(/ $/, "", d)
+         printf "%s\t%s\t%s\t%s\t%s\n", st, h, r, x, substr(d, 1, 120)
+       }' "$3/cst"
+}
+
 # nd_platform_restart_scope: what nd_platform_restart_proxy restarts.
 nd_platform_restart_scope() { printf 'proxy\n'; }
 
