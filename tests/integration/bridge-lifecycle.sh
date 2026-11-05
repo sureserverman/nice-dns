@@ -524,3 +524,29 @@ t_weak_memory_expires() {
     ) || exit 1
   done
 }
+
+# Tier-2 round 1: the adoption restart ignored the crash-loop hold, so a
+# refresh could restart a proxy that was already restarting on its own.
+t_a_crash_looping_proxy_is_not_restarted_to_adopt_a_set() {
+  local plat out tok
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      bl_set "$BL_LIVE" 5
+      bl_set "$CASE_DIR/cand" 7 9
+      printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+      bl_soak_state
+      : >"$FAKE/restart_changes"
+      nd_state_init || fail "state init"
+      printf 'schema\tnice-dns-controller-state/1\nboot_id\tboot-a\nupdated\t-\nstarted\t-\nroute\t-\noutage_since\t-\noutage_restarts\t0\nlast_action\t-\nlast_action_at\t-\nrecovery_at\t-\nrestart_seen_tor-haproxy\t4\ncrash_tor-haproxy\t%s,%s\n' \
+        "$(( $(date +%s) - 200 ))" "$(( $(date +%s) - 60 ))" >"$CASE_DIR/seed"
+      tok="$(nd_state_lock)" || fail "lock"; nd_state_commit "$tok" 0 "$CASE_DIR/seed" >/dev/null || fail "seed"; nd_state_unlock "$tok"
+      out="$(nd_bridges_refresh haproxy)"
+      assert_eq changed "$(bl_get result "$out")" "$plat: the filtered set is still applied: $out"
+      assert_eq held "$(bl_get adopted "$out")" "$plat: but the looping proxy is not restarted"
+      assert_eq "" "$(bl_restarts)" "$plat: no restart"
+      assert_file "$ND_STATE_DIR/bridges.pending" "$plat: the set waits for the next start"
+      assert_match 'bridges	held' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: the journal says why"
+    ) || exit 1
+  done
+}

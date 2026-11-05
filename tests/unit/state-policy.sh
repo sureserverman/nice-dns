@@ -20,7 +20,7 @@ sp_env() {
   unset ND_STATE_LEASE_S ND_POLICY_STARTUP_S ND_POLICY_GRACE_S ND_POLICY_COOLDOWN_S ND_POLICY_LADDER_S ND_POLICY_RUNTIME_REPAIRS \
     ND_POLICY_PROMOTE ND_POLICY_DEMOTE ND_POLICY_MAX_RESTARTS ND_POLICY_UNBOUND_FAILS ND_POLICY_UNBOUND_MAX_RESTARTS ND_POLICY_RETRY_S ND_POLICY_RUNTIME_REPAIR_MAX \
     ND_POLICY_PIHOLE_FAILS ND_POLICY_PIHOLE_MAX_RESTARTS ND_POLICY_PAUSED_PASSES \
-    ND_POLICY_CRASH_WINDOW_S ND_POLICY_CRASH_BURST
+    ND_POLICY_CRASH_WINDOW_S ND_POLICY_CRASH_BURST ND_POLICY_PAUSED_MAX_REPAIRS
 }
 
 sp_libs() {
@@ -1401,4 +1401,44 @@ t_crash_rows_pass_the_state_validator() {
   awk -F '\t' '$1 != "crash_tor-haproxy"' "$CASE_DIR/cur" >"$CASE_DIR/cur.bad"; cat "$CASE_DIR/bad.row" >>"$CASE_DIR/cur.bad"
   nd_state_commit "$tok" 1 "$CASE_DIR/cur.bad" >/dev/null 2>&1; assert_rc 2 $? "a bad rise list is refused"
   nd_state_unlock "$tok"
+}
+
+# Tier-2 round 1: the crash-loop code ran tr, tail, sed and wc, so with no
+# external command the window emptied and the hold never engaged.
+t_policy_is_pure_through_a_crash_loop() {
+  local n out
+  sp_ub_start
+  for n in 0 1 2 3 4 5 6 7 8 9 10; do
+    sp_obs "$CASE_DIR/px" healthy healthy healthy healthy healthy
+    sp_cnt "$CASE_DIR/px" tor-haproxy "$n"
+    SP_NOW=$((SP_NOW + 30))
+    out="$(PATH=/nonexistent nd_policy_decide "$CASE_DIR/px" "$CASE_DIR/cur" "$SP_NOW" boot-a 2>&1)"
+    assert_rc 0 $? "pass $n decides with no external command: $out"
+    printf '%s\n' "$out" | awk '$0 == "schema\tnice-dns-controller-state/1" { s = 1 } s' >"$CASE_DIR/cur"
+    [ "$n" = 3 ] && assert_match 'reason	crash-loop: tor-haproxy restarted 3 times' "$out" "the third rise escalates without tr or wc"
+  done
+  assert_match '^([0-9]+,){7}[0-9]+$' "$(sp_key "$CASE_DIR/cur" crash_tor-haproxy)" "ten rises keep the newest eight, without tail or sed"
+}
+
+t_the_unpause_is_capped_and_never_starves_the_other_rules() {
+  local i unp=0 ph=0 esc=0 last
+  sp_ub_start
+  # Pi-hole stays paused: its own check fails as well.
+  cp "$CASE_DIR/ok" "$CASE_DIR/pz"; sp_paused "$CASE_DIR/pz" pi-hole
+  printf 'obs\tlocal-service\tunhealthy\t4\tdig exit 9\n' >>"$CASE_DIR/pz"
+  for i in $(seq 1 40); do
+    sp_ub_pass "$CASE_DIR/pz"
+    case "$SP_ACTION:$SP_TARGET" in
+      repair-runtime:containers-paused) unp=$((unp + 1)); [ "$unp" -le 2 ] || [ $((SP_NOW - last)) -ge 1800 ] || fail "unpause $unp only $((SP_NOW - last)) s after the last"; last="$SP_NOW" ;;
+      restart-component:pi-hole) ph=$((ph + 1)); last="$SP_NOW" ;;
+      escalate:*) assert_match 'stays paused after 2 unpauses' "$SP_REASON" "a held pass escalates with the reason"; esc=$((esc + 1)) ;;
+    esac
+  done
+  assert_eq 2 "$unp" "two unpauses in 40 minutes, then the retry interval"
+  assert_eq 1 "$(( ph >= 1 ))" "past the cap Pi-hole's own rule acts ($ph restarts)"
+  assert_eq 1 "$(( esc >= 1 ))" "and passes no rule acted on escalate"
+  assert_eq 2 "$(sp_key "$CASE_DIR/cur" paused_repairs)" "the count is kept"
+  cp "$CASE_DIR/ok" "$CASE_DIR/run"; printf 'obs\tcontainer:pi-hole\thealthy\t20\trunning: health healthy restarts 0\n' >>"$CASE_DIR/run"
+  sp_ub_pass "$CASE_DIR/run"
+  assert_eq "" "$(sp_key "$CASE_DIR/cur" paused_repairs)" "a running reading clears it, and the row goes"
 }

@@ -65,7 +65,12 @@
 #     absent holds it. Where the platform lists no such repair (macOS has no
 #     pause) the policy escalates with the reason. It comes after the runtime
 #     faults and before Unbound's and Pi-hole's rules, whose checks a paused
-#     container fails too.
+#     container fails too. After ND_POLICY_PAUSED_MAX_REPAIRS (2) unpauses with a
+#     container still read paused, the unpause retries every ND_POLICY_RETRY_S;
+#     the passes between leave the other rules free to act (a Pi-hole or stack
+#     restart recreates the container) and escalate when nothing else acts.
+#     paused_repairs counts them; a pass with no container read paused and one
+#     read otherwise clears it.
 #   * A crash loop is held, not fought. Each container:<name> record ends with
 #     the unit's restart count ("restarts N"; Linux NRestarts). A count above the
 #     last one kept (restart_seen_<c>) is a restart that already happened: the
@@ -151,14 +156,14 @@ nd_policy_decide() {
   local s_ubfail=0 s_ubrest=0 ub=- ub_reason="" ub_due=0
   local phfails="${ND_POLICY_PIHOLE_FAILS:-3}" phmax="${ND_POLICY_PIHOLE_MAX_RESTARTS:-2}"
   local s_phfail=0 s_phrest=0 ph_ct=- ph_ls=- ph_reason="" ph_due=0
-  local pzpasses="${ND_POLICY_PAUSED_PASSES:-2}" pz_names="" pz=""
+  local pzpasses="${ND_POLICY_PAUSED_PASSES:-2}" pzmax="${ND_POLICY_PAUSED_MAX_REPAIRS:-2}" pz_names="" pz="" s_pzrep=0 pz_any=0 pz_read=0
   # The stack's containers (the observation validator's names), their paused
   # counts and this pass's reading: p paused, r running or failing otherwise.
   local -a cn=(pi-hole unbound tor-haproxy tor-socat) cpz=(0 0 0 0) cobs=(- - - -)
   # Crash loops: the last count kept, this pass's count, the rise epochs inside
   # the window ("e1,e2"), the last escalation.
   local cwin="${ND_POLICY_CRASH_WINDOW_S:-600}" cburst="${ND_POLICY_CRASH_BURST:-3}"
-  local -a cseen=(0 0 0 0) ccnt=(- - - -) crise=(- - - -) cesc=(- - - -)
+  local -a cseen=(0 0 0 0) ccnt=(- - - -) crise=(- - - -) cesc=(- - - -) crn=(0 0 0 0)
   local held=" " cr_due=-1 cr_first=0 boot_new=0
   local rt=- rt_reason="" compat_ok=0 valid=1 why="" notes=""
   local action=no-op target=- reason=""
@@ -195,7 +200,7 @@ nd_policy_decide() {
       route) s_route="$b" ;; outage_since) s_out="$b" ;; outage_restarts) s_rest="$b" ;;
       proxy_gen) s_pgen="$b" ;;
       unbound_fail) s_ubfail="$b" ;; unbound_restarts) s_ubrest="$b" ;; runtime_repairs) s_rtrep="$b" ;;
-      pihole_fail) s_phfail="$b" ;; pihole_restarts) s_phrest="$b" ;;
+      pihole_fail) s_phfail="$b" ;; pihole_restarts) s_phrest="$b" ;; paused_repairs) s_pzrep="$b" ;;
       restart_seen_*|crash_esc_*|crash_*)
         i=0
         while [ "$i" -lt 4 ]; do
@@ -226,6 +231,7 @@ nd_policy_decide() {
   _nd_p_num "$s_ubrest" || s_ubrest=0
   _nd_p_num "$s_phfail" || s_phfail=0
   _nd_p_num "$s_phrest" || s_phrest=0
+  _nd_p_num "$s_pzrep" || s_pzrep=0
 
   # Observations.
   local first=1
@@ -284,7 +290,7 @@ nd_policy_decide() {
   if [ "$s_boot" != "$boot" ]; then
     [ "$s_boot" = - ] || notes="boot changed; timers restart; "
     s_boot="$boot" s_started="$now" s_out=- s_rest=0 s_rec=- s_laat=- s_ubfail=0 s_ubrest=0 s_phfail=0 s_phrest=0
-    cpz=(0 0 0 0) cseen=(0 0 0 0) crise=(- - - -) cesc=(- - - -) boot_new=1
+    cpz=(0 0 0 0) cseen=(0 0 0 0) crise=(- - - -) cesc=(- - - -) boot_new=1 s_pzrep=0
     [ "$s_la" = - ] || s_la=-
     i=0; while [ "$i" -lt "$n" ]; do rok[i]=0; rfail[i]=0; runk[i]=0; i=$((i + 1)); done
     fresh=1
@@ -332,7 +338,7 @@ nd_policy_decide() {
     while [ "$i" -lt 4 ]; do
       if [ "${ccnt[i]}" != - ]; then
         if [ "$boot_new" = 0 ] && [ "${ccnt[i]}" -gt "${cseen[i]}" ]; then
-          crise[i]="$( [ "${crise[i]}" = - ] || printf '%s,' "${crise[i]}")$now"
+          if [ "${crise[i]}" = - ]; then crise[i]="$now"; else crise[i]="${crise[i]},$now"; fi
           s_rec="$now"
           notes="${notes}${cn[i]} restart count rose to ${ccnt[i]}; "
         fi
@@ -341,11 +347,14 @@ nd_policy_decide() {
       # Keep the rises inside the window (at most 8; a moved-back clock keeps them).
       rises="" k=0
       if [ "${crise[i]}" != - ]; then
-        for w in $(printf '%s\n' "${crise[i]}" | tr ',' ' '); do
+        # Only digits and commas reach here (the load checks it), so the
+        # unquoted split cannot glob.
+        for w in ${crise[i]//,/ }; do
           if [ $((now - w)) -lt "$cwin" ]; then rises="$rises${rises:+,}$w"; k=$((k + 1)); fi
         done
       fi
-      [ "$k" -le 8 ] || rises="$(printf '%s\n' "$rises" | tr ',' '\n' | tail -n 8 | tr '\n' ',' | sed 's/,$//')"
+      while [ "$k" -gt 8 ]; do rises="${rises#*,}"; k=$((k - 1)); done
+      crn[i]="$k"
       if [ -z "$rises" ]; then
         crise[i]=- cesc[i]=-
       else
@@ -402,14 +411,16 @@ nd_policy_decide() {
     # Paused containers: two passes in a row, then the unpause.
     i=0
     while [ "$i" -lt 4 ]; do
-      case "${cobs[i]}" in p) cpz[i]=$((cpz[i] + 1)) ;; r) cpz[i]=0 ;; esac
+      case "${cobs[i]}" in p) cpz[i]=$((cpz[i] + 1)) pz_any=1 ;; r) cpz[i]=0 pz_read=1 ;; esac
       [ "${cobs[i]}" = p ] && [ "${cpz[i]}" -ge "$pzpasses" ] && pz_names="$pz_names${pz_names:+ }${cn[i]}"
       i=$((i + 1))
     done
+    [ "$pz_any" = 1 ] || [ "$pz_read" = 0 ] || s_pzrep=0
     if [ -n "$pz_names" ]; then
       if [ "${repairs#* containers-paused }" = "$repairs" ]; then pz=escalate
       elif [ "$in_cool" = 1 ]; then notes="${notes}paused: $pz_names, inside the recovery cooldown; "
-      else pz=repair
+      elif [ "$s_pzrep" -lt "$pzmax" ] || ! _nd_p_num "$s_rec" || [ $((now - s_rec)) -ge "$retry" ]; then pz=repair
+      else pz=held
       fi
     fi
 
@@ -460,9 +471,9 @@ nd_policy_decide() {
     elif [ -n "$rt_fault" ] && [ "${repairs#* "$rt_fault" }" = "$repairs" ]; then
       action=escalate reason="runtime fault ($rt_fault) has no repair on this platform: $rt_reason"
     elif [ "$cr_due" -ge 0 ]; then
-      v="$(printf '%s\n' "${crise[cr_due]}" | tr ',' '\n' | wc -l | tr -d ' ')"
+      v=""; [ "$cr_first" = 1 ] && v="; first escalation of this loop"
       # Leads with crash-loop: (the CLI's dump reads it there); the notes follow.
-      action=escalate reason="crash-loop: ${cn[cr_due]} restarted $v times in ${cwin} s (restarts ${cseen[cr_due]}); the controller adds no restart$( [ "$cr_first" = 1 ] && printf '; first escalation of this loop')${notes:+; ${notes%; }}"
+      action=escalate reason="crash-loop: ${cn[cr_due]} restarted ${crn[cr_due]} times in ${cwin} s (restarts ${cseen[cr_due]}); the controller adds no restart$v${notes:+; ${notes%; }}"
       cesc[cr_due]="$now" notes=""
     elif [ -n "$rt_held" ]; then
       reason="${notes}runtime fault ($rt_fault) held: $rt_held is restarting on its own (crash-loop hold)"; notes=""
@@ -490,6 +501,7 @@ nd_policy_decide() {
       notes=""
     elif [ "$pz" = repair ]; then
       action=repair-runtime target=containers-paused reason="containers-paused: $pz_names (paused $pzpasses passes or more)"
+      s_pzrep=$((s_pzrep + 1))
     elif [ "$ub_due" = 1 ]; then
       action=restart-component target=unbound reason="Unbound failed $s_ubfail checks in a row: $ub_reason"
       s_ubfail=0 s_ubrest=$((s_ubrest + 1)) s_rec="$now"
@@ -565,6 +577,10 @@ nd_policy_decide() {
       fi
     fi
     reason="$notes$reason"
+    # Past the unpause cap, a pass no other rule acted on escalates.
+    if [ "$pz" = held ] && [ "$action" = no-op ]; then
+      action=escalate reason="paused: $pz_names stays paused after $s_pzrep unpauses; next unpause ${retry} s after the last ($((now - s_rec)) s so far); $reason"
+    fi
   fi
 
   if [ "$action" != no-op ]; then s_la="$action" s_laat="$now"; fi
@@ -581,6 +597,7 @@ nd_policy_decide() {
   [ "$s_rtrep" = 0 ] || printf 'runtime_repairs\t%s\n' "$s_rtrep"
   [ "$s_phfail" = 0 ] || printf 'pihole_fail\t%s\n' "$s_phfail"
   [ "$s_phrest" = 0 ] || printf 'pihole_restarts\t%s\n' "$s_phrest"
+  [ "$s_pzrep" = 0 ] || printf 'paused_repairs\t%s\n' "$s_pzrep"
   i=0
   while [ "$i" -lt 4 ]; do
     [ "${cpz[i]}" = 0 ] || printf 'paused_%s\t%s\n' "${cn[i]}" "${cpz[i]}"

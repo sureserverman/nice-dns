@@ -1269,7 +1269,12 @@ nd_bridges_refresh() {
   # recreates the proxy (user decision 2026-10-04: one fail-closed gap at most
   # per refresh). The pending marker bounds it: once the proxy has read the
   # set, a stale listed=1 in the state file restarts nothing.
-  if [ "$rc" -eq 0 ] && _nd_br_running_weak "$weak" "$listed" "$d/bridges.env" && _nd_br_pending; then
+  if [ "$rc" -eq 0 ] && _nd_br_running_weak "$weak" "$listed" "$d/bridges.env" && _nd_br_pending && _nd_br_crash_held; then
+    # The policy holds every restart of a proxy that is restarting on its own;
+    # the set stays pending and the next restart, whoever makes it, adopts it.
+    nd_recovery_journal "br-$(date +%s)" bridges held "the running proxy uses a bridge the new set leaves out, but it is restarting on its own (crash-loop hold); the set is adopted at its next start"
+    adopted=held
+  elif [ "$rc" -eq 0 ] && _nd_br_running_weak "$weak" "$listed" "$d/bridges.env" && _nd_br_pending; then
     nd_recovery_journal "br-$(date +%s)" bridges adopting "the running proxy uses a bridge the new set leaves out; the service restart adopts the set"
     if nd_recovery_restart_service "br-$(date +%s)-svc" >/dev/null; then
       rm -f "$(nd_platform_state_dir)/bridges.pending"; adopted=restarted
@@ -1279,6 +1284,15 @@ nd_bridges_refresh() {
   fi
   printf '%s\ndropped\t%s\nadopted\t%s\n' "$out" "$dropped" "$adopted"
   return "$rc"
+}
+
+# _nd_br_crash_held: 0 when the committed state holds a proxy restart-count rise
+# under ND_POLICY_CRASH_WINDOW_S (600) old (lib/policy.sh crash_<c>; read as
+# data, never sourced, DEC-001).
+_nd_br_crash_held() {
+  nd_state_load 2>/dev/null | awk -F '\t' -v now="$(date +%s)" -v win="${ND_POLICY_CRASH_WINDOW_S:-600}" '
+    $1 ~ /^crash_tor-(haproxy|socat)$/ { n = split($2, e, ","); if (now - e[n] < win) f = 1 }
+    END { exit !f }'
 }
 
 # _nd_br_pending: 0 when a refreshed set waits for the running proxy, which
