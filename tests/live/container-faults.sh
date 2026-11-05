@@ -23,7 +23,7 @@ cf_before   snapshot the target, record its proxy as the cell
 cf_install  nice-dns install from a checkout of HEAD, over the running stack; real timers, default tunables
 cf_pihole   SIGSTOP pihole-FTL; expect pi-hole requested, acknowledged, ready, a new start and a fresh name within 10 minutes; thaw
 cf_pause    Linux: pause unbound; expect the runtime repair of containers-paused (requested, acknowledged, ready) and a fresh name within 4 minutes. macOS: not run (no pause)
-cf_crash    Linux: crash the proxy 4 times, 20 s apart; expect one crash-loop escalation, no controller restart of the proxy, NRestarts up by 4 with growing delays, a fresh name within 10 minutes. macOS: not run
+cf_crash    Linux: crash the proxy 4 times, 75 s apart (one per controller pass); expect one crash-loop escalation, no controller restart of the proxy, NRestarts up by 4 with growing delays, a fresh name within 10 minutes. macOS: not run
 cf_stop     macOS: stop unbound; expect the containers-missing repair (requested, acknowledged, ready), a new start and a fresh name within 10 minutes. Linux: not run
 cf_after    thaw, unpause, end the crash sequence: the target ends with a settled stack
 cf_privacy  no bridge material, session or hash in the evidence
@@ -52,7 +52,11 @@ CF_STEPS='cf_before cf_install cf_pihole cf_pause cf_crash cf_stop cf_after'
 CF_RECOVER_MAX="${CF_RECOVER_MAX:-600}"
 CF_PAUSE_MAX="${CF_PAUSE_MAX:-240}"
 CF_CRASH_TIMES="${CF_CRASH_TIMES:-4}"
-CF_CRASH_EVERY="${CF_CRASH_EVERY:-20}"
+# The controller reads the restart count once a minute, and several restarts
+# inside one pass are one rise: four crashes 20 s apart (about 110 s with the
+# back-off) can fall in two passes, short of the three rises a crash loop
+# needs. 75 s puts each crash in its own pass.
+CF_CRASH_EVERY="${CF_CRASH_EVERY:-75}"
 # ND_POLICY_CRASH_WINDOW_S (600): the hold is watched for the whole window.
 CF_CRASH_OBSERVE="${CF_CRASH_OBSERVE:-600}"
 # shellcheck disable=SC2034 # read by il_each
