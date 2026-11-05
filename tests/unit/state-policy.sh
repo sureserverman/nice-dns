@@ -1403,6 +1403,39 @@ t_crash_rows_pass_the_state_validator() {
   nd_state_unlock "$tok"
 }
 
+# Live 2026-11-05 (restart-policy Task 3.3): mint's awk is mawk 1.3.4, which
+# panicked compiling the crash-row pattern, so every controller pass there
+# exited 2 from install on. The suite ran under gawk and never saw it. The
+# validator runs under each awk the Linux hosts ship (macOS's BSD awk ran it
+# live): the crash rows are accepted, a bad one refused, under every one.
+t_state_validator_runs_under_every_awk_the_hosts_ship() {
+  local tok impl d n=0 out
+  sp_ub_start
+  sp_px_pass 0; sp_px_pass 1; sp_px_pass 2; sp_px_pass 3
+  assert_match 'crash_tor-haproxy' "$(cat "$CASE_DIR/cur")" "the state holds a crash row"
+  awk -F '\t' '$1 != "crash_tor-haproxy"' "$CASE_DIR/cur" >"$CASE_DIR/cur.bad"; printf 'crash_tor-haproxy\t1,,2\n' >>"$CASE_DIR/cur.bad"
+  for impl in mawk gawk "busybox awk"; do
+    command -v "${impl%% *}" >/dev/null 2>&1 || continue
+    [ "$impl" != "busybox awk" ] || busybox awk 'BEGIN { exit 0 }' 2>/dev/null || continue
+    n=$((n + 1)); d="$CASE_DIR/awk-$n"; mkdir -p "$d"
+    printf '#!/bin/sh\nexec %s "$@"\n' "$impl" >"$d/awk"; chmod +x "$d/awk"
+    (
+      PATH="$d:$PATH"
+      ND_STATE_DIR="$CASE_DIR/st-$n"; export ND_STATE_DIR
+      nd_state_init || exit 9
+      tok="$(nd_state_lock)" || exit 9
+      out="$(nd_state_commit "$tok" 0 "$CASE_DIR/cur" 2>&1)"; rc=$?
+      [ "$rc" = 0 ] || { echo "accept rc=$rc: $out"; exit 1; }
+      out="$(nd_state_commit "$tok" 1 "$CASE_DIR/cur.bad" 2>&1)"; rc=$?
+      [ "$rc" = 2 ] || { echo "refuse rc=$rc: $out"; exit 1; }
+      nd_state_unlock "$tok"
+    ) >"$CASE_DIR/awk-$n.log" 2>&1
+    assert_rc 0 $? "$impl: the crash rows are accepted and a bad one refused: $(cat "$CASE_DIR/awk-$n.log")"
+  done
+  assert_ne 0 "$n" "at least one awk was tried"
+  command -v mawk >/dev/null 2>&1 || echo "note: mawk is not installed here; the Linux hosts' default awk was not tried" >&2
+}
+
 # Tier-2 round 1: the crash-loop code ran tr, tail, sed and wc, so with no
 # external command the window emptied and the hold never engaged.
 t_policy_is_pure_through_a_crash_loop() {

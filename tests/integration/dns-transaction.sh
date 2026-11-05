@@ -1048,6 +1048,28 @@ t_mullvad_rewrite_refusal_names_the_way_back() {
   done
 }
 
+# Live 2026-11-05 (restart-policy Task 3.3): Ubuntu's and Mint's awk is mawk
+# 1.3.4, which never matched an IPv4 server with ([0-9]{1,3}\.){3}: Mullvad's
+# custom 127.0.0.1, the setting the install itself writes, read as unknown.
+# The readers run under each awk the Linux hosts ship.
+t_mullvad_readers_accept_an_ipv4_server_under_every_awk() {
+  local impl d n=0 out
+  for impl in mawk gawk "busybox awk"; do
+    command -v "${impl%% *}" >/dev/null 2>&1 || continue
+    [ "$impl" != "busybox awk" ] || busybox awk 'BEGIN { exit 0 }' 2>/dev/null || continue
+    n=$((n + 1)); d="$CASE_DIR/awk-$n"; mkdir -p "$d"
+    printf '#!/bin/sh\nexec %s "$@"\n' "$impl" >"$d/awk"
+    printf '#!/bin/sh\nprintf "Custom DNS: yes\\nServers:\\n127.0.0.1\\nfe80::1\\n"\n' >"$d/mullvad"
+    chmod +x "$d/awk" "$d/mullvad"
+    printf 'schema\tnice-dns-mullvad-dns/1\nbefore_install\tcustom\t10.64.0.1\t::1\n' >"$d/rec.tsv"
+    out="$(PATH="$d:$PATH" bash -c '. "$1/lib/install.sh" && _nd_inst_mullvad_read && _nd_inst_mullvad_record_get "$2" before_install' _ "$NICE_DNS_ROOT" "$d/rec.tsv" 2>&1)"
+    assert_eq "$(printf 'custom 127.0.0.1 fe80::1\ncustom 10.64.0.1 ::1')" "$out" "$impl: both readers take IPv4 and IPv6 servers"
+    out="$(PATH="$d:$PATH" bash -c '. "$1/lib/install.sh" && printf "schema\tnice-dns-mullvad-dns/1\nx\tcustom\t1.2.3.4.5\n" >"$2" && _nd_inst_mullvad_record_get "$2" x' _ "$NICE_DNS_ROOT" "$d/bad.tsv" 2>&1)"
+    assert_nonzero $? "$impl: a five-part address is refused ($out)"
+  done
+  assert_ne 0 "$n" "at least one awk was tried"
+}
+
 t_no_mullvad_means_no_mullvad_calls() {
   local ep
   for ep in $(dt_linux_eps); do

@@ -129,6 +129,14 @@ _nd_state_check() {
     function num(v) { return v ~ /^[0-9]+$/ && length(v) <= 15 }
     function epoch(v) { return v == "-" || num(v) }
     function rid(v) { return v ~ /^[a-z0-9]+(-[a-z0-9]+)*$/ && length(v) <= 64 }
+    # 1..16 comma-separated epochs. Not one pattern with a repeated group: mawk
+    # 1.3.4 (Ubuntu and Mint) panics compiling ^[0-9]{1,15}(,[0-9]{1,15}){0,15}$.
+    function epochs(v,   p, n, i) {
+      n = split(v, p, ",")
+      if (n < 1 || n > 16) return 0
+      for (i = 1; i <= n; i++) if (p[i] !~ /^[0-9]+$/ || length(p[i]) > 15) return 0
+      return 1
+    }
     /\r/ { bad("carriage return"); next }
     NR == 1 { if ($0 != "schema\t" schema) bad("the first line must be schema<TAB>" schema); next }
     $1 == "streak" {
@@ -149,7 +157,7 @@ _nd_state_check() {
       else if (k == "route") ok = v == "-" || rid(v)
       else if (k == "proxy_gen") ok = v == "-" || v ~ /^[0-9a-f]{16}$/
       else if (k == "outage_restarts" || k == "unbound_fail" || k == "unbound_restarts" || k == "runtime_repairs" || k == "pihole_fail" || k == "pihole_restarts" || k == "paused_repairs" || k ~ /^(paused|restart_seen|crash_esc)_(pi-hole|unbound|tor-haproxy|tor-socat)$/) ok = num(v)
-      else if (k ~ /^crash_(pi-hole|unbound|tor-haproxy|tor-socat)$/) ok = v ~ /^[0-9]{1,15}(,[0-9]{1,15}){0,15}$/
+      else if (k ~ /^crash_(pi-hole|unbound|tor-haproxy|tor-socat)$/) ok = epochs(v)
       else if (k == "last_action") ok = v ~ /^(-|no-op|switch-route|refresh-bridges|restart-component|repair-runtime|escalate)$/
       else { bad("unknown key " k); next }
       if (!ok) bad("bad value for " k)

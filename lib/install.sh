@@ -1777,7 +1777,9 @@ EOF
 ND_INST_MULLVAD_SCHEMA='nice-dns-mullvad-dns/1'
 ND_INST_MULLVAD=0 ND_INST_MULLVAD_CHANGED=0
 # A DNS server word: dotted IPv4, or IPv6 (hex groups with at least one ':').
-ND_INST_MULLVAD_IP_ERE='^(([0-9]{1,3}\.){3}[0-9]{1,3}|[0-9A-Fa-f]*:[0-9A-Fa-f:.]*)$'
+# Spelled without a counted group: mawk 1.3.4 (Ubuntu, Mint) never matched
+# ([0-9]{1,3}\.){3}. [.] rather than \., which awk -v reads as an escape.
+ND_INST_MULLVAD_IP_ERE='^([0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3}|[0-9A-Fa-f]*:[0-9A-Fa-f:.]*)$'
 
 # _nd_inst_mullvad_read: Mullvad's current DNS setting as words, "custom
 # <ip>..." or "default [<block>...]" (ads, trackers, malware, adult-content,
