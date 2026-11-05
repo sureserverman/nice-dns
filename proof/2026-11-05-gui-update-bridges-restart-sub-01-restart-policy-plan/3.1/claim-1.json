@@ -1,0 +1,11 @@
+{
+ "created": "2026-11-05T17:31:51+00:00",
+ "fingerprint": "cba2df2f3944e74ace4ff2df769a773ff44773654a15d22d7693bc54591954d9",
+ "index": 1,
+ "kind": "claim-deviation",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-01-restart-policy-plan.md",
+ "schema": 2,
+ "task": "3.1",
+ "text": "`bash -n tests/live/container-faults.sh && shellcheck tests/live/container-faults.sh tests/live/target.sh && bash tests/live/container-faults.sh --dry-run` prints every step in order and touches no target",
+ "why": "Task 3.1 builds test harness only: every file it adds or changes is under tests/ (live scenario, target adapter ops, receipt verifier and manifest, fake adapter, dry-run group), so prove-claim has no non-test code to break. Its checks are mutation-proven instead by integration/container-faults-dryrun: nine seeded defects (no-ready, no-ack, not-felt, gen-unchanged, servfail, pause-wrong, crash-twice, crash-restart, no-backoff) each fail exactly the step meant to catch them, and eight forged receipt edits plus a cross-platform scenario each fail verify.sh (run 2026-11-05, 7/7 pass)."
+}

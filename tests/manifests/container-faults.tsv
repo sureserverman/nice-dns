@@ -1,0 +1,36 @@
+# Receipt manifest: container-faults. Parsed as data by tests/reports/verify.sh (never sourced).
+# Rows (tab-separated):
+#   platforms all                            the receipt holds an observed cell on every platform
+#   scenario  <id>  per-cell|per-cell-linux|per-cell-macos|global  <meaning>
+#   content   <id>  <ERE>                    the scenario's artifact has a line matching ERE
+# One observed cell per platform (restart-policy plan, Stage 3). A per-cell-<platform>
+# scenario is required of that platform's cells only, and refused on the other's.
+platforms	all
+scenario	CF-PIHOLE	per-cell	Pi-hole's DNS process frozen: the controller restarts it (Linux: alone) with no human action
+scenario	CF-PAUSE	per-cell-linux	Unbound paused: the controller unpauses it with no human action
+scenario	CF-CRASH	per-cell-linux	the proxy crashes in a loop: the unit backs off, the controller escalates once and adds no restart, the chain answers
+scenario	CF-STOP	per-cell-macos	Unbound stopped: the runtime repair brings it back with no human action
+content	CF-PIHOLE	^journal	[0-9]+	[^	]+	pi-hole	ready	
+content	CF-PIHOLE	^generation_changed	yes$
+content	CF-PIHOLE	^elapsed_s	([0-9]{1,2}|[1-5][0-9]{2}|600)$
+content	CF-PIHOLE	^fresh_during_fault	(SERVFAIL|REFUSED|timeout)$
+content	CF-PIHOLE	^fresh_name	[^	]+	(NOERROR|NXDOMAIN)$
+content	CF-PAUSE	^journal	[0-9]+	[^	]+	runtime	requested	repair of containers-paused
+content	CF-PAUSE	^journal	[0-9]+	[^	]+	runtime	ready	
+content	CF-PAUSE	^running_after	yes$
+content	CF-PAUSE	^elapsed_s	([0-9]{1,2}|1[0-9]{2}|2[0-3][0-9]|240)$
+content	CF-PAUSE	^fresh_during_fault	(SERVFAIL|REFUSED|timeout)$
+content	CF-PAUSE	^fresh_name	[^	]+	(NOERROR|NXDOMAIN)$
+content	CF-CRASH	^crash_escalations	1$
+content	CF-CRASH	^controller_proxy_restarts	0$
+content	CF-CRASH	^backoff_growing	yes$
+content	CF-CRASH	^nrestarts_rise	([4-9]|[1-9][0-9]+)$
+content	CF-CRASH	^unit_state_after	active$
+content	CF-CRASH	^elapsed_s	([0-9]{1,2}|[1-5][0-9]{2}|600)$
+content	CF-CRASH	^journal	[0-9]+	[^	]+	controller	escalated	crash-loop: tor-
+content	CF-CRASH	^fresh_name	[^	]+	(NOERROR|NXDOMAIN)$
+content	CF-STOP	^journal	[0-9]+	[^	]+	runtime	ready	
+content	CF-STOP	^generation_changed	yes$
+content	CF-STOP	^elapsed_s	([0-9]{1,2}|[1-5][0-9]{2}|600)$
+content	CF-STOP	^fresh_during_fault	(SERVFAIL|REFUSED|timeout)$
+content	CF-STOP	^fresh_name	[^	]+	(NOERROR|NXDOMAIN)$
