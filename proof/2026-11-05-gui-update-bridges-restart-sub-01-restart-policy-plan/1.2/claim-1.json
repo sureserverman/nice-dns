@@ -1,0 +1,41 @@
+{
+ "baseline": {
+  "elapsed_s": 2.3,
+  "exit": 0,
+  "tail": "run_id=20261105T142013Z-3758cafc artifacts=/home/user/.local/state/nice-dns-tests/runs/20261105T142013Z-3758cafc\nPASS  t_quadlets_back_off_and_only_the_controller_restarts_on_health\nPASS  t_real_persist_templates_and_orders_the_agent\nPASS  t_real_persistent_podman_renders_its_units\ngroup integration/installers-persistence: collected=3 passed=3 failed=0\ncollected=3 passed=3 failed=0\nresult=pass run_id=20261105T142013Z-3758cafc artifacts=/home/user/.local/state/nice-dns-tests/runs/20261105T142013Z-3758cafc"
+ },
+ "break_patch": "diff --git b/deb/quadlet/pi-hole.container a/deb/quadlet/pi-hole.container\nindex c28fa02..80e8333 100644\n--- b/deb/quadlet/pi-hole.container\n+++ a/deb/quadlet/pi-hole.container\n@@ -45,23 +45,11 @@ HealthRetries=5\n # 90s gives pihole-FTL plenty of time to initialize. Gravity is pre-built\n # in the image so no first-start gravity download is required.\n HealthStartPeriod=90s\n-# Health reports; it never restarts (see tor-haproxy.container: the\n-# nice-dns-health controller is the one restart owner, DEC-021,\n-# WF-DNS-002). A second owner here would race the controller's restart\n-# ladder (lib/policy.sh). A process that exits is still restarted by\n-# Restart= below.\n-HealthOnFailure=none\n+HealthOnFailure=restart\n \n [Service]\n Restart=on-failure\n-# Back off when the container keeps exiting (systemd 254: RestartSteps=,\n-# RestartMaxDelaySec=; they need a non-zero RestartSec=). On 2026-11-02 VM\n-# memory exhaustion aborted haproxy (rc 134) and its unit restarted every\n-# 3 s for 20 hours, about 1100 times an hour: StartLimitBurst never trips\n-# at that cadence. Now the delay grows from 3 s to 5 min in 5 steps.\n RestartSec=3s\n-RestartSteps=5\n-RestartMaxDelaySec=300s\n TimeoutStopSec=70\n \n [Install]\ndiff --git b/deb/quadlet/tor-haproxy.container a/deb/quadlet/tor-haproxy.container\nindex 9bc7936..4a7f88b 100644\n--- b/deb/quadlet/tor-haproxy.container\n+++ a/deb/quadlet/tor-haproxy.container\n@@ -71,14 +71,7 @@ HealthOnFailure=none\n \n [Service]\n Restart=on-failure\n-# Back off when the container keeps exiting (systemd 254: RestartSteps=,\n-# RestartMaxDelaySec=; they need a non-zero RestartSec=). On 2026-11-02 VM\n-# memory exhaustion aborted haproxy (rc 134) and its unit restarted every\n-# 3 s for 20 hours, about 1100 times an hour: StartLimitBurst never trips\n-# at that cadence. Now the delay grows from 3 s to 5 min in 5 steps.\n RestartSec=3s\n-RestartSteps=5\n-RestartMaxDelaySec=300s\n TimeoutStopSec=70\n \n [Install]\ndiff --git b/deb/quadlet/tor-socat.container a/deb/quadlet/tor-socat.container\nindex f938244..544a40b 100644\n--- b/deb/quadlet/tor-socat.container\n+++ a/deb/quadlet/tor-socat.container\n@@ -35,14 +35,7 @@ HealthOnFailure=none\n \n [Service]\n Restart=on-failure\n-# Back off when the container keeps exiting (systemd 254: RestartSteps=,\n-# RestartMaxDelaySec=; they need a non-zero RestartSec=). On 2026-11-02 VM\n-# memory exhaustion aborted haproxy (rc 134) and its unit restarted every\n-# 3 s for 20 hours, about 1100 times an hour: StartLimitBurst never trips\n-# at that cadence. Now the delay grows from 3 s to 5 min in 5 steps.\n RestartSec=3s\n-RestartSteps=5\n-RestartMaxDelaySec=300s\n TimeoutStopSec=70\n \n [Install]\ndiff --git b/deb/quadlet/unbound.container a/deb/quadlet/unbound.container\nindex 9fcb7f7..6935170 100644\n--- b/deb/quadlet/unbound.container\n+++ a/deb/quadlet/unbound.container\n@@ -50,14 +50,7 @@ HealthOnFailure=none\n # fills in the path.\n ExecStartPre=-/bin/sh __HEALTH_ROOT__/route-start\n Restart=on-failure\n-# Back off when the container keeps exiting (systemd 254: RestartSteps=,\n-# RestartMaxDelaySec=; they need a non-zero RestartSec=). On 2026-11-02 VM\n-# memory exhaustion aborted haproxy (rc 134) and its unit restarted every\n-# 3 s for 20 hours, about 1100 times an hour: StartLimitBurst never trips\n-# at that cadence. Now the delay grows from 3 s to 5 min in 5 steps.\n RestartSec=3s\n-RestartSteps=5\n-RestartMaxDelaySec=300s\n TimeoutStopSec=70\n \n [Install]\n",
+ "build": null,
+ "created": "2026-11-05T14:20:18+00:00",
+ "fingerprint": "db0fcaa5f62f64505c9c0b3408720773e23396e53ca529fa07ad92aa6e6fa6c8",
+ "index": 1,
+ "kind": "claim",
+ "named_break": "any unit keeps the old key",
+ "no_build_reason": "unit files are rendered by the quadlet generator inside the test",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-01-restart-policy-plan.md",
+ "red": {
+  "elapsed_s": 2.2,
+  "exit": 1,
+  "tail": "run_id=20261105T142016Z-9626a3cb artifacts=/home/user/.local/state/nice-dns-tests/runs/20261105T142016Z-9626a3cb\nFAIL  t_quadlets_back_off_and_only_the_controller_restarts_on_health (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261105T142016Z-9626a3cb/cases/integration-installers-persistence/t_quadlets_back_off_and_only_the_controller_restarts_on_health/case.log)\n      # in the image so no first-start gravity download is required.\n      HealthStartPeriod=90s\n      HealthOnFailure=restart\n      \n      [Service]\n      Restart=on-failure\n      RestartSec=3s\n      TimeoutStopSec=70\n      Environment=PODMAN_SYSTEMD_UNIT=%n\n      KillMode=mixed\n      ExecStop=/usr/bin/podman rm -v -f -i pi-hole\n      ExecStopPost=-/usr/bin/podman rm -v -f -i pi-hole\n      Delegate=yes\n      Type=notify\n      NotifyAccess=all\n      SyslogIdentifier=%N\n      ExecStart=/usr/bin/podman run --name pi-hole --replace --rm --cgroups=split --sdnotify=conmon -d -v nice-dns-pihole-lists:/var/lib/nice-dns-pihole --env DISABLE_GITHUB_UPDATES=true --env DNS1=127.0.0.1#5335 --env TZ=Europe/London --env WEBPASSWORD_FILE=pihole_webpassword --secret nice-dns-pihole-webpassword,type=mount,target=pihole_webpassword,uid=1000,gid=1000,mode=0400 --health-cmd \"dig -p $(pihole-FTL --config dns.port) +short +norecurse +retry=0 @127.0.0.1 pi.hole 2>/dev/null | grep -q '^[^;]' || exit 1\" --health-interval 30s --health-on-failure restart --health-retries 5 --health-start-period 90s --health-timeout 10s --pod nice-dns localhost/pi-hole:latest\n      \n      [Install]\n      WantedBy=default.target\nPASS  t_real_persist_templates_and_orders_the_agent\nPASS  t_real_persistent_podman_renders_its_units\ngroup integration/installers-persistence: collected=3 passed=2 failed=1\ncollected=3 passed=2 failed=1\nresult=fail run_id=20261105T142016Z-9626a3cb artifacts=/home/user/.local/state/nice-dns-tests/runs/20261105T142016Z-9626a3cb"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "1.2",
+ "test": "bash tests/run.sh integration installers-persistence",
+ "text": "a new case renders the quadlets with `/usr/libexec/podman/quadlet -dryrun -user` from a temporary `QUADLET_UNIT_DIRS` copy and asserts each generated service carries `RestartSteps=5` and `RestartMaxDelaySec=300s`, and `pi-hole.service` carries no `--health-on-failure=restart` (red if any unit keeps the old key)",
+ "touched": [
+  "deb/quadlet/pi-hole.container",
+  "deb/quadlet/tor-haproxy.container",
+  "deb/quadlet/tor-socat.container",
+  "deb/quadlet/unbound.container"
+ ],
+ "touched_blobs": {
+  "deb/quadlet/pi-hole.container": "c28fa025e8abaeeaad34bfebfa731f828697dba4",
+  "deb/quadlet/tor-haproxy.container": "9bc7936eaf690eeb2c4a85756c9a083d142fc0b1",
+  "deb/quadlet/tor-socat.container": "f938244396b3528b6ee82be05751a901f038563c",
+  "deb/quadlet/unbound.container": "9fcb7f77afe68b8cfc5a0ded99f8cec2293deaa9"
+ },
+ "witness_blobs": {
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}

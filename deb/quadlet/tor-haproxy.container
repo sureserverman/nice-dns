@@ -71,7 +71,14 @@ HealthOnFailure=none
 
 [Service]
 Restart=on-failure
+# Back off when the container keeps exiting (systemd 254: RestartSteps=,
+# RestartMaxDelaySec=; they need a non-zero RestartSec=). On 2026-11-02 VM
+# memory exhaustion aborted haproxy (rc 134) and its unit restarted every
+# 3 s for 20 hours, about 1100 times an hour: StartLimitBurst never trips
+# at that cadence. Now the delay grows from 3 s to 5 min in 5 steps.
 RestartSec=3s
+RestartSteps=5
+RestartMaxDelaySec=300s
 TimeoutStopSec=70
 
 [Install]
