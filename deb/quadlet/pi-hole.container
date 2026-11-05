@@ -47,8 +47,8 @@ HealthRetries=5
 HealthStartPeriod=90s
 # Health reports; it never restarts. Restarts on health belong to the
 # nice-dns-health controller alone (DEC-021, WF-DNS-002); a second owner
-# here would race it (see tor-haproxy.container). A process that exits non-zero or on a
-# signal is still restarted by Restart= below.
+# here would race it (see tor-haproxy.container). A process that exits
+# non-zero or on a signal is still restarted by Restart= below.
 HealthOnFailure=none
 
 [Service]
