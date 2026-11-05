@@ -53,7 +53,18 @@ case "$1" in
         [ -n "$n" ] && printf '%-12s %-16s linux  arm64  stopped                     1     256 MB\n' "$n" "$n:latest"
       done <"$FAKE/stopped"
     fi ;;
-  inspect) printf 'id-1 %s running\n' "$(cat "$FAKE/started")" ;;
+  inspect)
+    # The container-state format: $FAKE/paused names are paused.
+    case "$*" in *'{{.RestartCount}}'*)
+      for n in "$@"; do :; done
+      if grep -qxF "$n" "$FAKE/paused" 2>/dev/null; then echo 'paused healthy 0 0'; else echo 'running healthy 0 0'; fi
+      exit 0 ;;
+    esac
+    printf 'id-1 %s running\n' "$(cat "$FAKE/started")" ;;
+  # $FAKE/unpause_fails: the runtime refuses; otherwise the name is unpaused.
+  unpause)
+    [ -f "$FAKE/unpause_fails" ] && { echo "Error: \"$2\" is not paused, can't unpause: container state improper" >&2; exit 125; }
+    if [ -f "$FAKE/paused" ]; then grep -vxF "$2" "$FAKE/paused" >"$FAKE/paused.n"; mv "$FAKE/paused.n" "$FAKE/paused"; fi ;;
   system) : >"$FAKE/system-started" ;;
   exec)
     if [ "$2" = --user ]; then a1="$1"; shift 3; set -- "$a1" "$@"; fi
@@ -901,7 +912,7 @@ t_every_policy_restart_target_has_a_handler() {
       ra_fake "$plat"
       : >"$FAKE/restart_changes"; echo new >"$FAKE/ack"
       # shellcheck disable=SC2013  # the targets are single words in the source
-      for t in $(grep -oE 'action=restart-component target=[a-z]+' "$NICE_DNS_ROOT/lib/policy.sh" | sed 's/.*target=//' | sort -u); do
+      for t in $(grep -oE 'action=restart-component target=[a-z-]+' "$NICE_DNS_ROOT/lib/policy.sh" | sed 's/.*target=//' | sort -u); do
         ra_dec "$t"
         # The fake's new generation is per second; each target starts from an old one.
         echo t0-old >"$FAKE/started"
@@ -1115,5 +1126,50 @@ t_a_hung_service_manager_cannot_outlast_the_repair_budget() {
     sleep 1
     # shellcheck disable=SC2009  # pgrep is not in the stub PATH
     assert_eq 0 "$(ps -eo args 2>/dev/null | grep -c '^sleep 973$')" "no hung child is left"
+  ) || exit 1
+}
+
+# ─────────────────────────── fakes: paused containers ───────────────────────
+
+ra_paused_dec() { printf 'schema\tnice-dns-decision/1\naction\trepair-runtime\ntarget\tcontainers-paused\nreason\tcontainers-paused: %s (paused 2 passes)\n' "$1" >"$CASE_DIR/dec"; }
+
+t_a_paused_container_is_unpaused_and_acknowledged() {
+  local out rc
+  (
+    ra_fake linux
+    printf 'unbound\n' >"$FAKE/paused"
+    ra_paused_dec unbound
+    out="$(nd_recovery_apply "$CASE_DIR/dec" ra-p1 7)"; rc=$?
+    assert_rc 0 "$rc" "linux: unpaused and seen running: $out"
+    assert_eq 1 "$(grep -c '^podman unpause unbound$' "$FAKE_LOG")" "linux: podman unpause unbound"
+    assert_eq "$(printf 'runtime requested\nruntime acknowledged')" "$(ra_journal)" "linux: journal"
+    assert_match 'acknowledged.*unbound running' "$(awk -F '\t' '$4 == "acknowledged" { print $4 " " $5 }' "$ND_STATE_DIR/recovery.tsv")" "linux: acknowledged by a new running reading"
+    assert_not_match 'systemctl --user (start|restart|reset-failed)|daemon-reexec|kill' "$(cat "$FAKE_LOG")" "linux: nothing is started or restarted"
+
+    : >"$FAKE_LOG"; printf 'unbound\n' >"$FAKE/paused"; : >"$FAKE/unpause_fails"
+    out="$(nd_recovery_apply "$CASE_DIR/dec" ra-p2 7)"; rc=$?
+    assert_rc 1 "$rc" "linux: still paused is not acknowledged: $out"
+    assert_match 'not-acknowledged' "$(ra_journal | tail -n 1)" "linux: the journal says so"
+
+    : >"$FAKE_LOG"; rm -f "$FAKE/unpause_fails"
+    ra_paused_dec 'unbound;rm evil'
+    nd_recovery_apply "$CASE_DIR/dec" ra-p3 7 >/dev/null
+    assert_not_match 'evil|;rm' "$(cat "$FAKE_LOG")" "linux: a strange name is dropped"
+  ) || exit 1
+  (
+    ra_fake macos
+    out="$(repair_runtime containers-paused ra-p4 unbound)"; rc=$?
+    assert_rc 3 "$rc" "macos: no unpause exists: $out"
+    assert_eq "runtime unsupported" "$(ra_journal)" "macos: journaled unsupported, nothing run"
+    assert_not_match 'unpause|launchctl' "$(cat "$FAKE_LOG")" "macos: nothing is run"
+  ) || exit 1
+}
+
+t_the_linux_adapter_lists_containers_paused_or_running() {
+  (
+    ra_fake linux
+    nd_platform_runtime_list 5 "$CASE_DIR/l" || fail "list"
+    assert_match 'status=running.*status=paused' "$(grep '^podman ps' "$FAKE_LOG")" "a paused container is not missing (BL-053)"
+    assert_match 'containers-paused' "$(nd_platform_runtime_repairs)" "the Linux adapter repairs a paused container"
   ) || exit 1
 }

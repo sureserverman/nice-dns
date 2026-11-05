@@ -1218,3 +1218,13 @@ t_the_first_escalation_dump_is_bounded() {
   assert_eq 1 "$(( SECONDS - t0 <= 25 ))" "a hung dump does not hold the pass: $(( SECONDS - t0 )) s"
   unset ND_STATE_DIR ND_FAILURE_DUMP_S
 }
+
+# BL-053: podman ps leaves a paused container out, so a paused Unbound read as
+# containers-missing and the repair started a unit that already ran.
+t_a_paused_container_is_listed_not_missing() {
+  ob_setup linux
+  printf 'unbound\n' >"$FAKE/paused"; printf 'paused healthy 0 0\n' >"$FAKE/state_unbound"
+  ob_observe
+  ob_expect runtime healthy '^running: pi-hole unbound tor-haproxy$' "linux: a paused Unbound is listed, not missing"
+  ob_expect container:unbound unhealthy '^paused restarts 0$' "linux: its own record says paused"
+}

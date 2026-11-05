@@ -17,7 +17,8 @@
 #           repair-runtime | escalate
 #   target  a route id (switch-route), tor, proxy, unbound, pi-hole or stack
 #           (restart-component), the runtime
-#           fault (repair-runtime), or -
+#           fault (repair-runtime: runtime-down, containers-missing or
+#           containers-paused), or -
 #   reason  one line
 # followed by the proposed next state (nice-dns-controller-state/1, without a
 # generation row). Exit 0; 2 on a bad argument or route table.
@@ -56,6 +57,15 @@
 #     no healthy reading, whatever the routes say, the stack restarts: at once,
 #     then every ND_POLICY_RETRY_S, escalating on the passes between. runtime-down
 #     keeps its repair, because a stack restart needs the runtime.
+#   * A paused container (a container:<name> record "paused restarts N") in
+#     ND_POLICY_PAUSED_PASSES (2) consecutive passes, outside the cooldown, is
+#     unpaused (repair-runtime containers-paused, the names in the reason), so a
+#     deliberate short pause is not undone within a minute. A record of the
+#     container running or failing otherwise clears its count; indeterminate or
+#     absent holds it. Where the platform lists no such repair (macOS has no
+#     pause) the policy escalates with the reason. It comes after the runtime
+#     faults and before Unbound's and Pi-hole's rules, whose checks a paused
+#     container fails too.
 #   * Unbound's own health, after runtime faults and before route selection. An
 #     unbound observation with a control: reason counts always; a route: reason
 #     counts only with an identity route healthy in the same pass, since otherwise
@@ -119,7 +129,7 @@ nd_policy_decide() {
   local stale="${ND_POLICY_STALE:-5}" ladder="${ND_POLICY_LADDER_S:-660}"
   local ubfails="${ND_POLICY_UNBOUND_FAILS:-3}" ubmax="${ND_POLICY_UNBOUND_MAX_RESTARTS:-2}" retry="${ND_POLICY_RETRY_S:-1800}"
   local rtmax="${ND_POLICY_RUNTIME_REPAIR_MAX:-3}" s_rtrep=0
-  local repairs=" ${ND_POLICY_RUNTIME_REPAIRS:-runtime-down containers-missing} "
+  local repairs=" ${ND_POLICY_RUNTIME_REPAIRS:-runtime-down containers-missing containers-paused} "
   local routes="${ND_ROUTES_FILE:-$ND_POLICY_LIB_DIR/../routes/providers.tsv}"
   local tab=$'\t' cr=$'\r' a b c d e rest i j n=0 v
   local -a rid=() rok=() rfail=() runk=() robs=()
@@ -127,6 +137,10 @@ nd_policy_decide() {
   local s_ubfail=0 s_ubrest=0 ub=- ub_reason="" ub_due=0
   local phfails="${ND_POLICY_PIHOLE_FAILS:-3}" phmax="${ND_POLICY_PIHOLE_MAX_RESTARTS:-2}"
   local s_phfail=0 s_phrest=0 ph_ct=- ph_ls=- ph_reason="" ph_due=0
+  local pzpasses="${ND_POLICY_PAUSED_PASSES:-2}" pz_names="" pz=""
+  # The stack's containers (the observation validator's names), their paused
+  # counts and this pass's reading: p paused, r running or failing otherwise.
+  local -a cn=(pi-hole unbound tor-haproxy tor-socat) cpz=(0 0 0 0) cobs=(- - - -)
   local rt=- rt_reason="" compat_ok=0 valid=1 why="" notes=""
   local action=no-op target=- reason=""
 
@@ -163,6 +177,12 @@ nd_policy_decide() {
       proxy_gen) s_pgen="$b" ;;
       unbound_fail) s_ubfail="$b" ;; unbound_restarts) s_ubrest="$b" ;; runtime_repairs) s_rtrep="$b" ;;
       pihole_fail) s_phfail="$b" ;; pihole_restarts) s_phrest="$b" ;;
+      paused_*)
+        i=0
+        while [ "$i" -lt 4 ]; do
+          [ "paused_${cn[i]}" = "$a" ] && _nd_p_num "$b" && cpz[i]="$b"
+          i=$((i + 1))
+        done ;;
       last_action) s_la="$b" ;; last_action_at) s_laat="$b" ;; recovery_at) s_rec="$b" ;;
       streak)
         i=0
@@ -203,6 +223,20 @@ nd_policy_decide() {
       unbound) ub="$c"; ub_reason="$e" ;;
       container:pi-hole) ph_ct="$c"; [ "$c" != unhealthy ] || ph_reason="container: $e" ;;
       local-service) ph_ls="$c"; [ "$c" != unhealthy ] || [ -n "$ph_reason" ] || ph_reason="local-service: $e" ;;
+    esac
+    case "$b" in
+      container:*)
+        i=0
+        while [ "$i" -lt 4 ]; do
+          if [ "container:${cn[i]}" = "$b" ]; then
+            case "$c:$e" in
+              "unhealthy:paused restarts "*) cobs[i]=p ;;
+              indeterminate:*) ;;
+              *) cobs[i]=r ;;
+            esac
+          fi
+          i=$((i + 1))
+        done ;;
       route:*)
         i=0
         while [ "$i" -lt "$n" ]; do
@@ -218,6 +252,7 @@ nd_policy_decide() {
   if [ "$s_boot" != "$boot" ]; then
     [ "$s_boot" = - ] || notes="boot changed; timers restart; "
     s_boot="$boot" s_started="$now" s_out=- s_rest=0 s_rec=- s_laat=- s_ubfail=0 s_ubrest=0 s_phfail=0 s_phrest=0
+    cpz=(0 0 0 0)
     [ "$s_la" = - ] || s_la=-
     i=0; while [ "$i" -lt "$n" ]; do rok[i]=0; rfail[i]=0; runk[i]=0; i=$((i + 1)); done
     fresh=1
@@ -297,6 +332,20 @@ nd_policy_decide() {
       fi
     fi
 
+    # Paused containers: two passes in a row, then the unpause.
+    i=0
+    while [ "$i" -lt 4 ]; do
+      case "${cobs[i]}" in p) cpz[i]=$((cpz[i] + 1)) ;; r) cpz[i]=0 ;; esac
+      [ "${cobs[i]}" = p ] && [ "${cpz[i]}" -ge "$pzpasses" ] && pz_names="$pz_names${pz_names:+ }${cn[i]}"
+      i=$((i + 1))
+    done
+    if [ -n "$pz_names" ]; then
+      if [ "${repairs#* containers-paused }" = "$repairs" ]; then pz=escalate
+      elif [ "$in_cool" = 1 ]; then notes="${notes}paused: $pz_names, inside the recovery cooldown; "
+      else pz=repair
+      fi
+    fi
+
     # Pi-hole's own health, the same shape as Unbound's: either record failing
     # counts, indeterminate or absent changes nothing.
     local ph_seen=0
@@ -349,6 +398,11 @@ nd_policy_decide() {
         action=repair-runtime target="$rt_fault" reason="runtime fault: $rt_reason"
         [ "$rt_fault" != containers-missing ] || s_rtrep=$((s_rtrep + 1))
       fi
+    elif [ "$pz" = escalate ]; then
+      action=escalate reason="${notes}paused: $pz_names; this platform has no unpause"
+      notes=""
+    elif [ "$pz" = repair ]; then
+      action=repair-runtime target=containers-paused reason="containers-paused: $pz_names (paused $pzpasses passes or more)"
     elif [ "$ub_due" = 1 ]; then
       action=restart-component target=unbound reason="Unbound failed $s_ubfail checks in a row: $ub_reason"
       s_ubfail=0 s_ubrest=$((s_ubrest + 1)) s_rec="$now"
@@ -438,6 +492,11 @@ nd_policy_decide() {
   [ "$s_rtrep" = 0 ] || printf 'runtime_repairs\t%s\n' "$s_rtrep"
   [ "$s_phfail" = 0 ] || printf 'pihole_fail\t%s\n' "$s_phfail"
   [ "$s_phrest" = 0 ] || printf 'pihole_restarts\t%s\n' "$s_phrest"
+  i=0
+  while [ "$i" -lt 4 ]; do
+    [ "${cpz[i]}" = 0 ] || printf 'paused_%s\t%s\n' "${cn[i]}" "${cpz[i]}"
+    i=$((i + 1))
+  done
   i=0
   while [ "$i" -lt "$n" ]; do
     printf 'streak\t%s\t%s\t%s\t%s\n' "${rid[i]}" "${rok[i]}" "${rfail[i]}" "${runk[i]}"

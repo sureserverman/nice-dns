@@ -44,7 +44,9 @@ nd_platform_runtime_bin() { command -v podman 2>/dev/null; }
 nd_platform_runtime_list() {
   local bin rc
   bin="$(nd_platform_runtime_bin)" || return 3
-  nd_bounded "$1" "$2.raw" "$2.err" "$bin" ps --format '{{.Names}}'
+  # Paused containers too: plain `ps` leaves them out, and a paused one read as
+  # missing (BL-053); its own container:<name> record says paused.
+  nd_bounded "$1" "$2.raw" "$2.err" "$bin" ps -a --filter status=running --filter status=paused --format '{{.Names}}'
   rc=$?
   case "$rc" in 0) ;; 124) return 124 ;; *) [ -s "$2.err" ] || printf 'podman ps exited %s\n' "$rc" >"$2.err"; return 4 ;; esac
   grep -E '^[A-Za-z0-9][A-Za-z0-9_.-]*$' "$2.raw" >"$2"
@@ -191,9 +193,9 @@ nd_platform_wait_restarted() { return 0; }
 
 # nd_platform_runtime_repairs: the runtime faults nd_platform_repair_runtime
 # can repair here; the policy escalates any other (ND_POLICY_RUNTIME_REPAIRS).
-nd_platform_runtime_repairs() { printf 'containers-missing\n'; }
+nd_platform_runtime_repairs() { printf 'containers-missing containers-paused\n'; }
 
-# nd_platform_repair_runtime <fault> <deadline> <tmp> [missing name...]: 0
+# nd_platform_repair_runtime <fault> <deadline> <tmp> [name...]: 0
 # issued; 3 no repair exists for this fault here. Rootless podman has no daemon
 # to restart, so a runtime that does not answer is escalated, not repaired (it
 # is not in nd_platform_runtime_repairs). Missing containers are started by name:
@@ -214,8 +216,18 @@ nd_platform_runtime_repairs() { printf 'containers-missing\n'; }
 # <deadline>, so it stays inside the tick's timeout and the lock's lease. What it
 # did is left in <tmp>/rep.note for the journal.
 nd_platform_repair_runtime() {
-  local fault="$1" dl="$2" tmp="$3" n rc=0 named=0 stuck=0 end now mark last b boot
+  local fault="$1" dl="$2" tmp="$3" n rc=0 named=0 stuck=0 end now mark last b boot bin
   shift 3
+  if [ "$fault" = containers-paused ]; then
+    # Paused containers are unpaused by name; nothing is restarted.
+    bin="$(nd_platform_runtime_bin)" || return 3
+    for n in "$@"; do
+      case "$n" in pi-hole|unbound|tor-haproxy|tor-socat) ;; *) continue ;; esac
+      nd_bounded "$dl" "$tmp/rep" "$tmp/rep.err" "$bin" unpause "$n" || rc=$?
+      printf 'unpause %s (exit %s); ' "$n" "$rc" >>"$tmp/rep.note"
+    done
+    return "$rc"
+  fi
   [ "$fault" = containers-missing ] || return 3
   end=$(( $(date +%s) + dl * 2 ))
   # _nd_rep_left [most]: the seconds this repair may still spend on one call.

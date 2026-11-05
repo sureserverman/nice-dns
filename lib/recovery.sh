@@ -20,7 +20,7 @@
 #                                         restart Unbound (macOS: the stack)
 #   nd_recovery_restart_stack <request_id>
 #                                         restart the whole stack
-#   repair_runtime <fault> <request_id> [missing name...]
+#   repair_runtime <fault> <request_id> [name...]
 #                                         repair the runtime fault observed
 #   nd_recovery_apply <decision> <request_id> <route_generation>
 #                                         carry out one lib/policy.sh decision
@@ -809,9 +809,9 @@ nd_recovery_first_escalation() {
 }
 
 repair_runtime() {
-  local fault="${1:-}" id="${2:-}" dl="${ND_RECOVERY_CMD_DEADLINE:-15}" svc="${ND_RECOVERY_SERVICE_S:-120}" rc i=0 n
+  local fault="${1:-}" id="${2:-}" dl="${ND_RECOVERY_CMD_DEADLINE:-15}" svc="${ND_RECOVERY_SERVICE_S:-120}" rc i=0 n c st pz=""
   shift 2
-  case "$fault" in runtime-down|containers-missing) ;; *) _nd_rec_out refused runtime "$id" - - "no repair for fault '$fault'"; return 2 ;; esac
+  case "$fault" in runtime-down|containers-missing|containers-paused) ;; *) _nd_rec_out refused runtime "$id" - - "no repair for fault '$fault'"; return 2 ;; esac
   if ! _nd_rec_id_ok "$id"; then _nd_rec_out refused runtime "$id" - - "bad request id"; return 2; fi
   _nd_rec_lock_ok "$id" runtime || return 5
   _ND_RX="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-recovery.XXXXXX")" || return 4
@@ -823,7 +823,17 @@ repair_runtime() {
   nd_recovery_journal "$id" runtime requested "repair of $fault: $(cat "$_ND_RX/rep.note" 2>/dev/null)exit $rc"
   i=$(( $(_nd_rec_now) + svc )) n=0 rc=1
   while [ "$(_nd_rec_now)" -lt "$i" ]; do
-    if nd_platform_runtime_list "$dl" "$_ND_RX/running" >/dev/null 2>&1; then
+    if [ "$fault" = containers-paused ]; then
+      # Acknowledged by a new reading of each named container: running.
+      rc=0 pz=""
+      for c in "$@"; do
+        case "$c" in pi-hole|unbound|tor-haproxy|tor-socat) ;; *) continue ;; esac
+        st="$(nd_platform_container_state "$c" "$dl" "$_ND_RX" 2>/dev/null | cut -f 1)"
+        if [ "$st" = running ]; then pz="$pz${pz:+ }$c"; else rc=1; fi
+      done
+      [ -n "$pz" ] || rc=1
+      [ "$rc" -eq 0 ] && break
+    elif nd_platform_runtime_list "$dl" "$_ND_RX/running" >/dev/null 2>&1; then
       if [ "$fault" = runtime-down ]; then rc=0; break; fi
       n="$(grep -cx -e pi-hole -e unbound -e tor-haproxy -e tor-socat "$_ND_RX/running")"
       [ "$n" -ge 3 ] && { rc=0; break; }
@@ -832,7 +842,11 @@ repair_runtime() {
   done
   rm -rf "$_ND_RX"
   if [ "$rc" -eq 0 ]; then
-    nd_recovery_journal "$id" runtime acknowledged "$fault: the runtime answers$( [ "$fault" = containers-missing ] && printf ' and the stack runs')"
+    if [ "$fault" = containers-paused ]; then
+      nd_recovery_journal "$id" runtime acknowledged "$fault: $pz running"
+    else
+      nd_recovery_journal "$id" runtime acknowledged "$fault: the runtime answers$( [ "$fault" = containers-missing ] && printf ' and the stack runs')"
+    fi
     _nd_rec_out acknowledged runtime "$id" - - "$fault repaired"; return 0
   fi
   nd_recovery_journal "$id" runtime not-acknowledged "$fault persists after ${svc}s"
@@ -888,7 +902,11 @@ nd_recovery_apply() {
     repair-runtime)
       # The observation names what is missing: "containers-missing: a b (running: c)".
       names=""
-      case "$reason" in *containers-missing:*) names="${reason#*containers-missing: }"; names="${names%% (running*}" ;; esac
+      # A paused one: "containers-paused: a b (paused 2 passes or more)".
+      case "$reason" in
+        *containers-missing:*) names="${reason#*containers-missing: }"; names="${names%% (running*}" ;;
+        *containers-paused:*) names="${reason#*containers-paused: }"; names="${names%% (paused*}" ;;
+      esac
       # shellcheck disable=SC2086  # the names are words; the adapter checks each
       repair_runtime "$target" "$id" $names; return $? ;;
     *) nd_recovery_journal "$id" controller refused "unknown action '$action'"; return 2 ;;

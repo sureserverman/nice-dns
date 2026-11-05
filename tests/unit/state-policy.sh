@@ -19,7 +19,7 @@ sp_env() {
   export ND_ROUTES_FILE="$NICE_DNS_ROOT/routes/providers.tsv"
   unset ND_STATE_LEASE_S ND_POLICY_STARTUP_S ND_POLICY_GRACE_S ND_POLICY_COOLDOWN_S ND_POLICY_LADDER_S ND_POLICY_RUNTIME_REPAIRS \
     ND_POLICY_PROMOTE ND_POLICY_DEMOTE ND_POLICY_MAX_RESTARTS ND_POLICY_UNBOUND_FAILS ND_POLICY_UNBOUND_MAX_RESTARTS ND_POLICY_RETRY_S ND_POLICY_RUNTIME_REPAIR_MAX \
-    ND_POLICY_PIHOLE_FAILS ND_POLICY_PIHOLE_MAX_RESTARTS
+    ND_POLICY_PIHOLE_FAILS ND_POLICY_PIHOLE_MAX_RESTARTS ND_POLICY_PAUSED_PASSES
 }
 
 sp_libs() {
@@ -620,7 +620,7 @@ t_policy_escalates_a_runtime_fault_the_platform_cannot_repair() {
   ND_POLICY_RUNTIME_REPAIRS=containers-missing sp_decide "$CASE_DIR/o" "$CASE_DIR/cur" $((SP_T0 + 60))
   assert_eq repair-runtime "$SP_ACTION" "a fault the platform can repair is still repaired"
   ( . "$NICE_DNS_ROOT/lib/platform/linux.sh"
-    assert_eq containers-missing "$(nd_platform_runtime_repairs)" "linux: only missing containers are repairable" ) || exit 1
+    assert_eq "containers-missing containers-paused" "$(nd_platform_runtime_repairs)" "linux: missing and paused containers are repairable, the runtime is not" ) || exit 1
   ( . "$NICE_DNS_ROOT/lib/platform/macos.sh"
     assert_eq "runtime-down containers-missing" "$(nd_platform_runtime_repairs)" "macos: both faults are repairable" ) || exit 1
 }
@@ -1216,5 +1216,67 @@ t_pihole_state_rows_exist_only_when_non_zero() {
   assert_eq 1 "$(nd_state_load | awk -F '\t' '$1 == "pihole_fail" { print $2 }')" "and loads them back"
   printf 'pihole_restarts\tnope\n' >>"$CASE_DIR/cur"
   nd_state_commit "$tok" 1 "$CASE_DIR/cur" >/dev/null 2>&1; assert_rc 2 $? "a bad value is refused"
+  nd_state_unlock "$tok"
+}
+
+# ─────────────────────────── paused containers ───────────────────────────────
+
+# sp_paused <file> <name>: add a paused container record.
+sp_paused() { printf 'obs\tcontainer:%s\tunhealthy\t20\tpaused restarts 0\n' "$2" >>"$1"; }
+
+t_a_paused_container_is_unpaused_after_two_passes() {
+  sp_ub_start
+  cp "$CASE_DIR/ok" "$CASE_DIR/pz"; sp_paused "$CASE_DIR/pz" unbound
+  # A paused Unbound's control socket fails too: the unpause comes first.
+  sp_ub "$CASE_DIR/pz" unhealthy 'control: no answer'
+  cp "$CASE_DIR/ok" "$CASE_DIR/run"; printf 'obs\tcontainer:unbound\thealthy\t20\trunning: health healthy restarts 0\n' >>"$CASE_DIR/run"
+  sp_ub_pass "$CASE_DIR/pz"
+  assert_eq no-op "$SP_ACTION" "one paused pass is left alone: an operator may pause on purpose"
+  assert_eq 1 "$(sp_key "$CASE_DIR/cur" paused_unbound)" "the pass is counted"
+  sp_ub_pass "$CASE_DIR/pz"
+  assert_eq repair-runtime "$SP_ACTION" "two paused passes decide the repair"
+  assert_eq containers-paused "$SP_TARGET" "the fault is containers-paused"
+  assert_match '^containers-paused: unbound ' "$SP_REASON" "the reason names the container"
+  assert_eq "$SP_NOW" "$(sp_key "$CASE_DIR/cur" recovery_at)" "the repair starts the cooldown"
+  sp_ub_pass "$CASE_DIR/run"
+  assert_eq "" "$(sp_key "$CASE_DIR/cur" paused_unbound)" "a running reading clears the count, and the row goes"
+}
+
+t_a_paused_container_waits_out_the_cooldown() {
+  sp_ub_start
+  cp "$CASE_DIR/ok" "$CASE_DIR/pz"; sp_paused "$CASE_DIR/pz" pi-hole
+  awk -F '\t' -v n="$SP_NOW" 'BEGIN { OFS = "\t" } $1 == "recovery_at" { $2 = n } { print }' "$CASE_DIR/cur" >"$CASE_DIR/cur.2" && mv "$CASE_DIR/cur.2" "$CASE_DIR/cur"
+  sp_ub_pass "$CASE_DIR/pz"; sp_ub_pass "$CASE_DIR/pz"
+  assert_ne repair-runtime "$SP_ACTION" "inside the cooldown"
+  assert_match 'paused.*inside the recovery cooldown' "$SP_REASON" "the journal says why it waits"
+  sp_ub_pass "$CASE_DIR/pz"; sp_ub_pass "$CASE_DIR/pz"; sp_ub_pass "$CASE_DIR/pz"
+  assert_eq repair-runtime "$SP_ACTION" "the cooldown over, the repair"
+  assert_eq containers-paused "$SP_TARGET" "of the paused container"
+}
+
+t_a_paused_container_escalates_where_no_unpause_exists() {
+  sp_ub_start
+  export ND_POLICY_RUNTIME_REPAIRS="runtime-down containers-missing"
+  local before
+  cp "$CASE_DIR/ok" "$CASE_DIR/pz"; sp_paused "$CASE_DIR/pz" tor-haproxy
+  before="$(sp_key "$CASE_DIR/cur" recovery_at)"
+  sp_ub_pass "$CASE_DIR/pz"; sp_ub_pass "$CASE_DIR/pz"
+  assert_eq escalate "$SP_ACTION" "macOS lists no unpause: the policy escalates"
+  assert_match 'paused: tor-haproxy' "$SP_REASON" "with the reason"
+  assert_eq "$before" "$(sp_key "$CASE_DIR/cur" recovery_at)" "and nothing is restarted or repaired"
+}
+
+t_paused_rows_exist_only_when_non_zero() {
+  local tok
+  sp_ub_start
+  sp_ub_pass "$CASE_DIR/ok"
+  assert_eq 0 "$(grep -c '^paused_' "$CASE_DIR/cur")" "a zero-counter state has no new rows (BL-036)"
+  cp "$CASE_DIR/ok" "$CASE_DIR/pz"; sp_paused "$CASE_DIR/pz" pi-hole
+  sp_ub_pass "$CASE_DIR/pz"
+  nd_state_init || fail "init"
+  tok="$(nd_state_lock)" || fail "lock"
+  nd_state_commit "$tok" 0 "$CASE_DIR/cur" >/dev/null; assert_rc 0 $? "lib/state.sh accepts paused_pi-hole"
+  printf 'paused_nginx\t1\n' >>"$CASE_DIR/cur"
+  nd_state_commit "$tok" 1 "$CASE_DIR/cur" >/dev/null 2>&1; assert_rc 2 $? "a row for a container outside the stack is refused"
   nd_state_unlock "$tok"
 }

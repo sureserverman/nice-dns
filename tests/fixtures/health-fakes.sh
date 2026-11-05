@@ -62,7 +62,13 @@ case "$1" in
   ps)
     if [ "$me" = container ]; then echo "Error: Plugin 'container-ps' not found."; exit 0; fi
     if [ -f "$FAKE/rt.down" ]; then printf 'Error: cannot open storage:\tdatabase is locked\nsecond line\n' >&2; exit 125; fi
-    case "$*" in *-a*) cat "$FAKE/running" "$FAKE/stopped" 2>/dev/null ;; *) cat "$FAKE/running" ;; esac
+    # $FAKE/paused: names in $FAKE/running that are paused. Plain `ps` lists
+    # running containers only, as podman does; the status filter lists both.
+    case "$*" in
+      *status=running*) cat "$FAKE/running" ;;
+      *-a*) cat "$FAKE/running" "$FAKE/stopped" 2>/dev/null ;;
+      *) grep -vxF -f "$FAKE/paused" "$FAKE/running" 2>/dev/null || { [ -s "$FAKE/paused" ] || cat "$FAKE/running"; } ;;
+    esac
     exit 0 ;;
   ls|list)
     [ "$me" = container ] || { echo "Error: unknown command \"$1\" for \"podman\"" >&2; exit 125; }
