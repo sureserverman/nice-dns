@@ -1182,6 +1182,51 @@ t_pihole_healthy_reading_clears_and_indeterminate_holds() {
   assert_eq "" "$(sp_key "$CASE_DIR/cur" pihole_restarts)" "healthy a retry interval after the last restart clears it"
 }
 
+# Live 2026-11-05 (restart-policy Task 3.3): a SIGSTOPped pihole-FTL reads as
+# these records, copied from mint and the mac. local-service is a dig timeout,
+# indeterminate, and the macOS container record stays healthy (no health
+# check). Before the fix neither counted, and the healthy container record
+# cleared the streak each pass, so a hung Pi-hole was never restarted.
+sp_ph_frozen() {
+  case "$2" in
+    macos) printf 'obs\tcontainer:pi-hole\thealthy\t0\trunning: health none restarts 0\n' >>"$1" ;;
+    linux) printf 'obs\tcontainer:pi-hole\tunhealthy\t148\tunhealthy: the health check fails restarts 0\n' >>"$1" ;;
+  esac
+  printf 'obs\tlocal-service\tindeterminate\t6046\tdig timed out at 127.0.0.1#53 (pi.hole)\n' >>"$1"
+}
+
+t_a_frozen_pihole_is_restarted_on_both_platforms() {
+  local plat
+  for plat in macos linux; do
+    sp_ub_start
+    cp "$CASE_DIR/ok" "$CASE_DIR/frozen"; sp_ph_frozen "$CASE_DIR/frozen" "$plat"
+    sp_ub_pass "$CASE_DIR/frozen"; assert_eq no-op "$SP_ACTION" "$plat: first pass"
+    assert_eq 1 "$(sp_key "$CASE_DIR/cur" pihole_fail)" "$plat: a timed-out pi.hole with a route answering counts"
+    sp_ub_pass "$CASE_DIR/frozen"; assert_eq no-op "$SP_ACTION" "$plat: second pass"
+    sp_ub_pass "$CASE_DIR/frozen"
+    assert_eq restart-component "$SP_ACTION" "$plat: the third pass restarts"
+    assert_eq pi-hole "$SP_TARGET" "$plat: Pi-hole"
+    if [ "$plat" = macos ]; then
+      assert_match 'Pi-hole failed 3 checks in a row: local-service: dig timed out' "$SP_REASON" "macos: the reason says pi.hole timed out"
+    else
+      assert_match 'Pi-hole failed 3 checks in a row: container: unhealthy: the health check fails' "$SP_REASON" "linux: the reason names podman's failing check"
+    fi
+  done
+}
+
+# Without a route answering, a timeout says nothing about Pi-hole: the host or
+# the network may be what is slow. It neither counts nor clears.
+t_a_pihole_timeout_without_a_route_holds_the_streak() {
+  sp_ub_start; sp_ph_files
+  sp_ub_pass "$CASE_DIR/phls"; sp_ub_pass "$CASE_DIR/phls"
+  assert_eq 2 "$(sp_key "$CASE_DIR/cur" pihole_fail)" "two failures"
+  sp_obs "$CASE_DIR/down" healthy unhealthy unhealthy unhealthy unhealthy
+  sp_ph_frozen "$CASE_DIR/down" macos
+  sp_ub_pass "$CASE_DIR/down"
+  assert_eq 2 "$(sp_key "$CASE_DIR/cur" pihole_fail)" "no route answering: the timeout neither counts nor lets the container record clear"
+  assert_ne pi-hole "$SP_TARGET" "and restarts nothing"
+}
+
 t_pihole_new_boot_clears_the_counters() {
   sp_ub_start; sp_ph_files
   sp_ub_pass "$CASE_DIR/phbad"; sp_ub_pass "$CASE_DIR/phbad"

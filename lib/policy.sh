@@ -98,9 +98,13 @@
 #     The controller owns this restart: no quadlet restarts on health, since a
 #     health-triggered restart looped and wiped Tor's bootstrap.
 #   * Pi-hole's own health, after Unbound's and in the same shape (DEC-021). A
-#     pass fails Pi-hole when container:pi-hole or local-service is unhealthy; it
-#     is healthy when neither is unhealthy and one is healthy. Indeterminate or
-#     absent changes nothing and acts on nothing. Healthy clears pihole_fail, and
+#     pass fails Pi-hole when container:pi-hole or local-service is unhealthy,
+#     or when pi.hole timed out (local-service indeterminate, "dig timed out")
+#     while an identity route is healthy in the same pass: FTL answers that
+#     name itself, and a frozen FTL reads exactly so (live 2026-11-05). It is
+#     healthy when neither is unhealthy, local-service is not indeterminate,
+#     and one is healthy. Indeterminate or absent otherwise changes nothing and
+#     acts on nothing. Healthy clears pihole_fail, and
 #     clears pihole_restarts once ND_POLICY_RETRY_S has passed since the last
 #     restart. At ND_POLICY_PIHOLE_FAILS (3) in a row, outside the startup
 #     allowance and the cooldown, Pi-hole restarts (target pi-hole). After
@@ -257,7 +261,13 @@ nd_policy_decide() {
       proxy) case "$c:$e" in healthy:generation:*) p_gen="${e#generation:}" ;; esac ;;
       unbound) ub="$c"; ub_reason="$e" ;;
       container:pi-hole) ph_ct="$c"; [ "$c" != unhealthy ] || ph_reason="container: $e" ;;
-      local-service) ph_ls="$c"; [ "$c" != unhealthy ] || [ -n "$ph_reason" ] || ph_reason="local-service: $e" ;;
+      local-service)
+        ph_ls="$c"
+        # A dig timeout of pi.hole: FTL answers that name itself, so a silent
+        # one is a hung Pi-hole when the host does DNS work in time otherwise
+        # (corroborated below by an identity route, as Unbound's route rule).
+        case "$c:$e" in indeterminate:"dig timed out at "*) ph_ls=timeout ;; esac
+        [ "$ph_ls" = healthy ] || [ "$ph_ls" = indeterminate ] || [ -n "$ph_reason" ] || ph_reason="local-service: $e" ;;
     esac
     case "$b" in
       container:*)
@@ -425,10 +435,15 @@ nd_policy_decide() {
     fi
 
     # Pi-hole's own health, the same shape as Unbound's: either record failing
-    # counts, indeterminate or absent changes nothing.
+    # counts, indeterminate or absent changes nothing. A pi.hole timeout counts
+    # only while an identity route answers; without one it holds the streak,
+    # and so does any local-service reading that is not healthy: a container
+    # record cannot see FTL, so it never clears a streak local-service holds.
     local ph_seen=0
-    if [ "$ph_ct" = unhealthy ] || [ "$ph_ls" = unhealthy ]; then
+    if [ "$ph_ct" = unhealthy ] || [ "$ph_ls" = unhealthy ] || { [ "$ph_ls" = timeout ] && [ "$healthy_now" = 1 ]; }; then
       s_phfail=$((s_phfail + 1)) ph_seen=1
+    elif [ "$ph_ls" = timeout ] || [ "$ph_ls" = indeterminate ]; then
+      :
     elif [ "$ph_ct" = healthy ] || [ "$ph_ls" = healthy ]; then
       s_phfail=0
       if ! _nd_p_num "$s_rec" || [ $((now - s_rec)) -ge "$retry" ]; then s_phrest=0; fi
