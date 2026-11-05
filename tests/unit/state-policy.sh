@@ -19,7 +19,8 @@ sp_env() {
   export ND_ROUTES_FILE="$NICE_DNS_ROOT/routes/providers.tsv"
   unset ND_STATE_LEASE_S ND_POLICY_STARTUP_S ND_POLICY_GRACE_S ND_POLICY_COOLDOWN_S ND_POLICY_LADDER_S ND_POLICY_RUNTIME_REPAIRS \
     ND_POLICY_PROMOTE ND_POLICY_DEMOTE ND_POLICY_MAX_RESTARTS ND_POLICY_UNBOUND_FAILS ND_POLICY_UNBOUND_MAX_RESTARTS ND_POLICY_RETRY_S ND_POLICY_RUNTIME_REPAIR_MAX \
-    ND_POLICY_PIHOLE_FAILS ND_POLICY_PIHOLE_MAX_RESTARTS ND_POLICY_PAUSED_PASSES
+    ND_POLICY_PIHOLE_FAILS ND_POLICY_PIHOLE_MAX_RESTARTS ND_POLICY_PAUSED_PASSES \
+    ND_POLICY_CRASH_WINDOW_S ND_POLICY_CRASH_BURST
 }
 
 sp_libs() {
@@ -1278,5 +1279,126 @@ t_paused_rows_exist_only_when_non_zero() {
   nd_state_commit "$tok" 0 "$CASE_DIR/cur" >/dev/null; assert_rc 0 $? "lib/state.sh accepts paused_pi-hole"
   printf 'paused_nginx\t1\n' >>"$CASE_DIR/cur"
   nd_state_commit "$tok" 1 "$CASE_DIR/cur" >/dev/null 2>&1; assert_rc 2 $? "a row for a container outside the stack is refused"
+  nd_state_unlock "$tok"
+}
+
+# ─────────────────────────── crash loops ─────────────────────────────────────
+
+# sp_cnt <file> <container> <restarts> [verdict] [reason before "restarts"]:
+# add a container record carrying the unit's restart count.
+sp_cnt() { printf 'obs\tcontainer:%s\t%s\t20\t%s restarts %s\n' "$2" "${4:-healthy}" "${5:-running: health healthy}" "$3" >>"$1"; }
+
+# sp_px_pass <restarts> [route verdict]: one pass a minute after the last with
+# the proxy's count; routes healthy unless told.
+sp_px_pass() {
+  sp_obs "$CASE_DIR/px" healthy "${2:-healthy}" "${2:-healthy}" "${2:-healthy}" "${2:-healthy}"
+  sp_cnt "$CASE_DIR/px" tor-haproxy "$1"
+  sp_ub_pass "$CASE_DIR/px"
+}
+
+t_a_restart_count_rise_holds_a_due_pihole_restart() {
+  sp_ub_start
+  cp "$CASE_DIR/ok" "$CASE_DIR/f0"; sp_cnt "$CASE_DIR/f0" pi-hole 0 unhealthy 'unhealthy: FTL is not answering'
+  cp "$CASE_DIR/ok" "$CASE_DIR/f1"; sp_cnt "$CASE_DIR/f1" pi-hole 1 unhealthy 'exited: rc 134'
+  sp_ub_pass "$CASE_DIR/f0"; sp_ub_pass "$CASE_DIR/f0"
+  assert_eq 2 "$(sp_key "$CASE_DIR/cur" pihole_fail)" "two failures"
+  sp_ub_pass "$CASE_DIR/f1"
+  assert_ne pi-hole "$SP_TARGET" "the unit restarted Pi-hole itself: the due restart is held"
+  assert_match 'Pi-hole.*restarting on its own' "$SP_REASON" "the journal says why it waits"
+  assert_eq "$SP_NOW" "$(sp_key "$CASE_DIR/cur" recovery_at)" "the rise starts the cooldown"
+  assert_eq 1 "$(sp_key "$CASE_DIR/cur" restart_seen_pi-hole)" "the count is kept"
+  local held_until=$((SP_NOW + 600)) seen=0
+  while [ "$SP_NOW" -lt $((held_until + 120)) ]; do
+    sp_ub_pass "$CASE_DIR/f1"
+    if [ "$SP_TARGET" = pi-hole ]; then
+      seen=1
+      assert_eq 1 "$(( SP_NOW >= held_until ))" "no restart while the rise is under 600 s old ($((SP_NOW - held_until + 600)) s)"
+      break
+    fi
+  done
+  assert_eq 1 "$seen" "a stable count lets the held restart go"
+}
+
+t_three_rises_escalate_once_as_a_crash_loop() {
+  local n esc=0
+  sp_ub_start
+  sp_px_pass 0
+  assert_eq "" "$(sp_key "$CASE_DIR/cur" restart_seen_tor-haproxy)" "a zero count writes no row"
+  sp_px_pass 1; assert_ne escalate "$SP_ACTION" "one rise"
+  sp_px_pass 2; assert_ne escalate "$SP_ACTION" "two rises"
+  sp_px_pass 3
+  assert_eq escalate "$SP_ACTION" "three rises in 600 s"
+  assert_match '^crash-loop: tor-haproxy ' "$SP_REASON" "named"
+  assert_match 'first escalation of this loop' "$SP_REASON" "the first escalation of the loop says so: it writes the dump"
+  for n in 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27; do
+    sp_px_pass "$n"
+    case "$SP_ACTION:$SP_REASON" in escalate:*crash-loop:*) esc=$((esc + 1)) ;; esac
+    assert_not_match 'first escalation' "$SP_REASON" "only the first says so"
+  done
+  assert_eq 0 "$esc" "a rise every minute for 24 more minutes escalates nothing new"
+  for n in 28 29 30 31 32 33 34 35; do
+    sp_px_pass "$n"
+    case "$SP_ACTION:$SP_REASON" in escalate:*crash-loop:*) esc=$((esc + 1)) ;; esac
+  done
+  assert_eq 1 "$esc" "once a retry interval later"
+}
+
+t_a_crash_loop_never_gets_a_controller_restart() {
+  local n
+  sp_ub_start
+  # A full outage while the proxy crashes: the Tor ladder would act at once.
+  sp_px_pass 0 unhealthy
+  for n in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    sp_px_pass "$n" unhealthy
+    case "$SP_TARGET" in tor|proxy|stack) fail "the proxy is restarting on its own; the controller restarted $SP_TARGET (pass $n)" ;; esac
+  done
+  assert_match 'restart count rose|restarting on its own' "$SP_REASON" "the journal says why"
+  sp_obs "$CASE_DIR/mx" missing unhealthy unhealthy unhealthy unhealthy
+  printf 'obs\truntime\tunhealthy\t5\tcontainers-missing: tor-haproxy (running: pi-hole unbound)\n' >"$CASE_DIR/mx.rt"
+  awk -F '\t' 'NR == FNR { r = $0; next } $2 == "runtime" { print r; next } { print }' "$CASE_DIR/mx.rt" "$CASE_DIR/mx" >"$CASE_DIR/mx.2"
+  sp_cnt "$CASE_DIR/mx.2" tor-haproxy 13 indeterminate 'transient: state stopping'
+  SP_NOW=$((SP_NOW + 300)); sp_ub_pass "$CASE_DIR/mx.2"
+  assert_ne repair-runtime "$SP_ACTION" "nor is a container restarting on its own started by name"
+}
+
+t_a_stable_count_clears_the_loop_and_a_fall_is_a_new_baseline() {
+  local n
+  sp_ub_start
+  for n in 0 1 2 3; do sp_px_pass "$n"; done
+  assert_eq escalate "$SP_ACTION" "a loop"
+  assert_ne "" "$(sp_key "$CASE_DIR/cur" crash_tor-haproxy)" "its rises are kept"
+  for n in 1 2 3 4 5 6 7 8 9 10; do sp_px_pass 3; done
+  assert_eq "" "$(sp_key "$CASE_DIR/cur" crash_tor-haproxy)" "a count stable for 600 s clears it"
+  assert_eq "" "$(sp_key "$CASE_DIR/cur" crash_esc_tor-haproxy)" "and its escalation"
+  sp_px_pass 0
+  assert_eq "" "$(sp_key "$CASE_DIR/cur" crash_tor-haproxy)" "a fall (a manual restart resets NRestarts) is no rise"
+  assert_eq "" "$(sp_key "$CASE_DIR/cur" restart_seen_tor-haproxy)" "but a new baseline"
+  sp_px_pass 1
+  assert_ne "" "$(sp_key "$CASE_DIR/cur" crash_tor-haproxy)" "from which a rise counts"
+}
+
+t_a_new_boot_clears_the_crash_rows() {
+  sp_ub_start
+  sp_px_pass 0; sp_px_pass 5; sp_px_pass 6
+  assert_ne "" "$(sp_key "$CASE_DIR/cur" crash_tor-haproxy)" "rises before the boot"
+  sp_obs "$CASE_DIR/px" healthy healthy healthy healthy healthy; sp_cnt "$CASE_DIR/px" tor-haproxy 2
+  sp_decide "$CASE_DIR/px" "$CASE_DIR/cur" $((SP_NOW + 60)) boot-b; cp "$CASE_DIR/next" "$CASE_DIR/cur"
+  assert_eq "" "$(sp_key "$CASE_DIR/cur" crash_tor-haproxy)" "a new boot clears them"
+  assert_eq 2 "$(sp_key "$CASE_DIR/cur" restart_seen_tor-haproxy)" "and the count it reads is a baseline"
+  assert_eq "" "$(awk -F '\t' '$1 ~ /^crash/' "$CASE_DIR/cur")" "not a rise"
+}
+
+t_crash_rows_pass_the_state_validator() {
+  local tok
+  sp_ub_start
+  sp_px_pass 0
+  assert_eq 0 "$(grep -c -e '^crash' -e '^restart_seen' "$CASE_DIR/cur")" "a zero-counter state has no new rows (BL-036)"
+  sp_px_pass 1; sp_px_pass 2; sp_px_pass 3
+  nd_state_init || fail "init"
+  tok="$(nd_state_lock)" || fail "lock"
+  nd_state_commit "$tok" 0 "$CASE_DIR/cur" >/dev/null; assert_rc 0 $? "lib/state.sh accepts the crash rows: $(grep -e '^crash' -e '^restart_seen' "$CASE_DIR/cur" | tr '\n\t' '; ')"
+  printf 'crash_tor-haproxy\t1,x\n' >"$CASE_DIR/bad.row"
+  awk -F '\t' '$1 != "crash_tor-haproxy"' "$CASE_DIR/cur" >"$CASE_DIR/cur.bad"; cat "$CASE_DIR/bad.row" >>"$CASE_DIR/cur.bad"
+  nd_state_commit "$tok" 1 "$CASE_DIR/cur.bad" >/dev/null 2>&1; assert_rc 2 $? "a bad rise list is refused"
   nd_state_unlock "$tok"
 }

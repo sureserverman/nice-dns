@@ -51,6 +51,11 @@
 #                   non-zero
 #   paused_<c>      passes in a row container <c> (pi-hole, unbound, tor-haproxy,
 #                   tor-socat) was read paused; only when non-zero
+#   restart_seen_<c> the last restart count read for <c>; only when non-zero
+#   crash_<c>       epochs of the count's rises inside the crash window, comma
+#                   separated (at most 16); only while there is one
+#   crash_esc_<c>   epoch of the last crash-loop escalation of <c>; only while the
+#                   loop lasts
 #   streak <route> <ok> <fail> <unknown>
 #                   consecutive healthy / unhealthy / not-healthy observations
 # Every other key appears exactly once; streak rows once per route; nothing else.
@@ -141,7 +146,8 @@ _nd_state_check() {
       else if (k == "updated" || k == "started" || k == "outage_since" || k == "last_action_at" || k == "recovery_at") ok = epoch(v)
       else if (k == "route") ok = v == "-" || rid(v)
       else if (k == "proxy_gen") ok = v == "-" || v ~ /^[0-9a-f]{16}$/
-      else if (k == "outage_restarts" || k == "unbound_fail" || k == "unbound_restarts" || k == "runtime_repairs" || k == "pihole_fail" || k == "pihole_restarts" || k ~ /^paused_(pi-hole|unbound|tor-haproxy|tor-socat)$/) ok = num(v)
+      else if (k == "outage_restarts" || k == "unbound_fail" || k == "unbound_restarts" || k == "runtime_repairs" || k == "pihole_fail" || k == "pihole_restarts" || k ~ /^(paused|restart_seen|crash_esc)_(pi-hole|unbound|tor-haproxy|tor-socat)$/) ok = num(v)
+      else if (k ~ /^crash_(pi-hole|unbound|tor-haproxy|tor-socat)$/) ok = v ~ /^[0-9]{1,15}(,[0-9]{1,15}){0,15}$/
       else if (k == "last_action") ok = v ~ /^(-|no-op|switch-route|refresh-bridges|restart-component|repair-runtime|escalate)$/
       else { bad("unknown key " k); next }
       if (!ok) bad("bad value for " k)

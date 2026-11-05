@@ -66,6 +66,20 @@
 #     pause) the policy escalates with the reason. It comes after the runtime
 #     faults and before Unbound's and Pi-hole's rules, whose checks a paused
 #     container fails too.
+#   * A crash loop is held, not fought. Each container:<name> record ends with
+#     the unit's restart count ("restarts N"; Linux NRestarts). A count above the
+#     last one kept (restart_seen_<c>) is a restart that already happened: the
+#     cooldown restarts from it, and while a rise is under ND_POLICY_CRASH_WINDOW_S
+#     (600) old nothing restarts that container (pi-hole: pi-hole; unbound:
+#     unbound; the proxy: tor and proxy; any: the stack, and a containers-missing
+#     start of it). ND_POLICY_CRASH_BURST (3) rises inside the window escalate
+#     "crash-loop: <c>", at most once per ND_POLICY_RETRY_S; the first escalation
+#     of a loop says so and the CLI writes one failure dump for it. A count stable
+#     for the window clears the loop. A lower count (a manual start resets
+#     NRestarts), a first reading and a new boot are baselines, never rises. The
+#     unit's own back-off (RestartSteps=) is what slows the loop on Linux; Apple
+#     containers do not restart themselves, so on macOS the count stays 0 and the
+#     repair cap is the back-off.
 #   * Unbound's own health, after runtime faults and before route selection. An
 #     unbound observation with a control: reason counts always; a route: reason
 #     counts only with an identity route healthy in the same pass, since otherwise
@@ -141,6 +155,11 @@ nd_policy_decide() {
   # The stack's containers (the observation validator's names), their paused
   # counts and this pass's reading: p paused, r running or failing otherwise.
   local -a cn=(pi-hole unbound tor-haproxy tor-socat) cpz=(0 0 0 0) cobs=(- - - -)
+  # Crash loops: the last count kept, this pass's count, the rise epochs inside
+  # the window ("e1,e2"), the last escalation.
+  local cwin="${ND_POLICY_CRASH_WINDOW_S:-600}" cburst="${ND_POLICY_CRASH_BURST:-3}"
+  local -a cseen=(0 0 0 0) ccnt=(- - - -) crise=(- - - -) cesc=(- - - -)
+  local held=" " cr_due=-1 cr_first=0 boot_new=0
   local rt=- rt_reason="" compat_ok=0 valid=1 why="" notes=""
   local action=no-op target=- reason=""
 
@@ -177,6 +196,16 @@ nd_policy_decide() {
       proxy_gen) s_pgen="$b" ;;
       unbound_fail) s_ubfail="$b" ;; unbound_restarts) s_ubrest="$b" ;; runtime_repairs) s_rtrep="$b" ;;
       pihole_fail) s_phfail="$b" ;; pihole_restarts) s_phrest="$b" ;;
+      restart_seen_*|crash_esc_*|crash_*)
+        i=0
+        while [ "$i" -lt 4 ]; do
+          case "$a" in
+            "restart_seen_${cn[i]}") _nd_p_num "$b" && cseen[i]="$b" ;;
+            "crash_esc_${cn[i]}") _nd_p_num "$b" && cesc[i]="$b" ;;
+            "crash_${cn[i]}") case "$b" in ''|*[!0-9,]*|,*|*,|*,,*) ;; *) crise[i]="$b" ;; esac ;;
+          esac
+          i=$((i + 1))
+        done ;;
       paused_*)
         i=0
         while [ "$i" -lt 4 ]; do
@@ -229,6 +258,9 @@ nd_policy_decide() {
         i=0
         while [ "$i" -lt 4 ]; do
           if [ "container:${cn[i]}" = "$b" ]; then
+            # The count is the reason's last word (a check output may hold "restarts").
+            v="${e##* restarts }"
+            [ "$v" != "$e" ] && _nd_p_num "$v" && ccnt[i]="$v"
             case "$c:$e" in
               "unhealthy:paused restarts "*) cobs[i]=p ;;
               indeterminate:*) ;;
@@ -252,7 +284,7 @@ nd_policy_decide() {
   if [ "$s_boot" != "$boot" ]; then
     [ "$s_boot" = - ] || notes="boot changed; timers restart; "
     s_boot="$boot" s_started="$now" s_out=- s_rest=0 s_rec=- s_laat=- s_ubfail=0 s_ubrest=0 s_phfail=0 s_phrest=0
-    cpz=(0 0 0 0)
+    cpz=(0 0 0 0) cseen=(0 0 0 0) crise=(- - - -) cesc=(- - - -) boot_new=1
     [ "$s_la" = - ] || s_la=-
     i=0; while [ "$i" -lt "$n" ]; do rok[i]=0; rfail[i]=0; runk[i]=0; i=$((i + 1)); done
     fresh=1
@@ -294,6 +326,39 @@ nd_policy_decide() {
       esac
       i=$((i + 1))
     done
+    # Restart counts: a rise is a restart the unit already made.
+    local rises w k
+    i=0
+    while [ "$i" -lt 4 ]; do
+      if [ "${ccnt[i]}" != - ]; then
+        if [ "$boot_new" = 0 ] && [ "${ccnt[i]}" -gt "${cseen[i]}" ]; then
+          crise[i]="$( [ "${crise[i]}" = - ] || printf '%s,' "${crise[i]}")$now"
+          s_rec="$now"
+          notes="${notes}${cn[i]} restart count rose to ${ccnt[i]}; "
+        fi
+        cseen[i]="${ccnt[i]}"
+      fi
+      # Keep the rises inside the window (at most 8; a moved-back clock keeps them).
+      rises="" k=0
+      if [ "${crise[i]}" != - ]; then
+        for w in $(printf '%s\n' "${crise[i]}" | tr ',' ' '); do
+          if [ $((now - w)) -lt "$cwin" ]; then rises="$rises${rises:+,}$w"; k=$((k + 1)); fi
+        done
+      fi
+      [ "$k" -le 8 ] || rises="$(printf '%s\n' "$rises" | tr ',' '\n' | tail -n 8 | tr '\n' ',' | sed 's/,$//')"
+      if [ -z "$rises" ]; then
+        crise[i]=- cesc[i]=-
+      else
+        crise[i]="$rises"
+        case "${cn[i]}" in tor-*) held="${held}tor proxy stack ${cn[i]} " ;; *) held="${held}${cn[i]} stack " ;; esac
+        if [ "$k" -ge "$cburst" ] && [ "$cr_due" -lt 0 ] \
+           && { [ "${cesc[i]}" = - ] || [ $((now - cesc[i])) -ge "$retry" ] || [ "$now" -lt "${cesc[i]}" ]; }; then
+          cr_due="$i"; [ "${cesc[i]}" = - ] && cr_first=1
+        fi
+      fi
+      i=$((i + 1))
+    done
+
     local in_startup=0 in_cool=0
     [ $((now - s_started)) -lt "$startup" ] && in_startup=1
     if _nd_p_num "$s_rec" && [ $((now - s_rec)) -lt "$cool" ]; then in_cool=1; fi
@@ -319,7 +384,9 @@ nd_policy_decide() {
       unhealthy:route:*) if [ "$healthy_now" = 1 ]; then s_ubfail=$((s_ubfail + 1)) ub_seen=1; fi ;;
     esac
     if [ "$ub_seen" = 1 ] && [ "$s_ubfail" -ge "$ubfails" ]; then
-      if [ "$in_startup" = 1 ] || [ "$in_cool" = 1 ]; then
+      if [ "${held#* unbound }" != "$held" ]; then
+        notes="${notes}Unbound failed $s_ubfail checks in a row; it is restarting on its own (crash-loop hold); "
+      elif [ "$in_startup" = 1 ] || [ "$in_cool" = 1 ]; then
         notes="${notes}Unbound failed $s_ubfail checks in a row, inside the startup allowance or cooldown; "
       elif [ "$healthy_now" != 1 ] && [ "$unhealthy_now" = 1 ] && [ "$s_rest" -ge "$maxr" ]; then
         # Past the ladder's cap the stack restart below covers Unbound as well.
@@ -356,7 +423,9 @@ nd_policy_decide() {
       if ! _nd_p_num "$s_rec" || [ $((now - s_rec)) -ge "$retry" ]; then s_phrest=0; fi
     fi
     if [ "$ph_seen" = 1 ] && [ "$s_phfail" -ge "$phfails" ]; then
-      if [ "$in_startup" = 1 ] || [ "$in_cool" = 1 ]; then
+      if [ "${held#* pi-hole }" != "$held" ]; then
+        notes="${notes}Pi-hole failed $s_phfail checks in a row; it is restarting on its own (crash-loop hold); "
+      elif [ "$in_startup" = 1 ] || [ "$in_cool" = 1 ]; then
         notes="${notes}Pi-hole failed $s_phfail checks in a row, inside the startup allowance or cooldown; "
       elif [ "$healthy_now" != 1 ] && [ "$unhealthy_now" = 1 ] && [ "$s_rest" -ge "$maxr" ]; then
         notes="${notes}Pi-hole failed $s_phfail checks in a row; the stack restart covers it; "
@@ -377,13 +446,31 @@ nd_policy_decide() {
       esac
     fi
 
+    # A missing container that is restarting on its own is not started by name.
+    local rt_held=""
+    if [ "$rt_fault" = containers-missing ]; then
+      for v in ${rt_reason#containers-missing: }; do
+        case "$v" in "(running:"*) break ;; esac
+        [ "${held#* "$v" }" = "$held" ] || rt_held="$rt_held${rt_held:+ }$v"
+      done
+    fi
+
     if [ "$rt_fault" = cli-missing ]; then
       action=escalate reason="runtime CLI is missing: $rt_reason"
     elif [ -n "$rt_fault" ] && [ "${repairs#* "$rt_fault" }" = "$repairs" ]; then
       action=escalate reason="runtime fault ($rt_fault) has no repair on this platform: $rt_reason"
+    elif [ "$cr_due" -ge 0 ]; then
+      v="$(printf '%s\n' "${crise[cr_due]}" | tr ',' '\n' | wc -l | tr -d ' ')"
+      # Leads with crash-loop: (the CLI's dump reads it there); the notes follow.
+      action=escalate reason="crash-loop: ${cn[cr_due]} restarted $v times in ${cwin} s (restarts ${cseen[cr_due]}); the controller adds no restart$( [ "$cr_first" = 1 ] && printf '; first escalation of this loop')${notes:+; ${notes%; }}"
+      cesc[cr_due]="$now" notes=""
+    elif [ -n "$rt_held" ]; then
+      reason="${notes}runtime fault ($rt_fault) held: $rt_held is restarting on its own (crash-loop hold)"; notes=""
     elif [ -n "$rt_fault" ]; then
       if [ "$in_startup" = 1 ]; then reason="runtime fault ($rt_fault) inside the startup allowance"
       elif [ "$in_cool" = 1 ]; then reason="runtime fault ($rt_fault) inside the recovery cooldown"
+      elif [ "$rt_fault" = containers-missing ] && [ "$s_rtrep" -ge "$rtmax" ] && [ "$held" != " " ]; then
+        reason="containers stay missing after $rtmax repairs; the stack restart is held: a container is restarting on its own (crash-loop hold:$held)"
       elif [ "$rt_fault" = containers-missing ] && [ "$s_rtrep" -ge "$rtmax" ]; then
         # Repairing by name for ever kept the stack restart below from ever being
         # due: each repair resets recovery_at. The first restart comes at once,
@@ -453,6 +540,8 @@ nd_policy_decide() {
       if [ "$in_startup" = 1 ]; then reason="full outage inside the startup allowance"
       elif [ $((now - from)) -lt "$grace" ]; then reason="full outage for $((now - s_out)) s; grace $grace s"
       elif [ "$in_cool" = 1 ]; then reason="full outage; inside the recovery cooldown"
+      elif [ "$held" != " " ] && { [ "$s_rest" -ge "$maxr" ] || [ "${held#* tor }" != "$held" ]; }; then
+        reason="full outage; a container is restarting on its own (crash-loop hold:$held)"
       elif [ "$s_rest" -ge "$maxr" ]; then
         # Past the cap the ladder is spent, but stopping here left hosts without
         # DNS until a reboot (mint, 2026-10-30): the stack restarts every $retry s
@@ -495,6 +584,9 @@ nd_policy_decide() {
   i=0
   while [ "$i" -lt 4 ]; do
     [ "${cpz[i]}" = 0 ] || printf 'paused_%s\t%s\n' "${cn[i]}" "${cpz[i]}"
+    [ "${cseen[i]}" = 0 ] || printf 'restart_seen_%s\t%s\n' "${cn[i]}" "${cseen[i]}"
+    [ "${crise[i]}" = - ] || printf 'crash_%s\t%s\n' "${cn[i]}" "${crise[i]}"
+    [ "${cesc[i]}" = - ] || printf 'crash_esc_%s\t%s\n' "${cn[i]}" "${cesc[i]}"
     i=$((i + 1))
   done
   i=0

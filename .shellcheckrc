@@ -1,0 +1,4 @@
+# Follow the `# shellcheck source=` directives without -x. Otherwise SC1091
+# (info) makes a plain `shellcheck <file>` exit 1 for every script that
+# sources a library (47 files on 2026-11-05; with -x all of them exit 0).
+external-sources=true

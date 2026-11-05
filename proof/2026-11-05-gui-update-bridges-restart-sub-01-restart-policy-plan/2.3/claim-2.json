@@ -1,0 +1,35 @@
+{
+ "baseline": {
+  "elapsed_s": 85.8,
+  "exit": 0,
+  "tail": "PASS  t_state_lock_from_previous_boot_is_reclaimed\nPASS  t_state_orphan_lock_of_dead_process_is_reclaimed\nPASS  t_state_overlapping_actors_one_lock_winner\nPASS  t_state_rejects_malformed_and_never_executes_it\nPASS  t_state_release_only_removes_its_own_lock\nPASS  t_the_repair_count_passes_the_state_validator\nPASS  t_three_rises_escalate_once_as_a_crash_loop\nPASS  t_unbound_acts_only_on_a_failure_seen_in_this_pass\nPASS  t_unbound_control_failure_in_a_full_outage_restarts_it\nPASS  t_unbound_failing_with_routes_healthy_restarts_it_on_the_third_pass\nPASS  t_unbound_flapping_probe_cannot_defeat_the_restart_cap\nPASS  t_unbound_healthy_reading_clears_both_counters_and_indeterminate_holds\nPASS  t_unbound_new_boot_clears_the_counters\nPASS  t_unbound_past_the_cap_with_routes_unknown_is_still_restarted\nPASS  t_unbound_retries_every_half_hour_after_two_restarts\nPASS  t_unbound_retry_does_not_starve_the_stack_restart\nPASS  t_unbound_route_failure_in_a_full_outage_never_restarts_it\nPASS  t_unbound_route_failure_with_only_compat_answering_is_not_counted\nPASS  t_unbound_startup_and_cooldown_hold_the_restart\nPASS  t_unbound_state_rows_exist_only_when_non_zero\ngroup unit/state-policy: collected=69 passed=69 failed=0\ncollected=69 passed=69 failed=0\nresult=pass run_id=20261105T155129Z-3a9cf951 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261105T155129Z-3a9cf951\nrun_id=20261105T155201Z-65946cc4 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261105T155201Z-65946cc4\nPASS  t_a_container_that_stays_missing_reaches_the_stack_through_real_ticks\nPASS  t_a_crash_loop_is_escalated_once_with_one_dump_by_real_ticks\nPASS  t_cached_answer_never_hides_an_upstream_outage\nPASS  t_drift_never_re_renders\nPASS  t_drift_reports_an_image_off_the_lock\nPASS  t_held_outage_clock_with_unanswerable_probes_never_acts\nPASS  t_observed_onion_failure_switches_route_not_tor\nPASS  t_observed_outage_restart_is_acknowledged_then_ready\nPASS  t_security_drift_logs_once_per_day\nPASS  t_shadow_pass_observes_and_decides_but_never_acts\nPASS  t_status_shows_the_generation_and_lock_match\nPASS  t_unanswerable_probes_never_act\nPASS  t_unbound_failing_with_routes_healthy_is_restarted_by_real_ticks\ngroup integration/controller-interaction: collected=13 passed=13 failed=0\ncollected=13 passed=13 failed=0\nresult=pass run_id=20261105T155201Z-65946cc4 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261105T155201Z-65946cc4"
+ },
+ "break_patch": "--- a/health/nice-dns-health\n+++ b/health/nice-dns-health\n@@ -1095,7 +1095,6 @@\n   [ \"$(printf '%s\\n' \"$2\" | awk -F '\\t' '$1 == \"action\" { print $2; exit }')\" = escalate ] || return 0\n   reason=\"$(printf '%s\\n' \"$2\" | awk -F '\\t' '$1 == \"reason\" { print $2; exit }')\"\n   case \"$reason\" in\n-    crash-loop:*\"first escalation of this loop\"*) what=\"crash loop\" ;;\n     *) nd_recovery_first_escalation || return 0 ;;\n   esac\n   HEALTH_OBS=\"$(cat \"$1\")\"\n",
+ "build": null,
+ "created": "2026-11-05T15:54:22+00:00",
+ "fingerprint": "58658401e77bdacf857551a1c4ec6c6e836d806c5f554f6c0c1046abae1797a3",
+ "index": 2,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "shell library sourced by the test",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-01-restart-policy-plan.md",
+ "red": {
+  "elapsed_s": 87.3,
+  "exit": 1,
+  "tail": "PASS  t_state_orphan_lock_of_dead_process_is_reclaimed\nPASS  t_state_overlapping_actors_one_lock_winner\nPASS  t_state_rejects_malformed_and_never_executes_it\nPASS  t_state_release_only_removes_its_own_lock\nPASS  t_the_repair_count_passes_the_state_validator\nPASS  t_three_rises_escalate_once_as_a_crash_loop\nPASS  t_unbound_acts_only_on_a_failure_seen_in_this_pass\nPASS  t_unbound_control_failure_in_a_full_outage_restarts_it\nPASS  t_unbound_failing_with_routes_healthy_restarts_it_on_the_third_pass\nPASS  t_unbound_flapping_probe_cannot_defeat_the_restart_cap\nPASS  t_unbound_healthy_reading_clears_both_counters_and_indeterminate_holds\nPASS  t_unbound_new_boot_clears_the_counters\nPASS  t_unbound_past_the_cap_with_routes_unknown_is_still_restarted\nPASS  t_unbound_retries_every_half_hour_after_two_restarts\nPASS  t_unbound_retry_does_not_starve_the_stack_restart\nPASS  t_unbound_route_failure_in_a_full_outage_never_restarts_it\nPASS  t_unbound_route_failure_with_only_compat_answering_is_not_counted\nPASS  t_unbound_startup_and_cooldown_hold_the_restart\nPASS  t_unbound_state_rows_exist_only_when_non_zero\ngroup unit/state-policy: collected=69 passed=69 failed=0\ncollected=69 passed=69 failed=0\nresult=pass run_id=20261105T155255Z-9ab31eb5 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261105T155255Z-9ab31eb5\nrun_id=20261105T155326Z-10b03973 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261105T155326Z-10b03973\nPASS  t_a_container_that_stays_missing_reaches_the_stack_through_real_ticks\nFAIL  t_a_crash_loop_is_escalated_once_with_one_dump_by_real_ticks (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261105T155326Z-10b03973/cases/integration-controller-interaction/t_a_crash_loop_is_escalated_once_with_one_dump_by_real_ticks/case.log)\n      ASSERT FAIL: with one failure dump: expected [1] got [0]\nPASS  t_cached_answer_never_hides_an_upstream_outage\nPASS  t_drift_never_re_renders\nPASS  t_drift_reports_an_image_off_the_lock\nPASS  t_held_outage_clock_with_unanswerable_probes_never_acts\nPASS  t_observed_onion_failure_switches_route_not_tor\nPASS  t_observed_outage_restart_is_acknowledged_then_ready\nPASS  t_security_drift_logs_once_per_day\nPASS  t_shadow_pass_observes_and_decides_but_never_acts\nPASS  t_status_shows_the_generation_and_lock_match\nPASS  t_unanswerable_probes_never_act\nPASS  t_unbound_failing_with_routes_healthy_is_restarted_by_real_ticks\ngroup integration/controller-interaction: collected=13 passed=12 failed=1\ncollected=13 passed=12 failed=1\nresult=fail run_id=20261105T155326Z-10b03973 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261105T155326Z-10b03973"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "2.3",
+ "test": "bash tests/run.sh unit state-policy && bash tests/run.sh integration controller-interaction",
+ "text": "three rises in 600 s escalate once with `crash-loop: tor-haproxy` and a dump is written once",
+ "touched": [
+  "health/nice-dns-health"
+ ],
+ "touched_blobs": {
+  "health/nice-dns-health": "6306150bfda37eaaf076d2b3785b774a8cff4135"
+ },
+ "witness_blobs": {
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}

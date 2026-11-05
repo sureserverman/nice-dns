@@ -967,7 +967,8 @@ _nd_rec_readiness() {
 # (lib/policy.sh), carry the action out (active) or only record it (shadow),
 # commit the next state. Shadow mode keeps its own state and journal in the
 # state directory's shadow/ and never runs a runtime or route command.
-# Prints action, target, result and generation rows. Exit: 0 done; 3 the lock
+# Prints action, target, result, generation and reason rows (the policy's
+# reason: the CLI writes a crash loop's one failure dump from it). Exit: 0 done; 3 the lock
 # is held by another pass; 2 a state or input error.
 nd_recovery_tick() {
   local mode="${1:-}" obs="${2:-}" tok gen now boot t id rc=0 result=none rgen act pg
@@ -1022,7 +1023,7 @@ nd_recovery_tick() {
   fi
   gen="$(nd_state_commit "$tok" "$gen" "$t/next")" || gen="-"
   nd_state_unlock "$tok"
-  printf 'action\t%s\ntarget\t%s\nresult\t%s\ngeneration\t%s\n' "$(_nd_rec_field action "$t/decision")" "$(_nd_rec_field target "$t/decision")" "$result" "$gen"
+  printf 'action\t%s\ntarget\t%s\nresult\t%s\ngeneration\t%s\nreason\t%s\n' "$(_nd_rec_field action "$t/decision")" "$(_nd_rec_field target "$t/decision")" "$result" "$gen" "$(_nd_rec_field reason "$t/decision")"
   rm -rf "$t"
   return 0
 }
