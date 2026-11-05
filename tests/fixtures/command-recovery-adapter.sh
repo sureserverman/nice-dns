@@ -92,7 +92,7 @@ case "$op" in
     printf 'done\t%s\t4\n' "$((t + 5))" >>"$S/crash"
     printf '%s\tesc-1\tcontroller\tescalated\tcrash-loop: tor-%s restarted 3 times in 600 s\n' "$t" "$(cat "$S/proxy")" >>"$S/journal"
     [ "$brk" != crash-twice ] || printf '%s\tesc-2\tcontroller\tescalated\tcrash-loop: tor-%s restarted 4 times in 600 s\n' "$t" "$(cat "$S/proxy")" >>"$S/journal"
-    [ "$brk" != crash-restart ] || printf '%s\treq-crash\tproxy\trequested\tx\n' "$t" >>"$S/journal"
+    [ "$brk" != crash-restart ] || printf '%s\treq-crash\tservice\trequested\tproxy restart\n' "$t" >>"$S/journal"
     printf 'crash_sequence\tstarted\n' ;;
   stop-crash) printf 'crash_sequence\tstopped\n' ;;
   crash-report)

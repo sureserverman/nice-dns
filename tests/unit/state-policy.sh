@@ -1227,6 +1227,21 @@ t_a_pihole_timeout_without_a_route_holds_the_streak() {
   assert_ne pi-hole "$SP_TARGET" "and restarts nothing"
 }
 
+# Stage 3 gate round 1: f0ef103 made every indeterminate local-service hold
+# the streak, so a local-service that stayed unobservable (an observation
+# deadline on a loaded host) left two failures standing for ever, and one later
+# blip restarted Pi-hole. Only a pi.hole timeout holds; otherwise a healthy
+# container record clears the streak, as before.
+t_a_plain_indeterminate_local_service_lets_the_container_clear_the_streak() {
+  sp_ub_start; sp_ph_files
+  sp_ub_pass "$CASE_DIR/phbad"; sp_ub_pass "$CASE_DIR/phbad"
+  assert_eq 2 "$(sp_key "$CASE_DIR/cur" pihole_fail)" "two failures"
+  cp "$CASE_DIR/ok" "$CASE_DIR/phdl"; sp_ph "$CASE_DIR/phdl" healthy indeterminate
+  sp_ub_pass "$CASE_DIR/phdl"
+  assert_eq "" "$(sp_key "$CASE_DIR/cur" pihole_fail)" "a healthy container with local-service unobservable (deadline) clears the streak"
+  assert_ne pi-hole "$SP_TARGET" "and restarts nothing"
+}
+
 t_pihole_new_boot_clears_the_counters() {
   sp_ub_start; sp_ph_files
   sp_ub_pass "$CASE_DIR/phbad"; sp_ub_pass "$CASE_DIR/phbad"

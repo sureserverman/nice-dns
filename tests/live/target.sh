@@ -198,12 +198,14 @@
 #   unpause-container
 #                    Linux: unpause it (a running one is left alone) and
 #                    cancel the timer
-#   stop-container   stop --component (Linux: its unit; macOS: the container)
+#   stop-container   stop --component (Linux: its unit; macOS: the container).
+#                    No timer: start-container undoes it
 #   start-container  start it again (Linux: its unit; macOS: `container start`,
 #                    the same container with its environment)
 #   crash-container  Linux: crash the proxy --component --times N (1..9),
-#                    each ABRT at least --every S (20..300) seconds after it
-#                    runs again. The signal goes to tini's children: tini as
+#                    each ABRT --every S (20..300) seconds after the unit has
+#                    restarted from the last one (NRestarts rose) and the
+#                    container runs again. The signal goes to tini's children: tini as
 #                    PID 1 neither blocks nor handles ABRT, so `podman kill
 #                    --signal ABRT` is dropped by the kernel (mint
 #                    2026-11-05). A detached sequence, which ends by itself
@@ -1884,7 +1886,9 @@ case "$NICE_DNS_OP" in
     if [ "$NICE_DNS_OP" = thaw-service ]; then
       # No container means nothing is frozen. A failed thaw keeps the timer,
       # the only other thing that would ever thaw it.
-      if running "$c" && ! ctl_exec "$c" pkill -CONT -x "$p"; then
+      # A container restarted since the freeze may not run $p yet: nothing
+      # of it is stopped, so that counts as thawed.
+      if running "$c" && ctl_exec "$c" pgrep -x "$p" >/dev/null && ! ctl_exec "$c" pkill -CONT -x "$p"; then
         echo "could not thaw $p in $c; its timer stays armed" >&2
         exit 1
       fi
@@ -1935,16 +1939,25 @@ case "$NICE_DNS_OP" in
     # Each ABRT waits until the container runs again, then --every seconds.
     # The sequence ends by itself at NICE_DNS_FREEZE_MAX whatever happens here.
     nohup sh -c '
-      c=$1 n=$2 every=$3 f=$5 end=$(( $(date +%s) + $4 )) i=0
+      c=$1 n=$2 every=$3 f=$5 end=$(( $(date +%s) + $4 )) i=0 last=-1
+      nr() { systemctl --user show -p NRestarts --value "$c.service" 2>/dev/null; }
       while [ "$i" -lt "$n" ]; do
+        # A dying container still reads running: after a crash, wait for the
+        # unit to count the restart first.
+        while [ "$i" -gt 0 ] && [ "$(nr)" -le "$last" ]; do
+          [ "$(date +%s)" -lt "$end" ] || break 2
+          sleep 2
+        done
         while [ "$(podman inspect "$c" --format "{{.State.Status}}" 2>/dev/null)" != running ]; do
           [ "$(date +%s)" -lt "$end" ] || break 2
           sleep 2
         done
         sleep "$every"
         [ "$(date +%s)" -lt "$end" ] || break
+        last=$(nr)
         podman exec "$c" pkill -ABRT -P 1 </dev/null >/dev/null 2>&1
-        printf "kill\t%s\t%s\n" "$(date +%s)" "$?" >>"$f"
+        rc=$?
+        printf "kill\t%s\t%s\n" "$(date +%s)" "$rc" >>"$f"
         i=$((i + 1))
       done
       printf "done\t%s\t%s\n" "$(date +%s)" "$i" >>"$f"' nice-dns-crash-sequence \

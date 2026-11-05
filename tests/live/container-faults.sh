@@ -204,7 +204,10 @@ cf_crash() {
   delays="$(cf_delays "$cr" | paste -sd' ' -)"
   grow="$(printf '%s\n' "$delays" | awk '{ ok = (NF >= 3); for (i = 2; i <= NF; i++) if ($i <= $(i - 1)) ok = 0; print (ok ? "yes" : "no") }')"
   esc="$(cf_rows "$r" "$t0" "$ids" | awk -F '\t' -v c="$c" '$3 == "controller" && $4 == "escalated" && index($5, "crash-loop: " c " ") == 1' | grep -c .)"
-  held="$(cf_rows "$r" "$t0" "$ids" | awk -F '\t' '$4 == "requested" && ($3 == "proxy" || $3 == "tor" || $3 == "stack" || $3 == "runtime")' | grep -c .)"
+  # Every journal component that restarts or starts the proxy: tor (in-image),
+  # service (the proxy's unit or the macOS kickstart; lib/recovery.sh names a
+  # proxy restart so), stack, and runtime (a containers-missing start).
+  held="$(cf_rows "$r" "$t0" "$ids" | awk -F '\t' '$4 == "requested" && ($3 == "service" || $3 == "tor" || $3 == "stack" || $3 == "runtime")' | grep -c .)"
   st="$(il_val "$cr" unit state)"
   {
     printf 'fault\tcrash-container\ncomponent\t%s\ninjected\t%s\ntimes\t%s\nevery_s\t%s\n' "$c" "$t0" "$CF_CRASH_TIMES" "$CF_CRASH_EVERY"
@@ -240,6 +243,10 @@ cf_after() {
   if [ "$plat" = linux ]; then
     il_t "$a" unpause-container --component unbound >>"$d/ops.log" 2>&1
     il_t "$a" stop-crash >>"$d/ops.log" 2>&1
+  else
+    # stop-container has no timer: a stop the controller did not repair is
+    # undone here (a running container is left alone).
+    il_t "$a" start-container --component unbound >>"$d/ops.log" 2>&1
   fi
   cr_settled "$a"
   printf 'settled\tyes\n' >"$d/after.tsv"

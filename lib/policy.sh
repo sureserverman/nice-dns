@@ -102,9 +102,9 @@
 #     or when pi.hole timed out (local-service indeterminate, "dig timed out")
 #     while an identity route is healthy in the same pass: FTL answers that
 #     name itself, and a frozen FTL reads exactly so (live 2026-11-05). It is
-#     healthy when neither is unhealthy, local-service is not indeterminate,
-#     and one is healthy. Indeterminate or absent otherwise changes nothing and
-#     acts on nothing. Healthy clears pihole_fail, and
+#     healthy when neither is unhealthy, pi.hole did not time out, and one is
+#     healthy. Indeterminate or absent otherwise changes nothing and acts on
+#     nothing. Healthy clears pihole_fail, and
 #     clears pihole_restarts once ND_POLICY_RETRY_S has passed since the last
 #     restart. At ND_POLICY_PIHOLE_FAILS (3) in a row, outside the startup
 #     allowance and the cooldown, Pi-hole restarts (target pi-hole). After
@@ -436,13 +436,13 @@ nd_policy_decide() {
 
     # Pi-hole's own health, the same shape as Unbound's: either record failing
     # counts, indeterminate or absent changes nothing. A pi.hole timeout counts
-    # only while an identity route answers; without one it holds the streak,
-    # and so does any local-service reading that is not healthy: a container
-    # record cannot see FTL, so it never clears a streak local-service holds.
+    # only while an identity route answers; without one it holds the streak: a
+    # container record cannot see FTL, so it does not clear a timed-out one.
+    # Any other indeterminate local-service leaves the container record to decide.
     local ph_seen=0
     if [ "$ph_ct" = unhealthy ] || [ "$ph_ls" = unhealthy ] || { [ "$ph_ls" = timeout ] && [ "$healthy_now" = 1 ]; }; then
       s_phfail=$((s_phfail + 1)) ph_seen=1
-    elif [ "$ph_ls" = timeout ] || [ "$ph_ls" = indeterminate ]; then
+    elif [ "$ph_ls" = timeout ]; then
       :
     elif [ "$ph_ct" = healthy ] || [ "$ph_ls" = healthy ]; then
       s_phfail=0
