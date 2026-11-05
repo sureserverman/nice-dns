@@ -188,7 +188,9 @@ t_shadow_pass_observes_and_decides_but_never_acts() {
       assert_eq restart-component "$(ci_get action "$CI_OUT")" "$plat: the shadow pass reaches the same decision"
       assert_eq shadow "$(ci_get result "$CI_OUT")" "$plat: and only records it"
       [ ! -e "$FAKE/ctl/tor-restart-request" ] || fail "$plat: the shadow pass wrote a restart request"
-      assert_not_match 'systemctl|launchctl|kickstart' "$(cat "$FAKE_LOG")" "$plat: no scheduler command"
+      # The pass reads each container unit's restart count (read-only
+      # systemctl show); every other scheduler command would act.
+      assert_not_match 'systemctl|launchctl|kickstart' "$(grep -v '^systemctl --user show -p NRestarts --value ' "$FAKE_LOG")" "$plat: no scheduler command"
     ) || exit 1
   done
 }
