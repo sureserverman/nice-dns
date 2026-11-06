@@ -656,3 +656,72 @@ t_status_is_in_the_help() {
   cl_run "$CL_TREE/nice-dns" --help
   assert_match "^  status \[--tsv\]" "$CL_OUT" "--help lists status"
 }
+
+# ─────── Status and update plan, Stage 1 gate round 1: what status trusts ───
+
+# A file that is there but cannot be read is never read as absent.
+t_status_never_reads_an_unreadable_file_as_absent() {
+  local u p
+  for u in $(cl_platforms); do
+    st_world "$u"
+    p="${ST_SD%/*}"
+    chmod 000 "$p"; st_rows; chmod 700 "$p"
+    assert_rc 2 "$ST_RC" "$u: an unreachable state directory"
+    assert_match "^controller	unreadable	cannot read " "$ST_OUT" "$u: says so rather than 'never ran'"
+    chmod 000 "$ST_SD/state.tsv"; st_rows; chmod 600 "$ST_SD/state.tsv"
+    assert_rc 2 "$ST_RC" "$u: an unreadable state.tsv"
+    assert_match "^route	unreadable	cannot read ~/" "$ST_OUT" "$u: the route row says so, under ~/"
+    chmod 000 "$ST_SD/recovery.tsv"; st_rows; chmod 600 "$ST_SD/recovery.tsv"
+    assert_rc 2 "$ST_RC" "$u: an unreadable journal"
+    assert_match "^recent	unreadable	" "$ST_OUT" "$u: the recent row says so"
+    chmod 000 "$CL_HOME/.config/nice-dns/bridges.env"; st_rows; chmod 600 "$CL_HOME/.config/nice-dns/bridges.env"
+    assert_rc 2 "$ST_RC" "$u: an unreadable bridges.env"
+    assert_match "^bridges	unreadable	" "$ST_OUT" "$u: the bridges row says so"
+    chmod 000 "$ST_INST/generations/g1/prepare.tsv"; st_rows; chmod 600 "$ST_INST/generations/g1/prepare.tsv"
+    assert_rc 2 "$ST_RC" "$u: an unreadable install record is not 'not installed'"
+    assert_match "^install	unreadable	" "$ST_OUT" "$u: the install row says so"
+    printf '../../x\n' >"$ST_INST/current"; st_rows; printf 'g1\n' >"$ST_INST/current"
+    assert_rc 2 "$ST_RC" "$u: a current file naming no generation"
+    rm -f "$ST_SD/observations.tsv"; mkfifo "$ST_SD/observations.tsv"; st_rows; rm -f "$ST_SD/observations.tsv"
+    assert_rc 2 "$ST_RC" "$u: a FIFO is never opened"
+    printf 'garbage\n' >"$ST_SD/observations.tsv"; st_rows
+    assert_rc 2 "$ST_RC" "$u: a garbled observations file"
+    assert_match "^controller	unreadable	.*is not a pass the controller wrote" "$ST_OUT" "$u: says so"
+    assert_eq never "$(st_val controller last_pass)" "$u: and reports no pass"
+  done
+}
+
+t_status_epochs_are_plain_numbers_and_a_future_pass_is_stale() {
+  local e
+  st_world Linux
+  st_pass $((ST_NOW + 600)) OK; st_rows
+  assert_rc 0 "$ST_RC" "a pass dated in the future"
+  assert_eq future "$(st_val controller stale)" "is stale, never 'no'"
+  for e in 0800000000 1234567890123456789012 12a; do
+    st_pass "$e" OK; st_rows
+    assert_rc 2 "$ST_RC" "epoch $e: rejected"
+    assert_eq never "$(st_val controller last_pass)" "epoch $e: no pass"
+    assert_eq "" "$(cat "$CL_W/st-err")" "epoch $e: no shell arithmetic error"
+  done
+  st_pass $((ST_NOW - 30)) OK
+  ST_NOW=garbage st_rows
+  assert_rc 0 "$ST_RC" "a garbage ND_STATUS_NOW is ignored"
+  assert_eq "" "$(cat "$CL_W/st-err")" "without an arithmetic error"
+}
+
+t_status_route_absent_until_chosen_and_journal_fields_stay_aligned() {
+  st_world Linux
+  printf 'schema\tnice-dns-controller-state/1\ngeneration\t1\nroute\t-\n' >"$ST_SD/state.tsv"
+  printf '%s\tnd-x\t\tresultX\tdetail\n' $((ST_NOW - 1)) >>"$ST_SD/recovery.tsv"
+  st_rows
+  assert_eq "" "$(printf '%s\n' "$ST_OUT" | awk -F '\t' '$1 == "route"')" "no route row before a route is chosen"
+  assert_eq "$((ST_NOW - 1))	-	resultX" "$(printf '%s\n' "$ST_OUT" | awk -F '\t' '$1 == "recent" { l = $2 "\t" $3 "\t" $4 } END { print l }')" "an empty journal field is printed as -"
+}
+
+t_status_hint_survives_an_unreadable_state() {
+  st_world Linux; rm -rf "$ST_INST"; chmod 000 "$ST_SD"
+  cl_run "$CL_TREE/nice-dns" status --tsv
+  chmod 700 "$ST_SD"
+  assert_rc 2 "$CL_RC" "unreadable wins"
+  assert_match "^install	hint	curl -fsSL" "$CL_OUT" "and the install hint is still there"
+}

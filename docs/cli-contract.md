@@ -13,7 +13,12 @@ after every pass), its state and journal, the bridge files and the update-check
 cache. It runs no probe, no container runtime, no scheduler and no network
 call, so it answers in well under a second and may be polled every few seconds.
 Values never carry control characters (tabs included); each is at most 200
-bytes. Implemented by `lib/status.sh` (`nd_status_rows`); `nice-dns status`
+characters. `obs` rows keep their tab separators and are cut at 400 characters.
+A file `status` reads that is there but cannot be read — permissions, a parent
+directory that cannot be entered, the wrong kind of file, or content that is not
+what the controller writes — is never read as absent: its group gets a
+`<group> unreadable <reason>` row (the reason names the file, under `~/`) and the
+exit code is 2. Implemented by `lib/status.sh` (`nd_status_rows`); `nice-dns status`
 without `--tsv` prints the same rows as sections.
 
 ### Exit codes
@@ -22,7 +27,7 @@ without `--tsv` prints the same rows as sections.
 |---|---|
 | 0 | The rows were printed. A stale controller is still exit 0; read `controller stale`. |
 | 1 | Nothing is installed: `install installed no` and `install hint <the README's curl line>`. |
-| 2 | The controller's state directory, or its observations file, cannot be read: `controller unreadable <reason>`. |
+| 2 | A file `status` reads cannot be read (see the `unreadable` rows; 2 wins over 1, and the `install hint` row is still printed). Also, with nothing on stdout, a usage error, or an installed command whose kept source predates `status` (the message on stderr says to reinstall). |
 
 ### Rows
 
@@ -33,7 +38,7 @@ Rows of a group come together, in this order of groups.
 | Group | Keys and values |
 |---|---|
 | `install` | `installed yes\|no`; when installed: `generation <id>`, `source_commit <sha or unknown>`, `branch <name>`, `variant haproxy\|socat`, `pihole standard\|hardened`, `platform linux\|macos`, `lock sha256:<digest of release/images.lock>`; when not: `hint <the README's install line>`, which the `nice-dns` command adds (the library itself names no command). |
-| `controller` | `mode active\|shadow\|not-installed`; `last_pass <epoch>\|never`; `verdict <text>\|unknown` — `OK`, `FAIL [<names>]` (optionally followed by ` indeterminate=(<names>)`) or `INDETERMINATE [<names>]`; `stale no\|<seconds>\|never` — a pass older than 300 s is stale, and its observations are still printed; `schedule loaded\|stopped`; when the state cannot be read, `unreadable <reason>`. |
+| `controller` | `mode active\|shadow\|not-installed`; `last_pass <epoch>\|never`; `verdict <text>\|unknown` — `OK`, `FAIL [<names>]` (optionally followed by ` indeterminate=(<names>)`) or `INDETERMINATE [<names>]`; `stale no\|<seconds>\|never\|future` — a pass older than 300 s is stale, and its observations are still printed; `future` is a pass dated after the clock (the clock moved back), also stale; `schedule loaded\|stopped`; when the state cannot be read, `unreadable <reason>`. |
 | `obs` | The last pass's records, one per observation: `obs<TAB><name><TAB><verdict><TAB><ms><TAB><reason>`, with `<name>` like `container:pi-hole` or `route:cloudflare-onion` and `<verdict>` `healthy\|unhealthy\|indeterminate`. Absent when no pass was recorded. |
 | `route` | `selected <route id> <state generation>`, from the controller's state. Absent before the controller has chosen a route. |
 | `bridges` | `mode on\|off` (`on` unless the bridges toggle wrote `TOR_BRIDGES=off`); `count <n>` (bridge lines in `bridges.env`); `last_refresh <epoch>\|never`. |

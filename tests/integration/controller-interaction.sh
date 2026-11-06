@@ -429,7 +429,7 @@ ci_verdict() {
 # ci_kept <before> <after> <label>: observations.tsv is the spied records plus
 # one pass row with an epoch inside the pass and the records' verdict.
 ci_kept() {
-  local f="$ND_STATE_DIR/observations.tsv" row e
+  local f="${CI_KEPT_FILE:-$ND_STATE_DIR/observations.tsv}" row e
   assert_file "$f" "$3: the pass keeps its observations"
   assert_eq "$f" "$(find "$f" -maxdepth 0 -type f -perm 0600)" "$3: mode 0600"
   assert_match '^schema	nice-dns-observations/1$' "$(head -n 1 "$CI_SPY")" "$3: the pass decided on observations"
@@ -464,10 +464,13 @@ t_a_tick_keeps_the_observations_it_decided_on() {
       assert_match '^FAIL \[.*route:cloudflare-exit.* chain-resolves\]$' "$(tail -n 1 "$f" | cut -f3)" "$plat: a failing pass names what failed"
       ci_routes hang
       export ND_HEALTH_PROBE_DEADLINE=1
+      cp "$f" "$CASE_DIR/active-before-$plat"
       b="$(date +%s)"; ci_cli tick --shadow
-      ci_kept "$b" "$(date +%s)" "$plat: shadow tick"
-      assert_match '^INDETERMINATE \[.*route:cloudflare-exit.*\]$' "$(tail -n 1 "$f" | cut -f3)" "$plat: the shadow pass keeps its observations too"
+      CI_KEPT_FILE="$ND_STATE_DIR/shadow/observations.tsv" ci_kept "$b" "$(date +%s)" "$plat: shadow tick"
+      assert_match '^INDETERMINATE \[.*route:cloudflare-exit.*\]$' "$(tail -n 1 "$ND_STATE_DIR/shadow/observations.tsv" | cut -f3)" "$plat: the shadow pass keeps its observations in its own file"
+      assert_eq "$(cat "$CASE_DIR/active-before-$plat")" "$(cat "$f")" "$plat: and leaves the active controller's last pass alone"
       assert_eq "$f" "$(grep -l '^pass	' "$ND_STATE_DIR"/* "$ND_STATE_DIR"/.[!.]* 2>/dev/null)" "$plat: no temporary file is left"
+      assert_eq "$ND_STATE_DIR/shadow/observations.tsv" "$(grep -l '^pass	' "$ND_STATE_DIR"/shadow/* "$ND_STATE_DIR"/shadow/.[!.]* 2>/dev/null)" "$plat: nor in the shadow state"
     ) || exit 1
   done
 }

@@ -274,15 +274,21 @@ checks_verdict() {
   fi
 }
 
-# keep_observations <observations> <epoch> <verdict>: after a pass has
-# decided (nd_recovery_tick returned 0), $(nd_platform_state_dir)/
-# observations.tsv becomes its records plus `pass <epoch> <verdict>` (0600,
+# keep_observations <observations> <epoch> <verdict> [active|shadow]: after a
+# pass has decided (nd_recovery_tick returned 0), $(nd_platform_state_dir)/
+# observations.tsv (a shadow pass: shadow/observations.tsv) becomes its records plus `pass <epoch> <verdict>` (0600,
 # renamed over from a temporary file in the same directory, so a reader never
 # sees half a file and a pass that dies first leaves the previous one). A
 # failure is logged; the pass goes on.
 keep_observations() {
   local d t
-  if d="$(nd_platform_state_dir)" && nd_state_init 2>/dev/null && t="$(mktemp "$d/.observations.XXXXXX")"; then
+  d="$(nd_platform_state_dir)" || d=""
+  # A shadow pass keeps its own file: the active controller's last pass is
+  # what `nice-dns status` reports.
+  [ "${4:-active}" != shadow ] || [ -z "$d" ] || d="$d/shadow"
+  # A temp file a killed pass left behind (more than 10 minutes old).
+  [ -z "$d" ] || find "$d" -maxdepth 1 -name '.observations.*' -type f -mmin +10 -exec rm -f {} + 2>/dev/null
+  if [ -n "$d" ] && ND_STATE_DIR="$d" nd_state_init 2>/dev/null && t="$(mktemp "$d/.observations.XXXXXX")"; then
     if { cat "$1" && printf 'pass\t%s\t%s\n' "$2" "$3"; } >"$t" && chmod 600 "$t" && mv -f "$t" "$d/observations.tsv"; then
       return 0
     fi
@@ -1205,7 +1211,7 @@ cmd_tick() {
   epoch="$(date +%s)"
   out="$(nd_recovery_tick "$mode" "$o")"; rc=$?
   [ "$mode" != active ] || dump_first_escalation "$o" "$out"
-  [ "$rc" -ne 0 ] || keep_observations "$o" "$epoch" "$(HEALTH_OBS="$(cat "$o")"; FAILED_CHECKS=(); INDETERMINATE_CHECKS=(); CHECK_DETAIL=""; classify_observations; checks_verdict)"
+  [ "$rc" -ne 0 ] || keep_observations "$o" "$epoch" "$(HEALTH_OBS="$(cat "$o")"; FAILED_CHECKS=(); INDETERMINATE_CHECKS=(); CHECK_DETAIL=""; classify_observations; checks_verdict)" "$mode"
   rm -f "$o"
   log_to_file "$(ts) TICK $mode $(printf '%s\n' "$out" | awk -F '\t' '{ printf "%s%s=%s", s, $1, $2; s = " " }')"
   printf '%s\n' "$out"

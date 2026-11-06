@@ -348,7 +348,7 @@ status_human() {
     $1 == "schema" { next }
     $1 == "obs" { if ($2 ~ /^container:/) c[++nc] = $0; else if ($2 ~ /^route:/) r[++nr] = $0; else o[++no] = $0; next }
     { g[++ng] = $0 }
-    $1 == "controller" && $2 == "stale" && $3 != "no" { stale = ($3 == "never") ? " (stale: no pass recorded)" : " (stale: last pass " $3 " s ago)" }
+    $1 == "controller" && $2 == "stale" && $3 != "no" { stale = ($3 == "never") ? " (stale: no pass recorded)" : ($3 == "future") ? " (stale: the last pass is dated in the future)" : " (stale: last pass " $3 " s ago)" }
     $1 == "route" && $2 == "selected" { sel = $3 " (generation " $4 ")" }
     function kv(grp,   i, f, n, v) {
       for (i = 1; i <= ng; i++) { n = split(g[i], f, "\t"); if (f[1] != grp) continue
@@ -396,7 +396,7 @@ cmd_status() {
   # shellcheck disable=SC1090  # the source root is found at run time
   . "$lib" || return 2
   rows="$(nd_status_rows "$ND_CLI_PLATFORM")"; rc=$?
-  if [ "$rc" = 1 ]; then
+  if printf '%s\n' "$rows" | awk '$0 == "install\tinstalled\tno" { f = 1 } END { exit !f }'; then
     rows="$(printf '%s\n' "$rows" | awk -v h="$(status_hint)" '{ print } $0 == "install\tinstalled\tno" { print h }')"
   fi
   if [ "$tsv" = 1 ]; then printf '%s\n' "$rows"; else printf '%s\n' "$rows" | status_human; fi
