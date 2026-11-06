@@ -708,9 +708,8 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   transport-haproxy). Before, the line followed Tor's "Bootstrapped 100%",
   which Tor reports from cached state: on the Mac 2026-09-29 it came 2 s
   after a start and no circuit worked for about 2 minutes. The images
-  pinned in release/images.lock (tor-socat v2.10, tor-haproxy v2.14) are
-  from before those commits: deployed behavior changes when they are
-  released and re-pinned (baseline: unverified on a deployed host).
+  pinned in release/images.lock (tor-socat v2.12, tor-haproxy v2.16 since
+  2026-11-06) carry those commits.
 - Since the 2026-10-12 Mullvad findings plan each pass also reads the
   install (BL-045). The Linux `install-drift` observation
   (lib/health.sh:349-361) asks the platform adapter

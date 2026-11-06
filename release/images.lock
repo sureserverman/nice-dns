@@ -25,7 +25,15 @@ schema	nice-dns-images-lock/1
 #                                chosen proxy role); an install refuses a lock
 #                                whose image lacks one, before any interruption
 #
-# Qualified 2026-09-27: tor-haproxy v2.14 and tor-socat v2.10 are the Sub-plan 2
+# Qualified 2026-11-06: tor-haproxy v2.16 and tor-socat v2.12 (bridges-mode/1,
+# TOR_BRIDGES on|off) and the moved pihole-base digest. Signatures verified
+# with cosign v3.1.4 by scripts/update-images-lock.sh --write; live installs
+# with this lock on mint and mac: haproxy cells in installers run
+# 20261106T121314Z-4968f57c (receipt verified), socat cells in
+# install-lifecycle runs 20261106T145759Z-16b91d58 (mint) and
+# 20261106T143836Z-b4721db6 (mac); transport run 20261106T104707Z-e29a32b8.
+#
+# Earlier (historical): qualified 2026-09-27: tor-haproxy v2.14 and tor-socat v2.10 are the Sub-plan 2
 # route images with the Sub-plan 3 fixes (controller receipt
 # 20260927T143740Z-92951336 used their candidates); hardened-unbound v1.4.0 is
 # the Sub-plan 2 base. Signatures verified with cosign v3.1.3 against the
