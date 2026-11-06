@@ -66,6 +66,7 @@ own timeout, a missing tool). `observe` prints them as
 | Observation | Healthy when |
 |---|---|
 | `runtime` | the runtime CLI (`podman`; Apple `container`, also at `/opt/homebrew/bin/container`) answers and `pi-hole`, `unbound` and one of `tor-haproxy` / `tor-socat` run |
+| `container:<name>` | one per stack container (`pi-hole`, `unbound`, the running proxy): it runs, and podman's own health check (Linux) is not unhealthy. The reason ends `restarts N`, the unit's restart count (Linux `NRestarts`; macOS 0). Paused is unhealthy `paused`, any other stop `exited: rc N`; a transient state (created, stopping) or a failed inspect is indeterminate |
 | `dns-owner` | Linux: `/etc/resolv.conf` names only `nameserver 127.0.0.1`. macOS: every enabled network service (`networksetup`) and `scutil --dns` resolver #1 use `172.31.240.250` |
 | `install-drift` | Linux only: an install generation is recorded and the installed quadlets (with their drop-ins) declare host port 53 on loopback only. Otherwise `install-security-drift`, unhealthy, logged at err once a day per reason; indeterminate while an install is under way. Reported, never acted on: nothing is re-rendered (`nice-dns-health status` / `drift`) |
 | `local-service` | `pi.hole` has an A record (FTL alive) |
@@ -87,6 +88,33 @@ during a full outage is left to the Tor restarts below, since Unbound is telling
 the truth. After two restarts it retries every 30 minutes, and a passing check
 right after a restart does not reset that. Pi-hole and the proxy keep running on
 Linux; on macOS the restart rebuilds the stack.
+
+Pi-hole is read the same way. A pass fails it when `container:pi-hole` or
+`local-service` is unhealthy, or when `pi.hole` timed out while a route
+answered: FTL answers that name itself, so a silent one is hung. Three
+failures in a row restart Pi-hole alone on Linux (`systemctl --user restart
+pi-hole.service`) and rebuild the stack on macOS. A single container restarted
+there comes back at another address. After two restarts it retries every 30
+minutes. The controller is Pi-hole's one restart owner: `pi-hole.container` is
+`HealthOnFailure=none`, so podman's check only reports.
+
+A container read `paused` in two passes in a row is unpaused (Linux, `podman
+unpause`), so a short deliberate pause is not undone within a minute. After two
+unpauses it retries every 30 minutes. macOS has no pause; the reading escalates.
+
+A crash loop is held, not fought. Every container unit backs off by itself:
+`RestartSteps=5` and `RestartMaxDelaySec=300s` stretch the delay between starts
+from 3 s towards 300 s (systemd 254+; on mint the first four were 3, 8, 19 and
+47 s). When a container's restart count rises, the controller treats it as a
+restart that already happened: the cooldown starts from it, and for 10 minutes
+nothing restarts that container or the stack. Three rises within 10 minutes
+escalate once, `crash-loop: <name>`, with one failure dump. A count stable for
+10 minutes clears it. The hold lasts at most 30 minutes from the loop's first
+rise. After that the loop no longer holds the stack: a full outage, or a
+container that stays missing, restarts the stack, then again every 30 minutes,
+and the loop escalates again every 30 minutes while it lasts. The looping
+container itself is never restarted by name. Apple containers do not restart
+themselves, so on macOS the count stays 0.
 
 A full outage restarts Tor, then the proxy. After that the whole stack restarts
 every 30 minutes until a route answers, and the first escalation of the outage

@@ -187,7 +187,34 @@
 #   thaw-unbound     SIGCONT that process and cancel the timer
 #   stop-proxy       stop --component's own unit (macOS: its container) while
 #                    Pi-hole keeps running, as on 2026-10-29
-#   fresh-name       read-only: one fresh name through the client resolver;
+#   freeze-service   SIGSTOP the DNS process of --component pi-hole|unbound
+#                    (pihole-FTL, unbound) inside its container; a detached
+#                    timer thaws it after NICE_DNS_FREEZE_MAX_SECS whatever
+#                    happens here
+#   thaw-service     SIGCONT that process and cancel the timer
+#   pause-container  Linux: pause --component's container (podman pause); a
+#                    detached timer unpauses it after NICE_DNS_FREEZE_MAX_SECS.
+#                    macOS has no pause: refused
+#   unpause-container
+#                    Linux: unpause it (a running one is left alone) and
+#                    cancel the timer
+#   stop-container   stop --component (Linux: its unit; macOS: the container).
+#                    No timer: start-container undoes it
+#   start-container  start it again (Linux: its unit; macOS: `container start`,
+#                    the same container with its environment)
+#   crash-container  Linux: crash the proxy --component --times N (1..9),
+#                    each ABRT --every S (20..300) seconds after the unit has
+#                    restarted from the last one (NRestarts rose) and the
+#                    container runs again. The signal goes to tini's children: tini as
+#                    PID 1 neither blocks nor handles ABRT, so `podman kill
+#                    --signal ABRT` is dropped by the kernel (mint
+#                    2026-11-05). A detached sequence, which ends by itself
+#                    after NICE_DNS_FREEZE_MAX_SECS; its record is
+#                    ~/.nice-dns-crash.tsv
+#   stop-crash       end that sequence now
+#   crash-report     read-only: the sequence's record, the unit's NRestarts
+#                    and each exit-to-restart delay since it started
+#   fresh-name      read-only: one fresh name through the client resolver;
 #                    after the identity, prints fresh_name, the name and the status
 #   command          run the nice-dns command: --mode restart|reinstall|uninstall
 #                    by its installed full path (reinstall --local: the branch
@@ -237,7 +264,7 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network freeze-unbound thaw-unbound stop-proxy fresh-name command command-report'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network freeze-unbound thaw-unbound stop-proxy fresh-name command command-report freeze-service thaw-service pause-container unpause-container stop-container start-container crash-container stop-crash crash-report'
 FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
@@ -252,10 +279,10 @@ if [ "$op" != validate ]; then
   [ $# -gt 0 ] && shift
   case "$alias_" in ''|-*) die "usage: target.sh $op ALIAS --targets FILE" ;; esac
 fi
-targets='' component='' c_workload='' c_count='' c_timeout=5000 c_pause=0 c_identity='' c_sleep='' has_sleep='' i_cell='' i_sha='' i_hsha='' i_route='' i_mode='' i_ptag=''
+targets='' component='' c_workload='' c_count='' c_timeout=5000 c_pause=0 c_identity='' c_sleep='' has_sleep='' i_cell='' i_sha='' i_hsha='' i_route='' i_mode='' i_ptag='' i_times='' i_every=''
 while [ $# -gt 0 ]; do
   case "$1" in
-    --targets|--component|--workload|--count|--timeout-ms|--pause-ms|--identity|--after-sleep|--cell|--source-sha|--hardened-sha|--route|--mode|--proxy-tag)
+    --targets|--component|--workload|--count|--timeout-ms|--pause-ms|--identity|--after-sleep|--cell|--source-sha|--hardened-sha|--route|--mode|--proxy-tag|--times|--every)
       [ $# -ge 2 ] || die "option $1 needs a value"
       case "$1" in
         --targets) targets="$2" ;;
@@ -272,6 +299,8 @@ while [ $# -gt 0 ]; do
         --route) i_route="$2" ;;
         --mode) i_mode="$2" ;;
         --proxy-tag) i_ptag="$2" ;;
+        --times) i_times="$2" ;;
+        --every) i_every="$2" ;;
       esac
       shift 2 ;;
     *) die "unknown option '$1'" ;;
@@ -296,6 +325,12 @@ if [ "$op" = arm-set ]; then case "$i_mode" in baseline|candidate) ;; *) die "ar
 if [ "$op" = arm-prepare ]; then
   [[ "$i_sha" =~ ^[0-9a-f]{40}$ ]] || die "arm-prepare needs --source-sha <40-hex commit>"
   [ "$(git -C "$ND_CHECKOUT" cat-file -t "$i_sha" 2>/dev/null)" = commit ] || die "--source-sha $i_sha is not a commit in $ND_CHECKOUT"
+fi
+if [ "$op" = crash-container ]; then
+  [[ "$i_times" =~ ^[1-9]$ ]] || die "crash-container needs --times 1..9"
+  [[ "$i_every" =~ ^[0-9]{2,3}$ ]] && [ "$i_every" -ge 20 ] && [ "$i_every" -le 300 ] || die "crash-container needs --every 20..300 (seconds)"
+else
+  [ -z "$i_times$i_every" ] || die "--times/--every are only valid for crash-container"
 fi
 if [ "$op" = set-tunables ]; then case "$i_mode" in fast|default) ;; *) die "set-tunables needs --mode fast|default" ;; esac; fi
 if [ "$op" = command ]; then
@@ -361,7 +396,19 @@ case "$op" in
       *" $component "*) [ -n "$component" ] || die "--component is required" ;;
       *) die "component '$component' is not an upstream component (allowed: $UPSTREAM_COMPONENTS)" ;;
     esac ;;
-  *) [ -z "$component" ] || die "--component is only valid for sever/heal/freeze/thaw-upstream, build/recreate-proxy, fault/heal-route, thaw-on-request, arm-prepare/arm-set and stop-proxy" ;;
+  freeze-service|thaw-service)
+    case "$component" in pi-hole|unbound) ;; *) die "$op needs --component pi-hole|unbound" ;; esac ;;
+  pause-container|unpause-container|stop-container|start-container)
+    case " $COMPONENTS " in
+      *" $component "*) [ -n "$component" ] || die "--component is required" ;;
+      *) die "component '$component' is not a stack component (allowed: $COMPONENTS)" ;;
+    esac ;;
+  crash-container)
+    case " $UPSTREAM_COMPONENTS " in
+      *" $component "*) [ -n "$component" ] || die "--component is required" ;;
+      *) die "crash-container crashes the proxy only (allowed: $UPSTREAM_COMPONENTS)" ;;
+    esac ;;
+  *) [ -z "$component" ] || die "--component is only valid for sever/heal/freeze/thaw-upstream, build/recreate-proxy, fault/heal-route, thaw-on-request, arm-prepare/arm-set, stop-proxy, freeze/thaw-service, pause/unpause/stop/start-container and crash-container" ;;
 esac
 case "$op" in
   fault-route|heal-route|route-apply)
@@ -423,7 +470,7 @@ if [ "$op" = collect ]; then
     v="$(awk -F '\t' -v k="$k" '$1 == k { print $2; n++ } END { if (n != 1) exit 1 }' "$c_identity")" \
       || die "identity file needs exactly one '$k' row"
     [[ "$v" =~ $RE_IDVAL ]] || die "identity value for '$k' has unexpected characters"
-    ID_ENV="$ID_ENV NICE_DNS_ID_$(printf '%s' "$k" | tr a-z A-Z)=$v"
+    ID_ENV="$ID_ENV NICE_DNS_ID_$(printf '%s' "$k" | tr '[:lower:]' '[:upper:]')=$v"
     case "$k" in
       target_id) [ "$v" = "$alias_" ] || die "identity target_id '$v' is not the alias '$alias_'" ;;
       platform) [ "$v" = "$T_PLATFORM" ] || die "identity platform '$v' is not the target's '$T_PLATFORM'" ;;
@@ -502,6 +549,7 @@ remote_run() {
     printf 'target.sh: could not build the remote payload; nothing was sent\n' >&2
     return 2
   fi
+  # shellcheck disable=SC2029 # $1 is checked NAME=value words, meant to expand here
   ssh "${SSH_OPTS[@]}" "$T_SSH" "$1 /bin/sh -s" <"$payload"
   rc=$?
   rm -f "$payload"
@@ -520,6 +568,7 @@ build_payload() {
 BUNDLE_EOF=__NICE_DNS_BUNDLE_EOF__
 remote_bundle() {
   local f
+  # shellcheck disable=SC2016 # remote shell text, expanded on the target
   printf '%s\n' 'ND_BUNDLE=$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-collect.XXXXXX") || exit 1' \
     'trap '"'"'rm -rf "$ND_BUNDLE"'"'"' EXIT' \
     'mkdir -p "$ND_BUNDLE/tests/live" "$ND_BUNDLE/tests/manifests" || exit 1'
@@ -534,6 +583,7 @@ remote_bundle() {
 
 source_bundle() {
   # nice-dns at the pinned commit, base64 tar.gz, decoded into ND_SOURCE_TGZ.
+  # shellcheck disable=SC2016 # remote shell text, expanded on the target
   printf '%s\n' 'ND_SOURCE_TGZ=$(mktemp "${TMPDIR:-/tmp}/nice-dns-source.XXXXXX") || exit 1' \
     "{ base64 -d 2>/dev/null || base64 -D; } >\"\$ND_SOURCE_TGZ\" <<'$BUNDLE_EOF'"
   ( set -o pipefail; git -C "$ND_CHECKOUT" archive --format=tar "$i_sha" | gzip -9 | base64 ) || return 1
@@ -543,6 +593,7 @@ source_bundle() {
 proxy_bundle() {
   # The proxy sibling at the pinned commit (tracked files only: never the
   # untracked local bridge-eval binary), base64 tar.gz, into ND_PROXY_TGZ.
+  # shellcheck disable=SC2016 # remote shell text, expanded on the target
   printf '%s\n' 'ND_PROXY_TGZ=$(mktemp "${TMPDIR:-/tmp}/nice-dns-proxy.XXXXXX") || exit 1' \
     "{ base64 -d 2>/dev/null || base64 -D; } >\"\$ND_PROXY_TGZ\" <<'$BUNDLE_EOF'"
   ( set -o pipefail; git -C "$PSIB" archive --format=tar "$i_sha" | gzip -9 | base64 ) || return 1
@@ -552,6 +603,7 @@ proxy_bundle() {
 hardened_bundle() {
   # The pi-hole-hardened tree at the pinned commit, base64 tar.gz, decoded
   # into ND_HARDENED_TGZ on the target.
+  # shellcheck disable=SC2016 # remote shell text, expanded on the target
   printf '%s\n' 'ND_HARDENED_TGZ=$(mktemp "${TMPDIR:-/tmp}/nice-dns-hardened.XXXXXX") || exit 1' \
     "{ base64 -d 2>/dev/null || base64 -D; } >\"\$ND_HARDENED_TGZ\" <<'$BUNDLE_EOF'"
   ( set -o pipefail; git -C "$HSIB" archive --format=tar "$i_hsha" | gzip -9 | base64 ) || return 1
@@ -1827,6 +1879,109 @@ case "$NICE_DNS_OP" in
         done
       fi
     } | redact ;;
+  freeze-service|thaw-service)
+    [ "$plat" = macos ] && homebrew_path
+    c="$NICE_DNS_COMPONENT"
+    case "$c" in pi-hole) p=pihole-FTL ;; unbound) p=unbound ;; *) echo "no service process for $c" >&2; exit 2 ;; esac
+    if [ "$NICE_DNS_OP" = thaw-service ]; then
+      # No container means nothing is frozen. A failed thaw keeps the timer,
+      # the only other thing that would ever thaw it.
+      # A container restarted since the freeze may not run $p yet: nothing
+      # of it is stopped, so that counts as thawed.
+      if running "$c" && ctl_exec "$c" pgrep -x "$p" >/dev/null && ! ctl_exec "$c" pkill -CONT -x "$p"; then
+        echo "could not thaw $p in $c; its timer stays armed" >&2
+        exit 1
+      fi
+      pkill -f "nice-dns-service-watchdog $c" 2>/dev/null
+      printf 'thawed\t%s\n' "$c"
+      exit 0
+    fi
+    running "$c" || { echo "$c is not running" >&2; exit 1; }
+    [ "$(ctl_exec "$c" pgrep -x "$p" | grep -c .)" = 1 ] || { echo "expected exactly one $p in $c" >&2; exit 1; }
+    # Dead-man thaw, started before the freeze.
+    nohup sh -c 'sleep "$1"; "$2" exec "$3" pkill -CONT -x "$4"' "nice-dns-service-watchdog $c" \
+      "$NICE_DNS_FREEZE_MAX" "$C" "$c" "$p" </dev/null >/dev/null 2>&1 &
+    ctl_exec "$c" pkill -STOP -x "$p" || exit 1
+    s=$(ctl_exec "$c" sh -c "awk '{ print \$3 }' /proc/\$(pgrep -x $p)/stat")
+    printf 'service_state\t%s\t%s\n' "$c" "$s"
+    [ "$s" = T ] ;;
+  pause-container|unpause-container)
+    [ "$plat" = linux ] || { echo "Apple container has no pause" >&2; exit 2; }
+    c="$NICE_DNS_COMPONENT"
+    if [ "$NICE_DNS_OP" = unpause-container ]; then
+      st=$(ctl inspect "$c" --format '{{.State.Status}}' 2>/dev/null)
+      if [ "$st" = paused ] && ! ctl unpause "$c" >/dev/null; then
+        echo "could not unpause $c; its timer stays armed" >&2
+        exit 1
+      fi
+      pkill -f "nice-dns-pause-watchdog $c" 2>/dev/null
+      printf 'unpaused\t%s\t%s\n' "$c" "${st:-absent}"
+      exit 0
+    fi
+    running "$c" || { echo "$c is not running" >&2; exit 1; }
+    nohup sh -c 'sleep "$1"; "$2" unpause "$3"' "nice-dns-pause-watchdog $c" \
+      "$NICE_DNS_FREEZE_MAX" "$C" "$c" </dev/null >/dev/null 2>&1 &
+    ctl pause "$c" >/dev/null || exit 1
+    st=$(ctl inspect "$c" --format '{{.State.Status}}')
+    printf 'container_state\t%s\t%s\n' "$c" "$st"
+    [ "$st" = paused ] ;;
+  stop-container|start-container)
+    v="${NICE_DNS_OP%-container}"
+    if [ "$plat" = macos ]; then homebrew_path; ctl "$v" "$NICE_DNS_COMPONENT" </dev/null
+    else systemctl --user "$v" "$NICE_DNS_COMPONENT.service"; fi ;;
+  crash-container)
+    [ "$plat" = linux ] || { echo "crash-container is Linux-only" >&2; exit 2; }
+    c="$NICE_DNS_COMPONENT" f="$HOME/.nice-dns-crash.tsv"
+    running "$c" || { echo "$c is not running" >&2; exit 1; }
+    pgrep -f nice-dns-crash-sequence >/dev/null && { echo "a crash sequence is already running" >&2; exit 1; }
+    printf 'started\t%s\ncomponent\t%s\ntimes\t%s\nevery\t%s\nnrestarts_before\t%s\n' "$(date +%s)" "$c" \
+      "$NICE_DNS_TIMES" "$NICE_DNS_EVERY" "$(systemctl --user show -p NRestarts --value "$c.service")" >"$f"
+    # Each ABRT waits until the container runs again, then --every seconds.
+    # The sequence ends by itself at NICE_DNS_FREEZE_MAX whatever happens here.
+    nohup sh -c '
+      c=$1 n=$2 every=$3 f=$5 end=$(( $(date +%s) + $4 )) i=0 last=-1
+      nr() { systemctl --user show -p NRestarts --value "$c.service" 2>/dev/null; }
+      while [ "$i" -lt "$n" ]; do
+        # A dying container still reads running: after a crash, wait for the
+        # unit to count the restart first.
+        while [ "$i" -gt 0 ] && [ "$(nr)" -le "$last" ]; do
+          [ "$(date +%s)" -lt "$end" ] || break 2
+          sleep 2
+        done
+        while [ "$(podman inspect "$c" --format "{{.State.Status}}" 2>/dev/null)" != running ]; do
+          [ "$(date +%s)" -lt "$end" ] || break 2
+          sleep 2
+        done
+        sleep "$every"
+        [ "$(date +%s)" -lt "$end" ] || break
+        last=$(nr)
+        podman exec "$c" pkill -ABRT -P 1 </dev/null >/dev/null 2>&1
+        rc=$?
+        printf "kill\t%s\t%s\n" "$(date +%s)" "$rc" >>"$f"
+        i=$((i + 1))
+      done
+      printf "done\t%s\t%s\n" "$(date +%s)" "$i" >>"$f"' nice-dns-crash-sequence \
+      "$c" "$NICE_DNS_TIMES" "$NICE_DNS_EVERY" "$NICE_DNS_FREEZE_MAX" "$f" </dev/null >/dev/null 2>&1 &
+    printf 'crash_sequence\tstarted\t%s\n' "$c" ;;
+  stop-crash)
+    pkill -f nice-dns-crash-sequence 2>/dev/null
+    printf 'crash_sequence\tstopped\n' ;;
+  crash-report)
+    identity
+    f="$HOME/.nice-dns-crash.tsv"
+    printf 'now\t%s\nsection\tsequence\n' "$(date +%s)"
+    cat "$f" 2>/dev/null
+    if pgrep -f nice-dns-crash-sequence >/dev/null; then printf 'running\tyes\n'; else printf 'running\tno\n'; fi
+    c=$(awk -F '\t' '$1 == "component" { print $2; exit }' "$f" 2>/dev/null)
+    t0=$(awk -F '\t' '$1 == "started" { print $2; exit }' "$f" 2>/dev/null)
+    printf 'section\tunit\n'
+    if [ "$plat" = linux ] && [ -n "$c" ] && [ -n "$t0" ]; then
+      printf 'nrestarts\t%s\nstate\t%s\n' "$(systemctl --user show -p NRestarts --value "$c.service")" "$(systemctl --user is-active "$c.service")"
+      # exit<TAB>epoch and restart<TAB>epoch, in order: the unit's own log.
+      journalctl --user -u "$c.service" -o short-unix --since "@$t0" --no-pager 2>/dev/null |
+        awk '/Main process exited/ { split($1, t, "."); print "exit\t" t[1] }
+             /Scheduled restart job/ { split($1, t, "."); print "restart\t" t[1] }'
+    fi ;;
   sever-upstream) ctl stop "$NICE_DNS_COMPONENT" ;;
   heal-upstream) ctl start "$NICE_DNS_COMPONENT" ;;
   restore)
@@ -1887,7 +2042,7 @@ case "$op" in
     } >"$STATE/receipt.tsv"
     log_op 0
     printf 'snapshot %s -> %s\n' "$alias_" "$STATE/snapshot.tsv" ;;
-  config|health|controller-report|lifecycle-report|route-report|command-report|fresh-name)
+  config|health|controller-report|lifecycle-report|route-report|command-report|fresh-name|crash-report)
     # Read-only; the output starts with the identity lines, which are checked.
     preconnect_guards
     probe_identity "$op"
@@ -1911,7 +2066,7 @@ case "$op" in
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network|freeze-unbound|thaw-unbound|stop-proxy|command)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network|freeze-unbound|thaw-unbound|stop-proxy|command|freeze-service|thaw-service|pause-container|unpause-container|stop-container|start-container|crash-container|stop-crash)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"
@@ -1929,12 +2084,13 @@ case "$op" in
       remote_run "NICE_DNS_OP=capture-dns NICE_DNS_COUNT=$c_count"; rc=$?
     elif [ "$op" = restore ]; then
       names=''
+      # shellcheck disable=SC2013 # container names are single words
       for c in $(awk -F '\t' '$1 == "section" { s = $2; next } s == "containers" && $2 == "running" { print $1 }' "$STATE/snapshot.tsv"); do
         case " $COMPONENTS " in *" $c "*) names="$names $c" ;; esac
       done
       remote_run "NICE_DNS_OP=restore NICE_DNS_COMPONENTS='${names# }'"; rc=$?
     else
-      remote_run "NICE_DNS_OP=$op NICE_DNS_COMPONENT=$component NICE_DNS_FREEZE_MAX=$freeze_max NICE_DNS_ROUTE=$i_route NICE_DNS_MODE=$i_mode NICE_DNS_SOURCE_SHA=$i_sha NICE_DNS_PROXY_TAG=$i_ptag"; rc=$?
+      remote_run "NICE_DNS_OP=$op NICE_DNS_COMPONENT=$component NICE_DNS_FREEZE_MAX=$freeze_max NICE_DNS_ROUTE=$i_route NICE_DNS_MODE=$i_mode NICE_DNS_SOURCE_SHA=$i_sha NICE_DNS_PROXY_TAG=$i_ptag NICE_DNS_TIMES=$i_times NICE_DNS_EVERY=$i_every"; rc=$?
     fi
     log_op "$rc"
     [ "$rc" -eq 0 ] || exit 1 ;;

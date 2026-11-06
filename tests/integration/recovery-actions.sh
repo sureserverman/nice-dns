@@ -53,7 +53,18 @@ case "$1" in
         [ -n "$n" ] && printf '%-12s %-16s linux  arm64  stopped                     1     256 MB\n' "$n" "$n:latest"
       done <"$FAKE/stopped"
     fi ;;
-  inspect) printf 'id-1 %s running\n' "$(cat "$FAKE/started")" ;;
+  inspect)
+    # The container-state format: $FAKE/paused names are paused.
+    case "$*" in *'{{.RestartCount}}'*)
+      for n in "$@"; do :; done
+      if grep -qxF "$n" "$FAKE/paused" 2>/dev/null; then echo 'paused healthy 0 0'; else echo 'running healthy 0 0'; fi
+      exit 0 ;;
+    esac
+    printf 'id-1 %s running\n' "$(cat "$FAKE/started")" ;;
+  # $FAKE/unpause_fails: the runtime refuses; otherwise the name is unpaused.
+  unpause)
+    [ -f "$FAKE/unpause_fails" ] && { echo "Error: \"$2\" is not paused, can't unpause: container state improper" >&2; exit 125; }
+    if [ -f "$FAKE/paused" ]; then grep -vxF "$2" "$FAKE/paused" >"$FAKE/paused.n"; mv "$FAKE/paused.n" "$FAKE/paused"; fi ;;
   system) : >"$FAKE/system-started" ;;
   exec)
     if [ "$2" = --user ]; then a1="$1"; shift 3; set -- "$a1" "$@"; fi
@@ -901,7 +912,7 @@ t_every_policy_restart_target_has_a_handler() {
       ra_fake "$plat"
       : >"$FAKE/restart_changes"; echo new >"$FAKE/ack"
       # shellcheck disable=SC2013  # the targets are single words in the source
-      for t in $(grep -oE 'action=restart-component target=[a-z]+' "$NICE_DNS_ROOT/lib/policy.sh" | sed 's/.*target=//' | sort -u); do
+      for t in $(grep -oE 'action=restart-component target=[a-z-]+' "$NICE_DNS_ROOT/lib/policy.sh" | sed 's/.*target=//' | sort -u); do
         ra_dec "$t"
         # The fake's new generation is per second; each target starts from an old one.
         echo t0-old >"$FAKE/started"
@@ -1116,4 +1127,124 @@ t_a_hung_service_manager_cannot_outlast_the_repair_budget() {
     # shellcheck disable=SC2009  # pgrep is not in the stub PATH
     assert_eq 0 "$(ps -eo args 2>/dev/null | grep -c '^sleep 973$')" "no hung child is left"
   ) || exit 1
+}
+
+# ─────────────────────────── fakes: paused containers ───────────────────────
+
+ra_paused_dec() { printf 'schema\tnice-dns-decision/1\naction\trepair-runtime\ntarget\tcontainers-paused\nreason\tcontainers-paused: %s (paused 2 passes)\n' "$1" >"$CASE_DIR/dec"; }
+
+t_a_paused_container_is_unpaused_and_acknowledged() {
+  local out rc
+  (
+    ra_fake linux
+    printf 'unbound\n' >"$FAKE/paused"
+    ra_paused_dec unbound
+    out="$(nd_recovery_apply "$CASE_DIR/dec" ra-p1 7)"; rc=$?
+    assert_rc 0 "$rc" "linux: unpaused and seen running: $out"
+    assert_eq 1 "$(grep -c '^podman unpause unbound$' "$FAKE_LOG")" "linux: podman unpause unbound"
+    assert_eq "$(printf 'runtime requested\nruntime acknowledged')" "$(ra_journal)" "linux: journal"
+    assert_match 'acknowledged.*unbound running' "$(awk -F '\t' '$4 == "acknowledged" { print $4 " " $5 }' "$ND_STATE_DIR/recovery.tsv")" "linux: acknowledged by a new running reading"
+    assert_not_match 'systemctl --user (start|restart|reset-failed)|daemon-reexec|kill' "$(cat "$FAKE_LOG")" "linux: nothing is started or restarted"
+
+    : >"$FAKE_LOG"; printf 'unbound\n' >"$FAKE/paused"; : >"$FAKE/unpause_fails"
+    out="$(nd_recovery_apply "$CASE_DIR/dec" ra-p2 7)"; rc=$?
+    assert_rc 1 "$rc" "linux: still paused is not acknowledged: $out"
+    assert_match 'not-acknowledged' "$(ra_journal | tail -n 1)" "linux: the journal says so"
+
+    : >"$FAKE_LOG"; rm -f "$FAKE/unpause_fails"
+    ra_paused_dec 'unbound;rm evil'
+    nd_recovery_apply "$CASE_DIR/dec" ra-p3 7 >/dev/null
+    assert_not_match 'evil|;rm' "$(cat "$FAKE_LOG")" "linux: a strange name is dropped"
+  ) || exit 1
+  (
+    ra_fake macos
+    out="$(repair_runtime containers-paused ra-p4 unbound)"; rc=$?
+    assert_rc 3 "$rc" "macos: no unpause exists: $out"
+    assert_eq "runtime unsupported" "$(ra_journal)" "macos: journaled unsupported, nothing run"
+    assert_not_match 'unpause|launchctl' "$(cat "$FAKE_LOG")" "macos: nothing is run"
+  ) || exit 1
+}
+
+t_the_linux_adapter_lists_containers_paused_or_running() {
+  (
+    ra_fake linux
+    nd_platform_runtime_list 5 "$CASE_DIR/l" || fail "list"
+    assert_match 'status=running.*status=paused' "$(grep '^podman ps' "$FAKE_LOG")" "a paused container is not missing (BL-053)"
+    assert_match 'containers-paused' "$(nd_platform_runtime_repairs)" "the Linux adapter repairs a paused container"
+  ) || exit 1
+}
+
+# ─────────────────────────── fakes: Pi-hole restart ─────────────────────────
+
+# ra_ph_obs <file> <local-service verdict> [container verdict]: routes healthy,
+# with Pi-hole's records.
+ra_ph_obs() {
+  ra_obs "$1" healthy
+  printf 'obs\tcontainer:pi-hole\t%s\t20\t%s restarts 0\n' "${3:-healthy}" "$( [ "${3:-healthy}" = healthy ] && echo 'running: health healthy' || echo 'unhealthy: FTL is not answering')" >>"$1"
+  printf 'obs\tlocal-service\t%s\t4\tpi.hole\n' "$2" >>"$1"
+}
+
+t_pihole_restart_journals_requested_acknowledged_ready() {
+  local plat out rc
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      : >"$FAKE/restart_changes"
+      ra_dec pi-hole
+      out="$(nd_recovery_apply "$CASE_DIR/dec" ra-ph1 7)"; rc=$?
+      assert_rc 0 "$rc" "$plat: a new Pi-hole generation is the acknowledgement: $out"
+      assert_eq acknowledged "$(ra_field result "$out")" "$plat: result"
+      assert_eq pi-hole "$(ra_field component "$out")" "$plat: component"
+      assert_eq "$(printf 'pi-hole requested\npi-hole acknowledged')" "$(ra_journal)" "$plat: no readiness in the acknowledging call"
+      if [ "$plat" = linux ]; then
+        assert_eq 1 "$(grep -c '^systemctl --user restart pi-hole.service$' "$FAKE_LOG")" "linux: Pi-hole alone, once"
+        assert_eq 1 "$(grep -c '^systemctl ' "$FAKE_LOG")" "linux: no other unit is touched"
+        assert_match 'inspect .* pi-hole$' "$(grep '^podman inspect' "$FAKE_LOG" | head -n 1)" "linux: the generation read is Pi-hole's"
+      else
+        assert_eq 1 "$(grep -c '^launchctl kickstart -k gui/[0-9]*/org.nice-dns.start-container$' "$FAKE_LOG")" "macos: the stack's kickstart, once"
+        assert_file "$HOME/.local/state/nice-dns/restart-requested" "macos: asks the agent to rebuild"
+      fi
+      # Readiness is a later observation of Pi-hole answering pi.hole.
+      ra_ph_obs "$CASE_DIR/obs" unhealthy
+      _nd_rec_readiness "$CASE_DIR/obs" "$(date +%s)"
+      assert_eq "$(printf 'pi-hole requested\npi-hole acknowledged')" "$(ra_journal)" "$plat: still failing, not ready"
+      ra_ph_obs "$CASE_DIR/obs" healthy
+      _nd_rec_readiness "$CASE_DIR/obs" "$(date +%s)"
+      assert_eq "$(printf 'pi-hole requested\npi-hole acknowledged\npi-hole ready')" "$(ra_journal)" "$plat: ready once local-service answers"
+    ) || exit 1
+  done
+}
+
+t_pihole_restart_without_a_new_generation_is_not_acknowledged() {
+  local plat out rc
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      ra_dec pi-hole
+      out="$(nd_recovery_apply "$CASE_DIR/dec" ra-ph2 7)"; rc=$?
+      assert_rc 1 "$rc" "$plat: an unchanged generation fails: $out"
+      assert_eq not-acknowledged "$(ra_field result "$out")" "$plat: result"
+      assert_eq "$(printf 'pi-hole requested\npi-hole not-acknowledged')" "$(ra_journal)" "$plat: journal"
+    ) || exit 1
+  done
+}
+
+t_pihole_restart_is_refused_without_the_lock_and_in_shadow() {
+  local plat out rc i
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      : >"$FAKE/restart_changes"
+      ra_dec pi-hole
+      out="$(ND_RECOVERY_LOCK_TOKEN=not-the-holder nd_recovery_apply "$CASE_DIR/dec" ra-ph4 7)"; rc=$?
+      assert_rc 5 "$rc" "$plat: a lost lock stops it: $out"
+      assert_eq "" "$(grep -E '^(systemctl|launchctl)' "$FAKE_LOG")" "$plat: nothing was restarted"
+      export ND_POLICY_STARTUP_S=0
+      ra_ph_obs "$CASE_DIR/obs" unhealthy unhealthy
+      for i in 1 2 3; do out="$(nd_recovery_tick shadow "$CASE_DIR/obs")"; done
+      assert_eq pi-hole "$(ra_field target "$out")" "$plat: shadow decides the restart"
+      assert_eq shadow "$(ra_field result "$out")" "$plat: and only records it"
+      assert_eq "" "$(grep -E '^(systemctl|launchctl)' "$FAKE_LOG")" "$plat: shadow runs no restart"
+    ) || exit 1
+  done
 }

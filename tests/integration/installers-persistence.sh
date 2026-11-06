@@ -112,3 +112,28 @@ $(cat -n "$FAKE_LOG")"
     assert_eq "" "$(grep -E '^sudo ' "$FAKE_LOG")" "before any sudo: no sudoers rule, no helper"
   ) || exit 1
 }
+
+# One restart owner, back-off on crash (DEC-021, WF-DNS-002). On 2026-11-02 a
+# VM out of memory aborted haproxy and its unit restarted every 3 s for 20
+# hours: StartLimitBurst never trips at that cadence. Every unit backs off
+# (RestartSteps=/RestartMaxDelaySec=, systemd 254), and Pi-hole, like the
+# others, never restarts on health: the controller does. Checked on the
+# units Podman's own generator writes.
+t_quadlets_back_off_and_only_the_controller_restarts_on_health() {
+  local q gen out u unit
+  for gen in /usr/libexec/podman/quadlet /usr/lib/podman/quadlet; do [ -x "$gen" ] && break; done
+  [ -x "$gen" ] || fail "no quadlet generator on this host"
+  q="$CASE_DIR/quadlet"; mkdir -p "$q"
+  cp "$NICE_DNS_ROOT"/deb/quadlet/{nice-dns.network,nice-dns.pod,unbound.container,pi-hole.container,tor-haproxy.container,tor-socat.container} "$q/"
+  sed -i -e 's/__VARIANT__/haproxy/g' -e "s|__ROUTE_DIR__|$CASE_DIR/route|g" -e "s|__HEALTH_ROOT__|$CASE_DIR/health|g" "$q/unbound.container"
+  out="$(QUADLET_UNIT_DIRS="$q" "$gen" -dryrun -user 2>/dev/null)" || fail "the quadlet generator rejects the units"
+  for u in pi-hole unbound tor-haproxy tor-socat; do
+    unit="$(printf '%s\n' "$out" | awk -v s="---$u.service---" '$0 == s { p = 1; next } /^---.*---$/ { p = 0 } p' | sed 's/\\x20/ /g')"
+    assert_match '^ExecStart=' "$unit" "$u: the generator writes $u.service"
+    assert_match '^RestartSteps=5$' "$unit" "$u: a crash loop backs off in 5 steps"
+    assert_match '^RestartMaxDelaySec=300s$' "$unit" "$u: up to 5 minutes between restarts"
+    assert_match '^RestartSec=3s$' "$unit" "$u: from a non-zero first delay (the back-off needs it)"
+    assert_match '^ExecStart=.*--health-on-failure[= ]none' "$unit" "$u: its health check only reports"
+    assert_not_match '^ExecStart=.*--health-on-failure[= ]restart' "$unit" "$u: it never restarts on health (the controller owns that)"
+  done
+}

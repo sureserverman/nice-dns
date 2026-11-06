@@ -41,7 +41,9 @@
 #            from an earlier run, which passed all of it at nice-dns SHA40;
 #            DEC-009. At most once per cell, never this receipt's own run)
 # Scenario ids, scopes and required links come from tests/manifests/NAME.tsv;
-# anything undeclared fails. Content, not only structure, is checked:
+# anything undeclared fails. A scenario's scope is global (no cell), per-cell
+# (every observed cell) or per-cell-linux / per-cell-macos (every observed
+# cell of that platform, and only those). Content, not only structure, is checked:
 #   - manifest `platforms all`: the receipt has an observed cell on every
 #     platform, whatever options it is checked with;
 #   - manifest `minimum SCENARIO N`: its artifact is a nice-dns-sample/1 file
@@ -66,7 +68,7 @@ SIB="${NICE_DNS_SIBLINGS_DIR:-$(cd "$V_ROOT/.." && pwd -P)}"
 SCHEMA='nice-dns-receipt/1'
 REPOS='nice-dns tor-haproxy tor-socat hardened-unbound pi-hole-hardened'
 ARCH_REPOS='tor-haproxy tor-socat hardened-unbound pi-hole-hardened'
-RECEIPTS='baseline transport controller installers soak qualification command-recovery'
+RECEIPTS='baseline transport controller installers soak qualification command-recovery container-faults'
 ENTRYPOINTS='install-deb.sh install-deb-hardened.sh install-mac.sh install-mac-hardened.sh'
 TAB="$(printf '\t')"
 
@@ -119,7 +121,7 @@ cmd_manifests() {
           reqs="$reqs${reqs:+,}$a" ;;
         scenario)
           [ -n "${c:-}" ] && [ -z "${d:-}" ] || err "$m.tsv: scenario row needs id, scope, meaning"
-          case "$b" in per-cell|global) ;; *) err "$m.tsv: scenario $a has scope '$b'" ;; esac
+          case "$b" in per-cell|per-cell-linux|per-cell-macos|global) ;; *) err "$m.tsv: scenario $a has scope '$b'" ;; esac
           case "$ids" in *"|$a|"*) err "$m.tsv: duplicate scenario $a" ;; esac
           ids="$ids$a|" ;;
         minimum)
@@ -134,6 +136,7 @@ cmd_manifests() {
     while IFS= read -r a; do
       [ -n "$a" ] || err "$m.tsv: content row has an empty pattern"
     done < <(awk -F '\t' '!/^#/ && $1 == "content" { p = $0; if (!sub(/^[^\t]*\t[^\t]*\t/, "", p)) p = ""; print p }' "$MAN/$m.tsv")
+    # shellcheck disable=SC2013 # one word per row: ids, repository names, cell keys
     for a in $(awk -F '\t' '!/^#/ && ($1 == "minimum" || $1 == "content") { print $2 }' "$MAN/$m.tsv"); do
       case "$ids" in *"|$a|"*) ;; *) err "$m.tsv: minimum/content for undeclared scenario $a" ;; esac
     done
@@ -237,6 +240,7 @@ check_sources() {
     printf '%s' "$s" | grep -Eq '^[0-9a-f]{40}$' || err "$f: source $repo sha '$s' is not a full commit id"
     case "$(printf '%s\n' "$rows" | cut -f4)" in clean|dirty) ;; *) err "$f: source $repo state must be clean or dirty" ;; esac
   done
+  # shellcheck disable=SC2013 # one word per row: ids, repository names, cell keys
   for repo in $(awk -F '\t' '$1 == "source" { print $2 }' "$f"); do
     in_list "$repo" "$REPOS" || err "$f: source row for unknown repository '$repo'"
   done
@@ -313,6 +317,9 @@ check_scenarios() {
       [ "$c" = - ] && [ "$g" = - ] || err "$f: global scenario $id must not name a cell or image generation"
     else
       want="$(awk -F '\t' -v k="$c" '$1 == "cell" && $2 "/" $3 "/" $4 == k && $7 == "observed" { print $6; exit }' "$f")"
+      case "$scope" in
+        per-cell-*) [ "${c%%/*}" = "${scope#per-cell-}" ] || err "$f: scenario $id is ${scope#per-cell-}-only; $c is not a ${scope#per-cell-} cell" ;;
+      esac
       if [ -z "$want" ]; then err "$f: scenario $id names $c, which is not an observed cell"
       elif [ "$g" != "$want" ]; then err "$f: scenario $id ($c) was recorded against image generation '$g', the cell runs '$want'"
       fi
@@ -325,7 +332,8 @@ check_scenarios() {
     if [ "$scope" = global ]; then
       case "$seen" in *"|$id@-|"*) ;; *) err "$f: missing scenario $id" ;; esac
     else
-      for k in $(awk -F '\t' '$1 == "cell" && $7 == "observed" { print $2 "/" $3 "/" $4 }' "$f"); do
+      # shellcheck disable=SC2013 # one word per row: ids, repository names, cell keys
+      for k in $(awk -F '\t' -v p="${scope#per-cell-}" '$1 == "cell" && $7 == "observed" && (p == "per-cell" || $2 == p) { print $2 "/" $3 "/" $4 }' "$f"); do
         case "$seen" in *"|$id@$k|"*) ;; *) err "$f: missing scenario $id for cell $k" ;; esac
       done
     fi
@@ -389,6 +397,7 @@ check_contents() {
   done < <(awk -F '\t' '$1 == "scenario"' "$f")
   # Aggregate sample files under cells/P-X-H/ belong to that cell.
   while IFS="$TAB" read -r _ _ _ a; do
+    # shellcheck disable=SC2015 # either test failing skips the row
     safe_rel "$d" "$a" && is_samples "$d/$a" || continue
     c="$(awk -F '\t' -v p="$a" '$1 == "cell" { k = "cells/" $2 "-" $3 "-" $4 "/"; if (index(p, k) == 1) { print $2 "/" $3 "/" $4; exit } }' "$f")"
     check_sample_identity "$f" "$d/$a" "${c:--}"

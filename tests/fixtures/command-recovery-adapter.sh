@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Fake target adapter for the command-recovery dry run (Task 3.1): the operations
-# live/command-recovery adds, with their report format. Everything else goes to
+# Fake target adapter for the command-recovery and container-faults dry runs
+# (Task 3.1 of each plan): the operations those live groups add, with their
+# report format. Everything else goes to
 # tests/fixtures/lifecycle-adapter.sh, which keeps the install state. One defect
 # can be seeded by writing its name to $IL_FAKE_DIR/break:
 #   no-ready          a fault's journal has no ready row
@@ -21,12 +22,17 @@
 #   harness-tags      a versioned proxy tag stays, as the tuning harness leaves (no defect)
 #   quadlet-left      uninstall leaves a quadlet
 #   unit-left         uninstall leaves a not-found failed unit
+#   crash-twice       a crash loop is escalated twice (container-faults)
+#   crash-restart     the controller restarts the proxy during a crash loop
+#   no-backoff        the unit restarts after the same delay every time
+#   pause-wrong       a paused container is repaired as containers-missing
 # Nothing here touches the host.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 op="${1:-}"
 case "$op" in
   freeze-unbound|thaw-unbound|stop-proxy|fresh-name|command|command-report|controller-report|set-tunables) ;;
+  freeze-service|thaw-service|pause-container|unpause-container|stop-container|crash-container|stop-crash|crash-report) ;;
   *) exec bash "$HERE/lifecycle-adapter.sh" "$@" ;;
 esac
 alias_="${2:-}"
@@ -51,12 +57,13 @@ put() { printf '%s\n' "$2" >"$S/$1"; }
 now() { date +%s; }
 tick() { put clock "$(( $(get clock 0) + 1 ))"; }
 
-# fault_rows <component>: what the controller journals for a fault.
+# fault_rows <component> [requested detail]: what the controller journals for a fault.
 fault_rows() {
   local t id
-  id="req-$(get clock 0)"
+  id="req-$(get reqn 0)"
+  put reqn "$(( $(get reqn 0) + 1 ))"
   t="$(now)"
-  printf '%s\t%s\t%s\trequested\tx\n' "$t" "$id" "$1" >>"$S/journal"
+  printf '%s\t%s\t%s\trequested\t%s\n' "$t" "$id" "$1" "${2:-x}" >>"$S/journal"
   [ "$brk" = no-ack ] || printf '%s\t%s\t%s\tacknowledged\tx\n' "$t" "$id" "$1" >>"$S/journal"
   [ "$brk" = no-ready ] || printf '%s\t%s\t%s\tready\tx\n' "$t" "$id" "$1" >>"$S/journal"
   [ "$brk" = gen-unchanged ] || tick
@@ -67,7 +74,36 @@ fault_rows() {
 case "$op" in
   freeze-unbound) fault_rows unbound; printf 'unbound_state\tT\n' ;;
   thaw-unbound) printf 'thawed\n' ;;
-  stop-proxy) fault_rows runtime ;;
+  stop-proxy|stop-container) fault_rows runtime "repair of containers-missing: exit 0" ;;
+  freeze-service)
+    fault_rows pi-hole
+    [ "$brk" = gen-unchanged ] || put piclock "$(( $(get piclock 0) + 1 ))"
+    printf 'service_state\tpi-hole\tT\n' ;;
+  thaw-service) printf 'thawed\tpi-hole\n' ;;
+  pause-container)
+    if [ "$brk" = pause-wrong ]; then fault_rows runtime "repair of containers-missing: exit 0"
+    else fault_rows runtime "repair of containers-paused: exit 0"; fi
+    printf 'container_state\tunbound\tpaused\n' ;;
+  unpause-container) printf 'unpaused\tunbound\trunning\n' ;;
+  crash-container)
+    t="$(now)"
+    printf 'started\t%s\ncomponent\ttor-%s\ntimes\t4\nevery\t20\nnrestarts_before\t0\n' "$t" "$(cat "$S/proxy")" >"$S/crash"
+    for i in 1 2 3 4; do printf 'kill\t%s\t0\n' "$((t + i))" >>"$S/crash"; done
+    printf 'done\t%s\t4\n' "$((t + 5))" >>"$S/crash"
+    printf '%s\tesc-1\tcontroller\tescalated\tcrash-loop: tor-%s restarted 3 times in 600 s\n' "$t" "$(cat "$S/proxy")" >>"$S/journal"
+    [ "$brk" != crash-twice ] || printf '%s\tesc-2\tcontroller\tescalated\tcrash-loop: tor-%s restarted 4 times in 600 s\n' "$t" "$(cat "$S/proxy")" >>"$S/journal"
+    [ "$brk" != crash-restart ] || printf '%s\treq-crash\tservice\trequested\tproxy restart\n' "$t" >>"$S/journal"
+    printf 'crash_sequence\tstarted\n' ;;
+  stop-crash) printf 'crash_sequence\tstopped\n' ;;
+  crash-report)
+    printf 'now\t%s\nsection\tsequence\n' "$(now)"
+    cat "$S/crash" 2>/dev/null
+    printf 'running\tno\nsection\tunit\nnrestarts\t4\nstate\tactive\n'
+    t=1000
+    for dl in 3 7 19 47; do
+      [ "$brk" != no-backoff ] || dl=3
+      printf 'exit\t%s\nrestart\t%s\n' "$t" "$((t + dl))"; t=$((t + 100))
+    done ;;
   set-tunables) printf 'tunables\t%s\n' "$mode" ;;
   fresh-name)
     if [ "$(get felt no)" = yes ] && [ "$brk" = probe-broken ]; then rm -f "$S/felt"; echo "target.sh: target reported no machine id" >&2; exit 2; fi

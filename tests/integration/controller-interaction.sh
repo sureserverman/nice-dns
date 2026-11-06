@@ -188,7 +188,9 @@ t_shadow_pass_observes_and_decides_but_never_acts() {
       assert_eq restart-component "$(ci_get action "$CI_OUT")" "$plat: the shadow pass reaches the same decision"
       assert_eq shadow "$(ci_get result "$CI_OUT")" "$plat: and only records it"
       [ ! -e "$FAKE/ctl/tor-restart-request" ] || fail "$plat: the shadow pass wrote a restart request"
-      assert_not_match 'systemctl|launchctl|kickstart' "$(cat "$FAKE_LOG")" "$plat: no scheduler command"
+      # The pass reads each container unit's restart count (read-only
+      # systemctl show); every other scheduler command would act.
+      assert_not_match 'systemctl|launchctl|kickstart' "$(grep -v '^systemctl --user show -p NRestarts --value ' "$FAKE_LOG")" "$plat: no scheduler command"
     ) || exit 1
   done
 }
@@ -353,4 +355,32 @@ t_a_container_that_stays_missing_reaches_the_stack_through_real_ticks() {
       assert_eq 2 "$(ci_state runtime_repairs)" "$plat: counted"
     ) || exit 1
   done
+}
+
+# Task 2.3: a unit crash-looping on its own (NRestarts rising every pass) is
+# escalated once as crash-loop, with one failure dump, and the controller adds
+# no restart of its own.
+t_a_crash_loop_is_escalated_once_with_one_dump_by_real_ticks() {
+  (
+    local n esc=0 first=0
+    ci_env linux
+    export XDG_STATE_HOME="$HOME/.local/state"
+    ci_seed cloudflare-exit -
+    for n in 0 1 2 3 4; do
+      printf '%s\n' "$n" >"$FAKE/nrestarts_tor-haproxy.service"
+      ci_cli tick
+      assert_rc 0 "$CI_RC" "tick $n: $CI_OUT"
+      case "$(ci_get action "$CI_OUT"):$(ci_get reason "$CI_OUT")" in
+        escalate:*crash-loop:\ tor-haproxy*) esc=$((esc + 1)); [ "$first" = 0 ] && first="$n" ;;
+      esac
+      case "$(ci_get action "$CI_OUT"):$(ci_get target "$CI_OUT")" in
+        restart-component:tor|restart-component:proxy|restart-component:stack) fail "the controller restarted the looping proxy at tick $n" ;;
+      esac
+    done
+    assert_eq 3 "$first" "the third rise escalates"
+    assert_eq 1 "$esc" "once"
+    assert_eq 1 "$(find "$HOME" -name 'failure-*.log' | wc -l | tr -d ' ')" "with one failure dump"
+    assert_match 'ESCALATED first of this crash loop' "$(cat "$XDG_STATE_HOME/nice-dns-health/health.log")" "logged"
+    assert_eq 0 "$(grep -c 'systemctl --user \(re\)\{0,1\}start' "$FAKE_LOG")" "no unit was started or restarted"
+  ) || exit 1
 }

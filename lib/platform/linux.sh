@@ -44,7 +44,9 @@ nd_platform_runtime_bin() { command -v podman 2>/dev/null; }
 nd_platform_runtime_list() {
   local bin rc
   bin="$(nd_platform_runtime_bin)" || return 3
-  nd_bounded "$1" "$2.raw" "$2.err" "$bin" ps --format '{{.Names}}'
+  # Paused containers too: plain `ps` leaves them out, and a paused one read as
+  # missing (BL-053); its own container:<name> record says paused.
+  nd_bounded "$1" "$2.raw" "$2.err" "$bin" ps -a --filter status=running --filter status=paused --format '{{.Names}}'
   rc=$?
   case "$rc" in 0) ;; 124) return 124 ;; *) [ -s "$2.err" ] || printf 'podman ps exited %s\n' "$rc" >"$2.err"; return 4 ;; esac
   grep -E '^[A-Za-z0-9][A-Za-z0-9_.-]*$' "$2.raw" >"$2"
@@ -126,6 +128,41 @@ nd_platform_container_generation() {
   head -n 1 "$3/gen"
 }
 
+# nd_platform_container_state <container> <deadline> <tmp>: one line
+# "status<TAB>health<TAB>restarts<TAB>exit_code<TAB>detail". The status,
+# health, exit code and detail come from podman inspect: health is none
+# without a health check; detail is the last health check's output on one
+# line (cut to 120 characters; empty without a log). The restart count is
+# the container unit's NRestarts: quadlet runs each container with
+# --replace --rm, so a systemd restart is a new container and podman's own
+# RestartCount stays 0. NRestarts counts automatic restarts and starts again
+# from 0 when the unit is started or restarted by hand. 3 no CLI; 124
+# deadline; 1 inspect failed or its output did not parse; 5 the restart
+# count could not be read. On 1 and 5, <tmp>/cst.err holds the reason.
+nd_platform_container_state() {
+  local bin rc n
+  bin="$(nd_platform_runtime_bin)" || return 3
+  nd_bounded "$2" "$3/cst" "$3/cst.err" "$bin" inspect -f '{{.State.Status}} {{if .State.Healthcheck}}{{.State.Healthcheck.Status}}{{else}}none{{end}} {{.RestartCount}} {{.State.ExitCode}}{{if .State.Healthcheck}}{{range .State.Healthcheck.Log}}
+@@nd-health-log@@ {{.Output}}{{end}}{{end}}' "$1"; rc=$?
+  case "$rc" in 0) ;; 124) return 124 ;; *) return 1 ;; esac
+  nd_bounded "$2" "$3/cst.nr" "$3/cst.err" systemctl --user show -p NRestarts --value "$1.service"; rc=$?
+  case "$rc" in 0) ;; 124) return 124 ;; *) return 5 ;; esac
+  n="$(head -n 1 "$3/cst.nr")"
+  case "$n" in ''|*[!0-9]*) printf 'NRestarts of %s.service is not a number\n' "$1" >"$3/cst.err"; return 5 ;; esac
+  awk -v n="$n" 'NR == 1 {
+         if ($0 !~ /^[a-z]+ [a-z]* [0-9]+ -?[0-9]+$/) { bad = 1; exit }
+         st = $1; if (NF == 4) { h = $2; x = $4 } else { h = "none"; x = $3 }
+         next
+       }
+       /^@@nd-health-log@@ / { d = substr($0, 19); next }
+       { d = d " " $0 }
+       END {
+         if (bad || st == "") exit 1
+         gsub(/[[:cntrl:]]/, " ", d); gsub(/  +/, " ", d); sub(/^ /, "", d); sub(/ $/, "", d)
+         printf "%s\t%s\t%s\t%s\t%s\n", st, h, n, x, substr(d, 1, 120)
+       }' "$3/cst" || { printf 'podman inspect printed no state line for %s\n' "$1" >"$3/cst.err"; return 1; }
+}
+
 # nd_platform_restart_scope: what nd_platform_restart_proxy restarts.
 nd_platform_restart_scope() { printf 'proxy\n'; }
 
@@ -144,6 +181,14 @@ nd_platform_restart_unbound() {
   nd_bounded "$1" "$2/svc" "$2/svc.err" systemctl --user restart unbound.service
 }
 
+# nd_platform_restart_pihole <deadline> <tmp>: Pi-hole's service alone; nothing
+# depends on it but the pod's Wants=, which a restart does not propagate (mint,
+# 2026-11-05). The controller owns this restart: the quadlet is
+# HealthOnFailure=none (DEC-021, WF-DNS-002).
+nd_platform_restart_pihole() {
+  nd_bounded "$1" "$2/svc" "$2/svc.err" systemctl --user restart pi-hole.service
+}
+
 # nd_platform_restart_stack <deadline> <tmp>: the whole pod. Each member has
 # BindsTo= on it, and it Wants= each member, so all three stop and start with it.
 nd_platform_restart_stack() {
@@ -156,9 +201,9 @@ nd_platform_wait_restarted() { return 0; }
 
 # nd_platform_runtime_repairs: the runtime faults nd_platform_repair_runtime
 # can repair here; the policy escalates any other (ND_POLICY_RUNTIME_REPAIRS).
-nd_platform_runtime_repairs() { printf 'containers-missing\n'; }
+nd_platform_runtime_repairs() { printf 'containers-missing containers-paused\n'; }
 
-# nd_platform_repair_runtime <fault> <deadline> <tmp> [missing name...]: 0
+# nd_platform_repair_runtime <fault> <deadline> <tmp> [name...]: 0
 # issued; 3 no repair exists for this fault here. Rootless podman has no daemon
 # to restart, so a runtime that does not answer is escalated, not repaired (it
 # is not in nd_platform_runtime_repairs). Missing containers are started by name:
@@ -179,8 +224,18 @@ nd_platform_runtime_repairs() { printf 'containers-missing\n'; }
 # <deadline>, so it stays inside the tick's timeout and the lock's lease. What it
 # did is left in <tmp>/rep.note for the journal.
 nd_platform_repair_runtime() {
-  local fault="$1" dl="$2" tmp="$3" n rc=0 named=0 stuck=0 end now mark last b boot
+  local fault="$1" dl="$2" tmp="$3" n rc=0 named=0 stuck=0 end now mark last b boot bin
   shift 3
+  if [ "$fault" = containers-paused ]; then
+    # Paused containers are unpaused by name; nothing is restarted.
+    bin="$(nd_platform_runtime_bin)" || return 3
+    for n in "$@"; do
+      case "$n" in pi-hole|unbound|tor-haproxy|tor-socat) ;; *) continue ;; esac
+      nd_bounded "$dl" "$tmp/rep" "$tmp/rep.err" "$bin" unpause "$n" || rc=$?
+      printf 'unpause %s (exit %s); ' "$n" "$rc" >>"$tmp/rep.note"
+    done
+    return "$rc"
+  fi
   [ "$fault" = containers-missing ] || return 3
   end=$(( $(date +%s) + dl * 2 ))
   # _nd_rep_left [most]: the seconds this repair may still spend on one call.

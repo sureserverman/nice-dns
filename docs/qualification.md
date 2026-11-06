@@ -142,6 +142,39 @@ rows are what was true at their own commit. Three no longer hold:
 - `ready-corroboration` (controller receipt): the Unbound image has a
   `probe-route`, used for restart readiness (DEC-006, Stage 1).
 
+## macOS per-container restart (2026-11-05, not qualified)
+
+Restart-policy plan, Task 3.2, on the mac (container 1.6.1, macOS 27.2).
+The question was whether Unbound and Pi-hole could restart alone on
+macOS (`container stop <c>`, then `container start <c>`) instead of
+rebuilding the stack (BL-038).
+
+The test used `tests/live/target.sh` ops on the mac only, with the health
+controller quiesced so it could not repair first: stop-container,
+start-container, probe for the address, then a fresh name every 15 s for up
+to 300 s.
+
+| Step | Unbound |
+|---|---|
+| before | running at 172.31.240.251 |
+| stop, start | both exit 0 |
+| after | running at **172.31.240.253** |
+| fresh name | `timeout` after 314 s |
+
+The vmnet allocator hands out the next free address, and Apple's runtime
+has no `--ip` (apple/container#282, mac/start-container.sh:16-23). Pi-hole's
+upstream and the Unbound route are wired to .251, so the chain stayed down.
+`nice-dns restart` (the stack rebuild) restored .250/.251/.252, and a fresh
+name answered NOERROR right after. The Pi-hole leg was not run: the Unbound
+result already shows that a per-container restart can move an address the
+stack is wired for.
+
+Result: not qualified. On macOS, Unbound and Pi-hole restarts keep the stack
+kickstart (lib/platform/macos.sh, `nd_platform_restart_unbound` and
+`nd_platform_restart_pihole`), and integration/recovery-actions asserts it.
+A per-container restart needs a fixed address or a stack that follows the
+address a restart gets (BL-038).
+
 ## Known limits
 
 Found by the Stage 2 gate reviews and deferred (user decision 2026-10-06:

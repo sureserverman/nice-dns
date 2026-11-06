@@ -62,13 +62,25 @@ case "$1" in
   ps)
     if [ "$me" = container ]; then echo "Error: Plugin 'container-ps' not found."; exit 0; fi
     if [ -f "$FAKE/rt.down" ]; then printf 'Error: cannot open storage:\tdatabase is locked\nsecond line\n' >&2; exit 125; fi
-    case "$*" in *-a*) cat "$FAKE/running" "$FAKE/stopped" 2>/dev/null ;; *) cat "$FAKE/running" ;; esac
+    # $FAKE/paused: names in $FAKE/running that are paused. Plain `ps` lists
+    # running containers only, as podman does; the status filter lists both.
+    case "$*" in
+      *status=running*) cat "$FAKE/running" ;;
+      *-a*) cat "$FAKE/running" "$FAKE/stopped" 2>/dev/null ;;
+      *) grep -vxF -f "$FAKE/paused" "$FAKE/running" 2>/dev/null || { [ -s "$FAKE/paused" ] || cat "$FAKE/running"; } ;;
+    esac
     exit 0 ;;
   ls|list)
     [ "$me" = container ] || { echo "Error: unknown command \"$1\" for \"podman\"" >&2; exit 125; }
     if [ -f "$FAKE/rt.errexit0" ]; then echo "Error: XPC connection error: Connection invalid"; exit 0; fi
     if [ -f "$FAKE/rt.down" ]; then echo "Error: failed to connect to the container API server" >&2; exit 1; fi
-    case "${2:-}" in -a|--all) table all ;; *) table running ;; esac
+    # $FAKE/state.hang: `ls -a` (the container-state read) never answers.
+    case "${2:-}" in
+      -a|--all)
+        if [ -f "$FAKE/state.hang" ]; then sleep "$(cat "$FAKE/hang_secs")" & wait; exit 1; fi
+        table all ;;
+      *) table running ;;
+    esac
     exit 0 ;;
   exec)
     # `exec --user U C cmd...` (the Unbound container, run as unbound).
@@ -146,6 +158,18 @@ case "$1" in
       [ -f "$FAKE/image_$n" ] || { echo "Error: no such container $n" >&2; exit 125; }
       cat "$FAKE/image_$n"; exit 0 ;;
     esac
+    # The container-state format (nd_platform_container_state): podman's
+    # output is $FAKE/state_<name>; $FAKE/state_<name>.fail is an inspect
+    # error, $FAKE/state.hang no answer; otherwise running, stopped or absent.
+    case "$*" in *'{{.RestartCount}}'*)
+      for n in "$@"; do :; done
+      if [ -f "$FAKE/state.hang" ]; then sleep "$(cat "$FAKE/hang_secs")" & wait; exit 1; fi
+      if [ -f "$FAKE/state_$n.fail" ]; then echo "Error: no such object: \"$n\"" >&2; exit 125; fi
+      if [ -f "$FAKE/state_$n" ]; then cat "$FAKE/state_$n"; exit 0; fi
+      if grep -qxF "$n" "$FAKE/running"; then echo 'running healthy 0 0'; exit 0; fi
+      if grep -qxF "$n" "$FAKE/stopped" 2>/dev/null; then echo 'exited none 0 0'; exit 0; fi
+      echo "Error: no such object: \"$n\"" >&2; exit 125 ;;
+    esac
     printf 'id-1 %s running\n' "$(cat "$FAKE/started" 2>/dev/null || echo 2026-09-23T22:16:33Z)" ;;
   run)
     # The image's bridge-eval (Task 2.2): -v <host>:/pool, -out /pool/<file>.
@@ -205,6 +229,13 @@ STUB
 me="$(basename "$0")"
 l="$me"; for a in "$@"; do l="$l $a"; done; printf '%s\n' "$l" >>"$FAKE_LOG"
 case "$me $*" in
+  # A unit's restart count (nd_platform_container_state): $FAKE/nrestarts_<unit>,
+  # 0 without one; $FAKE/nrestarts.fail is a manager that does not answer.
+  "systemctl --user show -p NRestarts --value "*)
+    for u in "$@"; do :; done
+    if [ -f "$FAKE/nrestarts.fail" ]; then echo "Failed to connect to bus: No such file or directory" >&2; exit 1; fi
+    cat "$FAKE/nrestarts_$u" 2>/dev/null || echo 0
+    exit 0 ;;
   "systemctl --user restart "*|"launchctl kickstart -k "*)
     [ -f "$FAKE/restart_changes" ] && echo "restarted-$(date +%s)-$$" >"$FAKE/started" ;;
 esac

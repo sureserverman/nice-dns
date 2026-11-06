@@ -18,9 +18,11 @@
 #                                         unreachable): the only Tor restart path
 #   nd_recovery_restart_unbound <request_id>
 #                                         restart Unbound (macOS: the stack)
+#   nd_recovery_restart_pihole <request_id>
+#                                         restart Pi-hole (macOS: the stack)
 #   nd_recovery_restart_stack <request_id>
 #                                         restart the whole stack
-#   repair_runtime <fault> <request_id> [missing name...]
+#   repair_runtime <fault> <request_id> [name...]
 #                                         repair the runtime fault observed
 #   nd_recovery_apply <decision> <request_id> <route_generation>
 #                                         carry out one lib/policy.sh decision
@@ -792,6 +794,10 @@ _nd_rec_restart_verified() {
 
 nd_recovery_restart_unbound() { _nd_rec_restart_verified "${1:-}" unbound unbound nd_platform_restart_unbound; }
 
+# nd_recovery_restart_pihole: acknowledged by a new Pi-hole container start,
+# ready when local-service answers again (DEC-006).
+nd_recovery_restart_pihole() { _nd_rec_restart_verified "${1:-}" pi-hole pi-hole nd_platform_restart_pihole; }
+
 # nd_recovery_restart_stack: every member restarts; the proxy's new start is the
 # acknowledgement, because the ladder's outage is what this answers.
 nd_recovery_restart_stack() { _nd_rec_restart_verified "${1:-}" stack "" nd_platform_restart_stack; }
@@ -809,9 +815,9 @@ nd_recovery_first_escalation() {
 }
 
 repair_runtime() {
-  local fault="${1:-}" id="${2:-}" dl="${ND_RECOVERY_CMD_DEADLINE:-15}" svc="${ND_RECOVERY_SERVICE_S:-120}" rc i=0 n
+  local fault="${1:-}" id="${2:-}" dl="${ND_RECOVERY_CMD_DEADLINE:-15}" svc="${ND_RECOVERY_SERVICE_S:-120}" rc i=0 n c st pz=""
   shift 2
-  case "$fault" in runtime-down|containers-missing) ;; *) _nd_rec_out refused runtime "$id" - - "no repair for fault '$fault'"; return 2 ;; esac
+  case "$fault" in runtime-down|containers-missing|containers-paused) ;; *) _nd_rec_out refused runtime "$id" - - "no repair for fault '$fault'"; return 2 ;; esac
   if ! _nd_rec_id_ok "$id"; then _nd_rec_out refused runtime "$id" - - "bad request id"; return 2; fi
   _nd_rec_lock_ok "$id" runtime || return 5
   _ND_RX="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-recovery.XXXXXX")" || return 4
@@ -823,7 +829,17 @@ repair_runtime() {
   nd_recovery_journal "$id" runtime requested "repair of $fault: $(cat "$_ND_RX/rep.note" 2>/dev/null)exit $rc"
   i=$(( $(_nd_rec_now) + svc )) n=0 rc=1
   while [ "$(_nd_rec_now)" -lt "$i" ]; do
-    if nd_platform_runtime_list "$dl" "$_ND_RX/running" >/dev/null 2>&1; then
+    if [ "$fault" = containers-paused ]; then
+      # Acknowledged by a new reading of each named container: running.
+      rc=0 pz=""
+      for c in "$@"; do
+        case "$c" in pi-hole|unbound|tor-haproxy|tor-socat) ;; *) continue ;; esac
+        st="$(nd_platform_container_state "$c" "$dl" "$_ND_RX" 2>/dev/null | cut -f 1)"
+        if [ "$st" = running ]; then pz="$pz${pz:+ }$c"; else rc=1; fi
+      done
+      [ -n "$pz" ] || rc=1
+      [ "$rc" -eq 0 ] && break
+    elif nd_platform_runtime_list "$dl" "$_ND_RX/running" >/dev/null 2>&1; then
       if [ "$fault" = runtime-down ]; then rc=0; break; fi
       n="$(grep -cx -e pi-hole -e unbound -e tor-haproxy -e tor-socat "$_ND_RX/running")"
       [ "$n" -ge 3 ] && { rc=0; break; }
@@ -832,7 +848,11 @@ repair_runtime() {
   done
   rm -rf "$_ND_RX"
   if [ "$rc" -eq 0 ]; then
-    nd_recovery_journal "$id" runtime acknowledged "$fault: the runtime answers$( [ "$fault" = containers-missing ] && printf ' and the stack runs')"
+    if [ "$fault" = containers-paused ]; then
+      nd_recovery_journal "$id" runtime acknowledged "$fault: $pz running"
+    else
+      nd_recovery_journal "$id" runtime acknowledged "$fault: the runtime answers$( [ "$fault" = containers-missing ] && printf ' and the stack runs')"
+    fi
     _nd_rec_out acknowledged runtime "$id" - - "$fault repaired"; return 0
   fi
   nd_recovery_journal "$id" runtime not-acknowledged "$fault persists after ${svc}s"
@@ -882,13 +902,18 @@ nd_recovery_apply() {
         tor) nd_recovery_restart_tor "$id"; return $? ;;
         proxy) nd_recovery_restart_service "$id"; return $? ;;
         unbound) nd_recovery_restart_unbound "$id"; return $? ;;
+        pi-hole) nd_recovery_restart_pihole "$id"; return $? ;;
         stack) nd_recovery_restart_stack "$id"; return $? ;;
         *) nd_recovery_journal "$id" controller refused "no restart for component '$target'"; return 2 ;;
       esac ;;
     repair-runtime)
       # The observation names what is missing: "containers-missing: a b (running: c)".
       names=""
-      case "$reason" in *containers-missing:*) names="${reason#*containers-missing: }"; names="${names%% (running*}" ;; esac
+      # A paused one: "containers-paused: a b (paused 2 passes or more)".
+      case "$reason" in
+        *containers-missing:*) names="${reason#*containers-missing: }"; names="${names%% (running*}" ;;
+        *containers-paused:*) names="${reason#*containers-paused: }"; names="${names%% (paused*}" ;;
+      esac
       # shellcheck disable=SC2086  # the names are words; the adapter checks each
       repair_runtime "$target" "$id" $names; return $? ;;
     *) nd_recovery_journal "$id" controller refused "unknown action '$action'"; return 2 ;;
@@ -908,6 +933,7 @@ nd_recovery_apply() {
 #                     uncorroborated".
 #   runtime           the runtime observation is healthy
 #   unbound           the unbound observation is healthy
+#   pi-hole           local-service is healthy (Pi-hole answers pi.hole)
 _nd_rec_readiness() {
   local f d row id comp at ok det age ids
   d="$(nd_platform_state_dir)"; f="$d/recovery.tsv"
@@ -935,6 +961,8 @@ _nd_rec_readiness() {
         fi ;;
       runtime|unbound)
         awk -F '\t' -v n="$comp" '$1 == "obs" && $2 == n && $3 == "healthy" { f = 1 } END { exit !f }' "$1" && ok=1 ;;
+      pi-hole)
+        awk -F '\t' '$1 == "obs" && $2 == "local-service" && $3 == "healthy" { f = 1 } END { exit !f }' "$1" && ok=1 ;;
     esac
     age=$(( $2 - at ))
     if [ "$ok" = 1 ]; then nd_recovery_journal "$id" "$comp" ready "observed working ${age}s after the acknowledgement$det"
@@ -949,7 +977,8 @@ _nd_rec_readiness() {
 # (lib/policy.sh), carry the action out (active) or only record it (shadow),
 # commit the next state. Shadow mode keeps its own state and journal in the
 # state directory's shadow/ and never runs a runtime or route command.
-# Prints action, target, result and generation rows. Exit: 0 done; 3 the lock
+# Prints action, target, result, generation and reason rows (the policy's
+# reason: the CLI writes a crash loop's one failure dump from it). Exit: 0 done; 3 the lock
 # is held by another pass; 2 a state or input error.
 nd_recovery_tick() {
   local mode="${1:-}" obs="${2:-}" tok gen now boot t id rc=0 result=none rgen act pg
@@ -1004,7 +1033,7 @@ nd_recovery_tick() {
   fi
   gen="$(nd_state_commit "$tok" "$gen" "$t/next")" || gen="-"
   nd_state_unlock "$tok"
-  printf 'action\t%s\ntarget\t%s\nresult\t%s\ngeneration\t%s\n' "$(_nd_rec_field action "$t/decision")" "$(_nd_rec_field target "$t/decision")" "$result" "$gen"
+  printf 'action\t%s\ntarget\t%s\nresult\t%s\ngeneration\t%s\nreason\t%s\n' "$(_nd_rec_field action "$t/decision")" "$(_nd_rec_field target "$t/decision")" "$result" "$gen" "$(_nd_rec_field reason "$t/decision")"
   rm -rf "$t"
   return 0
 }
@@ -1240,7 +1269,12 @@ nd_bridges_refresh() {
   # recreates the proxy (user decision 2026-10-04: one fail-closed gap at most
   # per refresh). The pending marker bounds it: once the proxy has read the
   # set, a stale listed=1 in the state file restarts nothing.
-  if [ "$rc" -eq 0 ] && _nd_br_running_weak "$weak" "$listed" "$d/bridges.env" && _nd_br_pending; then
+  if [ "$rc" -eq 0 ] && _nd_br_running_weak "$weak" "$listed" "$d/bridges.env" && _nd_br_pending && _nd_br_crash_held; then
+    # The policy holds every restart of a proxy that is restarting on its own;
+    # the set stays pending and the next restart, whoever makes it, adopts it.
+    nd_recovery_journal "br-$(date +%s)" bridges held "the running proxy uses a bridge the new set leaves out, but it is restarting on its own (crash-loop hold); the set is adopted at its next start"
+    adopted=held
+  elif [ "$rc" -eq 0 ] && _nd_br_running_weak "$weak" "$listed" "$d/bridges.env" && _nd_br_pending; then
     nd_recovery_journal "br-$(date +%s)" bridges adopting "the running proxy uses a bridge the new set leaves out; the service restart adopts the set"
     if nd_recovery_restart_service "br-$(date +%s)-svc" >/dev/null; then
       rm -f "$(nd_platform_state_dir)/bridges.pending"; adopted=restarted
@@ -1250,6 +1284,15 @@ nd_bridges_refresh() {
   fi
   printf '%s\ndropped\t%s\nadopted\t%s\n' "$out" "$dropped" "$adopted"
   return "$rc"
+}
+
+# _nd_br_crash_held: 0 when the committed state holds a proxy restart-count rise
+# under ND_POLICY_CRASH_WINDOW_S (600) old (lib/policy.sh crash_<c>; read as
+# data, never sourced, DEC-001).
+_nd_br_crash_held() {
+  nd_state_load 2>/dev/null | awk -F '\t' -v now="$(date +%s)" -v win="${ND_POLICY_CRASH_WINDOW_S:-600}" '
+    $1 ~ /^crash_tor-(haproxy|socat)$/ { n = split($2, e, ","); if (now - e[n] < win) f = 1 }
+    END { exit !f }'
 }
 
 # _nd_br_pending: 0 when a refreshed set waits for the running proxy, which

@@ -467,8 +467,8 @@ t_observe_output_is_valid_tsv_with_one_line_reasons() {
       assert_match 'runtime-down: .*failed to connect' "$(ob_reason runtime)" "$plat: the runtime's error is the reason"
     fi
     if [ "$plat" = linux ]; then drift="install-drift "; else drift=""; fi
-    assert_eq "runtime proxy dns-owner ${drift}local-service filtering local-cache route:cloudflare-onion route:cloudflare-exit route:quad9-exit route:cloudflare-legacy unbound " \
-      "$(printf '%s\n' "$OB_OUT" | awk -F '\t' '$1 == "obs" { print $2 }' | tr '\n' ' ')" "$plat: the documented names, in order (install-drift on Linux only)"
+    assert_eq "runtime container:pi-hole container:unbound proxy dns-owner ${drift}local-service filtering local-cache route:cloudflare-onion route:cloudflare-exit route:quad9-exit route:cloudflare-legacy unbound " \
+      "$(printf '%s\n' "$OB_OUT" | awk -F '\t' '$1 == "obs" { print $2 }' | tr '\n' ' ')" "$plat: the documented names, in order (install-drift on Linux only; no proxy name, so no container:<proxy>, while the runtime is down)"
   done
 }
 
@@ -718,8 +718,8 @@ INNER
   assert_match '^response\|NOERROR\|104\.16\.132\.229 104\.16\.133\.229$' "$out" "dig parse under 3.2 (BusyBox awk)"
   assert_match '^bounded=124 secs=[12]$' "$out" "the deadline holds under 3.2"
   assert_match '^left=0$' "$out" "no process left under 3.2"
-  assert_eq 11 "$(awk -F '\t' '$1 == "obs" && $3 == "healthy"' "$w/obs-linux.tsv" | wc -l | tr -d ' ')" "all eleven linux observations healthy under 3.2 (proxy, then unbound added)"
-  assert_eq 11 "$(awk -F '\t' '$1 == "obs" && $3 == "healthy"' "$w/obs-macos.tsv" | wc -l | tr -d ' ')" "all eleven macos observations healthy under 3.2 (proxy, then unbound added)"
+  assert_eq 14 "$(awk -F '\t' '$1 == "obs" && $3 == "healthy"' "$w/obs-linux.tsv" | wc -l | tr -d ' ')" "all fourteen linux observations healthy under 3.2 (proxy, unbound, then the three container records added)"
+  assert_eq 14 "$(awk -F '\t' '$1 == "obs" && $3 == "healthy"' "$w/obs-macos.tsv" | wc -l | tr -d ' ')" "all fourteen macos observations healthy under 3.2 (proxy, unbound, then the three container records added)"
   for p in linux macos; do
     assert_match "^cli-run-$p=0\$" "$out" "$p: CLI run passes under 3.2"
     assert_match "^cli-indeterminate-$p=1\$" "$out" "$p: CLI indeterminate run under 3.2"
@@ -820,6 +820,181 @@ t_proxy_generation_without_a_hash_tool_is_indeterminate() {
     ob_observe
     ob_expect proxy indeterminate '^unknown: no sha256sum or shasum' "$plat: no hash tool"
   done
+}
+
+# ─────────────────────────── container states (restart policy) ──────────────
+#
+# container:pi-hole, container:unbound and container:<proxy> follow runtime:
+# each container's own state, with its restart count as the reason's last
+# words ("restarts N"), which the restart policy reads. Linux reads podman
+# inspect ($FAKE/state_<name> is its output); macOS reads the STATE column of
+# `container ls -a` and counts restarts in the controller's restarts.tsv.
+
+# ob_restarts <name> <count>...: macOS restart counter rows.
+ob_restarts() {
+  export ND_STATE_DIR="$CASE_DIR/state"
+  mkdir -p "$ND_STATE_DIR"; : >"$ND_STATE_DIR/restarts.tsv"
+  while [ $# -ge 2 ]; do printf '%s\t%s\n' "$1" "$2" >>"$ND_STATE_DIR/restarts.tsv"; shift 2; done
+}
+
+t_container_running_records_follow_runtime_for_each_proxy_variant() {
+  local plat v names
+  ob_setup linux
+  ob_restarts
+  for plat in $(ob_platforms); do
+    for v in haproxy socat; do
+      ob_platform "$plat"
+      printf 'pi-hole\nunbound\ntor-%s\n' "$v" >"$FAKE/running"
+      ob_observe
+      assert_rc 0 "$OB_RC" "$plat/$v: observe runs: $OB_ERR"
+      ob_expect container:pi-hole healthy '^running: .*restarts 0$' "$plat/$v: container:pi-hole runs"
+      ob_expect container:unbound healthy '^running: .*restarts 0$' "$plat/$v: container:unbound runs"
+      ob_expect "container:tor-$v" healthy '^running: .*restarts 0$' "$plat/$v: container:tor-$v runs"
+      names="$(printf '%s\n' "$OB_OUT" | awk -F '\t' '$1 == "obs" { print $2 }' | head -n 4 | tr '\n' ' ')"
+      assert_eq "runtime container:pi-hole container:unbound container:tor-$v " "$names" "$plat/$v: the container records follow runtime"
+      printf '%s\n' "$OB_OUT" | bash -c '. "$1" && nd_health_validate' _ "$OB_HEALTH" || fail "$plat/$v: the set with container records is valid: $OB_OUT"
+    done
+  done
+  # Linux: the count is the unit's NRestarts. Quadlet runs each container
+  # with --replace --rm, so every systemd restart is a new container and
+  # podman's own RestartCount stays 0 (mint, 2026-11-05); it is ignored.
+  ob_platform linux
+  printf 'running healthy 9 0\n' >"$FAKE/state_pi-hole"
+  printf 3 >"$FAKE/nrestarts_pi-hole.service"
+  printf 'running starting 0 0\n' >"$FAKE/state_unbound"
+  printf 1 >"$FAKE/nrestarts_unbound.service"
+  ob_observe
+  ob_expect container:pi-hole healthy '^running: health healthy restarts 3$' "linux: the unit's restart count is the reason's last words, not podman's"
+  ob_expect container:unbound healthy '^running: health starting restarts 1$' "linux: a starting health check is running"
+  assert_match 'systemctl --user show -p NRestarts --value pi-hole.service' "$(cat "$FAKE_LOG")" "linux: the count is read from the container's unit"
+}
+
+t_container_podman_unhealthy_carries_the_last_check_output() {
+  ob_setup linux
+  printf 2 >"$FAKE/nrestarts_unbound.service"
+  printf 'running unhealthy 0 0\n@@nd-health-log@@ an older failure\n\n@@nd-health-log@@ dig: couldn'"'"'t get address\tfor\n  127.0.0.1#5335\n\n' >"$FAKE/state_unbound"
+  ob_observe
+  ob_expect container:unbound unhealthy "^unhealthy: dig: couldn't get address for 127\\.0\\.0\\.1#5335 restarts 2\$" "linux: the last check's output, on one line"
+  assert_not_match 'older failure' "$(ob_reason container:unbound)" "linux: only the last check's output"
+  printf 'running unhealthy 0 0\n' >"$FAKE/state_unbound"; printf 5 >"$FAKE/nrestarts_unbound.service"
+  ob_observe
+  ob_expect container:unbound unhealthy '^unhealthy: .*restarts 5$' "linux: unhealthy without a check log"
+  printf 'running unhealthy 0 0\n@@nd-health-log@@ %0300d\n' 7 >"$FAKE/state_unbound"; printf 0 >"$FAKE/nrestarts_unbound.service"
+  ob_observe
+  ob_expect container:unbound unhealthy '^unhealthy: 0+ restarts 0$' "linux: a long check output never cuts the restart count off"
+}
+
+t_container_paused_is_unhealthy() {
+  ob_setup linux
+  printf 'paused healthy 0 0\n' >"$FAKE/state_tor-haproxy"; printf 1 >"$FAKE/nrestarts_tor-haproxy.service"
+  ob_observe
+  ob_expect container:tor-haproxy unhealthy '^paused restarts 1$' "linux: a paused proxy"
+}
+
+t_container_exited_reports_its_exit_code_and_restarts() {
+  local plat
+  ob_setup linux
+  printf 'exited none 0 134\n' >"$FAKE/state_pi-hole"; printf 4 >"$FAKE/nrestarts_pi-hole.service"
+  ob_observe
+  ob_expect container:pi-hole unhealthy '^exited: rc 134 restarts 4$' "linux: an aborted Pi-hole"
+  printf 'stopped healthy 0 1\n' >"$FAKE/state_pi-hole"; printf 0 >"$FAKE/nrestarts_pi-hole.service"
+  ob_observe
+  ob_expect container:pi-hole unhealthy '^exited: rc 1 restarts 0$' "linux: a stopped container is exited"
+  for st in created initialized configured stopping removing; do
+    printf '%s none 0 0\n' "$st" >"$FAKE/state_pi-hole"
+    ob_observe
+    ob_expect container:pi-hole indeterminate "^transient: state $st restarts 0\$" "linux: $st is on the way up or down, not exited"
+  done
+  for plat in $(ob_platforms); do
+    [ "$plat" = macos ] || continue
+    ob_platform macos
+    ob_restarts unbound 2 pi-hole 7
+    printf 'pi-hole\ntor-haproxy\n' >"$FAKE/running"; printf 'unbound\n' >"$FAKE/stopped"
+    ob_observe
+    ob_expect container:unbound unhealthy '^exited: rc \? restarts 2$' "macos: a stopped Unbound; Apple container has no exit code"
+    ob_expect container:pi-hole healthy '^running: health none restarts 7$' "macos: the count comes from restarts.tsv"
+  done
+}
+
+t_container_inspect_failure_is_indeterminate() {
+  local plat cli
+  ob_setup linux
+  for plat in $(ob_platforms); do
+    ob_platform "$plat"
+    if [ "$plat" = linux ]; then
+      : >"$FAKE/state_unbound.fail"
+      ob_observe
+      ob_expect container:unbound indeterminate '^unknown: the state of unbound is not readable .*no such object.* restarts [?]$' "linux: inspect failed, with the runtime's error"
+      ob_expect container:pi-hole healthy '' "linux: the other containers still report"
+      printf 'garbage line\n' >"$FAKE/state_pi-hole"
+      ob_observe
+      ob_expect container:pi-hole indeterminate '^unknown: .*pi-hole.* restarts [?]$' "linux: unparseable inspect output"
+      rm -f "$FAKE/state_pi-hole" "$FAKE/state_unbound.fail"
+      : >"$FAKE/nrestarts.fail"
+      ob_observe
+      ob_expect container:pi-hole indeterminate '^unknown: the restart count of pi-hole is not readable .*Failed to connect to bus.* restarts [?]$' "linux: no restart count, with the manager's error"
+      rm -f "$FAKE/nrestarts.fail"
+    else
+      printf 'pi-hole\ntor-haproxy\n' >"$FAKE/running"
+      ob_observe
+      ob_expect container:unbound indeterminate '^unknown: the state of unbound is not readable .* restarts [?]$' "macos: no row for the container"
+    fi
+    ob_platform "$plat"
+    if [ "$plat" = macos ]; then cli=container; else cli=podman; fi
+    : >"$FAKE/rt.down"
+    ob_observe
+    ob_expect container:pi-hole indeterminate '^runtime' "$plat: no runtime, no container state"
+    ob_expect container:unbound indeterminate '^runtime' "$plat: no runtime, no container state"
+    rm -f "$FAKE/rt.down"
+    printf '%s\n' "$OB_OUT" | bash -c '. "$1" && nd_health_validate' _ "$OB_HEALTH" || fail "$plat: indeterminate container records validate: $OB_OUT"
+    assert_match "^$cli " "$(cat "$FAKE_LOG")" "$plat: the runtime CLI was asked"
+  done
+}
+
+t_container_macos_health_is_none() {
+  ob_setup macos
+  ob_restarts tor-haproxy 3 unbound x
+  ob_observe
+  ob_expect container:tor-haproxy healthy '^running: health none restarts 3$' "macos: no health check, restarts from restarts.tsv"
+  ob_expect container:unbound healthy '^running: health none restarts 0$' "macos: a malformed count is 0"
+  ob_expect container:pi-hole healthy '^running: health none restarts 0$' "macos: no row is 0"
+  rm -f "$ND_STATE_DIR/restarts.tsv"
+  ob_observe
+  ob_expect container:tor-haproxy healthy '^running: health none restarts 0$' "macos: no counter file is 0"
+  assert_not_match '^container inspect' "$(cat "$FAKE_LOG")" "macos: never container inspect (its JSON holds the BRIDGE environment)"
+}
+
+t_container_state_deadline_keeps_the_pass_inside_its_budget() {
+  local plat t0 el
+  ob_setup linux
+  for plat in $(ob_platforms); do
+    ob_platform "$plat"
+    : >"$FAKE/state.hang"
+    t0=$SECONDS
+    ND_HEALTH_CMD_DEADLINE=2 ob_observe 8
+    el=$((SECONDS - t0))
+    ob_expect container:pi-hole indeterminate '^deadline' "$plat: a hung state read is indeterminate"
+    ob_expect container:tor-haproxy indeterminate '^deadline' "$plat: every container's read is bounded"
+    assert_eq 1 "$((el <= 12))" "$plat: the pass ends near its 8 s budget (took $el s)"
+    rm -f "$FAKE/state.hang"
+    ob_no_proc "sleep $(cat "$FAKE/hang_secs")"
+  done
+}
+
+t_validator_container_records_are_optional_and_carry_restarts() {
+  local base out
+  ob_setup linux
+  base="$(printf 'schema\tnice-dns-observations/1\n'; for n in runtime dns-owner local-service filtering local-cache route:a; do printf 'obs\t%s\thealthy\t1\tfine\n' "$n"; done)"
+  printf '%s\n' "$base" | bash -c '. "$1" && nd_health_validate' _ "$OB_HEALTH" 2>/dev/null
+  assert_rc 0 "$?" "a set without container records is valid"
+  printf '%s\nobs\tcontainer:pi-hole\thealthy\t1\trunning: health none restarts 0\nobs\tcontainer:unbound\tunhealthy\t1\texited: rc ? restarts 2\nobs\tcontainer:tor-socat\tindeterminate\t1\tdeadline: no answer restarts ?\n' "$base" \
+    | bash -c '. "$1" && nd_health_validate' _ "$OB_HEALTH" 2>/dev/null
+  assert_rc 0 "$?" "well-formed container records"
+  out="$(printf '%s\nobs\tcontainer:pi-hole\thealthy\t1\trunning: health none\n' "$base" | bash -c '. "$1" && nd_health_validate' _ "$OB_HEALTH" 2>&1)"
+  assert_nonzero "$?" "a container record without its restart count is refused"
+  assert_match 'restarts' "$out" "and named"
+  printf '%s\nobs\tcontainer:tor-haproxy\thealthy\t1\trunning: health none restarts 0\n' "$base" | bash -c '. "$1" && nd_health_validate' _ "$OB_HEALTH" 2>/dev/null
+  assert_rc 0 "$?" "container:tor-haproxy is a known name"
 }
 
 # ─────────────────────────── install drift (BL-045) ──────────────────────────
@@ -1042,4 +1217,14 @@ t_the_first_escalation_dump_is_bounded() {
   assert_match '^action	escalate$' "$(cat "$CASE_DIR/out")" "the pass escalates"
   assert_eq 1 "$(( SECONDS - t0 <= 25 ))" "a hung dump does not hold the pass: $(( SECONDS - t0 )) s"
   unset ND_STATE_DIR ND_FAILURE_DUMP_S
+}
+
+# BL-053: podman ps leaves a paused container out, so a paused Unbound read as
+# containers-missing and the repair started a unit that already ran.
+t_a_paused_container_is_listed_not_missing() {
+  ob_setup linux
+  printf 'unbound\n' >"$FAKE/paused"; printf 'paused healthy 0 0\n' >"$FAKE/state_unbound"
+  ob_observe
+  ob_expect runtime healthy '^running: pi-hole unbound tor-haproxy$' "linux: a paused Unbound is listed, not missing"
+  ob_expect container:unbound unhealthy '^paused restarts 0$' "linux: its own record says paused"
 }

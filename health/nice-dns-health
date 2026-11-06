@@ -309,8 +309,11 @@ write_failure_dump() {
         if [ "$IS_LINUX" -eq 1 ]; then
           echo "=== $rt inspect $c (state) ==="
           "$rt" inspect "$c" --format \
-            '  status={{.State.Status}} health={{if .State.Healthcheck}}{{.State.Healthcheck.Status}}{{else}}none{{end}} restarts={{.RestartCount}} pid={{.State.Pid}}' 2>&1 \
+            '  status={{.State.Status}} health={{if .State.Healthcheck}}{{.State.Healthcheck.Status}}{{else}}none{{end}} pid={{.State.Pid}}' 2>&1 \
             | sed 's/^/  /'
+          # The unit's count: quadlet's --replace --rm makes each systemd
+          # restart a new container, so podman's RestartCount stays 0.
+          echo "    unit restarts=$(systemctl --user show -p NRestarts --value "$c.service" 2>&1)"
           echo "=== $rt logs --tail 50 $c ==="
           "$rt" logs --tail 50 "$c" 2>&1 | sed 's/^/  /'
         else
@@ -1085,11 +1088,16 @@ LAUNCHER
 
 # dump_first_escalation <observations> <tick output>: the first escalation of an
 # outage writes one failure dump, so a long outage leaves evidence while it lasts
-# (none existed for the 2026-10-30 windows on mint).
+# (none existed for the 2026-10-30 windows on mint). So does the first escalation
+# of a crash loop, which the policy marks in its reason (it keeps the loop's state).
 dump_first_escalation() {
-  local t name verdict
+  local t name verdict what="outage" reason
   [ "$(printf '%s\n' "$2" | awk -F '\t' '$1 == "action" { print $2; exit }')" = escalate ] || return 0
-  nd_recovery_first_escalation || return 0
+  reason="$(printf '%s\n' "$2" | awk -F '\t' '$1 == "reason" { print $2; exit }')"
+  case "$reason" in
+    crash-loop:*"first escalation of this loop"*) what="crash loop" ;;
+    *) nd_recovery_first_escalation || return 0 ;;
+  esac
   HEALTH_OBS="$(cat "$1")"
   CHECK_DETAIL=""
   FAILED_CHECKS=()
@@ -1104,9 +1112,9 @@ dump_first_escalation() {
   # wedged host, and a hung dump would hold the controller for the whole outage.
   t="$(mktemp "${TMPDIR:-/tmp}/nice-dns-dump.XXXXXX")" || return 0
   if nd_bounded "${ND_FAILURE_DUMP_S:-60}" "$t" "$t.err" write_failure_dump "$(ts)"; then
-    log_to_file "$(ts) ESCALATED first of this outage -> $(cat "$t")"
+    log_to_file "$(ts) ESCALATED first of this $what -> $(cat "$t")"
   else
-    log_to_file "$(ts) ESCALATED first of this outage; the failure dump did not finish within ${ND_FAILURE_DUMP_S:-60} s"
+    log_to_file "$(ts) ESCALATED first of this $what; the failure dump did not finish within ${ND_FAILURE_DUMP_S:-60} s"
   fi
   rm -f "$t" "$t.err"
 }

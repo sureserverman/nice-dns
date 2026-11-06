@@ -60,3 +60,5 @@ live	qualification-cells	tests/live/qualification-cells.sh	live
 live	qualification-receipt	tests/live/qualification-receipt.sh	live
 live	command-recovery	tests/live/command-recovery.sh	live
 integration	command-recovery-dryrun	tests/integration/command-recovery-dryrun.sh	local
+live	container-faults	tests/live/container-faults.sh	live
+integration	container-faults-dryrun	tests/integration/container-faults-dryrun.sh	local
