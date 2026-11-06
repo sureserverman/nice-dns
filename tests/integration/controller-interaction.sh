@@ -212,12 +212,17 @@ ci_drift_env() {
 # ci_cli <cmd...>: the controller from a private checkout-shaped copy (the
 # controller refuses a library directory others can write).
 ci_cli() {
-  local t="$CASE_DIR/tree"
+  local t="${CI_TREE:-$CASE_DIR/tree}"
+  ci_tree
+  CI_OUT="$(bash "$t/health/nice-dns-health" "$@" 2>&1)"; CI_RC=$?
+}
+# ci_tree: the copy ci_cli runs ($CI_TREE, default $CASE_DIR/tree).
+ci_tree() {
+  local t="${CI_TREE:-$CASE_DIR/tree}"
   if [ ! -d "$t" ]; then
     mkdir -p "$t" && cp -R "$NICE_DNS_ROOT/health" "$NICE_DNS_ROOT/lib" "$NICE_DNS_ROOT/routes" "$t/" && chmod -R go-w "$t"
     chmod go-w "$CASE_DIR"
   fi
-  CI_OUT="$(bash "$t/health/nice-dns-health" "$@" 2>&1)"; CI_RC=$?
 }
 
 t_status_shows_the_generation_and_lock_match() {
@@ -382,5 +387,163 @@ t_a_crash_loop_is_escalated_once_with_one_dump_by_real_ticks() {
     assert_eq 1 "$(find "$HOME" -name 'failure-*.log' | wc -l | tr -d ' ')" "with one failure dump"
     assert_match 'ESCALATED first of this crash loop' "$(cat "$XDG_STATE_HOME/nice-dns-health/health.log")" "logged"
     assert_eq 0 "$(grep -c 'systemctl --user \(re\)\{0,1\}start' "$FAKE_LOG")" "no unit was started or restarted"
+  ) || exit 1
+}
+
+# ───────────────────── the last observations (Sub-plan 3 Task 1.1) ───────────
+#
+# After each pass the controller keeps observations.tsv in its state
+# directory: the records the pass decided on and `pass <epoch> <verdict>`,
+# the verdict being the one `run` logs. The file is renamed into place after
+# the decision, so a pass that dies first leaves the previous one.
+
+ci_log() {
+  if [ "$1" = linux ]; then printf '%s\n' "$HOME/.local/state/nice-dns-health/health.log"
+  else printf '%s\n' "$HOME/Library/Logs/nice-dns-health/health.log"; fi
+}
+# ci_spy: the tree's nd_recovery_tick first copies the observations it decides
+# on to $CI_SPY.
+ci_spy() {
+  ci_tree
+  cat >>"$CI_TREE/lib/recovery.sh" <<'SPY'
+eval "ci_real_tick() $(declare -f nd_recovery_tick | sed 1d)"
+nd_recovery_tick() { cp "$2" "$CI_SPY"; ci_real_tick "$@"; }
+SPY
+}
+# ci_verdict <observations>: the verdict from the records, worked out here
+# independently: unhealthy names (plus chain-resolves when no route answered
+# and one failed), then indeterminate ones.
+ci_verdict() {
+  awk -F '\t' '$1 != "obs" { next }
+    $2 ~ /^route:/ { r++ }
+    $3 == "healthy" { if ($2 ~ /^route:/) ok++; next }
+    $3 == "unhealthy" { f = f s1 $2; s1 = " "; if ($2 ~ /^route:/) bad++; next }
+    { i = i s2 $2; s2 = " " }
+    END {
+      if (r && !ok && bad) f = f s1 "chain-resolves"
+      if (f == "" && i == "") print "OK"
+      else if (f == "") print "INDETERMINATE [" i "]"
+      else print "FAIL [" f "]" (i != "" ? " indeterminate=(" i ")" : "")
+    }' "$1"
+}
+# ci_kept <before> <after> <label>: observations.tsv is the spied records plus
+# one pass row with an epoch inside the pass and the records' verdict.
+ci_kept() {
+  local f="${CI_KEPT_FILE:-$ND_STATE_DIR/observations.tsv}" row e
+  assert_file "$f" "$3: the pass keeps its observations"
+  assert_eq "$f" "$(find "$f" -maxdepth 0 -type f -perm 0600)" "$3: mode 0600"
+  assert_match '^schema	nice-dns-observations/1$' "$(head -n 1 "$CI_SPY")" "$3: the pass decided on observations"
+  assert_eq "$(cat "$CI_SPY")" "$(grep -v '^pass	' "$f")" "$3: every record of the pass and nothing else"
+  assert_eq 1 "$(grep -c '^pass	' "$f")" "$3: one pass row"
+  row="$(tail -n 1 "$f")"
+  e="$(printf '%s\n' "$row" | cut -f2)"
+  case "$e" in ''|*[!0-9]*) fail "$3: the pass epoch is not a number: $row" ;; esac
+  [ "$e" -ge "$1" ] && [ "$e" -le "$2" ] || fail "$3: the pass epoch $e is outside the pass ($1..$2)"
+  assert_eq "$(printf 'pass\t%s\t%s' "$e" "$(ci_verdict "$CI_SPY")")" "$row" "$3: the pass row carries the verdict"
+}
+
+t_a_tick_keeps_the_observations_it_decided_on() {
+  local plat
+  for plat in linux macos; do
+    (
+      local b f
+      ci_env "$plat"
+      CI_TREE="$CASE_DIR/tree-$plat"
+      export XDG_STATE_HOME="$HOME/.local/state" CI_SPY="$CASE_DIR/spy-$plat"
+      # Linux observes the installed generation: one without drift.
+      [ "$plat" = macos ] || { export XDG_CONFIG_HOME="$HOME/.config"; ob_install_state; }
+      f="$ND_STATE_DIR/observations.tsv"
+      ci_seed cloudflare-exit -
+      ci_spy
+      b="$(date +%s)"; ci_cli tick; assert_rc 0 "$CI_RC" "$plat: healthy tick: $CI_OUT"
+      ci_kept "$b" "$(date +%s)" "$plat: healthy tick"
+      assert_eq OK "$(tail -n 1 "$f" | cut -f3)" "$plat: a healthy pass is OK"
+      ci_routes servfail
+      b="$(date +%s)"; ci_cli tick
+      ci_kept "$b" "$(date +%s)" "$plat: failing tick"
+      assert_match '^FAIL \[.*route:cloudflare-exit.* chain-resolves\]$' "$(tail -n 1 "$f" | cut -f3)" "$plat: a failing pass names what failed"
+      ci_routes hang
+      export ND_HEALTH_PROBE_DEADLINE=1
+      cp "$f" "$CASE_DIR/active-before-$plat"
+      b="$(date +%s)"; ci_cli tick --shadow
+      CI_KEPT_FILE="$ND_STATE_DIR/shadow/observations.tsv" ci_kept "$b" "$(date +%s)" "$plat: shadow tick"
+      assert_match '^INDETERMINATE \[.*route:cloudflare-exit.*\]$' "$(tail -n 1 "$ND_STATE_DIR/shadow/observations.tsv" | cut -f3)" "$plat: the shadow pass keeps its observations in its own file"
+      assert_eq "$(cat "$CASE_DIR/active-before-$plat")" "$(cat "$f")" "$plat: and leaves the active controller's last pass alone"
+      assert_eq "$f" "$(grep -l '^pass	' "$ND_STATE_DIR"/* "$ND_STATE_DIR"/.[!.]* 2>/dev/null)" "$plat: no temporary file is left"
+      assert_eq "$ND_STATE_DIR/shadow/observations.tsv" "$(grep -l '^pass	' "$ND_STATE_DIR"/shadow/* "$ND_STATE_DIR"/shadow/.[!.]* 2>/dev/null)" "$plat: nor in the shadow state"
+    ) || exit 1
+  done
+}
+
+t_a_pass_that_dies_before_deciding_keeps_the_previous_observations() {
+  local plat
+  for plat in linux macos; do
+    (
+      local f
+      ci_env "$plat"
+      CI_TREE="$CASE_DIR/tree-$plat"
+      export XDG_STATE_HOME="$HOME/.local/state"
+      f="$ND_STATE_DIR/observations.tsv"
+      ci_seed cloudflare-exit -
+      ci_cli tick; assert_rc 0 "$CI_RC" "$plat: first tick: $CI_OUT"
+      assert_file "$f" "$plat: the first pass keeps its observations"
+      cp -p "$f" "$CASE_DIR/kept-$plat"
+      # The next pass observes something else and dies before the decision.
+      ci_routes servfail
+      # shellcheck disable=SC2016 # $$ is the controller's, expanded in the tree
+      printf 'nd_recovery_tick() { kill -KILL $$; }\n' >>"$CI_TREE/lib/recovery.sh"
+      ci_cli tick
+      assert_rc 137 "$CI_RC" "$plat: the pass was killed: $CI_OUT"
+      assert_eq "$(cat "$CASE_DIR/kept-$plat")" "$(cat "$f")" "$plat: the previous observations stay"
+      assert_eq "$f" "$(find "$f" -maxdepth 0 -type f -perm 0600)" "$plat: still 0600"
+    ) || exit 1
+  done
+}
+
+# `run` keeps the same file, with the verdict it logs.
+t_run_keeps_the_verdict_it_logs() {
+  local plat
+  for plat in linux macos; do
+    (
+      local b v
+      ci_env "$plat"
+      CI_TREE="$CASE_DIR/tree-$plat"
+      export XDG_STATE_HOME="$HOME/.local/state" CI_SPY="$CASE_DIR/spy-$plat"
+      # Linux observes the installed generation: one without drift.
+      [ "$plat" = macos ] || { export XDG_CONFIG_HOME="$HOME/.config"; ob_install_state; }
+      ci_seed cloudflare-exit -
+      ci_spy
+      b="$(date +%s)"; ci_cli run; assert_rc 0 "$CI_RC" "$plat: healthy run: $CI_OUT"
+      ci_kept "$b" "$(date +%s)" "$plat: healthy run"
+      assert_match ' OK  all checks passed$' "$(grep -E ' (OK|FAIL|INDETERMINATE) ' "$(ci_log "$plat")" | tail -n 1)" "$plat: run logged OK"
+      ci_routes servfail
+      b="$(date +%s)"; ci_cli run
+      ci_kept "$b" "$(date +%s)" "$plat: failing run"
+      v="$(tail -n 1 "$ND_STATE_DIR/observations.tsv" | cut -f3)"
+      assert_match '^FAIL ' "$v" "$plat: a failing run"
+      assert_eq 1 "$(grep -E ' (OK|FAIL|INDETERMINATE) ' "$(ci_log "$plat")" | tail -n 1 | grep -cF " $v -> ")" "$plat: the pass row's verdict is the logged one:
+$(tail -n 3 "$(ci_log "$plat")")"
+    ) || exit 1
+  done
+}
+
+# Status and update plan, Task 1.3: the controller's status lists every
+# container record of the last pass, whatever containers exist.
+t_health_status_lists_every_container_record() {
+  (
+    local n
+    ci_drift_env
+    mkdir -p "$ND_STATE_DIR"; chmod 700 "$ND_STATE_DIR"
+    printf 'schema\tnice-dns-observations/1\nobs\tcontainer:unbound\thealthy\t3\trunning\nobs\tcontainer:pi-hole\tunhealthy\t5\tpaused\nobs\tcontainer:tor-haproxy\thealthy\t4\trunning\nobs\tcontainer:extra\tindeterminate\t1\tno answer\nobs\troute:cloudflare-onion\thealthy\t120\tanswered\npass\t1800000000\tOK\n' >"$ND_STATE_DIR/observations.tsv"
+    ci_cli status
+    assert_match "=== Containers ===" "$CI_OUT" "the table is there: $CI_OUT"
+    n="$(printf '%s\n' "$CI_OUT" | sed -n '/^=== Containers ===/,/^$/p' | grep -c '^  ')"
+    assert_eq 4 "$n" "one line per container record"
+    assert_match "  pi-hole +unhealthy +paused" "$CI_OUT" "name, verdict and reason"
+    assert_match "  extra +indeterminate +no answer" "$CI_OUT" "a container the code does not name is listed too"
+    rm -f "$ND_STATE_DIR/observations.tsv"
+    ci_cli status
+    assert_match "=== Containers ===" "$CI_OUT" "the table is there without a pass"
+    assert_match "no pass recorded yet" "$CI_OUT" "and says why it is empty"
   ) || exit 1
 }

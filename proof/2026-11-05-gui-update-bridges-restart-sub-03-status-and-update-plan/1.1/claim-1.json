@@ -1,0 +1,35 @@
+{
+ "baseline": {
+  "elapsed_s": 67.7,
+  "exit": 0,
+  "tail": "run_id=20261106T194159Z-6fc671d2 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261106T194159Z-6fc671d2\nPASS  t_a_container_that_stays_missing_reaches_the_stack_through_real_ticks\nPASS  t_a_crash_loop_is_escalated_once_with_one_dump_by_real_ticks\nPASS  t_a_pass_that_dies_before_deciding_keeps_the_previous_observations\nPASS  t_a_tick_keeps_the_observations_it_decided_on\nPASS  t_cached_answer_never_hides_an_upstream_outage\nPASS  t_drift_never_re_renders\nPASS  t_drift_reports_an_image_off_the_lock\nPASS  t_health_status_lists_every_container_record\nPASS  t_held_outage_clock_with_unanswerable_probes_never_acts\nPASS  t_observed_onion_failure_switches_route_not_tor\nPASS  t_observed_outage_restart_is_acknowledged_then_ready\nPASS  t_run_keeps_the_verdict_it_logs\nPASS  t_security_drift_logs_once_per_day\nPASS  t_shadow_pass_observes_and_decides_but_never_acts\nPASS  t_status_shows_the_generation_and_lock_match\nPASS  t_unanswerable_probes_never_act\nPASS  t_unbound_failing_with_routes_healthy_is_restarted_by_real_ticks\ngroup integration/controller-interaction: collected=17 passed=17 failed=0\ncollected=17 passed=17 failed=0\nresult=pass run_id=20261106T194159Z-6fc671d2 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261106T194159Z-6fc671d2"
+ },
+ "break_patch": "diff --git a/health/nice-dns-health b/health/nice-dns-health\nindex 01fac2b..6d16a3d 100755\n--- a/health/nice-dns-health\n+++ b/health/nice-dns-health\n@@ -549,7 +549,7 @@ run_controller_pass() {\n   epoch=\"$(date +%s)\"\n   out=\"$(nd_recovery_tick active \"$o\" 2>&1)\"; rc=$?\n   # Only a pass that decided (busy or a broken state decides nothing).\n-  [ \"$rc\" -ne 0 ] || keep_observations \"$o\" \"$epoch\" \"$(checks_verdict)\"\n+  :\n   rm -f \"$o\"\n   log_to_file \"$now_human controller $(printf '%s\\n' \"$out\" | awk -F '\\t' 'NF == 2 { printf \"%s%s=%s\", s, $1, $2; s = \" \" }')\"\n }\n@@ -1211,7 +1211,7 @@ cmd_tick() {\n   epoch=\"$(date +%s)\"\n   out=\"$(nd_recovery_tick \"$mode\" \"$o\")\"; rc=$?\n   [ \"$mode\" != active ] || dump_first_escalation \"$o\" \"$out\"\n-  [ \"$rc\" -ne 0 ] || keep_observations \"$o\" \"$epoch\" \"$(HEALTH_OBS=\"$(cat \"$o\")\"; FAILED_CHECKS=(); INDETERMINATE_CHECKS=(); CHECK_DETAIL=\"\"; classify_observations; checks_verdict)\" \"$mode\"\n+  :\n   rm -f \"$o\"\n   log_to_file \"$(ts) TICK $mode $(printf '%s\\n' \"$out\" | awk -F '\\t' '{ printf \"%s%s=%s\", s, $1, $2; s = \" \" }')\"\n   printf '%s\\n' \"$out\"\n",
+ "build": null,
+ "created": "2026-11-06T19:44:03+00:00",
+ "fingerprint": "127e416ed143f1daf80ad741663ff10e50631279f01baf293b498a6745077723",
+ "index": 1,
+ "kind": "claim",
+ "named_break": "the file is written before the verdict",
+ "no_build_reason": "bash scripts: nothing is compiled",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-03-status-and-update-plan.md",
+ "red": {
+  "elapsed_s": 56.0,
+  "exit": 1,
+  "tail": "run_id=20261106T194307Z-72b78a0c artifacts=/home/user/.local/state/nice-dns-tests/runs/20261106T194307Z-72b78a0c\nPASS  t_a_container_that_stays_missing_reaches_the_stack_through_real_ticks\nPASS  t_a_crash_loop_is_escalated_once_with_one_dump_by_real_ticks\nFAIL  t_a_pass_that_dies_before_deciding_keeps_the_previous_observations (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261106T194307Z-72b78a0c/cases/integration-controller-interaction/t_a_pass_that_dies_before_deciding_keeps_the_previous_observations/case.log)\n      ASSERT FAIL: linux: the first pass keeps its observations: no regular file /home/user/.local/state/nice-dns-tests/runs/20261106T194307Z-72b78a0c/cases/integration-controller-interaction/t_a_pass_that_dies_before_deciding_keeps_the_previous_observations/state-linux/observations.tsv\nFAIL  t_a_tick_keeps_the_observations_it_decided_on (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261106T194307Z-72b78a0c/cases/integration-controller-interaction/t_a_tick_keeps_the_observations_it_decided_on/case.log)\n      ASSERT FAIL: linux: healthy tick: the pass keeps its observations: no regular file /home/user/.local/state/nice-dns-tests/runs/20261106T194307Z-72b78a0c/cases/integration-controller-interaction/t_a_tick_keeps_the_observations_it_decided_on/state-linux/observations.tsv\nPASS  t_cached_answer_never_hides_an_upstream_outage\nPASS  t_drift_never_re_renders\nPASS  t_drift_reports_an_image_off_the_lock\nPASS  t_health_status_lists_every_container_record\nPASS  t_held_outage_clock_with_unanswerable_probes_never_acts\nPASS  t_observed_onion_failure_switches_route_not_tor\nPASS  t_observed_outage_restart_is_acknowledged_then_ready\nFAIL  t_run_keeps_the_verdict_it_logs (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261106T194307Z-72b78a0c/cases/integration-controller-interaction/t_run_keeps_the_verdict_it_logs/case.log)\n      ASSERT FAIL: linux: healthy run: the pass keeps its observations: no regular file /home/user/.local/state/nice-dns-tests/runs/20261106T194307Z-72b78a0c/cases/integration-controller-interaction/t_run_keeps_the_verdict_it_logs/state-linux/observations.tsv\nPASS  t_security_drift_logs_once_per_day\nPASS  t_shadow_pass_observes_and_decides_but_never_acts\nPASS  t_status_shows_the_generation_and_lock_match\nPASS  t_unanswerable_probes_never_act\nPASS  t_unbound_failing_with_routes_healthy_is_restarted_by_real_ticks\ngroup integration/controller-interaction: collected=17 passed=14 failed=3\ncollected=17 passed=14 failed=3\nresult=fail run_id=20261106T194307Z-72b78a0c artifacts=/home/user/.local/state/nice-dns-tests/runs/20261106T194307Z-72b78a0c"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "1.1",
+ "test": "bash tests/run.sh integration controller-interaction",
+ "text": "after a tick the file holds every record of that pass and a `pass` row with the tick's epoch and verdict (red if the file is written before the verdict)",
+ "touched": [
+  "health/nice-dns-health"
+ ],
+ "touched_blobs": {
+  "health/nice-dns-health": "01fac2b0fa71ae9d1c72e49267485170fc0b161e"
+ },
+ "witness_blobs": {
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}

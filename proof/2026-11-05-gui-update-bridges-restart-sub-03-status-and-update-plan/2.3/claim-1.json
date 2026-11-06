@@ -1,0 +1,38 @@
+{
+ "baseline": {
+  "elapsed_s": 1.9,
+  "exit": 0,
+  "tail": "check-contracts: OK (WF-DNS-001..004 and all operations in /home/user/dev/containers/nice-dns/tests/manifests/privacy-ops.tsv) docs/workflows/dns-lifecycle.md"
+ },
+ "break_patch": "diff --git a/docs/workflows/dns-lifecycle.md b/docs/workflows/dns-lifecycle.md\nindex a9ed88a..c7810ca 100644\n--- a/docs/workflows/dns-lifecycle.md\n+++ b/docs/workflows/dns-lifecycle.md\n@@ -6,7 +6,7 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the\n - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)\n   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.\n - Baseline source: this repository at commit\n-  `bc5faf3bc85ea528d67acd023e3df6110a0cb731`. Citations are `path:line` at that commit.\n+  `2438546c7294aee82846ef442e6995f52edc85d4`. Citations are `path:line` at that commit.\n   The eight-cell baseline receipt measured b85bc9b. The document was first\n   written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,\n   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02\n",
+ "build": null,
+ "created": "2026-11-06T21:13:05+00:00",
+ "fingerprint": "8070a856458609477a0cb934775f38cc4c95bbf6a308324c81e8ff5284219513",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "bash and docs: nothing is compiled",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-03-status-and-update-plan.md",
+ "red": {
+  "elapsed_s": 1.9,
+  "exit": 1,
+  "tail": "check-contracts: cited nice-dns changed since the pinned commit 2438546c7294; re-derive its citations and re-pin"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "2.3",
+ "test": "bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md && grep -q 'WF-DNS-005' docs/workflows/dns-lifecycle.md && grep -q 'nice-dns update' README.md && ./nice-dns --help | grep -q '^  update'",
+ "text": "`bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md && grep -q 'WF-DNS-005' docs/workflows/dns-lifecycle.md && grep -q 'nice-dns update' README.md && ./nice-dns --help | grep -q '^  update'`",
+ "touched": [
+  "docs/workflows/dns-lifecycle.md"
+ ],
+ "touched_blobs": {
+  "docs/workflows/dns-lifecycle.md": "a9ed88ac60563d6308e6a7c18ea5657d26b909bd"
+ },
+ "witness_blobs": {
+  "README.md": "74c70203acb1bb0c50a59a770cc14dfde3afb125",
+  "docs/workflows/dns-lifecycle.md": "a9ed88ac60563d6308e6a7c18ea5657d26b909bd",
+  "nice-dns": "641202e044ad69b5466f0616d4e2ee98cd9d5c88",
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}

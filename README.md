@@ -25,6 +25,8 @@ Once installed, one command manages the stack on Linux and macOS, from any direc
 nice-dns install [haproxy|socat] [--hardened] [--branch B]   # from a checkout
 nice-dns reinstall [haproxy|socat] [--hardened|--standard] [--branch B] [--local]
 nice-dns restart
+nice-dns status [--tsv]
+nice-dns update [--check] [--force]
 nice-dns uninstall
 ```
 
@@ -32,6 +34,8 @@ nice-dns uninstall
 - **`--branch`** always clones that branch, even from a checkout. `--hardened` needs a `pi-hole-hardened` checkout: next to your nice-dns checkout, or where the last hardened install found it, or in `~/.local/share/nice-dns/`.
 - **`nice-dns reinstall`** installs again with the recorded proxy, Pi-hole flavour and branch; options override them. It clones the branch first. If that fails because DNS is down, the running stack is untouched and `--local` uses the source kept at the last install.
 - **`nice-dns restart`** restarts the whole stack and waits for DNS to answer. It runs no DNS command itself; on macOS the stack's own start script re-pins DNS and bounces Mullvad, as it does whenever it rebuilds. Either way this costs a Tor bootstrap of a minute or more.
+- **`nice-dns status`** says what is installed, what the health controller last saw and did, the bridges, the admin page and the last update check. It only reads files, so it answers at once; `--tsv` prints the same as rows for scripts (docs/cli-contract.md). It exits 1 when nothing is installed and 2 when something it reads cannot be read.
+- **`nice-dns update`** asks GitHub whether your branch's commit differs from the installed one (usually: is newer). If it does, it installs it like `nice-dns reinstall`, with the recorded choices; `--check` only asks, and `--force` reinstalls even when nothing differs. If it cannot tell (offline, DNS down, or an install from a modified checkout), it installs nothing and says why. An install from a local commit GitHub does not have counts as different, so `update` would install the branch's commit over it.
 - **`nice-dns uninstall`** removes the stack, gives host DNS back, then removes the command.
 
 ## Install

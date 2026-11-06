@@ -1,0 +1,11 @@
+{
+ "created": "2026-11-06T19:12:37+00:00",
+ "fingerprint": "c151e8d7cc239e7889416ff8c3a76c73c8d3c99ef23ead3218065d63a463ea75",
+ "index": 1,
+ "kind": "claim-deviation",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-03-status-and-update-plan.md",
+ "schema": 2,
+ "task": "1.4",
+ "text": "every row group the command prints is documented and nothing else is (red if a group is missing from either side)",
+ "why": "prove-claim cannot extract this Test: command (its backticks split the markdown code span). Checked by hand with ND_STATE_DIR on a scratch copy of the laptop's controller state plus one recorded pass (owner, 2026-11-06: \"Fixture state dir (Recommended)\"; the laptop's own controller predates Task 1.1 and writes no obs rows): exit 0 with the doc; exit 1 (diff: > obs) with the obs row removed; exit 0 after restoring; and exit 2 with no doc at all."
+}
