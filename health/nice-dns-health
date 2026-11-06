@@ -218,7 +218,6 @@ run_checks() {
   INDETERMINATE_CHECKS=()
   CHECK_DETAIL=""
   HEALTH_OBS=""
-  local kind name verdict ms reason routes=0 route_ok=0 rbad=0
 
   if ! load_health_libs; then
     FAILED_CHECKS+=("health-libs")
@@ -231,6 +230,14 @@ run_checks() {
     CHECK_DETAIL+="FAIL health-observations: the observation output is not valid"$'\n'
     return
   fi
+  classify_observations
+}
+
+# classify_observations: adds HEALTH_OBS's records to FAILED_CHECKS,
+# INDETERMINATE_CHECKS and CHECK_DETAIL (run_checks; the kept observations
+# of a tick classify the same way).
+classify_observations() {
+  local kind name verdict ms reason routes=0 route_ok=0 rbad=0
   while IFS=$'\t' read -r kind name verdict ms reason; do
     [ "$kind" = obs ] || continue
     case "$name" in route:*) routes=$((routes + 1)) ;; esac
@@ -253,6 +260,36 @@ EOF
     FAILED_CHECKS+=("chain-resolves")
     CHECK_DETAIL+="FAIL chain-resolves: no provider route answered ($rbad of $routes unhealthy); a local-cache answer is not upstream health"$'\n'
   fi
+}
+
+# checks_verdict: the verdict of FAILED_CHECKS and INDETERMINATE_CHECKS, as
+# `run` logs it: OK, INDETERMINATE [names] or FAIL [names] indeterminate=(names).
+checks_verdict() {
+  if [ ${#FAILED_CHECKS[@]} -eq 0 ] && [ ${#INDETERMINATE_CHECKS[@]} -eq 0 ]; then
+    printf 'OK\n'
+  elif [ ${#FAILED_CHECKS[@]} -eq 0 ]; then
+    printf 'INDETERMINATE [%s]\n' "${INDETERMINATE_CHECKS[*]}"
+  else
+    printf 'FAIL [%s]%s\n' "${FAILED_CHECKS[*]}" "${INDETERMINATE_CHECKS[*]:+ indeterminate=(${INDETERMINATE_CHECKS[*]})}"
+  fi
+}
+
+# keep_observations <observations> <epoch> <verdict>: after a pass has
+# decided (nd_recovery_tick returned 0), $(nd_platform_state_dir)/
+# observations.tsv becomes its records plus `pass <epoch> <verdict>` (0600,
+# renamed over from a temporary file in the same directory, so a reader never
+# sees half a file and a pass that dies first leaves the previous one). A
+# failure is logged; the pass goes on.
+keep_observations() {
+  local d t
+  if d="$(nd_platform_state_dir)" && nd_state_init 2>/dev/null && t="$(mktemp "$d/.observations.XXXXXX")"; then
+    if { cat "$1" && printf 'pass\t%s\t%s\n' "$2" "$3"; } >"$t" && chmod 600 "$t" && mv -f "$t" "$d/observations.tsv"; then
+      return 0
+    fi
+    rm -f "$t"
+  fi
+  log_to_file "$(ts) observations not kept in ${d:-the state directory}"
+  return 0
 }
 
 # redact_bridges: diagnostics never carry bridge material (PRIV-NO-SECRETS):
@@ -406,11 +443,11 @@ cmd_run() {
   if [ ${#FAILED_CHECKS[@]} -eq 0 ]; then
     # Nothing is known to be broken, and nothing is known to work: keep any
     # outage window as it is and take no action.
-    log_to_file "$now INDETERMINATE [${INDETERMINATE_CHECKS[*]}] -> $dump"
+    log_to_file "$now $(checks_verdict) -> $dump"
     run_controller_pass "$now"
     return 1
   fi
-  log_to_file "$now FAIL [${FAILED_CHECKS[*]}]${INDETERMINATE_CHECKS[*]:+ indeterminate=(${INDETERMINATE_CHECKS[*]})} -> $dump"
+  log_to_file "$now $(checks_verdict) -> $dump"
   run_controller_pass "$now"
   return 1
 }
@@ -495,7 +532,7 @@ refresh_bridges_on_outage() {
 }
 
 run_controller_pass() {
-  local now_human="$1" o out
+  local now_human="$1" o out epoch rc
   # No libraries or no valid observations: nothing to decide on.
   if [ -z "${HEALTH_LIBS_LOADED:-}" ] || [ -z "$HEALTH_OBS" ] || ! printf '%s\n' "$HEALTH_OBS" | nd_health_validate 2>/dev/null; then
     log_to_file "$now_human controller skipped: no valid observations"
@@ -503,7 +540,10 @@ run_controller_pass() {
   fi
   o="$(mktemp "${TMPDIR:-/tmp}/nice-dns-obs.XXXXXX")" || return 0
   printf '%s\n' "$HEALTH_OBS" >"$o"
-  out="$(nd_recovery_tick active "$o" 2>&1)"
+  epoch="$(date +%s)"
+  out="$(nd_recovery_tick active "$o" 2>&1)"; rc=$?
+  # Only a pass that decided (busy or a broken state decides nothing).
+  [ "$rc" -ne 0 ] || keep_observations "$o" "$epoch" "$(checks_verdict)"
   rm -f "$o"
   log_to_file "$now_human controller $(printf '%s\n' "$out" | awk -F '\t' 'NF == 2 { printf "%s%s=%s", s, $1, $2; s = " " }')"
 }
@@ -1124,7 +1164,7 @@ dump_first_escalation() {
 # what it would do, in a separate shadow state), commit. The schedules still
 # call `run`; Sub-plan 3 Task 2.1 moves them to `tick`.
 cmd_tick() {
-  local mode=active o out rc
+  local mode=active o out rc epoch
   case "${1:-}" in
     --shadow) mode=shadow ;;
     '') ;;
@@ -1145,8 +1185,10 @@ cmd_tick() {
     rm -f "$o"; echo "$SCRIPT_NAME: the observation output is not valid" >&2; return 3
   fi
   report_security_drift "$o"
+  epoch="$(date +%s)"
   out="$(nd_recovery_tick "$mode" "$o")"; rc=$?
   [ "$mode" != active ] || dump_first_escalation "$o" "$out"
+  [ "$rc" -ne 0 ] || keep_observations "$o" "$epoch" "$(HEALTH_OBS="$(cat "$o")"; FAILED_CHECKS=(); INDETERMINATE_CHECKS=(); CHECK_DETAIL=""; classify_observations; checks_verdict)"
   rm -f "$o"
   log_to_file "$(ts) TICK $mode $(printf '%s\n' "$out" | awk -F '\t' '{ printf "%s%s=%s", s, $1, $2; s = " " }')"
   printf '%s\n' "$out"
