@@ -23,19 +23,20 @@ Usage: nice-dns <command> [options]
       --local uses the source kept at the last install instead.
   restart
       Restart the whole stack and wait for DNS to answer.
-  update [--check] [--force] [haproxy|socat] [--hardened|--standard] [--branch B]
-      Ask the recorded branch (or B) for its newest commit and compare it
-      with the installed one: `current` (exit 0), `available <commit>`
-      (exit 10) or `unknown: <reason>` (exit 1); the answer is kept for
-      `status`. --check stops there. Otherwise a newer commit (or any
-      commit, with --force) is installed like `reinstall`, from a clone of
-      that branch and with the recorded choices; options override them.
-      An unknown answer installs nothing.
+  update --check [--branch B]
+  update [--force] [haproxy|socat] [--hardened|--standard] [--branch B]
+      Compare the installed commit with the newest commit of the recorded
+      branch (or B). --check prints `current` (exit 0), `available
+      <commit>` (exit 10: the branch has a different commit, usually newer)
+      or `unknown: <reason>` (exit 1), and keeps the answer for `status`.
+      Without --check a different commit (any, with --force) is installed
+      like `reinstall`, from a clone of the branch with the recorded
+      choices; options override them. An unknown answer installs nothing.
   status [--tsv]
       What is installed, what the controller last saw and did, and the
       last update check. Reads files only. --tsv prints the
       nice-dns-status/1 rows (docs/cli-contract.md). Exit 0, 1 when
-      nothing is installed, 2 when the controller's state is unreadable.
+      nothing is installed, 2 when a file it reads cannot be read.
   uninstall
       Remove the stack, then this command.
 EOF
@@ -360,47 +361,58 @@ update_cache_dir() {
 }
 
 # update_write_cache <branch> <local> <remote> <result>: update-check.tsv
-# (nice-dns-update-check/1), renamed over from a temporary file. A failure
-# to write it is reported and does not change the answer.
+# (nice-dns-update-check/1), renamed over from a temporary file in the
+# controller's state directory. That directory belongs to the controller:
+# when it is not there (or is a symlink), nothing is kept. A failure to
+# write is reported and does not change the answer.
 update_write_cache() {
   local d t
   if ! d="$(update_cache_dir)"; then err "the update check was not kept: no status library"; return 0; fi
-  if { [ -d "$d" ] || (umask 077 && mkdir -p "$d"); } && t="$(mktemp "$d/.update-check.XXXXXX")"; then
+  if [ ! -d "$d" ] || [ -L "$d" ]; then err "the update check was not kept: no controller state directory at $d"; return 0; fi
+  if t="$(mktemp "$d/.update-check.XXXXXX")"; then
     if printf 'schema\tnice-dns-update-check/1\nchecked_at\t%s\nbranch\t%s\nlocal_commit\t%s\nremote_commit\t%s\nresult\t%s\n' \
         "$(date +%s)" "$1" "$2" "${3:--}" "$4" >"$t" && chmod 600 "$t" && mv -f "$t" "$d/update-check.tsv"; then
       return 0
     fi
     rm -f "$t"
   fi
-  err "the update check was not kept in ${d:-the state directory}"
+  err "the update check was not kept in $d"
   return 0
 }
 
 # update_check: sets ND_CLI_UP_RESULT (current|available|unknown),
-# ND_CLI_UP_REMOTE, ND_CLI_UP_BRANCH and ND_CLI_UP_REASON, writes the
-# cache and prints the answer. Returns 0, 10 or 1. Only `git ls-remote`
-# reaches the network, bounded by its low-speed limit and, where it exists,
-# by timeout(1).
+# ND_CLI_UP_REMOTE, ND_CLI_UP_BRANCH and ND_CLI_UP_REASON and keeps the
+# answer for `status` when the branch is the recorded one. Prints nothing.
+# `available` means the branch's commit DIFFERS from the installed one,
+# usually newer; an install from a local commit the branch does not have
+# reads as available too. Only `git ls-remote` reaches the network; where
+# timeout(1) exists it is the hard bound, 55 s, so the answer comes within a
+# minute; otherwise git's low-speed limit ends only a transfer that has
+# started.
 update_check() {
-  local m local_c dirty out to=""
+  local m local_c dirty out to="" recorded
   ND_CLI_UP_RESULT=unknown ND_CLI_UP_REMOTE="" ND_CLI_UP_REASON=""
   if ! m="$(recorded_manifest)"; then
-    err "$ND_CLI_NOT_INSTALLED"
-    return 1
+    ND_CLI_UP_REASON="nothing is installed"
+    return 0
   fi
-  ND_CLI_UP_BRANCH="${ND_CLI_BRANCH:-$(recorded_field "$m" branch)}"
-  [ -n "$ND_CLI_UP_BRANCH" ] || ND_CLI_UP_BRANCH=main
+  recorded="$(recorded_field "$m" branch)"
+  [ -n "$recorded" ] || recorded=main
+  ND_CLI_UP_BRANCH="${ND_CLI_BRANCH:-$recorded}"
   local_c="$(recorded_field "$m" source_commit)"
   dirty="$(recorded_field "$m" source_dirty)"
   case "$local_c" in
     *[!0-9a-f]*|'') ND_CLI_UP_REASON="the installed source was not a clean commit" ;;
     *) [ "${#local_c}" -eq 40 ] && [ "$dirty" = 0 ] || ND_CLI_UP_REASON="the installed source was not a clean commit" ;;
   esac
+  if [ -z "$ND_CLI_UP_REASON" ] && ! command -v git >/dev/null 2>&1; then
+    ND_CLI_UP_REASON="git is not installed"
+  fi
   if [ -z "$ND_CLI_UP_REASON" ]; then
-    command -v timeout >/dev/null 2>&1 && to="timeout 90"
-    # shellcheck disable=SC2086  # $to is "timeout 90" or empty
+    command -v timeout >/dev/null 2>&1 && to="timeout 55"
+    # shellcheck disable=SC2086  # $to is "timeout 55" or empty
     if ! out="$($to git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 ls-remote --heads "$ND_CLI_REPO" "refs/heads/$ND_CLI_UP_BRANCH" 2>/dev/null)"; then
-      ND_CLI_UP_REASON="could not reach $ND_CLI_REPO (is DNS down?)"
+      ND_CLI_UP_REASON="could not reach $ND_CLI_REPO (offline, or DNS down?)"
     else
       ND_CLI_UP_REMOTE="$(printf '%s\n' "$out" | awk -F '\t' -v r="refs/heads/$ND_CLI_UP_BRANCH" '$2 == r && $1 ~ /^[0-9a-f]+$/ && length($1) == 40 { print $1; exit }')"
       if [ -z "$ND_CLI_UP_REMOTE" ]; then
@@ -412,21 +424,25 @@ update_check() {
       fi
     fi
   fi
-  update_write_cache "$ND_CLI_UP_BRANCH" "${local_c:--}" "$ND_CLI_UP_REMOTE" "$ND_CLI_UP_RESULT"
-  case "$ND_CLI_UP_RESULT" in
-    current) echo current; return 0 ;;
-    available) printf 'available %s\n' "$(printf '%s' "$ND_CLI_UP_REMOTE" | cut -c1-12)"; return 10 ;;
-  esac
-  printf 'unknown: %s\n' "$ND_CLI_UP_REASON"
-  return 1
+  # `status` compares the installed commit with its own branch only.
+  case "$local_c" in *[!0-9a-f]*|'') local_c=- ;; *) [ "${#local_c}" -eq 40 ] || local_c=- ;; esac
+  [ "$ND_CLI_UP_BRANCH" != "$recorded" ] || update_write_cache "$ND_CLI_UP_BRANCH" "$local_c" "$ND_CLI_UP_REMOTE" "$ND_CLI_UP_RESULT"
 }
 
-# cmd_update [--check] [--force] [reinstall choices]: the check, then, unless
-# --check, `reinstall` of the checked branch from a clone of it, with the
-# recorded choices (DEC-019: the installers do all the work). Never widens
-# them: the branch is the recorded one unless --branch names another.
+# update_short: the first 12 hex of the checked commit.
+update_short() { printf '%s' "$ND_CLI_UP_REMOTE" | cut -c1-12; }
+
+# cmd_update [--check | [--force] [reinstall choices]]: the check, then,
+# unless --check, `reinstall` of the checked branch from a clone of it, with
+# the recorded choices (DEC-019: the installers do all the work). Never
+# widens them: the branch is the recorded one unless --branch names another.
+# The last line on stdout is the answer (docs/cli-contract.md); the
+# installer's own output comes before it. Exit: 0 current / installed,
+# 10 available (--check), 1 unknown (nothing installed), 3 the install
+# failed (the installer kept or restored the stack), 11 installed but the
+# check afterwards does not say current, 2 usage.
 cmd_update() {
-  local check=0 force=0 rc a
+  local check=0 force=0 rc
   local rest=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -440,29 +456,44 @@ cmd_update() {
   # Bash 3.2, hence the guard.
   if [ "${#rest[@]}" -gt 0 ]; then parse_choices 1 "${rest[@]}"; fi
   [ "$ND_CLI_LOCAL" = 0 ] || bad_usage "--local reinstalls the kept source; update installs the branch"
-  update_check; rc=$?
-  [ "$check" = 0 ] || return "$rc"
-  case "$ND_CLI_UP_RESULT" in
-    unknown)
+  if [ "$check" = 1 ]; then
+    [ "$force" = 0 ] || bad_usage "--check installs nothing, so --force has no meaning with it"
+    [ -z "$ND_CLI_VARIANT$ND_CLI_PIHOLE" ] || bad_usage "--check takes only --branch"
+  fi
+  update_check
+  if [ "$ND_CLI_UP_RESULT" = unknown ]; then
+    printf 'unknown: %s\n' "$ND_CLI_UP_REASON"
+    if [ "$ND_CLI_UP_REASON" = "nothing is installed" ]; then
+      err "$ND_CLI_NOT_INSTALLED"
+    elif [ "$check" = 0 ]; then
       # shellcheck disable=SC2016  # the backticks are text for the reader
       err 'nothing was installed. `nice-dns reinstall` installs the branch without a check.'
-      return 1 ;;
-    current)
-      if [ "$force" = 0 ]; then echo "already current"; return 0; fi ;;
-  esac
+    fi
+    return 1
+  fi
+  if [ "$check" = 1 ]; then
+    if [ "$ND_CLI_UP_RESULT" = current ]; then echo current; return 0; fi
+    printf 'available %s\n' "$(update_short)"
+    return 10
+  fi
+  if [ "$ND_CLI_UP_RESULT" = current ] && [ "$force" = 0 ]; then
+    echo "already current"
+    return 0
+  fi
   ND_CLI_BRANCH="$ND_CLI_UP_BRANCH"
   cmd_reinstall; rc=$?
   if [ "$rc" -ne 0 ]; then
     # shellcheck disable=SC2016  # the backticks are text for the reader
-    err "the update did not install (exit $rc); the installer keeps or restores the running stack. "'`nice-dns reinstall --local` reinstalls the source kept at the last install.'
-    return "$rc"
+    err "the update did not install (installer exit $rc); the installer keeps or restores the running stack. "'`nice-dns reinstall --local` reinstalls the source kept at the last install.'
+    return 3
   fi
-  if a="$(update_check)" && [ "$a" = current ]; then
-    printf 'updated to %s\n' "$(printf '%s' "$ND_CLI_UP_REMOTE" | cut -c1-12)"
+  update_check
+  if [ "$ND_CLI_UP_RESULT" = current ]; then
+    printf 'updated to %s\n' "$(update_short)"
     return 0
   fi
-  err "the install finished, but the check now says: $a"
-  return 1
+  printf 'installed; the check now says %s\n' "$ND_CLI_UP_RESULT${ND_CLI_UP_REASON:+: $ND_CLI_UP_REASON}"
+  return 11
 }
 
 # ─── status ──────────────────────────────────────────────────────────────────

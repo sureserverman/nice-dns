@@ -808,6 +808,7 @@ t_update_check_with_nothing_installed() {
   cl_world Linux; up_remote "$UP_REMOTE"
   cl_run "$CL_TREE/nice-dns" update --check
   assert_rc 1 "$CL_RC" "nothing installed"
+  assert_eq "unknown: nothing is installed" "$CL_OUT" "an unknown line on stdout, as for every exit 1"
   assert_match 'not installed' "$CL_ERR" "says so"
   assert_eq "" "$(cl_calls '^git ')" "and asks no remote"
 }
@@ -823,7 +824,8 @@ t_update_installs_the_recorded_choices_when_available() {
     cl_run "$CL_CMD" update
     assert_rc 0 "$CL_RC" "$u: update: $CL_ERR"
     assert_eq "installer[clone] install-$os-hardened.sh socat main" "$(cl_calls '^installer')" "$u: the recorded variant, flavour and branch, from a clone of the branch"
-    assert_match "updated to fedcba987654$" "$CL_OUT" "$u: names the new commit"
+    assert_eq "updated to fedcba987654" "$(printf '%s\n' "$CL_OUT" | tail -n 1)" "$u: the last line names the new commit"
+    assert_not_match "^available" "$CL_OUT" "$u: and the check's own line is not printed"
     assert_eq current "$(awk -F '\t' '$1 == "result" { print $2 }' "$ST_SD/update-check.tsv")" "$u: and re-checks"
   done
 }
@@ -840,7 +842,7 @@ t_update_current_installs_nothing_unless_forced() {
     up_world "$u"; os="$(cl_os "$u")"; cl_installed; up_remote "$UP_LOCAL"
     cl_run "$CL_CMD" update
     assert_rc 0 "$CL_RC" "$u: current: $CL_ERR"
-    assert_match "already current" "$CL_OUT" "$u: says so"
+    assert_eq "already current" "$CL_OUT" "$u: says exactly that"
     assert_eq "" "$(cl_calls '^installer')" "$u: and installs nothing"
     assert_eq "" "$(cl_calls '^git .*clone')" "$u: nor clones"
     cl_run "$CL_CMD" update --force
@@ -869,8 +871,9 @@ t_update_unknown_installs_nothing() {
 
 t_update_a_failed_install_names_reinstall_local() {
   up_world Linux; cl_installed; up_remote "$UP_REMOTE"
-  CL_INSTALLER_RC=3 cl_run "$CL_CMD" update
-  assert_rc 3 "$CL_RC" "the installer's failure is the update's"
+  CL_INSTALLER_RC=10 cl_run "$CL_CMD" update
+  assert_rc 3 "$CL_RC" "a failed install is exit 3, whatever the installer's code (10 would read as available)"
+  assert_match "installer exit 10" "$CL_ERR" "the installer's code is named"
   assert_match "nice-dns reinstall --local" "$CL_ERR" "names --local"
   assert_eq available "$(awk -F '\t' '$1 == "result" { print $2 }' "$ST_SD/update-check.tsv")" "the cache still says available"
 }
@@ -882,4 +885,78 @@ t_update_refuses_local_and_widens_nothing() {
   assert_eq "" "$(cl_calls '^installer')" "and installs nothing"
   cl_run "$CL_CMD" update --branch dev
   assert_match "ls-remote --heads https://github.com/sureserverman/nice-dns.git refs/heads/dev$" "$(cl_calls '^git ')" "--branch asks that branch"
+}
+
+# ─────── Status and update plan, Stage 2 gate round 1: the update contract ──
+
+t_update_installed_but_not_current_is_exit_11() {
+  up_world Linux; cl_installed; up_remote "$UP_REMOTE"
+  rm -f "$CL_FAKE/new_commit"
+  cl_run "$CL_CMD" update
+  assert_rc 11 "$CL_RC" "the install ran, but the record still names the old commit"
+  assert_eq "installed; the check now says available" "$(printf '%s\n' "$CL_OUT" | tail -n 1)" "the last line says so"
+  assert_match "installer\[clone\]" "$(cl_calls '^installer')" "and the install did run"
+}
+
+t_update_check_takes_only_branch() {
+  up_world Linux; up_remote "$UP_REMOTE"
+  cl_run "$CL_TREE/nice-dns" update --check --force
+  assert_rc 2 "$CL_RC" "--check with --force is a usage error"
+  cl_run "$CL_TREE/nice-dns" update --check socat
+  assert_rc 2 "$CL_RC" "--check with a choice is a usage error"
+  assert_eq "" "$(cl_calls '^git ')" "and nothing is asked"
+}
+
+t_update_check_of_another_branch_keeps_no_cache() {
+  up_world Linux; up_remote "$UP_REMOTE"
+  printf '%s\trefs/heads/dev\n' "$UP_REMOTE" >"$CL_FAKE/ls_remote"
+  cl_run "$CL_TREE/nice-dns" update --check --branch dev
+  assert_rc 10 "$CL_RC" "dev differs: $CL_ERR"
+  assert_eq "" "$(find "$ST_SD" -name update-check.tsv)" "status compares the installed commit with its own branch only"
+}
+
+t_update_check_without_a_controller_keeps_no_cache_and_creates_nothing() {
+  up_world Linux; up_remote "$UP_LOCAL"
+  rm -rf "${ST_SD:?}"
+  cl_run "$CL_TREE/nice-dns" update --check
+  assert_rc 0 "$CL_RC" "the answer stands"
+  assert_eq current "$CL_OUT" "and is printed"
+  assert_match "not kept" "$CL_ERR" "the missing cache is named"
+  [ ! -e "$ST_SD" ] || fail "update created the controller's state directory"
+}
+
+t_update_check_reads_only_its_own_branch_line() {
+  up_world Linux
+  printf '%s\trefs/heads/mainline\n%s\trefs/heads/main\n' "$UP_REMOTE" "$UP_LOCAL" >"$CL_FAKE/ls_remote"
+  cl_run "$CL_TREE/nice-dns" update --check
+  assert_eq current "$CL_OUT" "refs/heads/mainline is not main"
+  printf '%s\trefs/heads/main\n' "${UP_REMOTE%?}" >"$CL_FAKE/ls_remote"
+  cl_run "$CL_TREE/nice-dns" update --check
+  assert_rc 1 "$CL_RC" "a 39-character commit is no commit"
+  assert_match "^unknown: the remote has no branch 'main'" "$CL_OUT" "says so"
+  printf 'garbage\n' >"$CL_FAKE/ls_remote"
+  cl_run "$CL_TREE/nice-dns" update --check
+  assert_rc 1 "$CL_RC" "garbage is no commit"
+  up_remote "$UP_LOCAL"; cl_run "$CL_TREE/nice-dns" update --check
+  assert_match "^git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 ls-remote" "$(cl_calls '^git ')" "the transfer has its low-speed bound"
+}
+
+t_update_check_bounds_its_wait_under_a_minute() {
+  local b
+  up_world Linux; b="$CL_W/slow"; mkdir -p "$b"
+  # A git that never answers, behind the real timeout(1).
+  printf '#!/bin/sh\nexec sleep 300\n' >"$b/git"; chmod +x "$b/git"
+  ln -s "$(command -v timeout)" "$b/timeout"
+  SECONDS=0
+  HOME="$CL_HOME" PATH="$b:$CL_FAKE:$PATH" TMPDIR="$CASE_DIR" XDG_STATE_HOME="" XDG_CONFIG_HOME="" XDG_DATA_HOME="" bash "$CL_TREE/nice-dns" update --check >"$CL_W/out" 2>"$CL_W/err"
+  CL_RC=$?
+  assert_rc 1 "$CL_RC" "a stalled remote is unknown"
+  [ "$SECONDS" -lt 60 ] || fail "the answer took ${SECONDS}s, not under a minute"
+  assert_eq unknown "$(awk -F '\t' '$1 == "result" { print $2 }' "$ST_SD/update-check.tsv")" "the cache says unknown"
+}
+
+t_update_cache_names_no_commit_for_an_unclean_record() {
+  up_world Linux unknown 0; up_remote "$UP_REMOTE"
+  cl_run "$CL_TREE/nice-dns" update --check
+  assert_eq - "$(awk -F '\t' '$1 == "local_commit" { print $2 }' "$ST_SD/update-check.tsv")" "local_commit is - when the record names no commit"
 }
