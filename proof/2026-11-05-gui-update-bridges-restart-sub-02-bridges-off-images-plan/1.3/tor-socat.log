@@ -1,4 +1,0 @@
-tor-supervisor: spawned tor pid=9 generation=1 direct (no bridges)
-tor-supervisor: bootstrapped after 5 s, a stream works after 6 s (exit)
-Tor bootstrapped successfully.
-ready=1
