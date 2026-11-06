@@ -34,3 +34,9 @@ Assumption: The release CI can build the images on every platform it builds (lin
 Checked: each arch's APKINDEX: `curl -fsSL https://dl-cdn.alpinelinux.org/alpine/<repo>/community/<arch>/APKINDEX.tar.gz | tar -xzO APKINDEX` for repo edge and v3.24, arch x86_64 aarch64 armv7 riscv64
 Result: edge: x86_64/aarch64/armv7 `0.8.1-r7`, riscv64 `0.8.1-r6` (index last-modified 2026-10-15, stalled); v3.24: `0.8.1-r7` on all four. Neither r6 nor r7 from edge resolves on all four platforms.
 Verdict: false
+
+## Premise 4
+Assumption: After the owner's decision (2026-11-06, "1": install lyrebird from Alpine v3.24/community instead of edge), the pinned `lyrebird=0.8.1-r7` resolves on all four release platforms.
+Checked: per arch, in alpine:3.24.1: `apk fetch --arch <arch> --no-cache --allow-untrusted --repositories-file /dev/null -X https://dl-cdn.alpinelinux.org/alpine/v3.24/community -o /tmp/o lyrebird`, then `.PKGINFO` arch; Dockerfiles switched in tor-haproxy 9a39088, tor-socat 37b3306; both images rebuilt and tests/run.sh green.
+Result: x86_64, aarch64, armv7, riscv64 each downloaded `lyrebird-0.8.1-r7.apk` with the matching arch.
+Verdict: holds
