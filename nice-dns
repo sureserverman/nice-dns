@@ -23,6 +23,11 @@ Usage: nice-dns <command> [options]
       --local uses the source kept at the last install instead.
   restart
       Restart the whole stack and wait for DNS to answer.
+  status [--tsv]
+      What is installed, what the controller last saw and did, and the
+      last update check. Reads files only. --tsv prints the
+      nice-dns-status/1 rows (docs/cli-contract.md). Exit 0, 1 when
+      nothing is installed, 2 when the controller's state is unreadable.
   uninstall
       Remove the stack, then this command.
 EOF
@@ -46,7 +51,7 @@ ND_CLI_CMD="$1"
 shift
 
 case "$ND_CLI_CMD" in
-  install|reinstall|restart|uninstall) ;;
+  install|reinstall|restart|uninstall|status) ;;
   -h|--help|help) usage; exit 0 ;;
   *) bad_usage "unknown command '$ND_CLI_CMD'" ;;
 esac
@@ -333,9 +338,64 @@ cmd_restart() {
   echo "nice-dns restarted; DNS is answering."
 }
 
+# ─── status ──────────────────────────────────────────────────────────────────
+
+# status_human: the rows (stdin) as sections. Observations from a stale pass
+# are printed under a header that says how old they are.
+status_human() {
+  awk -F '\t' '
+    function sec(t) { if (shown++) print ""; print t }
+    $1 == "schema" { next }
+    $1 == "obs" { if ($2 ~ /^container:/) c[++nc] = $0; else if ($2 ~ /^route:/) r[++nr] = $0; else o[++no] = $0; next }
+    { g[++ng] = $0 }
+    $1 == "controller" && $2 == "stale" && $3 != "no" { stale = ($3 == "never") ? " (stale: no pass recorded)" : " (stale: last pass " $3 " s ago)" }
+    $1 == "route" && $2 == "selected" { sel = $3 " (generation " $4 ")" }
+    function kv(grp,   i, f, n, v) {
+      for (i = 1; i <= ng; i++) { n = split(g[i], f, "\t"); if (f[1] != grp) continue
+        v = f[3]; for (j = 4; j <= n; j++) v = v " " f[j]; printf "  %-15s %s\n", f[2], v }
+    }
+    function obs(a, n, strip,   i, f) { for (i = 1; i <= n; i++) { split(a[i], f, "\t"); sub(strip, "", f[2]); printf "  %-22s %-13s %s\n", f[2], f[3], f[5] } }
+    END {
+      sec("Install"); kv("install")
+      sec("Controller"); kv("controller"); for (i = 1; i <= no; i++) { split(o[i], f, "\t"); printf "  check %-22s %-13s %s\n", f[2], f[3], f[5] }
+      sec("Containers" stale); if (nc) obs(c, nc, "^container:"); else print "  (none observed)"
+      sec("Routes" stale); if (sel != "") printf "  %-22s %s\n", "selected", sel; obs(r, nr, "^route:")
+      sec("Bridges"); kv("bridges")
+      sec("Update"); kv("update")
+      sec("Admin"); kv("admin")
+      sec("Recent actions")
+      n = 0; for (i = 1; i <= ng; i++) { split(g[i], f, "\t"); if (f[1] == "recent") { printf "  %s  %-26s %s\n", f[2], f[3], f[4]; n++ } }
+      if (!n) print "  (none)"
+    }'
+}
+
+# cmd_status [--tsv]: lib/status.sh from this checkout or the kept source.
+cmd_status() {
+  local tsv=0 rows rc lib="$ND_CLI_ROOT/lib/status.sh"
+  while [ $# -gt 0 ]; do
+    case "$1" in --tsv) tsv=1 ;; *) bad_usage "unknown option '$1' for status" ;; esac
+    shift
+  done
+  if [ ! -f "$lib" ]; then
+    if ! recorded_manifest >/dev/null; then
+      printf 'schema\tnice-dns-status/1\ninstall\tinstalled\tno\n'
+      err "$ND_CLI_NOT_INSTALLED"
+      return 1
+    fi
+    err "no status library at $lib; reinstall to update the kept source"
+    return 2
+  fi
+  # shellcheck disable=SC1090  # the source root is found at run time
+  . "$lib" || return 2
+  rows="$(nd_status_rows "$ND_CLI_PLATFORM")"; rc=$?
+  if [ "$tsv" = 1 ]; then printf '%s\n' "$rows"; else printf '%s\n' "$rows" | status_human; fi
+  return "$rc"
+}
+
 case "$ND_CLI_CMD" in
   install) cmd_install "$@" ;;
   uninstall) cmd_uninstall "$@" ;;
   reinstall) cmd_reinstall "$@" ;;
   restart) cmd_restart "$@" ;;
+  status) cmd_status "$@" ;;
 esac

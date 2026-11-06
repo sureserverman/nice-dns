@@ -97,7 +97,7 @@ cl_record() {
 cl_run() {
   local cmd="$1"
   shift
-  HOME="$CL_HOME" PATH="$CL_FAKE:$PATH" TMPDIR="$CASE_DIR" XDG_STATE_HOME="" bash "$cmd" "$@" >"$CL_W/out" 2>"$CL_W/err"
+  HOME="$CL_HOME" PATH="$CL_FAKE:$PATH" TMPDIR="$CASE_DIR" XDG_STATE_HOME="" XDG_CONFIG_HOME="" XDG_DATA_HOME="" bash "$cmd" "$@" >"$CL_W/out" 2>"$CL_W/err"
   CL_RC=$?
   CL_OUT="$(cat "$CL_W/out")" CL_ERR="$(cat "$CL_W/err")"
 }
@@ -610,4 +610,46 @@ t_status_values_carry_no_control_characters() {
   printf 'schema\tnice-dns-install-prepare/1\nvariant\thaproxy\npihole\tstandard\nbranch\tma\033[31min\n' >"$ST_INST/generations/g1/prepare.tsv"
   st_rows
   assert_eq "ma[31min" "$(st_val install branch)" "an escape in a file value is removed"
+}
+
+# ─────────────── Status and update plan, Task 1.3: the status command ───────
+
+t_status_command_prints_rows_and_sections_with_its_exit_codes() {
+  local u bad s
+  for u in $(cl_platforms); do
+    st_world "$u"
+    ND_STATUS_NOW="$ST_NOW" cl_run "$CL_TREE/nice-dns" status --tsv
+    assert_rc 0 "$CL_RC" "$u: status --tsv: $CL_ERR"
+    assert_eq "schema	nice-dns-status/1" "$(printf '%s\n' "$CL_OUT" | head -n 1)" "$u: --tsv starts with the schema line"
+    bad="$(printf '%s\n' "$CL_OUT" | awk -F '\t' 'NR > 1 && ($1 !~ /^(install|controller|obs|route|bridges|update|admin|recent)$/ || NF < 3)')"
+    assert_eq "" "$bad" "$u: every other row is a known group with a key and a value"
+    assert_eq "" "$(cl_calls '^(podman|container|dig|systemctl|launchctl|git) ')" "$u: status runs no runtime, scheduler, resolver or git"
+    ND_STATUS_NOW="$ST_NOW" cl_run "$CL_TREE/nice-dns" status
+    assert_rc 0 "$CL_RC" "$u: status: $CL_ERR"
+    for s in Install Controller Containers Routes Bridges Update Admin "Recent actions"; do
+      assert_match "^$s" "$CL_OUT" "$u: the $s section"
+    done
+    assert_match "pi-hole +unhealthy +paused" "$CL_OUT" "$u: a container line"
+    assert_match "cloudflare-onion +healthy +answered" "$CL_OUT" "$u: a route line"
+    assert_not_match "\\(stale" "$CL_OUT" "$u: a fresh pass's observations carry no stale marker"
+    assert_match "^  stale +no$" "$CL_OUT" "$u: and the controller says so"
+    st_pass $((ST_NOW - 400)) OK
+    ND_STATUS_NOW="$ST_NOW" cl_run "$CL_TREE/nice-dns" status
+    assert_match "^Containers \(stale: last pass 400 s ago\)" "$CL_OUT" "$u: stale observations are marked and still printed"
+    assert_match "pi-hole +unhealthy +paused" "$CL_OUT" "$u: still printed"
+    chmod 000 "$ST_SD"
+    cl_run "$CL_TREE/nice-dns" status --tsv
+    chmod 700 "$ST_SD"
+    assert_rc 2 "$CL_RC" "$u: an unreadable state directory exits 2"
+    rm -rf "$ST_INST"
+    cl_run "$CL_TREE/nice-dns" status
+    assert_rc 1 "$CL_RC" "$u: nothing installed exits 1"
+    assert_match "curl -fsSL" "$CL_OUT" "$u: and names the curl line"
+  done
+}
+
+t_status_is_in_the_help() {
+  cl_world Linux
+  cl_run "$CL_TREE/nice-dns" --help
+  assert_match "^  status \[--tsv\]" "$CL_OUT" "--help lists status"
 }

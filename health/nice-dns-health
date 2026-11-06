@@ -942,6 +942,11 @@ cmd_status() {
   echo "=== Install ==="
   install_report || true
   echo
+  # The last pass's container records (observations.tsv, written after each
+  # pass): whatever containers the observations name.
+  echo "=== Containers ==="
+  container_report
+  echo
   # The controller's own lines: a failing unit's start attempts must not hide them.
   echo "=== Last 5 health.log entries ==="
   if [ -f "$ROLL_LOG" ]; then
@@ -954,6 +959,18 @@ cmd_status() {
   # shellcheck disable=SC2012
   ls -1t "$LOG_DIR"/failure-*.log 2>/dev/null | head -5 | sed 's/^/  /' \
     || echo "  (none)"
+}
+
+# container_report: one line per `container:` record of the last pass, from
+# the file the pass keeps (keep_observations). Reads that file only.
+container_report() {
+  local f
+  if ! load_health_libs || ! f="$(nd_platform_state_dir)/observations.tsv" || [ ! -r "$f" ]; then
+    echo "  (no pass recorded yet)"
+    return 0
+  fi
+  _ir_clean_lines <"$f" | awk -F '\t' '$1 == "obs" && $2 ~ /^container:/ { sub(/^container:/, "", $2); printf "  %-12s %-13s %s\n", $2, $3, $5; n++ }
+    END { if (!n) print "  (no container records in the last pass)" }'
 }
 
 # ───────────── Install drift (BL-045) ─────────────

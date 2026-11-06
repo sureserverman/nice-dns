@@ -523,3 +523,24 @@ $(tail -n 3 "$(ci_log "$plat")")"
     ) || exit 1
   done
 }
+
+# Status and update plan, Task 1.3: the controller's status lists every
+# container record of the last pass, whatever containers exist.
+t_health_status_lists_every_container_record() {
+  (
+    local n
+    ci_drift_env
+    mkdir -p "$ND_STATE_DIR"; chmod 700 "$ND_STATE_DIR"
+    printf 'schema\tnice-dns-observations/1\nobs\tcontainer:unbound\thealthy\t3\trunning\nobs\tcontainer:pi-hole\tunhealthy\t5\tpaused\nobs\tcontainer:tor-haproxy\thealthy\t4\trunning\nobs\tcontainer:extra\tindeterminate\t1\tno answer\nobs\troute:cloudflare-onion\thealthy\t120\tanswered\npass\t1800000000\tOK\n' >"$ND_STATE_DIR/observations.tsv"
+    ci_cli status
+    assert_match "=== Containers ===" "$CI_OUT" "the table is there: $CI_OUT"
+    n="$(printf '%s\n' "$CI_OUT" | sed -n '/^=== Containers ===/,/^$/p' | grep -c '^  ')"
+    assert_eq 4 "$n" "one line per container record"
+    assert_match "  pi-hole +unhealthy +paused" "$CI_OUT" "name, verdict and reason"
+    assert_match "  extra +indeterminate +no answer" "$CI_OUT" "a container the code does not name is listed too"
+    rm -f "$ND_STATE_DIR/observations.tsv"
+    ci_cli status
+    assert_match "=== Containers ===" "$CI_OUT" "the table is there without a pass"
+    assert_match "no pass recorded yet" "$CI_OUT" "and says why it is empty"
+  ) || exit 1
+}
