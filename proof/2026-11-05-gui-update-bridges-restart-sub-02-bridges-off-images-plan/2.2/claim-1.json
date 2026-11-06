@@ -1,0 +1,36 @@
+{
+ "baseline": {
+  "elapsed_s": 29.7,
+  "exit": 0,
+  "tail": "run_id=20261106T104526Z-017bb151 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261106T104526Z-017bb151\nPASS  t_every_public_resolver_literal_is_declared\nPASS  t_every_required_proxy_interface_is_provided\nPASS  t_hardened_needs_its_sibling\nPASS  t_installers_use_the_locked_digests\nPASS  t_lock_is_well_formed\nPASS  t_malformed_lock_is_refused\nPASS  t_missing_interface_is_refused\nPASS  t_refresh_script_checks_and_writes\nPASS  t_signatures_are_verified_when_cosign_is_present\nPASS  t_unsupported_platform_is_refused\ngroup integration/release-inputs: collected=10 passed=10 failed=0\ncollected=10 passed=10 failed=0\nresult=pass run_id=20261106T104526Z-017bb151 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261106T104526Z-017bb151\nROLE            REFERENCE                          STATUS       DIGEST\nproxy-haproxy   docker.io/sureserver/tor-haproxy:v2.16 current      sha256:b47b200323d867775c5302d7c6c92b22ec3856860157432ea9de42ce1f8b110f\nproxy-socat     docker.io/sureserver/tor-socat:v2.12 current      sha256:4feee0640ed17f3142b165ef527192456b46851659f17ce23ba1fceec0380992\nunbound-base    docker.io/sureserver/hardened-unbound:v1.4.0 current      sha256:132e0ffde4a25c8bf9df32affe23304949229cff945ffefd513233eb89dffea4\npihole-base     docker.io/pihole/pihole:latest     current      sha256:30f803ad5dd60ff96cc0a63008a2e9271af481c1b0399a182192b2e91152c1f9\nThe lock matches the registry."
+ },
+ "break_patch": "--- a/release/images.lock\n+++ b/release/images.lock\n@@ -44,7 +44,6 @@\n provides\tproxy-socat\troute-listeners/1\n provides\tproxy-socat\troute-probe/1\n provides\tproxy-socat\tcontrol-restart/1\n-provides\tproxy-socat\tbridges-mode/1\n requires\tproxy\troute-listeners/1\n requires\tproxy\troute-probe/1\n requires\tproxy\tcontrol-restart/1\n",
+ "build": null,
+ "created": "2026-11-06T10:46:09+00:00",
+ "fingerprint": "ecc9efbb217928f5951657f4f8cb7d5e197a72d53290150f78feb0575a3fb44d",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "shell scripts and data; nothing to build",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-02-bridges-off-images-plan.md",
+ "red": {
+  "elapsed_s": 13.3,
+  "exit": 1,
+  "tail": "run_id=20261106T104556Z-f84a2b27 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261106T104556Z-f84a2b27\nPASS  t_every_public_resolver_literal_is_declared\nFAIL  t_every_required_proxy_interface_is_provided (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261106T104556Z-f84a2b27/cases/integration-release-inputs/t_every_required_proxy_interface_is_provided/case.log)\n      ASSERT FAIL: proxy-socat provides bridges-mode/1: both are []\nPASS  t_hardened_needs_its_sibling\nFAIL  t_installers_use_the_locked_digests (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261106T104556Z-f84a2b27/cases/integration-release-inputs/t_installers_use_the_locked_digests/case.log)\n      ASSERT FAIL: install-deb: \u25b8 Preparing generation 20261106T104556Z-0123456789ab (source checkout, commit 0123456789abcdef0123456789abcdef01234567; previous none, rollback none)\n      nice-dns install: the locked tor-socat image does not provide bridges-mode/1, which this nice-dns needs; refusing before any change: expected exit 0 got 1\nPASS  t_lock_is_well_formed\nPASS  t_malformed_lock_is_refused\nPASS  t_missing_interface_is_refused\nPASS  t_refresh_script_checks_and_writes\nPASS  t_signatures_are_verified_when_cosign_is_present\nPASS  t_unsupported_platform_is_refused\ngroup integration/release-inputs: collected=10 passed=8 failed=2\ncollected=10 passed=8 failed=2\nresult=fail run_id=20261106T104556Z-f84a2b27 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261106T104556Z-f84a2b27"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "2.2",
+ "test": "bash tests/run.sh integration release-inputs && scripts/update-images-lock.sh",
+ "text": "the lock parses with the new interface required and provided by both proxies (red if a `requires` row has no provider), and the digests are current",
+ "touched": [
+  "release/images.lock"
+ ],
+ "touched_blobs": {
+  "release/images.lock": "a4fd6d78efbbffdc240da6c31a4adebe4edafb35"
+ },
+ "witness_blobs": {
+  "scripts/update-images-lock.sh": "ed54f565ea78a9fb8c3fd825a54723edd9d7b266",
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}

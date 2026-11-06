@@ -45,6 +45,20 @@ t_lock_is_well_formed() {
   assert_eq "" "$(awk -F '\t' '/^#/ { next } $1 !~ /^(schema|supported|issuer|image|unpublished|provides|requires)$/ && NF' "$RI_LOCK")" "no unknown row kinds"
 }
 
+# Either proxy may be chosen at install, so each `requires proxy` interface
+# must be provided by both proxy rows; a lock pinned to a proxy release
+# without one is refused at install. bridges-mode/1 (TOR_BRIDGES on|off,
+# Sub-plan 2) is required so the bridges toggle never meets an older image.
+t_every_required_proxy_interface_is_provided() {
+  local i p
+  assert_ne "" "$(awk -F '\t' '$1 == "requires" && $2 == "proxy" && $3 == "bridges-mode/1"' "$RI_LOCK")" "this tree requires bridges-mode/1"
+  for i in $(awk -F '\t' '$1 == "requires" && $2 == "proxy" { print $3 }' "$RI_LOCK"); do
+    for p in proxy-haproxy proxy-socat; do
+      assert_ne "" "$(awk -F '\t' -v p="$p" -v i="$i" '$1 == "provides" && $2 == p && $3 == i' "$RI_LOCK")" "$p provides $i"
+    done
+  done
+}
+
 # A public resolver written into the product bypasses the host's resolver,
 # and a VPN that confines DNS (Mullvad custom DNS) refuses it (BL-047,
 # measured 2026-10-11). So each one is declared in release/bootstrap.tsv: a
