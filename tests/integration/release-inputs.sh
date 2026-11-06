@@ -45,6 +45,20 @@ t_lock_is_well_formed() {
   assert_eq "" "$(awk -F '\t' '/^#/ { next } $1 !~ /^(schema|supported|issuer|image|unpublished|provides|requires)$/ && NF' "$RI_LOCK")" "no unknown row kinds"
 }
 
+# Either proxy may be chosen at install, so each `requires proxy` interface
+# must be provided by both proxy rows; a lock pinned to a proxy release
+# without one is refused at install. bridges-mode/1 (TOR_BRIDGES on|off,
+# Sub-plan 2) is required so the bridges toggle never meets an older image.
+t_every_required_proxy_interface_is_provided() {
+  local i p
+  assert_ne "" "$(awk -F '\t' '$1 == "requires" && $2 == "proxy" && $3 == "bridges-mode/1"' "$RI_LOCK")" "this tree requires bridges-mode/1"
+  for i in $(awk -F '\t' '$1 == "requires" && $2 == "proxy" { print $3 }' "$RI_LOCK"); do
+    for p in proxy-haproxy proxy-socat; do
+      assert_ne "" "$(awk -F '\t' -v p="$p" -v i="$i" '$1 == "provides" && $2 == p && $3 == i' "$RI_LOCK")" "$p provides $i"
+    done
+  done
+}
+
 # A public resolver written into the product bypasses the host's resolver,
 # and a VPN that confines DNS (Mullvad custom DNS) refuses it (BL-047,
 # measured 2026-10-11). So each one is declared in release/bootstrap.tsv: a
@@ -292,6 +306,7 @@ STUB
   cat >"$b/podman" <<'STUB'
 #!/bin/sh
 printf 'podman %s\n' "$*" >>"$FAKE_LOG"
+[ -f "$FAKE/podman_fail" ] && { echo 'Error: cannot set up namespace' >&2; exit 125; }
 echo '{"manifests":[{"platform":{"os":"linux","architecture":"amd64"}},{"platform":{"os":"linux","architecture":"arm64"}},{"platform":{"os":"linux","architecture":"arm","variant":"v7"}},{"platform":{"os":"linux","architecture":"riscv64"}},{"platform":{"os":"unknown","architecture":"unknown"}}]}'
 STUB
   cat >"$b/cosign" <<'STUB'
@@ -314,5 +329,15 @@ STUB
   cp "$RI_LOCK" "$w/images.lock"
   out="$(LOCK="$w/images.lock" PATH="$b:$PATH" bash "$NICE_DNS_ROOT/scripts/update-images-lock.sh" --lock "$w/images.lock" --write 2>&1)"; rc=$?
   assert_nonzero "$rc" "a failed signature refuses --write: $out"
+  assert_eq "$(cat "$RI_LOCK")" "$(cat "$w/images.lock")" "and leaves the lock as it was"
+  # Why: podman fails from a shell without a usable user namespace; the
+  # script must say the listing failed, not that every build is missing.
+  rm -f "$FAKE/cosign_fail"
+  : >"$FAKE/podman_fail"
+  cp "$RI_LOCK" "$w/images.lock"
+  out="$(LOCK="$w/images.lock" PATH="$b:$PATH" bash "$NICE_DNS_ROOT/scripts/update-images-lock.sh" --lock "$w/images.lock" --write 2>&1)"; rc=$?
+  assert_nonzero "$rc" "a failed platform listing refuses --write: $out"
+  assert_match 'cannot list the platforms of docker.io/sureserver/tor-haproxy' "$out" "it says the listing failed"
+  assert_eq "" "$(printf '%s\n' "$out" | grep -E 'Traceback|has no linux/')" "and does not report missing builds"
   assert_eq "$(cat "$RI_LOCK")" "$(cat "$w/images.lock")" "and leaves the lock as it was"
 }

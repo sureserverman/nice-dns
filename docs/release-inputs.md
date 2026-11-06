@@ -19,9 +19,12 @@ requires. It is data, parsed by `lib/install.sh` and
 2. This host's platform is in the lock's `supported` set, and every image the
    install uses has a build for it.
 3. The lock says the chosen proxy provides every interface this tree
-   `requires`: fixed route listeners, the route probe and the acknowledged
-   control restart. This compares the lock's own reviewed rows; it catches a
-   lock pinned to an image that was never qualified for this tree. What the
+   `requires`: fixed route listeners, the route probe, the acknowledged
+   control restart and the bridges mode (`bridges-mode/1`: the proxy runs
+   over obfs4 bridges with `TOR_BRIDGES=on`, the default, and Tor direct
+   with `TOR_BRIDGES=off`; tor-haproxy v2.16 and tor-socat v2.12 onwards).
+   This compares the lock's own reviewed rows; it catches a lock pinned to
+   an image that was never qualified for this tree. What the
    pulled image actually does is proven later, before the resolver is pinned:
    the readiness wait needs Unbound to resolve over a route (the route
    listeners and probe), and the controller's self-check must pass.

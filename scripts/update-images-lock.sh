@@ -45,8 +45,11 @@ registry_digest() {
 }
 
 # registry_platforms <repository:tag>: the index's platforms, comma-separated.
+# Fails when podman cannot inspect the index (e.g. no usable user namespace).
 registry_platforms() {
-  podman manifest inspect "$1" 2>/dev/null | python3 -c '
+  local json
+  json="$(podman manifest inspect "$1" 2>/dev/null)" && [ -n "$json" ] || return 1
+  printf '%s' "$json" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 out = []
@@ -75,10 +78,13 @@ EOF
     echo "$role: cannot read the digest of $repo:$tag" >&2; errors=1
     printf '%s\n' "$line" >>"$NEW"; continue
   fi
-  nplats="$(registry_platforms "$repo:$tag")" || nplats=""
-  for p in $(printf '%s' "$SUPPORTED" | tr ',' ' '); do
-    case ",$nplats," in *",$p,"*) ;; *) echo "$role: $repo:$tag has no $p build (supported: $SUPPORTED)" >&2; errors=1 ;; esac
-  done
+  if ! nplats="$(registry_platforms "$repo:$tag")"; then
+    echo "$role: cannot list the platforms of $repo:$tag (podman manifest inspect failed)" >&2; errors=1
+  else
+    for p in $(printf '%s' "$SUPPORTED" | tr ',' ' '); do
+      case ",$nplats," in *",$p,"*) ;; *) echo "$role: $repo:$tag has no $p build (supported: $SUPPORTED)" >&2; errors=1 ;; esac
+    done
+  fi
   if [ "$signer" != none ]; then
     if ! cosign verify --certificate-identity-regexp "^$(printf '%s' "$signer" | sed 's/\./\\./g')" \
           --certificate-oidc-issuer "$ISSUER" "$repo@$now" >/dev/null 2>&1; then
