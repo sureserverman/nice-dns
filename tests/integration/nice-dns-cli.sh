@@ -73,6 +73,13 @@ where=checkout
 case "\$0" in *"/.local/share/nice-dns/source/"*) where=snapshot ;; esac
 echo "installer[\$where] $s.sh \$*" >>"$CL_LOG"
 [ -z "\${ND_INST_HARDENED_SIBLING:-}" ] || echo "sibling \$ND_INST_HARDENED_SIBLING" >>"$CL_LOG"
+# An install from a clone records that clone's commit (\$FAKE/new_commit).
+if [ -f "$CL_FAKE/new_commit" ] && [ "\${CL_INSTALLER_RC:-0}" = 0 ]; then
+  for f in "\$HOME/.local/state/nice-dns-install/generations/"*/prepare.tsv "\$HOME/Library/Application Support/nice-dns-install/generations/"*/prepare.tsv; do
+    [ -f "\$f" ] || continue
+    awk -F '\t' -v c="\$(cat "$CL_FAKE/new_commit")" 'BEGIN { OFS = "\t" } \$1 == "source_commit" { \$2 = c } { print }' "\$f" >"\$f.new" && mv "\$f.new" "\$f"
+  done
+fi
 exit "\${CL_INSTALLER_RC:-0}"
 EOF
   done
@@ -803,4 +810,76 @@ t_update_check_with_nothing_installed() {
   assert_rc 1 "$CL_RC" "nothing installed"
   assert_match 'not installed' "$CL_ERR" "says so"
   assert_eq "" "$(cl_calls '^git ')" "and asks no remote"
+}
+
+# ─────────────── Status and update plan, Task 2.2: update applies ──────────
+
+t_update_installs_the_recorded_choices_when_available() {
+  local u os
+  for u in $(cl_platforms); do
+    up_world "$u"; os="$(cl_os "$u")"; cl_installed; up_remote "$UP_REMOTE"
+    printf '%s\n' "$UP_REMOTE" >"$CL_FAKE/new_commit"
+    sed -i.bak 's/^variant\t.*/variant\tsocat/; s/^pihole\t.*/pihole\thardened/' "$ST_INST/generations/g1/prepare.tsv"; rm -f "$ST_INST/generations/g1/prepare.tsv.bak"
+    cl_run "$CL_CMD" update
+    assert_rc 0 "$CL_RC" "$u: update: $CL_ERR"
+    assert_eq "installer[clone] install-$os-hardened.sh socat main" "$(cl_calls '^installer')" "$u: the recorded variant, flavour and branch, from a clone of the branch"
+    assert_match "updated to fedcba987654$" "$CL_OUT" "$u: names the new commit"
+    assert_eq current "$(awk -F '\t' '$1 == "result" { print $2 }' "$ST_SD/update-check.tsv")" "$u: and re-checks"
+  done
+}
+
+t_update_from_a_checkout_still_installs_the_branch() {
+  up_world Linux; up_remote "$UP_REMOTE"
+  cl_run "$CL_TREE/nice-dns" update
+  assert_eq "installer[clone] install-deb.sh haproxy main" "$(cl_calls '^installer')" "a checkout's update installs the branch, not itself"
+}
+
+t_update_current_installs_nothing_unless_forced() {
+  local u os
+  for u in $(cl_platforms); do
+    up_world "$u"; os="$(cl_os "$u")"; cl_installed; up_remote "$UP_LOCAL"
+    cl_run "$CL_CMD" update
+    assert_rc 0 "$CL_RC" "$u: current: $CL_ERR"
+    assert_match "already current" "$CL_OUT" "$u: says so"
+    assert_eq "" "$(cl_calls '^installer')" "$u: and installs nothing"
+    assert_eq "" "$(cl_calls '^git .*clone')" "$u: nor clones"
+    cl_run "$CL_CMD" update --force
+    assert_rc 0 "$CL_RC" "$u: --force: $CL_ERR"
+    assert_eq "installer[clone] install-$os.sh haproxy main" "$(cl_calls '^installer')" "$u: --force reinstalls anyway"
+  done
+}
+
+t_update_unknown_installs_nothing() {
+  local u
+  for u in $(cl_platforms); do
+    up_world "$u"; cl_installed
+    : >"$CL_FAKE/ls_remote_fails"
+    cl_run "$CL_CMD" update --force
+    assert_rc 1 "$CL_RC" "$u: unknown"
+    assert_match "^unknown: could not reach" "$CL_OUT" "$u: with the reason"
+    assert_eq "" "$(cl_calls '^installer')" "$u: installs nothing, even with --force"
+    assert_eq "" "$(cl_calls '^git .*clone')" "$u: clones nothing"
+    up_world "$u" unknown 0; cl_installed; up_remote "$UP_REMOTE"
+    cl_run "$CL_CMD" update
+    assert_rc 1 "$CL_RC" "$u: a source that was not a clean commit"
+    assert_match "nice-dns reinstall" "$CL_ERR" "$u: names reinstall as the way forward"
+    assert_eq "" "$(cl_calls '^installer')" "$u: installs nothing"
+  done
+}
+
+t_update_a_failed_install_names_reinstall_local() {
+  up_world Linux; cl_installed; up_remote "$UP_REMOTE"
+  CL_INSTALLER_RC=3 cl_run "$CL_CMD" update
+  assert_rc 3 "$CL_RC" "the installer's failure is the update's"
+  assert_match "nice-dns reinstall --local" "$CL_ERR" "names --local"
+  assert_eq available "$(awk -F '\t' '$1 == "result" { print $2 }' "$ST_SD/update-check.tsv")" "the cache still says available"
+}
+
+t_update_refuses_local_and_widens_nothing() {
+  up_world Linux; cl_installed; up_remote "$UP_REMOTE"
+  cl_run "$CL_CMD" update --local
+  assert_rc 2 "$CL_RC" "--local has no meaning for update"
+  assert_eq "" "$(cl_calls '^installer')" "and installs nothing"
+  cl_run "$CL_CMD" update --branch dev
+  assert_match "ls-remote --heads https://github.com/sureserverman/nice-dns.git refs/heads/dev$" "$(cl_calls '^git ')" "--branch asks that branch"
 }

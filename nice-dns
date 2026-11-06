@@ -23,11 +23,14 @@ Usage: nice-dns <command> [options]
       --local uses the source kept at the last install instead.
   restart
       Restart the whole stack and wait for DNS to answer.
-  update --check [--branch B]
+  update [--check] [--force] [haproxy|socat] [--hardened|--standard] [--branch B]
       Ask the recorded branch (or B) for its newest commit and compare it
-      with the installed one: prints `current` (exit 0), `available <commit>`
-      (exit 10) or `unknown: <reason>` (exit 1). Keeps the answer for
-      `status`. Changes nothing else.
+      with the installed one: `current` (exit 0), `available <commit>`
+      (exit 10) or `unknown: <reason>` (exit 1); the answer is kept for
+      `status`. --check stops there. Otherwise a newer commit (or any
+      commit, with --force) is installed like `reinstall`, from a clone of
+      that branch and with the recorded choices; options override them.
+      An unknown answer installs nothing.
   status [--tsv]
       What is installed, what the controller last saw and did, and the
       last update check. Reads files only. --tsv prints the
@@ -418,23 +421,48 @@ update_check() {
   return 1
 }
 
-# cmd_update --check [--branch B]
+# cmd_update [--check] [--force] [reinstall choices]: the check, then, unless
+# --check, `reinstall` of the checked branch from a clone of it, with the
+# recorded choices (DEC-019: the installers do all the work). Never widens
+# them: the branch is the recorded one unless --branch names another.
 cmd_update() {
-  local check=0
+  local check=0 force=0 rc a
+  local rest=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --check) check=1 ;;
-      --branch)
-        [ $# -ge 2 ] || bad_usage "--branch needs a name"
-        case "$2" in -*|'') bad_usage "--branch needs a name" ;; esac
-        ND_CLI_BRANCH="$2"
-        shift ;;
-      *) bad_usage "unknown option '$1' for update" ;;
+      --force) force=1 ;;
+      *) rest[${#rest[@]}]="$1" ;;
     esac
     shift
   done
-  [ "$check" = 1 ] || bad_usage "update needs --check"
-  update_check
+  # "${rest[@]}" of an empty array is an unbound variable under set -u in
+  # Bash 3.2, hence the guard.
+  if [ "${#rest[@]}" -gt 0 ]; then parse_choices 1 "${rest[@]}"; fi
+  [ "$ND_CLI_LOCAL" = 0 ] || bad_usage "--local reinstalls the kept source; update installs the branch"
+  update_check; rc=$?
+  [ "$check" = 0 ] || return "$rc"
+  case "$ND_CLI_UP_RESULT" in
+    unknown)
+      # shellcheck disable=SC2016  # the backticks are text for the reader
+      err 'nothing was installed. `nice-dns reinstall` installs the branch without a check.'
+      return 1 ;;
+    current)
+      if [ "$force" = 0 ]; then echo "already current"; return 0; fi ;;
+  esac
+  ND_CLI_BRANCH="$ND_CLI_UP_BRANCH"
+  cmd_reinstall; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # shellcheck disable=SC2016  # the backticks are text for the reader
+    err "the update did not install (exit $rc); the installer keeps or restores the running stack. "'`nice-dns reinstall --local` reinstalls the source kept at the last install.'
+    return "$rc"
+  fi
+  if a="$(update_check)" && [ "$a" = current ]; then
+    printf 'updated to %s\n' "$(printf '%s' "$ND_CLI_UP_REMOTE" | cut -c1-12)"
+    return 0
+  fi
+  err "the install finished, but the check now says: $a"
+  return 1
 }
 
 # ─── status ──────────────────────────────────────────────────────────────────
