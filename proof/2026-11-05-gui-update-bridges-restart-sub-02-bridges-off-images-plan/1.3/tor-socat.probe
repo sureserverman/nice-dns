@@ -1,0 +1,2 @@
+port=853 name=tor.cloudflare-dns.com result=ok rcode=NOERROR ms=3500
+probe_exit=0
