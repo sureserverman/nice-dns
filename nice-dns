@@ -23,6 +23,11 @@ Usage: nice-dns <command> [options]
       --local uses the source kept at the last install instead.
   restart
       Restart the whole stack and wait for DNS to answer.
+  update --check [--branch B]
+      Ask the recorded branch (or B) for its newest commit and compare it
+      with the installed one: prints `current` (exit 0), `available <commit>`
+      (exit 10) or `unknown: <reason>` (exit 1). Keeps the answer for
+      `status`. Changes nothing else.
   status [--tsv]
       What is installed, what the controller last saw and did, and the
       last update check. Reads files only. --tsv prints the
@@ -51,7 +56,7 @@ ND_CLI_CMD="$1"
 shift
 
 case "$ND_CLI_CMD" in
-  install|reinstall|restart|uninstall|status) ;;
+  install|reinstall|restart|uninstall|status|update) ;;
   -h|--help|help) usage; exit 0 ;;
   *) bad_usage "unknown command '$ND_CLI_CMD'" ;;
 esac
@@ -338,6 +343,100 @@ cmd_restart() {
   echo "nice-dns restarted; DNS is answering."
 }
 
+# ─── update ──────────────────────────────────────────────────────────────────
+
+# update_cache_dir: the controller's state directory, where `status` reads the
+# cache (lib/status.sh _nd_st_paths). 1 without the status library.
+update_cache_dir() {
+  local lib="$ND_CLI_ROOT/lib/status.sh"
+  [ -f "$lib" ] || return 1
+  # shellcheck disable=SC1090  # the source root is found at run time
+  . "$lib" || return 1
+  _nd_st_paths "$ND_CLI_PLATFORM"
+  printf '%s\n' "$ND_ST_STATE_DIR"
+}
+
+# update_write_cache <branch> <local> <remote> <result>: update-check.tsv
+# (nice-dns-update-check/1), renamed over from a temporary file. A failure
+# to write it is reported and does not change the answer.
+update_write_cache() {
+  local d t
+  if ! d="$(update_cache_dir)"; then err "the update check was not kept: no status library"; return 0; fi
+  if { [ -d "$d" ] || (umask 077 && mkdir -p "$d"); } && t="$(mktemp "$d/.update-check.XXXXXX")"; then
+    if printf 'schema\tnice-dns-update-check/1\nchecked_at\t%s\nbranch\t%s\nlocal_commit\t%s\nremote_commit\t%s\nresult\t%s\n' \
+        "$(date +%s)" "$1" "$2" "${3:--}" "$4" >"$t" && chmod 600 "$t" && mv -f "$t" "$d/update-check.tsv"; then
+      return 0
+    fi
+    rm -f "$t"
+  fi
+  err "the update check was not kept in ${d:-the state directory}"
+  return 0
+}
+
+# update_check: sets ND_CLI_UP_RESULT (current|available|unknown),
+# ND_CLI_UP_REMOTE, ND_CLI_UP_BRANCH and ND_CLI_UP_REASON, writes the
+# cache and prints the answer. Returns 0, 10 or 1. Only `git ls-remote`
+# reaches the network, bounded by its low-speed limit and, where it exists,
+# by timeout(1).
+update_check() {
+  local m local_c dirty out to=""
+  ND_CLI_UP_RESULT=unknown ND_CLI_UP_REMOTE="" ND_CLI_UP_REASON=""
+  if ! m="$(recorded_manifest)"; then
+    err "$ND_CLI_NOT_INSTALLED"
+    return 1
+  fi
+  ND_CLI_UP_BRANCH="${ND_CLI_BRANCH:-$(recorded_field "$m" branch)}"
+  [ -n "$ND_CLI_UP_BRANCH" ] || ND_CLI_UP_BRANCH=main
+  local_c="$(recorded_field "$m" source_commit)"
+  dirty="$(recorded_field "$m" source_dirty)"
+  case "$local_c" in
+    *[!0-9a-f]*|'') ND_CLI_UP_REASON="the installed source was not a clean commit" ;;
+    *) [ "${#local_c}" -eq 40 ] && [ "$dirty" = 0 ] || ND_CLI_UP_REASON="the installed source was not a clean commit" ;;
+  esac
+  if [ -z "$ND_CLI_UP_REASON" ]; then
+    command -v timeout >/dev/null 2>&1 && to="timeout 90"
+    # shellcheck disable=SC2086  # $to is "timeout 90" or empty
+    if ! out="$($to git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 ls-remote --heads "$ND_CLI_REPO" "refs/heads/$ND_CLI_UP_BRANCH" 2>/dev/null)"; then
+      ND_CLI_UP_REASON="could not reach $ND_CLI_REPO (is DNS down?)"
+    else
+      ND_CLI_UP_REMOTE="$(printf '%s\n' "$out" | awk -F '\t' -v r="refs/heads/$ND_CLI_UP_BRANCH" '$2 == r && $1 ~ /^[0-9a-f]+$/ && length($1) == 40 { print $1; exit }')"
+      if [ -z "$ND_CLI_UP_REMOTE" ]; then
+        ND_CLI_UP_REASON="the remote has no branch '$ND_CLI_UP_BRANCH'"
+      elif [ "$ND_CLI_UP_REMOTE" = "$local_c" ]; then
+        ND_CLI_UP_RESULT=current
+      else
+        ND_CLI_UP_RESULT=available
+      fi
+    fi
+  fi
+  update_write_cache "$ND_CLI_UP_BRANCH" "${local_c:--}" "$ND_CLI_UP_REMOTE" "$ND_CLI_UP_RESULT"
+  case "$ND_CLI_UP_RESULT" in
+    current) echo current; return 0 ;;
+    available) printf 'available %s\n' "$(printf '%s' "$ND_CLI_UP_REMOTE" | cut -c1-12)"; return 10 ;;
+  esac
+  printf 'unknown: %s\n' "$ND_CLI_UP_REASON"
+  return 1
+}
+
+# cmd_update --check [--branch B]
+cmd_update() {
+  local check=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --check) check=1 ;;
+      --branch)
+        [ $# -ge 2 ] || bad_usage "--branch needs a name"
+        case "$2" in -*|'') bad_usage "--branch needs a name" ;; esac
+        ND_CLI_BRANCH="$2"
+        shift ;;
+      *) bad_usage "unknown option '$1' for update" ;;
+    esac
+    shift
+  done
+  [ "$check" = 1 ] || bad_usage "update needs --check"
+  update_check
+}
+
 # ─── status ──────────────────────────────────────────────────────────────────
 
 # status_human: the rows (stdin) as sections. Observations from a stale pass
@@ -409,4 +508,5 @@ case "$ND_CLI_CMD" in
   reinstall) cmd_reinstall "$@" ;;
   restart) cmd_restart "$@" ;;
   status) cmd_status "$@" ;;
+  update) cmd_update "$@" ;;
 esac

@@ -46,6 +46,9 @@ case "$s" in
   git)
     [ -f "\$FAKE/clone_fails" ] && exit 128
     case "\$*" in
+      *ls-remote*)
+        [ -f "\$FAKE/ls_remote_fails" ] && { echo "fatal: unable to access the remote" >&2; exit 128; }
+        [ -f "\$FAKE/ls_remote" ] && cat "\$FAKE/ls_remote" ;;
       *rev-parse*) [ -f "\$FAKE/git_branch" ] && cat "\$FAKE/git_branch" ;;
       *clone*)
         for last; do :; done
@@ -724,4 +727,80 @@ t_status_hint_survives_an_unreadable_state() {
   chmod 700 "$ST_SD"
   assert_rc 2 "$CL_RC" "unreadable wins"
   assert_match "^install	hint	curl -fsSL" "$CL_OUT" "and the install hint is still there"
+}
+
+# ─────────────── Status and update plan, Task 2.1: update --check ───────────
+
+UP_LOCAL=0123456789abcdef0123456789abcdef01234567
+UP_REMOTE=fedcba9876543210fedcba9876543210fedcba98
+
+# up_world <uname> [source_commit] [source_dirty]: an installed host whose
+# record names branch main and that commit.
+up_world() {
+  st_world "$1"
+  sed -i.bak '/^source_commit\t/d' "$ST_INST/generations/g1/prepare.tsv" && rm -f "$ST_INST/generations/g1/prepare.tsv.bak"
+  printf 'source_commit\t%s\nsource_dirty\t%s\n' "${2:-$UP_LOCAL}" "${3:-0}" >>"$ST_INST/generations/g1/prepare.tsv"
+}
+up_remote() { printf '%s\trefs/heads/main\n' "$1" >"$CL_FAKE/ls_remote"; }
+
+t_update_check_compares_the_recorded_commit_with_the_branch() {
+  local u c
+  for u in $(cl_platforms); do
+    up_world "$u"; up_remote "$UP_LOCAL"
+    cl_run "$CL_TREE/nice-dns" update --check
+    assert_rc 0 "$CL_RC" "$u: same commit: $CL_ERR"
+    assert_eq current "$CL_OUT" "$u: says current"
+    assert_match "^git .*ls-remote --heads https://github.com/sureserverman/nice-dns.git refs/heads/main$" "$(cl_calls '^git ')" "$u: asks for the recorded branch only"
+    assert_eq "" "$(cl_calls '^git .*clone')" "$u: and clones nothing"
+    c="$ST_SD/update-check.tsv"
+    assert_eq "schema	nice-dns-update-check/1" "$(head -n 1 "$c")" "$u: the cache has its schema"
+    assert_eq "$c" "$(find "$c" -maxdepth 0 -type f -perm 0600)" "$u: mode 0600"
+    assert_eq "current" "$(awk -F '\t' '$1 == "result" { print $2 }' "$c")" "$u: and the result"
+    up_remote "$UP_REMOTE"
+    cl_run "$CL_TREE/nice-dns" update --check
+    assert_rc 10 "$CL_RC" "$u: a newer commit: $CL_ERR"
+    assert_eq "available fedcba987654" "$CL_OUT" "$u: names its short commit"
+    assert_eq "$UP_REMOTE" "$(awk -F '\t' '$1 == "remote_commit" { print $2 }' "$c")" "$u: the cache keeps the remote commit"
+    assert_eq "$UP_LOCAL" "$(awk -F '\t' '$1 == "local_commit" { print $2 }' "$c")" "$u: and the local one"
+    assert_eq main "$(awk -F '\t' '$1 == "branch" { print $2 }' "$c")" "$u: and the branch"
+    : >"$CL_LOG"
+    ND_STATUS_NOW="$ST_NOW" cl_run "$CL_TREE/nice-dns" status --tsv
+    assert_match "^update	result	available$" "$CL_OUT" "$u: status shows the cached result"
+    assert_match "^update	remote_commit	$UP_REMOTE$" "$CL_OUT" "$u: and the remote commit"
+    assert_eq "" "$(cl_calls '^git ')" "$u: without asking the remote again"
+  done
+}
+
+t_update_check_unknown_changes_nothing_but_the_cache() {
+  local u c
+  for u in $(cl_platforms); do
+    up_world "$u"; c="$ST_SD/update-check.tsv"
+    : >"$CL_FAKE/ls_remote_fails"
+    cl_run "$CL_TREE/nice-dns" update --check
+    assert_rc 1 "$CL_RC" "$u: an unreachable remote"
+    assert_match "^unknown: " "$CL_OUT" "$u: says unknown with a reason"
+    assert_eq unknown "$(awk -F '\t' '$1 == "result" { print $2 }' "$c")" "$u: the cache says unknown"
+    assert_eq "" "$(cl_calls '^installer')" "$u: nothing is installed"
+    rm -f "$CL_FAKE/ls_remote_fails"; : >"$CL_FAKE/ls_remote"
+    cl_run "$CL_TREE/nice-dns" update --check
+    assert_rc 1 "$CL_RC" "$u: a branch the remote does not have"
+    assert_match "^unknown: .*main" "$CL_OUT" "$u: names it"
+    up_world "$u" unknown 0; up_remote "$UP_REMOTE"
+    cl_run "$CL_TREE/nice-dns" update --check
+    assert_rc 1 "$CL_RC" "$u: an unknown source commit"
+    assert_eq "unknown: the installed source was not a clean commit" "$CL_OUT" "$u: says so"
+    up_world "$u" "$UP_LOCAL" 1
+    cl_run "$CL_TREE/nice-dns" update --check
+    assert_rc 1 "$CL_RC" "$u: a dirty source"
+    assert_eq "unknown: the installed source was not a clean commit" "$CL_OUT" "$u: says so"
+    assert_eq unknown "$(awk -F '\t' '$1 == "result" { print $2 }' "$c")" "$u: the cache says unknown"
+  done
+}
+
+t_update_check_with_nothing_installed() {
+  cl_world Linux; up_remote "$UP_REMOTE"
+  cl_run "$CL_TREE/nice-dns" update --check
+  assert_rc 1 "$CL_RC" "nothing installed"
+  assert_match 'not installed' "$CL_ERR" "says so"
+  assert_eq "" "$(cl_calls '^git ')" "and asks no remote"
 }

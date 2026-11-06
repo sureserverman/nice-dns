@@ -1,0 +1,35 @@
+{
+ "baseline": {
+  "elapsed_s": 57.5,
+  "exit": 0,
+  "tail": "PASS  t_a_named_branch_is_what_gets_installed_and_recorded\nPASS  t_an_installer_failure_is_the_commands_failure\nPASS  t_command_keeps_to_bash_32_syntax\nPASS  t_each_command_reaches_the_right_script\nPASS  t_failed_clone_names_local_and_changes_nothing\nPASS  t_hardened_off_a_clone_or_the_kept_source_finds_its_sibling\nPASS  t_installed_command_uses_the_kept_source\nPASS  t_installed_reinstall_clones_the_recorded_branch\nPASS  t_macos_restart_waits_for_the_rebuild_before_checking_dns\nPASS  t_reinstall_and_restart_with_nothing_installed\nPASS  t_reinstall_flags_override_the_record\nPASS  t_reinstall_local_uses_the_snapshot_with_no_clone\nPASS  t_reinstall_refuses_an_unreadable_record\nPASS  t_reinstall_uses_the_recorded_choices\nPASS  t_restart_failure_is_reported_and_releases\nPASS  t_restart_releases_on_a_signal\nPASS  t_restart_runs_once_between_hold_and_release\nPASS  t_restart_waits_for_a_running_pass_and_gives_up_cleanly\nPASS  t_restart_without_an_answer_says_so_and_releases\nPASS  t_root_is_refused_with_the_installers_message\nPASS  t_status_command_prints_rows_and_sections_with_its_exit_codes\nPASS  t_status_epochs_are_plain_numbers_and_a_future_pass_is_stale\nPASS  t_status_flags_a_stale_or_missing_pass_and_still_prints_it\nPASS  t_status_hint_survives_an_unreadable_state\nPASS  t_status_is_in_the_help\nPASS  t_status_never_reads_an_unreadable_file_as_absent\nPASS  t_status_not_installed_names_the_curl_line_and_exits_1\nPASS  t_status_route_absent_until_chosen_and_journal_fields_stay_aligned\nPASS  t_status_rows_cover_every_group_without_running_anything\nPASS  t_status_unreadable_state_exits_2\nPASS  t_status_values_carry_no_control_characters\nPASS  t_the_readiness_wait_keeps_to_its_stated_limit\nPASS  t_unknown_commands_and_options_are_usage_errors\nPASS  t_unsupported_platform_is_refused\nPASS  t_update_check_compares_the_recorded_commit_with_the_branch\nPASS  t_update_check_unknown_changes_nothing_but_the_cache\nPASS  t_update_check_with_nothing_installed\ngroup integration/nice-dns-cli: collected=37 passed=37 failed=0\ncollected=37 passed=37 failed=0\nresult=pass run_id=20261106T195302Z-d5f010f1 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261106T195302Z-d5f010f1"
+ },
+ "break_patch": "diff --git a/nice-dns b/nice-dns\nindex 677f062..d31709c 100755\n--- a/nice-dns\n+++ b/nice-dns\n@@ -402,7 +402,7 @@ update_check() {\n       ND_CLI_UP_REMOTE=\"$(printf '%s\\n' \"$out\" | awk -F '\\t' -v r=\"refs/heads/$ND_CLI_UP_BRANCH\" '$2 == r && $1 ~ /^[0-9a-f]+$/ && length($1) == 40 { print $1; exit }')\"\n       if [ -z \"$ND_CLI_UP_REMOTE\" ]; then\n         ND_CLI_UP_REASON=\"the remote has no branch '$ND_CLI_UP_BRANCH'\"\n-      elif [ \"$ND_CLI_UP_REMOTE\" = \"$local_c\" ]; then\n+      elif [ -n \"$local_c\" ]; then\n         ND_CLI_UP_RESULT=current\n       else\n         ND_CLI_UP_RESULT=available\n",
+ "build": null,
+ "created": "2026-11-06T19:54:57+00:00",
+ "fingerprint": "06850de0cb67a5d407ed24852a09f7581d9e214dd22103b0a2a9d71f93b7cc7a",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "bash scripts: nothing is compiled",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-03-status-and-update-plan.md",
+ "red": {
+  "elapsed_s": 57.0,
+  "exit": 1,
+  "tail": "PASS  t_an_installer_failure_is_the_commands_failure\nPASS  t_command_keeps_to_bash_32_syntax\nPASS  t_each_command_reaches_the_right_script\nPASS  t_failed_clone_names_local_and_changes_nothing\nPASS  t_hardened_off_a_clone_or_the_kept_source_finds_its_sibling\nPASS  t_installed_command_uses_the_kept_source\nPASS  t_installed_reinstall_clones_the_recorded_branch\nPASS  t_macos_restart_waits_for_the_rebuild_before_checking_dns\nPASS  t_reinstall_and_restart_with_nothing_installed\nPASS  t_reinstall_flags_override_the_record\nPASS  t_reinstall_local_uses_the_snapshot_with_no_clone\nPASS  t_reinstall_refuses_an_unreadable_record\nPASS  t_reinstall_uses_the_recorded_choices\nPASS  t_restart_failure_is_reported_and_releases\nPASS  t_restart_releases_on_a_signal\nPASS  t_restart_runs_once_between_hold_and_release\nPASS  t_restart_waits_for_a_running_pass_and_gives_up_cleanly\nPASS  t_restart_without_an_answer_says_so_and_releases\nPASS  t_root_is_refused_with_the_installers_message\nPASS  t_status_command_prints_rows_and_sections_with_its_exit_codes\nPASS  t_status_epochs_are_plain_numbers_and_a_future_pass_is_stale\nPASS  t_status_flags_a_stale_or_missing_pass_and_still_prints_it\nPASS  t_status_hint_survives_an_unreadable_state\nPASS  t_status_is_in_the_help\nPASS  t_status_never_reads_an_unreadable_file_as_absent\nPASS  t_status_not_installed_names_the_curl_line_and_exits_1\nPASS  t_status_route_absent_until_chosen_and_journal_fields_stay_aligned\nPASS  t_status_rows_cover_every_group_without_running_anything\nPASS  t_status_unreadable_state_exits_2\nPASS  t_status_values_carry_no_control_characters\nPASS  t_the_readiness_wait_keeps_to_its_stated_limit\nPASS  t_unknown_commands_and_options_are_usage_errors\nPASS  t_unsupported_platform_is_refused\nFAIL  t_update_check_compares_the_recorded_commit_with_the_branch (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261106T195400Z-4e7d71f4/cases/integration-nice-dns-cli/t_update_check_compares_the_recorded_commit_with_the_branch/case.log)\n      ASSERT FAIL: Linux: a newer commit: : expected exit 10 got 0\nPASS  t_update_check_unknown_changes_nothing_but_the_cache\nPASS  t_update_check_with_nothing_installed\ngroup integration/nice-dns-cli: collected=37 passed=36 failed=1\ncollected=37 passed=36 failed=1\nresult=fail run_id=20261106T195400Z-4e7d71f4 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261106T195400Z-4e7d71f4"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "2.1",
+ "test": "bash tests/run.sh integration nice-dns-cli",
+ "text": "with a `git` shim on PATH: same sha \u2192 0 and `current`",
+ "touched": [
+  "nice-dns"
+ ],
+ "touched_blobs": {
+  "nice-dns": "677f0624533efccd361a316a6d96794bd5a3913c"
+ },
+ "witness_blobs": {
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}
