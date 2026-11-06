@@ -306,6 +306,7 @@ STUB
   cat >"$b/podman" <<'STUB'
 #!/bin/sh
 printf 'podman %s\n' "$*" >>"$FAKE_LOG"
+[ -f "$FAKE/podman_fail" ] && { echo 'Error: cannot set up namespace' >&2; exit 125; }
 echo '{"manifests":[{"platform":{"os":"linux","architecture":"amd64"}},{"platform":{"os":"linux","architecture":"arm64"}},{"platform":{"os":"linux","architecture":"arm","variant":"v7"}},{"platform":{"os":"linux","architecture":"riscv64"}},{"platform":{"os":"unknown","architecture":"unknown"}}]}'
 STUB
   cat >"$b/cosign" <<'STUB'
@@ -328,5 +329,15 @@ STUB
   cp "$RI_LOCK" "$w/images.lock"
   out="$(LOCK="$w/images.lock" PATH="$b:$PATH" bash "$NICE_DNS_ROOT/scripts/update-images-lock.sh" --lock "$w/images.lock" --write 2>&1)"; rc=$?
   assert_nonzero "$rc" "a failed signature refuses --write: $out"
+  assert_eq "$(cat "$RI_LOCK")" "$(cat "$w/images.lock")" "and leaves the lock as it was"
+  # Why: podman fails from a shell without a usable user namespace; the
+  # script must say the listing failed, not that every build is missing.
+  rm -f "$FAKE/cosign_fail"
+  : >"$FAKE/podman_fail"
+  cp "$RI_LOCK" "$w/images.lock"
+  out="$(LOCK="$w/images.lock" PATH="$b:$PATH" bash "$NICE_DNS_ROOT/scripts/update-images-lock.sh" --lock "$w/images.lock" --write 2>&1)"; rc=$?
+  assert_nonzero "$rc" "a failed platform listing refuses --write: $out"
+  assert_match 'cannot list the platforms of docker.io/sureserver/tor-haproxy' "$out" "it says the listing failed"
+  assert_eq "" "$(printf '%s\n' "$out" | grep -E 'Traceback|has no linux/')" "and does not report missing builds"
   assert_eq "$(cat "$RI_LOCK")" "$(cat "$w/images.lock")" "and leaves the lock as it was"
 }
