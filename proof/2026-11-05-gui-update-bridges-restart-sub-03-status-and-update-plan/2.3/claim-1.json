@@ -1,0 +1,38 @@
+{
+ "baseline": {
+  "elapsed_s": 2.1,
+  "exit": 0,
+  "tail": "check-contracts: OK (WF-DNS-001..004 and all operations in /home/user/dev/containers/nice-dns/tests/manifests/privacy-ops.tsv) docs/workflows/dns-lifecycle.md"
+ },
+ "break_patch": "diff --git a/docs/workflows/dns-lifecycle.md b/docs/workflows/dns-lifecycle.md\nindex fa182f2..15ada47 100644\n--- a/docs/workflows/dns-lifecycle.md\n+++ b/docs/workflows/dns-lifecycle.md\n@@ -6,7 +6,7 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the\n - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)\n   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.\n - Baseline source: this repository at commit\n-  `2438546c7294aee82846ef442e6995f52edc85d4`. Citations are `path:line` at that commit.\n+  `8fda2a6097bcdc2db49d343afaf073296ab94324`. Citations are `path:line` at that commit.\n   The eight-cell baseline receipt measured b85bc9b. The document was first\n   written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,\n   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02\n",
+ "build": null,
+ "created": "2026-11-06T20:25:56+00:00",
+ "fingerprint": "178abe248316b8fefc9e6198eacfa03f4247fbe8c40afb092edf3d0c39889b2b",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "documentation and bash: nothing is compiled",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-03-status-and-update-plan.md",
+ "red": {
+  "elapsed_s": 2.1,
+  "exit": 1,
+  "tail": "check-contracts: cited nice-dns:428 is past the end of nice-dns (412 lines) at 8fda2a6097bc\ncheck-contracts: cited nice-dns:448 is past the end of nice-dns (412 lines) at 8fda2a6097bc\ncheck-contracts: cited nice-dns:451 is past the end of nice-dns (412 lines) at 8fda2a6097bc\ncheck-contracts: cited nice-dns:472 is past the end of nice-dns (412 lines) at 8fda2a6097bc\ncheck-contracts: cited nice-dns changed since the pinned commit 8fda2a6097bc; re-derive its citations and re-pin"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "2.3",
+ "test": "bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md && grep -q 'WF-DNS-005' docs/workflows/dns-lifecycle.md && grep -q 'nice-dns update' README.md && ./nice-dns --help | grep -q '^  update'",
+ "text": "`bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md && grep -q 'WF-DNS-005' docs/workflows/dns-lifecycle.md && grep -q 'nice-dns update' README.md && ./nice-dns --help | grep -q '^  update'`",
+ "touched": [
+  "docs/workflows/dns-lifecycle.md"
+ ],
+ "touched_blobs": {
+  "docs/workflows/dns-lifecycle.md": "fa182f21321a74b499653689d64dd767953f1d49"
+ },
+ "witness_blobs": {
+  "README.md": "17b6286454d76dcd02e43f8d1e63e6fe6f80c2b9",
+  "docs/workflows/dns-lifecycle.md": "fa182f21321a74b499653689d64dd767953f1d49",
+  "nice-dns": "5bfb9b0cd6b559ce15d9c3d36a069240ba98b8bb",
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}

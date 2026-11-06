@@ -48,3 +48,30 @@ Rows of a group come together, in this order of groups.
 
 A reader ignores a group or key it does not know; a new key is added without a
 schema change, a changed meaning bumps the schema.
+
+## `nice-dns update [--check] [--force] [haproxy|socat] [--hardened|--standard] [--branch B]`
+
+The check asks GitHub for the newest commit of the recorded branch (or `B`)
+with `git ls-remote --heads` and compares it with the installed source commit.
+It is the only part of `status` and `update` that uses the network, bounded by
+git's low-speed limit and, where `timeout` exists, by 90 s.
+
+### Exit codes and output
+
+| Code | Output (stdout) | Meaning |
+|---|---|---|
+| 0 | `current` | `--check`: the installed commit is the branch's newest. |
+| 10 | `available <first 12 hex of the commit>` | `--check`: the branch has a newer commit. |
+| 1 | `unknown: <reason>` | The remote could not be reached, the branch does not exist there, or the installed source was not a clean commit (`source_commit` not 40 hex, or `source_dirty` not 0). Nothing is installed, even with `--force`; stderr names `nice-dns reinstall`. Also: nothing is installed at all. |
+| 0 | `already current` | Without `--check`, with nothing newer and no `--force`: nothing is installed. |
+| 0 | `updated to <first 12 hex>` | Without `--check`: the newer commit (or, with `--force`, the same one) was installed like `nice-dns reinstall`, from a clone of the checked branch with the recorded choices (options override them; the branch is never widened unless `--branch` says so), and a second check says `current`. |
+| the installer's | — | The install failed; the installer kept or restored the running stack and stderr names `nice-dns reinstall --local`. |
+| 2 | — | A usage error (`--local` is refused: update installs the branch, not the kept source). |
+
+### The cache `status` reads
+
+Every check writes `update-check.tsv` in the controller's state directory
+(0600, renamed over a temporary file): `schema<TAB>nice-dns-update-check/1`,
+`checked_at <epoch>`, `branch <name>`, `local_commit <sha or ->`,
+`remote_commit <sha or ->`, `result current|available|unknown`. `status`
+prints it as the `update` rows; it never asks the remote itself.
