@@ -475,3 +475,139 @@ t_the_readiness_wait_keeps_to_its_stated_limit() {
   assert_rc 1 "$?" "a wait that never answers ends"
   [ $(( $(date +%s) - t0 )) -lt 5 ] || fail "with sleep faked the tries end it at once"
 }
+
+# ─────────────── Status and update plan, Task 1.2: the status rows ──────────
+
+# st_world <uname>: the files a host with a working stack holds, under the
+# case's HOME: the install's generation, the controller's receipt, state,
+# journal and last observations, the bridge files and the schedule. Sets
+# ST_PLAT, ST_SD (the controller's state directory), ST_NOW.
+st_world() {
+  local rd i
+  cl_world "$1"; cl_record haproxy standard main
+  ST_NOW=1800000000
+  if [ "$1" = Linux ]; then
+    ST_PLAT=linux ST_INST="$CL_HOME/.local/state/nice-dns-install" ST_SD="$CL_HOME/.local/state/nice-dns/controller"
+    rd="$CL_HOME/.local/share/nice-dns-health" ST_SCHED="$CL_HOME/.config/systemd/user/default.target.wants/nice-dns-health.timer"
+  else
+    ST_PLAT=macos ST_INST="$CL_HOME/Library/Application Support/nice-dns-install" ST_SD="$CL_HOME/Library/Application Support/nice-dns/controller"
+    rd="$CL_HOME/Library/Application Support/nice-dns-health" ST_SCHED="$CL_HOME/Library/LaunchAgents/org.nice-dns.health.plist"
+  fi
+  mkdir -p "$ST_SD" "$rd" "${ST_SCHED%/*}" "$CL_HOME/.config/nice-dns"
+  chmod 700 "$ST_SD"
+  : >"$ST_SCHED"
+  printf 'source_commit\t%s\nplatform\t%s\nlock\tsha256:%s\ncredential\tpihole-admin\t%s\tkept\n' \
+    0123456789abcdef0123456789abcdef01234567 \
+    "$ST_PLAT" lockdigest "$CL_HOME/secret/pihole_webpassword" >>"$ST_INST/generations/g1/prepare.tsv"
+  printf 'schema\tnice-dns-health-install/1\nmode\tactive\n' >"$rd/install.tsv"
+  st_pass $((ST_NOW - 30)) OK
+  printf 'schema\tnice-dns-controller-state/1\ngeneration\t42\nroute\tcloudflare-onion\n' >"$ST_SD/state.tsv"
+  : >"$ST_SD/recovery.tsv"
+  for i in 1 2 3 4 5 6 7; do
+    printf '%s\tnd-%s\troute:r%s\tresult%s\tdetail %s\n' $((ST_NOW - 100 + i)) "$i" "$i" "$i" "$i" >>"$ST_SD/recovery.tsv"
+  done
+  printf 'BRIDGE1=obfs4 a\nBRIDGE2=obfs4 b\nBRIDGE3=obfs4 c\n' >"$CL_HOME/.config/nice-dns/bridges.env"
+  printf '%s\n' $((ST_NOW - 3600)) >"$ST_SD/bridges.last"
+}
+
+# st_pass <epoch> <verdict>: the controller's last observations.
+st_pass() {
+  printf 'schema\tnice-dns-observations/1\nobs\tcontainer:unbound\thealthy\t3\trunning\nobs\tcontainer:pi-hole\tunhealthy\t5\tpaused\nobs\troute:cloudflare-onion\thealthy\t120\tanswered\npass\t%s\t%s\n' "$1" "$2" >"$ST_SD/observations.tsv"
+}
+
+# st_rows: nd_status_rows under a PATH of awk, sed, cat, date, tr and cut,
+# plus logging stubs for every tool that would probe or reach the network.
+# ST_OUT, ST_RC; ST_CALLS lists the stub calls.
+st_rows() {
+  local b="$CL_W/st-bin" t p
+  rm -rf "$b"; mkdir -p "$b"
+  for t in awk sed cat date tr cut; do p="$(command -v "$t")" && ln -s "$p" "$b/$t"; done
+  for t in podman container dig curl git systemctl launchctl uname nc; do
+    printf '#!/bin/sh\necho "%s $*" >>"%s/st-calls.log"\nexit 0\n' "$t" "$CL_W" >"$b/$t"
+    chmod +x "$b/$t"
+  done
+  : >"$CL_W/st-calls.log"
+  ST_OUT="$(HOME="$CL_HOME" PATH="$b" XDG_STATE_HOME="" XDG_CONFIG_HOME="" XDG_DATA_HOME="" ND_STATUS_NOW="$ST_NOW" \
+    /bin/bash -c '. "$1" && nd_status_rows "$2"' st "$NICE_DNS_ROOT/lib/status.sh" "$ST_PLAT" 2>"$CL_W/st-err")"
+  ST_RC=$?
+  ST_CALLS="$(cat "$CL_W/st-calls.log")"
+}
+
+# st_val <group> <key>: the rest of that row (tabs kept).
+st_val() { printf '%s\n' "$ST_OUT" | awk -F '\t' -v g="$1" -v k="$2" '$1 == g && $2 == k { sub(/^[^\t]*\t[^\t]*\t/, ""); print; exit }'; }
+
+t_status_rows_cover_every_group_without_running_anything() {
+  local u g n
+  for u in $(cl_platforms); do
+    st_world "$u"; st_rows
+    assert_rc 0 "$ST_RC" "$u: rows: $(cat "$CL_W/st-err")"
+    assert_eq "" "$ST_CALLS" "$u: status runs no probe, runtime, scheduler or network tool"
+    assert_eq "schema	nice-dns-status/1" "$(printf '%s\n' "$ST_OUT" | head -n 1)" "$u: the schema line comes first"
+    for g in install controller obs route bridges update admin recent; do
+      assert_match "^$g	" "$ST_OUT" "$u: the $g group is there"
+    done
+    assert_eq yes "$(st_val install installed)" "$u: installed"
+    assert_eq main "$(st_val install branch)" "$u: branch"
+    assert_eq "$ST_PLAT" "$(st_val install platform)" "$u: platform"
+    assert_eq active "$(st_val controller mode)" "$u: controller mode"
+    assert_eq $((ST_NOW - 30)) "$(st_val controller last_pass)" "$u: last pass"
+    assert_eq OK "$(st_val controller verdict)" "$u: verdict"
+    assert_eq no "$(st_val controller stale)" "$u: a 30 s old pass is not stale"
+    assert_eq loaded "$(st_val controller schedule)" "$u: schedule"
+    n="$(printf '%s\n' "$ST_OUT" | awk -F '\t' '$1 == "obs"' | wc -l | tr -d ' ')"
+    assert_eq 3 "$n" "$u: every observation of the pass is copied"
+    assert_match "^obs	container:pi-hole	unhealthy	5	paused$" "$ST_OUT" "$u: as the controller wrote it"
+    assert_eq "cloudflare-onion	42" "$(st_val route selected)" "$u: the selected route"
+    assert_eq on "$(st_val bridges mode)" "$u: bridges on without a mode file"
+    assert_eq 3 "$(st_val bridges count)" "$u: bridge count"
+    assert_eq $((ST_NOW - 3600)) "$(st_val bridges last_refresh)" "$u: last refresh"
+    assert_eq "unknown	never-checked" "$(st_val update result)" "$u: no update check yet"
+    assert_eq "$CL_HOME/secret/pihole_webpassword" "$(st_val admin password_path)" "$u: the admin password's path, never the password"
+    n="$(printf '%s\n' "$ST_OUT" | awk -F '\t' '$1 == "recent" { print $2 "\t" $3 "\t" $4 }' | tr '\n' '|')"
+    assert_eq "$((ST_NOW - 97))	route:r3	result3|$((ST_NOW - 96))	route:r4	result4|$((ST_NOW - 95))	route:r5	result5|$((ST_NOW - 94))	route:r6	result6|$((ST_NOW - 93))	route:r7	result7|" "$n" "$u: the last five journal rows, oldest first"
+  done
+}
+
+t_status_flags_a_stale_or_missing_pass_and_still_prints_it() {
+  local u
+  for u in $(cl_platforms); do
+    st_world "$u"
+    st_pass $((ST_NOW - 400)) "FAIL [container:pi-hole]"
+    st_rows
+    assert_rc 0 "$ST_RC" "$u: a stale pass is not an error"
+    assert_eq 400 "$(st_val controller stale)" "$u: stale for 400 s"
+    assert_eq "FAIL [container:pi-hole]" "$(st_val controller verdict)" "$u: its verdict"
+    assert_match "^obs	container:unbound	" "$ST_OUT" "$u: its observations are still printed"
+    rm -f "$ST_SD/observations.tsv"; st_rows
+    assert_eq never "$(st_val controller stale)" "$u: no pass yet"
+    assert_eq never "$(st_val controller last_pass)" "$u: no last pass"
+    rm -f "$ST_SCHED"; st_rows
+    assert_eq stopped "$(st_val controller schedule)" "$u: no schedule"
+  done
+}
+
+t_status_not_installed_names_the_curl_line_and_exits_1() {
+  local u
+  for u in $(cl_platforms); do
+    st_world "$u"; rm -rf "$ST_INST"; st_rows
+    assert_rc 1 "$ST_RC" "$u: nothing installed"
+    assert_eq no "$(st_val install installed)" "$u: installed no"
+    assert_match "^install	hint	curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-$(cl_os "$u").sh" "$ST_OUT" "$u: the README's curl line"
+  done
+}
+
+t_status_unreadable_state_exits_2() {
+  local u
+  for u in $(cl_platforms); do
+    st_world "$u"; chmod 000 "$ST_SD"; st_rows; chmod 700 "$ST_SD"
+    assert_rc 2 "$ST_RC" "$u: unreadable state"
+    assert_match "^controller	unreadable	" "$ST_OUT" "$u: says so"
+  done
+}
+
+t_status_values_carry_no_control_characters() {
+  st_world Linux
+  printf 'schema\tnice-dns-install-prepare/1\nvariant\thaproxy\npihole\tstandard\nbranch\tma\033[31min\n' >"$ST_INST/generations/g1/prepare.tsv"
+  st_rows
+  assert_eq "ma[31min" "$(st_val install branch)" "an escape in a file value is removed"
+}
