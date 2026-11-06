@@ -592,7 +592,6 @@ t_status_not_installed_names_the_curl_line_and_exits_1() {
     st_world "$u"; rm -rf "$ST_INST"; st_rows
     assert_rc 1 "$ST_RC" "$u: nothing installed"
     assert_eq no "$(st_val install installed)" "$u: installed no"
-    assert_match "^install	hint	curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-$(cl_os "$u").sh" "$ST_OUT" "$u: the README's curl line"
   done
 }
 
@@ -642,9 +641,13 @@ t_status_command_prints_rows_and_sections_with_its_exit_codes() {
     chmod 700 "$ST_SD"
     assert_rc 2 "$CL_RC" "$u: an unreadable state directory exits 2"
     rm -rf "$ST_INST"
-    cl_run "$CL_TREE/nice-dns" status
+    cl_run "$CL_TREE/nice-dns" status --tsv
     assert_rc 1 "$CL_RC" "$u: nothing installed exits 1"
-    assert_match "curl -fsSL" "$CL_OUT" "$u: and names the curl line"
+    assert_eq "install	hint	$(grep -F "install-$(cl_os "$u").sh -o" "$NICE_DNS_ROOT/README.md" | head -n 1)" "$(printf '%s\n' "$CL_OUT" | awk -F '\t' '$1 == "install" && $2 == "hint"')" "$u: the hint is the README's install line"
+    assert_eq "installed	no" "$(printf '%s\n' "$CL_OUT" | awk -F '\t' 'NR == 2 { print $2 "\t" $3 }')" "$u: right after the installed row"
+    cl_run "$CL_TREE/nice-dns" status
+    assert_rc 1 "$CL_RC" "$u: the sections too"
+    assert_match "hint +curl -fsSL" "$CL_OUT" "$u: and name the install line"
   done
 }
 

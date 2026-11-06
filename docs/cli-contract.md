@@ -32,7 +32,7 @@ Rows of a group come together, in this order of groups.
 
 | Group | Keys and values |
 |---|---|
-| `install` | `installed yes\|no`; when installed: `generation <id>`, `source_commit <sha or unknown>`, `branch <name>`, `variant haproxy\|socat`, `pihole standard\|hardened`, `platform linux\|macos`, `lock sha256:<digest of release/images.lock>`; when not: `hint <curl line>`. |
+| `install` | `installed yes\|no`; when installed: `generation <id>`, `source_commit <sha or unknown>`, `branch <name>`, `variant haproxy\|socat`, `pihole standard\|hardened`, `platform linux\|macos`, `lock sha256:<digest of release/images.lock>`; when not: `hint <the README's install line>`, which the `nice-dns` command adds (the library itself names no command). |
 | `controller` | `mode active\|shadow\|not-installed`; `last_pass <epoch>\|never`; `verdict <text>\|unknown` — `OK`, `FAIL [<names>]` (optionally followed by ` indeterminate=(<names>)`) or `INDETERMINATE [<names>]`; `stale no\|<seconds>\|never` — a pass older than 300 s is stale, and its observations are still printed; `schedule loaded\|stopped`; when the state cannot be read, `unreadable <reason>`. |
 | `obs` | The last pass's records, one per observation: `obs<TAB><name><TAB><verdict><TAB><ms><TAB><reason>`, with `<name>` like `container:pi-hole` or `route:cloudflare-onion` and `<verdict>` `healthy\|unhealthy\|indeterminate`. Absent when no pass was recorded. |
 | `route` | `selected <route id> <state generation>`, from the controller's state. Absent before the controller has chosen a route. |

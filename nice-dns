@@ -369,6 +369,13 @@ status_human() {
     }'
 }
 
+# status_hint: the README's install line for this platform, the hint a
+# `status` with nothing installed adds after `install installed no`.
+status_hint() {
+  printf 'install\thint\tcurl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-%s.sh -o install-%s.sh && bash install-%s.sh\n' \
+    "$ND_CLI_OS" "$ND_CLI_OS" "$ND_CLI_OS"
+}
+
 # cmd_status [--tsv]: lib/status.sh from this checkout or the kept source.
 cmd_status() {
   local tsv=0 rows rc lib="$ND_CLI_ROOT/lib/status.sh"
@@ -379,6 +386,7 @@ cmd_status() {
   if [ ! -f "$lib" ]; then
     if ! recorded_manifest >/dev/null; then
       printf 'schema\tnice-dns-status/1\ninstall\tinstalled\tno\n'
+      status_hint
       err "$ND_CLI_NOT_INSTALLED"
       return 1
     fi
@@ -388,6 +396,9 @@ cmd_status() {
   # shellcheck disable=SC1090  # the source root is found at run time
   . "$lib" || return 2
   rows="$(nd_status_rows "$ND_CLI_PLATFORM")"; rc=$?
+  if [ "$rc" = 1 ]; then
+    rows="$(printf '%s\n' "$rows" | awk -v h="$(status_hint)" '{ print } $0 == "install\tinstalled\tno" { print h }')"
+  fi
   if [ "$tsv" = 1 ]; then printf '%s\n' "$rows"; else printf '%s\n' "$rows" | status_human; fi
   return "$rc"
 }

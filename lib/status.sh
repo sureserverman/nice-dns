@@ -5,10 +5,11 @@
 #   <group> <key> <value>...
 # It reads files only: the install's current generation, the controller's
 # receipt, state, journal and last observations (observations.tsv, written
-# after each pass), the bridge files and the update-check cache. It runs no
-# probe, no container runtime, no scheduler and no network call, so a GUI can
-# poll it every few seconds; its whole PATH may be awk, sed, cat, date, tr and
-# cut. A value from a file is printed without control characters, as
+# after each pass), the bridge files and the update-check cache. It starts no
+# probe, no runtime CLI, no scheduler and nothing that uses the network, so a
+# GUI can poll it every few seconds; its whole PATH may be awk, sed, cat, date,
+# tr and cut. When nothing is installed the `nice-dns` command adds the
+# install hint (the README's install line). A value from a file is printed without control characters, as
 # health/nice-dns-health install_report does. Written for macOS's Bash 3.2.
 
 ND_STATUS_SCHEMA=nice-dns-status/1
@@ -41,15 +42,13 @@ _nd_st_paths() {
       ND_ST_STATE_DIR="${ND_STATE_DIR:-$HOME/Library/Application Support/nice-dns/controller}"
       ND_ST_RECEIPT="$HOME/Library/Application Support/nice-dns-health/install.tsv"
       ND_ST_SCHEDULE="$HOME/Library/LaunchAgents/org.nice-dns.health.plist"
-      ND_ST_ADMIN_URL="http://172.31.240.250/admin"
-      ND_ST_CURL="curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac.sh -o install-mac.sh && bash install-mac.sh" ;;
+      ND_ST_ADMIN_URL="http://172.31.240.250/admin" ;;
     *)
       ND_ST_INSTALL_DIR="$state/nice-dns-install"
       ND_ST_STATE_DIR="${ND_STATE_DIR:-$state/nice-dns/controller}"
       ND_ST_RECEIPT="${XDG_DATA_HOME:-$HOME/.local/share}/nice-dns-health/install.tsv"
       ND_ST_SCHEDULE="$cfg/systemd/user/default.target.wants/nice-dns-health.timer"
-      ND_ST_ADMIN_URL="http://localhost:8880/admin"
-      ND_ST_CURL="curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb.sh -o install-deb.sh && bash install-deb.sh" ;;
+      ND_ST_ADMIN_URL="http://localhost:8880/admin" ;;
   esac
 }
 
@@ -78,7 +77,6 @@ nd_status_rows() {
   else
     m=""
     _nd_st_row install installed no
-    _nd_st_row install hint "$ND_ST_CURL"
     rc=1
   fi
 
