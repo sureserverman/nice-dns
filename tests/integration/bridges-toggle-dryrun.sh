@@ -66,8 +66,9 @@ t_dry_run_prints_every_step_for_both_platforms_and_touches_nothing() {
     assert_eq "$BT_STEPS " "$(printf '%s\n' "$out" | awk -v p="$p" '$1 == p { print $2 }' | tr '\n' ' ')" "$p: every step, in order"
   done
   assert_eq "bt_privacy bt_receipt " "$(printf '%s\n' "$out" | awk '$1 == "all" { print $2 }' | tr '\n' ' ')" "then the privacy check and the receipt"
-  assert_match '^macos +bt_install .*quiesce-agents.*mac-runtime-ssh.*install-cell.*mac-runtime-gui.*resume-agents' "$out" \
-    "the mac install moves the runtime into the ssh domain and always restores it (OD-7)"
+  assert_match '^macos +bt_install .*quiesce-agents.*install-cell.*gui session.*resume-agents.*never moved \(OD-8\)' "$out" \
+    "the mac install runs in the gui session, always resumes the agents and never moves the runtime (OD-8)"
+  assert_not_match '^macos .*mac-runtime' "$out" "no runtime move on the mac"
   assert_not_match '^linux .*mac-runtime' "$out" "Linux does not"
   for t in 'bridges off' 'direct \(no bridges\)' 'bridges-refresh' 'bridges	mode	off|bridges<TAB>mode<TAB>off' 'bridges on' 'with N bridge\(s\)' '600 s'; do
     assert_match "$t" "$out" "the plan names [$t]"
@@ -111,7 +112,7 @@ t_a_well_behaved_target_passes_and_its_receipt_verifies() {
     assert_eq "BT-OFF BT-ON BT-REFRESH BT-STATUS-OFF BT-STATUS-ON " \
       "$(awk -F '\t' -v p="$s" '$1 == "scenario" && index($3, p "/") == 1 { print $2 }' "$r" | sort | tr '\n' ' ')" "$s carries every scenario"
   done
-  assert_match '^limit	mac-runtime-domain	' "$(cat "$r")" "the receipt names the runtime move as a limit (BL-052)"
+  assert_match '^limit	mac-runtime-domain	.*gui session' "$(cat "$r")" "the receipt names the gui-session install as a limit (BL-052)"
   # The evidence: both switches with exit, last line and one request id
   # carrying mode-change and acknowledged; both supervisor lines; both names.
   s="$(cat "$CASE_DIR"/good/receipts/bridges-toggle/*/cells/macos-*/switch-off.tsv)"
@@ -123,7 +124,7 @@ t_a_well_behaved_target_passes_and_its_receipt_verifies() {
   assert_match '^supervisor	tor-[a-z]+	tor-supervisor: spawned tor pid=[0-9]+ generation=[0-9]+ with [0-9]+ bridge\(s\)$' "$s" "the launch with bridges"
 }
 
-t_the_mac_install_moves_the_runtime_and_always_restores_it() {
+t_the_mac_install_never_moves_the_runtime_and_always_resumes() {
   local out
   out="$(
     btd_world "$CASE_DIR/order"
@@ -131,12 +132,12 @@ t_the_mac_install_moves_the_runtime_and_always_restores_it() {
     echo passed
   )"
   assert_eq passed "$out" "the install passes on both platforms"
-  assert_eq "quiesce-agents mac-runtime-ssh install-cell mac-runtime-gui resume-agents " \
+  assert_eq "quiesce-agents install-cell resume-agents " \
     "$(grep -E '^(quiesce-agents|mac-runtime-ssh|install-cell|mac-runtime-gui|resume-agents)$' "$CASE_DIR/order/fake/mac1/oplog" | tr '\n' ' ')" \
-    "macOS: quiesce, move into the ssh domain, install, restore gui/501, resume"
+    "macOS: quiesce, install, resume; the runtime is never moved"
   assert_eq "install-cell " "$(grep -E '^(quiesce-agents|mac-runtime-ssh|install-cell|mac-runtime-gui|resume-agents)$' "$CASE_DIR/order/fake/lin1/oplog" | tr '\n' ' ')" \
     "Linux: the install alone"
-  # A failed install still puts the runtime back and resumes the agents.
+  # A failed install still resumes the agents.
   out="$(
     btd_world "$CASE_DIR/failed-install"
     printf 'install-fails\n' >"$IL_FAKE_DIR/break"
@@ -145,18 +146,17 @@ t_the_mac_install_moves_the_runtime_and_always_restores_it() {
     echo failed
   )"
   assert_eq failed "$out" "a failed install fails the step"
-  assert_eq "quiesce-agents mac-runtime-ssh install-cell mac-runtime-gui resume-agents " \
+  assert_eq "quiesce-agents install-cell resume-agents " \
     "$(grep -E '^(quiesce-agents|mac-runtime-ssh|install-cell|mac-runtime-gui|resume-agents)$' "$CASE_DIR/failed-install/fake/mac1/oplog" | tr '\n' ' ')" \
-    "and the runtime is restored and the agents resumed after it"
-  assert_eq gui "$(cat "$CASE_DIR/failed-install/fake/mac1/domain")" "the mac ends with its runtime in gui/501"
+    "and the agents are resumed after it"
+  assert_no_path "$CASE_DIR/failed-install/fake/mac1/domain" "the mac's runtime was never moved"
 }
 
 t_each_seeded_defect_is_caught() {
   local before='bt_before bt_install'
   # shellcheck disable=SC2086 # one word per step
   {
-    btd_catches no-runtime-move bt_before bt_install
-    btd_catches gui-restore-fails bt_before bt_install
+    btd_catches resume-fails bt_before bt_install
     btd_catches cli-fails $before bt_off
     btd_catches no-mode-change $before bt_off
     btd_catches no-ack $before bt_off

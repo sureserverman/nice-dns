@@ -236,7 +236,11 @@
 #                    same pipe on the target: no other log line is printed or
 #                    kept, and nothing after the <how> words (bridge lines
 #                    are secret)
-#   mac-runtime-ssh  macOS only (OD-7, BL-052): move the container runtime
+#   mac-runtime-ssh  NOT USED since OD-8: on 2026-11-07 it broke the mac's
+#                    vmnet (interface creation failed) until InternetSharing
+#                    was restarted. target.sh reaches a gui/<uid> runtime
+#                    through the gui session instead (ND_GUI).
+#                    macOS only (OD-7, BL-052): move the container runtime
 #                    into the ssh-visible launchd domain for an install over
 #                    ssh: boot out every gui/<uid> com.apple.container.*
 #                    service, then `container system start`. Quiesce the
@@ -641,6 +645,17 @@ if [ "$(uname -s)" = Darwin ]; then
   plat=macos
   mid=$(ioreg -rd1 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformUUID/ { print $4 }')
   C=$(command -v container || ls /opt/homebrew/bin/container /usr/local/bin/container 2>/dev/null | head -1)
+  # OD-8 (BL-052): ssh cannot see a runtime in launchd gui/<uid>. Then every
+  # container call (and the installer) runs inside the gui session; the
+  # runtime is never moved (moving it broke vmnet on 2026-11-07).
+  ND_GUI=no
+  if [ -n "$C" ] && ! "$C" system status </dev/null >/dev/null 2>&1 &&
+    sudo -n launchctl asuser "$(id -u)" sudo -n -u "$(id -un)" "$C" system status </dev/null >/dev/null 2>&1; then
+    g="$HOME/.nice-dns-harness-ctl"
+    # shellcheck disable=SC2016 # $HOME, $PATH and $@ expand when the shim runs
+    printf '#!/bin/sh\nexec sudo -n launchctl asuser %s sudo -n -u %s env HOME="$HOME" PATH="$PATH" %s "$@"\n' \
+      "$(id -u)" "$(id -un)" "$C" >"$g" && chmod 700 "$g" && C="$g" && ND_GUI=yes
+  fi
   RESOLVER='172.31.240.250#53'
   HEALTH_LOG="$HOME/Library/Logs/nice-dns-health/health.log"
 else
@@ -929,10 +944,13 @@ case "$NICE_DNS_OP" in
     fi
     printf '%s_cell\t%s/%s\ninstaller\t%s\nsource_sha\t%s\nstarted_utc\t%s\n' "$NICE_DNS_ACTION" "$NICE_DNS_PROXY" "$NICE_DNS_PIHOLE" "$inst" \
       "$NICE_DNS_SOURCE_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # In the gui session when ssh cannot see the runtime (OD-8).
+    gs=""
+    [ "${ND_GUI:-no}" = yes ] && gs="sudo -n launchctl asuser $(id -u) sudo -n -u $(id -un) env HOME=$HOME PATH=$PATH"
     if [ "$NICE_DNS_ACTION" = uninstall ]; then
-      (cd "$w/nice-dns" && bash "./$inst" uninstall) </dev/null 2>&1
+      (cd "$w/nice-dns" && $gs bash "./$inst" uninstall) </dev/null 2>&1
     else
-      (cd "$w/nice-dns" && bash "./$inst" "$NICE_DNS_PROXY" main) </dev/null 2>&1
+      (cd "$w/nice-dns" && $gs bash "./$inst" "$NICE_DNS_PROXY" main) </dev/null 2>&1
     fi
     rc=$?
     # Apple's runtime keeps a guest-side cause (e.g. `internalError: "mount"`,
@@ -940,8 +958,8 @@ case "$NICE_DNS_OP" in
     # past a few minutes: take it with the failure, or it is gone.
     if [ "$rc" -ne 0 ] && [ "$plat" = macos ]; then
       echo "── runtime state after the failure ──"
-      container ls -a 2>&1; container volume list 2>&1
-      container system logs --last 10m 2>&1 | tail -n 400
+      ctl ls -a </dev/null 2>&1; ctl volume list </dev/null 2>&1
+      ctl system logs --last 10m </dev/null 2>&1 | tail -n 400
     fi
     printf 'finished_utc\t%s\ninstaller_exit\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc"
     exit $rc ;;

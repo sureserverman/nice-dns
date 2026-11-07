@@ -1194,6 +1194,50 @@ t_bridges_toggle_ops_are_guarded() {
   assert_not_match 'bootout|bootstrap' "$b" "and boots nothing out or in"
 }
 
+# bridges-toggle plan, OD-8 (BL-052): when plain ssh cannot see the mac's
+# runtime but the gui session can, every container call goes through
+# `launchctl asuser`, and so does the installer; the runtime is never moved.
+t_mac_gui_runtime_is_reached_through_the_gui_session() {
+  local b
+  tg_setup
+  tg_remote_tools Darwin
+  mkdir -p "$CASE_DIR/home"
+  HOME="$CASE_DIR/home"; export HOME
+  # Plain container calls fail unless they run inside the fake gui session.
+  cat >"$CASE_DIR/rbin/container" <<'FAKE'
+#!/bin/sh
+printf 'container %s gui=%s\n' "$*" "${ND_FAKE_GUI:-no}" >>"$FAKE_LOG"
+[ "${ND_FAKE_GUI:-}" = 1 ] || { echo "apiserver is not running and not registered with launchd" >&2; exit 1; }
+FAKE
+  cat >"$CASE_DIR/rbin/launchctl" <<'FAKE'
+#!/bin/sh
+printf 'launchctl %s\n' "$*" >>"$FAKE_LOG"
+[ "$1" = asuser ] || exit 0
+shift 2
+ND_FAKE_GUI=1 exec "$@"
+FAKE
+  cat >"$CASE_DIR/rbin/sudo" <<'FAKE'
+#!/bin/sh
+printf 'sudo %s\n' "$*" >>"$FAKE_LOG"
+[ "$1" = -n ] && shift
+[ "$1" = -u ] && shift 2
+exec "$@"
+FAKE
+  chmod 755 "$CASE_DIR"/rbin/*
+  tg_targets 'mac1	macos	mac1-ssh	SHA256:AAAAtestfingerprintAAAAAAAAAAAAAAAAAAAAAAAA	disposable	2026-09-22'
+  tg snapshot mac1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "mac snapshot: $TG_OUT"
+  assert_match '^container list --all gui=1$' "$(cat "$FAKE_LOG")" "the container list ran inside the gui session"
+  assert_not_match '^container list .*gui=no$' "$(cat "$FAKE_LOG")" "and never outside it"
+  assert_match '^sudo -n launchctl asuser [0-9]+ sudo -n -u ' "$(cat "$FAKE_LOG")" "through sudo launchctl asuser"
+  assert_not_match 'launchctl (bootout|bootstrap|kickstart)|container system (start|stop)' "$(cat "$FAKE_LOG")" "the runtime is never moved"
+  b="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG" | sed -n '/^  install-cell|uninstall-cell)/,/^    exit \$rc ;;$/p')"
+  assert_match '\[ "\$\{ND_GUI:-no\}" = yes \] && gs="sudo -n launchctl asuser' "$b" "the installer runs in the gui session when ssh cannot see the runtime"
+  assert_match '\$gs bash "\./\$inst" "\$NICE_DNS_PROXY" main' "$b" "install"
+  assert_match '\$gs bash "\./\$inst" uninstall' "$b" "and uninstall"
+  assert_not_match '(^|[;&|( ])container ' "$(printf '%s\n' "$b" | grep -v '^[[:space:]]*#')" "its failure diagnostics use ctl, not a bare container"
+}
+
 t_supervisor_lines_return_only_spawn_lines() {
   tg_setup
   tg_remote_tools Linux

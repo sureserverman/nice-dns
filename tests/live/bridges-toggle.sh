@@ -6,12 +6,12 @@
 # this checkout's HEAD; the installed proxy launcher must know TOR_BRIDGES
 # before `nice-dns bridges on|off` accepts a switch (Stage 1).
 #
-# macOS (OD-7, BL-052): the mac's container runtime normally runs in launchd
-# gui/<uid>, which an ssh install cannot see. The install step quiesces the
-# controller agents and moves the runtime into the ssh-visible domain
-# (target.sh mac-runtime-ssh), installs, then always puts it back in gui/<uid>
-# (mac-runtime-gui: the stack listed and a fresh name answering) and resumes
-# the agents. The switches run with the runtime in gui/<uid>.
+# macOS (OD-8, BL-052): the mac's container runtime runs in launchd
+# gui/<uid>, which plain ssh cannot see. target.sh then runs the mac's
+# container calls and its installer inside the gui session (launchctl
+# asuser); the runtime is never moved (OD-7's move broke vmnet, 2026-11-07).
+# The install step quiesces the controller agents, installs, and always
+# resumes them.
 #
 # A failed step stops that platform's later steps, but bt_after still runs,
 # so the target ends with bridges on and a settled stack. Every wait is
@@ -36,7 +36,7 @@ bt_plan() {
   for p in linux macos; do
     printf '%s %-13s %s\n' "$p" bt_before "snapshot the target, record its proxy as the cell ($p/<proxy>/standard)"
     if [ "$p" = macos ]; then
-      printf '%s %-13s %s\n' "$p" bt_install "quiesce-agents; mac-runtime-ssh (boot out gui/<uid> com.apple.container.*, container system start over ssh); install-cell --cell <proxy>/standard --source-sha HEAD; then always mac-runtime-gui (container system stop over ssh, kickstart gui/<uid>/org.nice-dns.start-container, until container ls shows the stack and a fresh name answers) and resume-agents (OD-7)"
+      printf '%s %-13s %s\n' "$p" bt_install "quiesce-agents; install-cell --cell <proxy>/standard --source-sha HEAD, inside the gui session when ssh cannot see the runtime (launchctl asuser); then always resume-agents; the runtime is never moved (OD-8)"
     else
       printf '%s %-13s %s\n' "$p" bt_install "install-cell --cell <proxy>/standard --source-sha HEAD; the deployment checked; real timers"
     fi
@@ -195,32 +195,27 @@ bt_status() {
 
 bt_before() { bt_budget bt_before; cr_before "$@"; }
 
-# On macOS the runtime move is undone whatever the install did (OD-7).
+# On macOS the agents are resumed whatever the install did (OD-8).
 bt_install() {
   local plat="$1" a="$2" d proxy rc=0 back=0
   d="$(il_dir "$a")"; proxy="$(il_cell "$a" proxy)"
   bt_budget bt_install
   if [ "$plat" = macos ]; then
     il_t "$a" quiesce-agents >"$d/runtime-quiesce.log" 2>&1 || rc=1
-    [ "$rc" != 0 ] || il_t "$a" mac-runtime-ssh >"$d/runtime-ssh.log" 2>&1 || rc=2
   fi
   [ "$rc" != 0 ] || il_t "$a" install-cell --cell "$proxy/standard" --source-sha "$(il_cell "$a" source_sha)" >"$d/install.log" 2>&1 || rc=3
   if [ "$plat" = macos ]; then
-    il_t "$a" mac-runtime-gui >"$d/runtime-gui.log" 2>&1 || back=1
     il_t "$a" resume-agents >"$d/runtime-resume.log" 2>&1 || back=2
     {
       awk -F '\t' '$1 == "quiesced" || $1 == "absent" { print "quiesce\t" $2 "\t" $1 }' "$d/runtime-quiesce.log"
-      awk -F '\t' '$1 == "booted_out" || $1 == "system_start" || $1 == "system_status" { print "to_ssh\t" $0 }' "$d/runtime-ssh.log" 2>/dev/null
-      awk -F '\t' '$1 == "system_stop" || $1 == "kickstarted" || $1 == "stack" || $1 == "waited_s" { print "to_gui\t" $0 }' "$d/runtime-gui.log"
       printf 'restored\t%s\n' "$([ "$back" = 0 ] && echo yes || echo no)"
     } >"$d/runtime.tsv"
   fi
   case "$rc" in
     1) fail "quiesce-agents failed: $(tail -n 5 "$d/runtime-quiesce.log" | tr '\n' ' ')" ;;
-    2) fail "mac-runtime-ssh failed: $(tail -n 5 "$d/runtime-ssh.log" | tr '\n' ' ')" ;;
     3) fail "install-cell $proxy/standard failed: $(tail -n 20 "$d/install.log")" ;;
   esac
-  [ "$back" = 0 ] || fail "the runtime was not put back in gui/<uid> or the agents not resumed: $(tail -n 5 "$d/runtime-gui.log" | tr '\n' ' '); $(tail -n 3 "$d/runtime-resume.log" | tr '\n' ' ')"
+  [ "$back" = 0 ] || fail "the agents were not resumed: $(tail -n 3 "$d/runtime-resume.log" | tr '\n' ' ')"
   il_report "$a" after-install || fail "lifecycle-report"
   il_check_deployed "$plat" "$d/after-install.tsv" "$proxy"
   il_t "$a" set-tunables --mode default >>"$d/ops.log" 2>&1 || fail "set-tunables: $(tail -n 5 "$d/ops.log")"
@@ -318,7 +313,7 @@ bt_receipt() {
     done
     printf 'product\tnice-dns\t%s\n' "$(git -C "$NICE_DNS_ROOT" rev-parse HEAD)"
     # What the run did not prove.
-    printf 'limit\tmac-runtime-domain\t-\tscope=BL-052\tthe macOS install ran with the container runtime moved into the ssh-visible launchd domain and back to gui/<uid> (OD-7), not with the runtime where it normally runs\n'
+    printf 'limit\tmac-runtime-domain\t-\tscope=BL-052\tthe macOS install ran over ssh inside the gui session (launchctl asuser, OD-8), not from a login at the Mac\n'
     printf 'limit\tmac-gui-context\t-\tscope=BL-052\tmacOS nice-dns commands ran in the GUI context (launchctl asuser), not from plain ssh or Terminal\n'
   } >"$r"
   selected=" $(il_platforms) "

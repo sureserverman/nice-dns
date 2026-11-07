@@ -3,12 +3,12 @@
 # Task 2.1): the operations live/bridges-toggle uses, with target.sh's report
 # formats. Install state, snapshots and lifecycle reports go to
 # tests/fixtures/command-recovery-adapter.sh (and on to lifecycle-adapter.sh).
-# A fake mac refuses an install while its runtime is in gui/<uid> and a switch
-# while it is not (BL-052, OD-7). Every operation is appended to
+# A fake mac's runtime stays in gui/<uid>, where target.sh reaches it through
+# the gui session (OD-8): an install or a switch fails once anything moves it
+# (BL-052; mac-runtime-ssh moves it, as on the real mac). Every operation is appended to
 # $IL_FAKE_DIR/<alias>/oplog. One defect can be seeded by writing its name to
 # $IL_FAKE_DIR/break:
-#   no-runtime-move   mac-runtime-ssh leaves the runtime in gui/<uid>
-#   gui-restore-fails mac-runtime-gui does not bring the stack back
+#   resume-fails      resume-agents exits 1
 #   install-fails     install-cell fails
 #   cli-fails         nice-dns bridges exits 1
 #   no-mode-change    a switch journals no mode-change row
@@ -82,17 +82,17 @@ case "$op" in
     put quiesced yes
     if [ "$plat" = macos ]; then printf 'quiesced\torg.nice-dns.health\trc=0\nquiesced\torg.nice-dns.health-bridges\trc=0\n'
     else printf 'quiesced\tnice-dns-health.timer\trc=0\n'; fi ;;
-  resume-agents) put quiesced no; printf 'resumed\tagents\trc=0\n' ;;
+  resume-agents)
+    [ "$brk" != resume-fails ] || { echo "fake resume failed"; exit 1; }
+    put quiesced no; printf 'resumed\tagents\trc=0\n' ;;
   mac-runtime-ssh)
-    [ "$brk" = no-runtime-move ] || put domain ssh
+    put domain ssh
     printf 'booted_out\tgui/501/com.apple.container.apiserver\trc=0\nsystem_start\trc=0\nsystem_status\trc=0\n' ;;
   mac-runtime-gui)
-    printf 'system_stop\trc=0\nkickstarted\tgui/501/org.nice-dns.start-container\trc=0\n'
-    if [ "$brk" = gui-restore-fails ]; then put domain none; printf 'stack\t1 containers\n'; exit 1; fi
     put domain gui
-    printf 'stack\trunning\t3\nwaited_s\t4\n' ;;
+    printf 'system_stop\trc=0\nkickstarted\tgui/501/org.nice-dns.start-container\trc=0\nstack\trunning\t3\nwaited_s\t4\n' ;;
   install-cell)
-    if [ "$plat" = macos ] && [ "$(get domain gui)" != ssh ]; then
+    if [ "$plat" = macos ] && [ "$(get domain gui)" != gui ]; then
       echo "the container runtime is not up after its restart (nd_install_macos_fresh_datapath)"; exit 1
     fi
     [ "$brk" != install-fails ] || { echo "fake install failed"; exit 1; }
