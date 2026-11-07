@@ -529,6 +529,12 @@ refresh_bridges_on_outage() {
   last="$(cat "$f" 2>/dev/null)"; case "$last" in ''|*[!0-9]*) last=0 ;; esac
   [ $((now - last)) -ge "${ND_BRIDGE_OUTAGE_REFRESH_S:-3600}" ] || return 0
   (umask 077 && printf '%s\n' "$now" >"$f")
+  # Bridges off: nothing to evaluate (stamped above, so one row an hour).
+  if [ "$(nd_bridges_mode)" = off ]; then
+    nd_recovery_journal "br-$now" bridges skipped "bridges off"
+    log_to_file "$1 BRIDGES outage refresh result=skipped (bridges off)"
+    return 0
+  fi
   t="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-br.XXXXXX")" || return 0
   c="$(nd_platform_proxy_container "${ND_RECOVERY_CMD_DEADLINE:-15}" "$t" 2>/dev/null)"; v="${c#tor-}"
   rm -rf "${t:?}"

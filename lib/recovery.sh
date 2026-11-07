@@ -1060,6 +1060,17 @@ nd_recovery_tick() {
 #     generation, so a later Tor restart during a sustained failure can adopt
 #     the set through the service restart (nd_recovery_restart_tor); a proxy
 #     that restarted since has adopted it already.
+#   * with bridges off (TOR_BRIDGES=off in bridges-mode.env, nd_bridges_mode)
+#     nothing is evaluated or applied; the pool is kept for `on`.
+
+# nd_bridges_mode: on or off, from bridges-mode.env in the bridge directory
+# (read as data, never sourced, DEC-001). Absent or any other value is on.
+nd_bridges_mode() {
+  case "$(awk -F '=' '$1 == "TOR_BRIDGES" { print $2; exit }' "$(nd_platform_bridge_dir)/bridges-mode.env" 2>/dev/null)" in
+    off) printf 'off\n' ;;
+    *) printf 'on\n' ;;
+  esac
+}
 
 _ND_BR_LINE='^BRIDGE[0-9]+=obfs4 [0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]{1,5} [0-9A-F]{40} cert=[A-Za-z0-9+/=]+ iat-mode=[0-2]$'
 
@@ -1231,6 +1242,10 @@ _nd_br_running_weak() {
 nd_bridges_refresh() {
   local v="${1:-}" d base cand rc t out weak="" listed="" dropped=0 n0 adopted=-
   case "$v" in haproxy|socat) ;; *) printf 'result\trefused\ndetail\tvariant must be haproxy or socat\n'; return 2 ;; esac
+  if [ "$(nd_bridges_mode)" = off ]; then
+    nd_recovery_journal "br-$(date +%s)" bridges skipped "bridges off"
+    printf 'result\tskipped\ndetail\tbridges off\n'; return 3
+  fi
   d="$(nd_platform_bridge_dir)"
   if ! _nd_br_mutex_take; then
     nd_recovery_journal "br-$(date +%s)" bridges skipped "another bridge refresh is running"
