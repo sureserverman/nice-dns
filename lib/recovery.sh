@@ -1072,6 +1072,21 @@ nd_bridges_mode() {
   esac
 }
 
+# nd_bridges_mode_change <on|off> <request_id>: the switch of the bridges mode
+# as a recovery action (WF-DNS-004): journal the change, then restart the
+# proxy through the service action (nd_recovery_restart_service: Linux the
+# proxy unit, macOS the stack's agent), acknowledged by a new container start;
+# the controller's next pass observes readiness (DEC-006). The caller has
+# written bridges-mode.env and holds the state lock (ND_RECOVERY_LOCK_TOKEN):
+# unlike the bridge-adoption restart (BL-030), this one never runs without it.
+nd_bridges_mode_change() {
+  case "${1:-}" in on|off) ;; *) _nd_rec_out refused bridges "${2:-}" - - "mode must be on or off"; return 2 ;; esac
+  if ! _nd_rec_id_ok "${2:-}"; then _nd_rec_out refused bridges "${2:-}" - - "bad request id"; return 2; fi
+  _nd_rec_lock_ok "$2" bridges || return 5
+  nd_recovery_journal "$2" bridges mode-change "$1"
+  nd_recovery_restart_service "$2"
+}
+
 _ND_BR_LINE='^BRIDGE[0-9]+=obfs4 [0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]{1,5} [0-9A-F]{40} cert=[A-Za-z0-9+/=]+ iat-mode=[0-2]$'
 
 # _nd_br_norm <file>: the valid bridge lines, without keys, sorted, unique.

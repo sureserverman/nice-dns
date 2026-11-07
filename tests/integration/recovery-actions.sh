@@ -1248,3 +1248,45 @@ t_pihole_restart_is_refused_without_the_lock_and_in_shadow() {
     ) || exit 1
   done
 }
+
+# Sub-plan 4 Task 1.4 (WF-DNS-004, DEC-006): a bridges mode change is a
+# recovery action: journalled, a service restart acknowledged by a new start,
+# and later observed ready by the controller's pass. It runs only under the
+# state lock (unlike the bridge-adoption restart, BL-030).
+t_bridges_mode_change_is_a_locked_acknowledged_restart() {
+  local plat out rc tok id
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      tok="$(nd_state_lock)" || fail "$plat: lock"
+      export ND_RECOVERY_LOCK_TOKEN="$tok"
+      : >"$FAKE/restart_changes"
+      id="bridges-off-$(date +%s)"
+      out="$(nd_bridges_mode_change off "$id")"; rc=$?
+      assert_rc 0 "$rc" "$plat: the mode change restarts the proxy: $out"
+      assert_eq acknowledged "$(ra_field result "$out")" "$plat: acknowledged by a new start"
+      assert_match "$id	bridges	mode-change	off" "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: the change is journalled"
+      assert_match "$id	service	requested	" "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: the restart is requested"
+      assert_match "$id	service	acknowledged	" "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: and acknowledged"
+      if [ "$plat" = linux ]; then
+        assert_match '^systemctl --user restart tor-haproxy\.service$' "$(cat "$FAKE_LOG")" "$plat: the proxy unit restarts"
+      else
+        assert_match '^launchctl kickstart -k ' "$(cat "$FAKE_LOG")" "$plat: the stack's agent rebuilds"
+      fi
+      # The controller's next pass observes readiness (DEC-006).
+      ra_obs "$CASE_DIR/obs" healthy
+      echo 0 >"$FAKE/unbound_probe_rc"
+      _nd_rec_readiness "$CASE_DIR/obs" "$(date +%s)"
+      assert_match "$id	service	ready	" "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: the restart is later observed ready"
+      # Without the lock nothing changes.
+      nd_state_unlock "$tok" >/dev/null
+      : >"$FAKE_LOG"
+      out="$(nd_bridges_mode_change on "bridges-on-$(date +%s)")"; rc=$?
+      assert_rc 5 "$rc" "$plat: no mode-change restart without the lock"
+      assert_not_match 'systemctl|launchctl' "$(cat "$FAKE_LOG")" "$plat: no service command ran"
+      assert_not_match 'mode-change	on' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: and nothing is journalled as changed"
+      out="$(nd_bridges_mode_change sideways "bridges-x-1")"; rc=$?
+      assert_rc 2 "$rc" "$plat: an unknown mode is refused"
+    ) || exit 1
+  done
+}

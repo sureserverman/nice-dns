@@ -91,7 +91,12 @@ nothing, and nothing is kept while the controller has no state directory.
 The bridges mode is one line, `TOR_BRIDGES=on` or `TOR_BRIDGES=off`, in
 `~/.config/nice-dns/bridges-mode.env` (0644, no secret). An absent file means
 `on`. `on` and `off` write it, renamed over a temporary file in the same
-directory; the proxy reads it at its next start. They never touch `bridges.env`,
+directory. When the mode changed they then restart the proxy (macOS: the whole
+stack) as `restart` does: the controller's schedules held and its state lock
+taken, the restart journalled (`bridges mode-change <mode>`, then the service
+restart's `requested` and `acknowledged`; the controller's next pass adds
+`ready`), then a wait for DNS; the schedules are released on every exit. An
+unchanged mode is written again and restarts nothing. They never touch `bridges.env`,
 the bridge pool, so `on` uses the last good set again. Nothing reads the mode
 file as shell: it is parsed for the `TOR_BRIDGES` line only.
 
@@ -105,7 +110,8 @@ The last line on stdout is the answer.
 
 | Code | Last line on stdout | Meaning |
 |---|---|---|
-| 0 | `takes effect at the next proxy start` | `on` or `off`: the mode file now holds that mode. `off` prints the note about what the ISP sees before it. |
+| 0 | `Bridges are <mode>; the proxy restarted and DNS is answering.` | `on` or `off` changed the mode: the file holds it, the proxy restarted with it and DNS answers. `off` prints the note about what the ISP sees before it. |
+| 0 | `Bridges are already <mode>; nothing restarted.` | `on` or `off` asked for the mode already in force (an absent file is `on`). |
 | 0 | `last_refresh <epoch>\|never` | `status`: the `bridges` rows of `status --tsv` without the group column, in order: `mode<TAB>on\|off`, `count<TAB><n>` (bridge lines in `bridges.env`), `last_refresh<TAB><epoch>\|never`. |
-| 1 | — | Nothing is installed (stderr: ``nice-dns is not installed; run `nice-dns install` ``); the mode file is not written. Or `on`/`off` could not write the mode file: stderr names its path, and the mode and everything else are unchanged. |
+| 1 | — | Nothing is installed (stderr: ``nice-dns is not installed; run `nice-dns install` ``); the mode file is not written. Or `on`/`off` could not write the mode file: stderr names its path, and the mode and everything else are unchanged. Or the controller stayed busy (stderr: `still busy`): the mode is unchanged. Or the restart failed (stderr: the mode is written and takes effect at the next proxy start) or DNS did not answer after it (stderr: `not answering yet`). |
 | 2 | — | A usage error (no subcommand, another word, or more than one), with nothing on stdout; or `status` found a file it reads there but unreadable (an `unreadable<TAB><reason>` line, as in `status`). |
