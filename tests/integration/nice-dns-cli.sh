@@ -960,3 +960,116 @@ t_update_cache_names_no_commit_for_an_unclean_record() {
   cl_run "$CL_TREE/nice-dns" update --check
   assert_eq - "$(awk -F '\t' '$1 == "local_commit" { print $2 }' "$ST_SD/update-check.tsv")" "local_commit is - when the record names no commit"
 }
+
+# ─────────────── Bridges toggle plan, Task 1.1: nice-dns bridges ────────────
+
+# bt_mode_file: the mode file the toggle writes (absent means on).
+bt_mode_file() { printf '%s\n' "$CL_HOME/.config/nice-dns/bridges-mode.env"; }
+
+t_bridges_off_and_on_write_the_mode_line() {
+  local u f pool
+  for u in $(cl_platforms); do
+    st_world "$u"; f="$(bt_mode_file)"
+    pool="$(cat "$CL_HOME/.config/nice-dns/bridges.env")"
+    cl_run "$CL_TREE/nice-dns" bridges off
+    assert_rc 0 "$CL_RC" "$u: bridges off: $CL_ERR"
+    assert_file "$f" "$u: off writes the mode file"
+    assert_eq "TOR_BRIDGES=off" "$(cat "$f")" "$u: off writes exactly one line"
+    assert_eq 1 "$(wc -l <"$f" | tr -d ' ')" "$u: and only that line"
+    assert_eq 644 "$(stat -c %a "$f")" "$u: the mode file is 0644"
+    assert_match "ISP" "$CL_OUT" "$u: off says what the ISP sees"
+    assert_match "Tor guard" "$CL_OUT" "$u: plain Tor guard connections"
+    assert_match "obfs4" "$CL_OUT" "$u: instead of obfs4 traffic"
+    assert_eq "takes effect at the next proxy start" "$(printf '%s\n' "$CL_OUT" | tail -n 1)" "$u: off: the last line"
+    assert_eq "" "$(find "$CL_HOME/.config/nice-dns" -name '.bridges-mode*')" "$u: no temporary file is left"
+    assert_eq "$pool" "$(cat "$CL_HOME/.config/nice-dns/bridges.env")" "$u: the bridge pool is untouched"
+    assert_eq "" "$(cl_calls .)" "$u: off runs nothing"
+    cl_run "$CL_TREE/nice-dns" bridges on
+    assert_rc 0 "$CL_RC" "$u: bridges on: $CL_ERR"
+    assert_eq "TOR_BRIDGES=on" "$(cat "$f")" "$u: on writes on"
+    assert_eq 644 "$(stat -c %a "$f")" "$u: still 0644"
+    assert_not_match "Tor guard" "$CL_OUT" "$u: on carries no privacy note"
+    assert_eq "takes effect at the next proxy start" "$(printf '%s\n' "$CL_OUT" | tail -n 1)" "$u: on: the last line"
+    assert_eq "$pool" "$(cat "$CL_HOME/.config/nice-dns/bridges.env")" "$u: the bridge pool is still untouched"
+  done
+}
+
+t_bridges_status_reads_the_mode_back() {
+  local u
+  for u in $(cl_platforms); do
+    st_world "$u"
+    cl_run "$CL_TREE/nice-dns" bridges status
+    assert_rc 0 "$CL_RC" "$u: bridges status: $CL_ERR"
+    assert_eq "mode	on
+count	3
+last_refresh	$((ST_NOW - 3600))" "$CL_OUT" "$u: absent means on, with the pool size and the last refresh"
+    cl_run "$CL_TREE/nice-dns" bridges off
+    cl_run "$CL_TREE/nice-dns" bridges status
+    assert_rc 0 "$CL_RC" "$u: bridges status after off: $CL_ERR"
+    assert_eq "mode	off
+count	3
+last_refresh	$((ST_NOW - 3600))" "$CL_OUT" "$u: status reads off back"
+    ND_STATUS_NOW="$ST_NOW" cl_run "$CL_TREE/nice-dns" status --tsv
+    assert_match "^bridges	mode	off$" "$CL_OUT" "$u: status --tsv shows the mode"
+    cl_run "$CL_TREE/nice-dns" bridges on
+    ND_STATUS_NOW="$ST_NOW" cl_run "$CL_TREE/nice-dns" status --tsv
+    assert_match "^bridges	mode	on$" "$CL_OUT" "$u: and on again"
+    assert_eq "" "$(cl_calls .)" "$u: bridges status runs nothing"
+  done
+}
+
+t_bridges_bad_arguments_are_usage_errors() {
+  local args
+  st_world Linux
+  for args in "bridges" "bridges frobnicate" "bridges On" "bridges off on" "bridges status --tsv" "bridges --help"; do
+    # shellcheck disable=SC2086  # each row is a word list
+    cl_run "$CL_TREE/nice-dns" $args
+    assert_rc 2 "$CL_RC" "[$args] is a usage error"
+    assert_match '^Usage: nice-dns' "$CL_ERR" "[$args]: usage on stderr"
+    assert_eq "" "$CL_OUT" "[$args]: nothing on stdout"
+    assert_no_path "$(bt_mode_file)" "[$args]: no mode file"
+  done
+}
+
+t_bridges_not_installed_exits_1_and_writes_nothing() {
+  local u sub
+  for u in $(cl_platforms); do
+    for sub in off on status; do
+      cl_world "$u"; mkdir -p "$CL_HOME/.config/nice-dns"
+      cl_run "$CL_TREE/nice-dns" bridges "$sub"
+      assert_rc 1 "$CL_RC" "$u bridges $sub: exit 1"
+      # shellcheck disable=SC2016  # the backticks are text for the reader
+      assert_match 'nice-dns is not installed; run `nice-dns install`' "$CL_ERR" "$u bridges $sub: the message"
+      assert_eq "" "$CL_OUT" "$u bridges $sub: nothing on stdout"
+      assert_no_path "$(bt_mode_file)" "$u bridges $sub: the mode file is not written"
+      assert_eq "" "$(cl_calls .)" "$u bridges $sub: nothing ran"
+    done
+  done
+}
+
+t_bridges_an_unwritable_mode_file_names_the_path() {
+  local u d
+  for u in $(cl_platforms); do
+    st_world "$u"; d="$CL_HOME/.config/nice-dns"
+    cl_run "$CL_TREE/nice-dns" bridges on
+    chmod 500 "$d"
+    cl_run "$CL_TREE/nice-dns" bridges off
+    chmod 700 "$d"
+    assert_nonzero "$CL_RC" "$u: an unwritable directory fails"
+    assert_match "$d/bridges-mode.env" "$CL_ERR" "$u: the error names the path"
+    assert_not_match "takes effect" "$CL_OUT" "$u: no success line"
+    assert_eq "TOR_BRIDGES=on" "$(cat "$(bt_mode_file)")" "$u: the mode is unchanged"
+    assert_eq "" "$(find "$d" -name '.bridges-mode*')" "$u: no temporary file is left"
+    rm -rf "${d:?}"
+    cl_run "$CL_TREE/nice-dns" bridges off
+    assert_nonzero "$CL_RC" "$u: a missing config directory fails"
+    assert_match "$d/bridges-mode.env" "$CL_ERR" "$u: and names the path"
+    assert_no_path "$d" "$u: nothing is created"
+  done
+}
+
+t_bridges_is_in_the_help() {
+  cl_world Linux
+  cl_run "$CL_TREE/nice-dns" --help
+  assert_match "^  bridges on\|off\|status" "$CL_OUT" "--help lists bridges"
+}

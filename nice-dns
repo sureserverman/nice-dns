@@ -37,6 +37,11 @@ Usage: nice-dns <command> [options]
       last update check. Reads files only. --tsv prints the
       nice-dns-status/1 rows (docs/cli-contract.md). Exit 0, 1 when
       nothing is installed, 2 when a file it reads cannot be read.
+  bridges on|off|status
+      on/off writes the bridges mode (~/.config/nice-dns/bridges-mode.env);
+      it takes effect at the next proxy start. With bridges off, your ISP
+      sees plain Tor guard connections instead of obfs4 traffic. status
+      prints the mode, the number of bridges and the last refresh.
   uninstall
       Remove the stack, then this command.
 EOF
@@ -60,7 +65,7 @@ ND_CLI_CMD="$1"
 shift
 
 case "$ND_CLI_CMD" in
-  install|reinstall|restart|uninstall|status|update) ;;
+  install|reinstall|restart|uninstall|status|update|bridges) ;;
   -h|--help|help) usage; exit 0 ;;
   *) bad_usage "unknown command '$ND_CLI_CMD'" ;;
 esac
@@ -561,6 +566,56 @@ cmd_status() {
   return "$rc"
 }
 
+# ─── bridges ─────────────────────────────────────────────────────────────────
+
+# bridges_write <dir> <on|off>: bridges-mode.env, one line, 0644, renamed over
+# from a temporary file in the same directory. bridges.env (the pool) is never
+# touched. The directory is the installer's; a missing one is not created.
+bridges_write() {
+  local f="$1/bridges-mode.env" t
+  if t="$(mktemp "$1/.bridges-mode.XXXXXX" 2>/dev/null)"; then
+    if printf 'TOR_BRIDGES=%s\n' "$2" >"$t" && chmod 644 "$t" && mv -f "$t" "$f"; then
+      return 0
+    fi
+    rm -f "$t"
+  fi
+  err "could not write $f; the bridges mode is unchanged"
+  return 1
+}
+
+# cmd_bridges on|off|status: the bridges mode (TOR_BRIDGES=on|off; absent
+# means on). on/off write it; the proxy reads it at its next start. status
+# prints the `bridges` rows of `status --tsv` without the group column. The
+# mode file is never sourced (DEC-001). Exit: 0, 1 not installed or the file
+# cannot be written, 2 usage, or (status) a file it reads cannot be read.
+cmd_bridges() {
+  local sub="${1:-}" d rows rc=0
+  local lib="$ND_CLI_ROOT/lib/status.sh" plat="$ND_CLI_ROOT/lib/platform/$ND_CLI_PLATFORM.sh"
+  [ $# -eq 1 ] || bad_usage "bridges takes one of on, off, status"
+  case "$sub" in on|off|status) ;; *) bad_usage "unknown option '$sub' for bridges" ;; esac
+  if ! recorded_manifest >/dev/null || [ ! -f "$lib" ] || [ ! -f "$plat" ]; then
+    err "$ND_CLI_NOT_INSTALLED"
+    return 1
+  fi
+  # shellcheck disable=SC1090  # the source root is found at run time
+  . "$plat" || return 1
+  # shellcheck disable=SC1090
+  . "$lib" || return 1
+  d="$(nd_platform_bridge_dir)"
+  if [ "$sub" = status ]; then
+    _nd_st_paths "$ND_CLI_PLATFORM"
+    rows="$(_nd_st_bridges "$d" "$ND_ST_STATE_DIR")" || rc=$?
+    printf '%s\n' "$rows" | cut -f 2-
+    return "$rc"
+  fi
+  bridges_write "$d" "$sub" || return 1
+  if [ "$sub" = off ]; then
+    echo "Bridges are off. Your ISP will see plain Tor guard connections instead of"
+    echo "obfs4 traffic: it can tell you use Tor, though still not what you look up."
+  fi
+  echo "takes effect at the next proxy start"
+}
+
 case "$ND_CLI_CMD" in
   install) cmd_install "$@" ;;
   uninstall) cmd_uninstall "$@" ;;
@@ -568,4 +623,5 @@ case "$ND_CLI_CMD" in
   restart) cmd_restart "$@" ;;
   status) cmd_status "$@" ;;
   update) cmd_update "$@" ;;
+  bridges) cmd_bridges "$@" ;;
 esac

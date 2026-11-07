@@ -85,3 +85,27 @@ state directory (0600, renamed over a temporary file):
 `result current|available|unknown`. A check of another branch (`--branch`) keeps
 nothing, and nothing is kept while the controller has no state directory.
 `status` prints the cache as the `update` rows; it never asks the remote itself.
+
+## `nice-dns bridges on|off|status`
+
+The bridges mode is one line, `TOR_BRIDGES=on` or `TOR_BRIDGES=off`, in
+`~/.config/nice-dns/bridges-mode.env` (0644, no secret). An absent file means
+`on`. `on` and `off` write it, renamed over a temporary file in the same
+directory; the proxy reads it at its next start. They never touch `bridges.env`,
+the bridge pool, so `on` uses the last good set again. Nothing reads the mode
+file as shell: it is parsed for the `TOR_BRIDGES` line only.
+
+With bridges off, the ISP no longer sees obfs4 traffic. It sees plain
+connections to Tor guards: it can tell Tor is in use, though still not what is
+looked up. `off` says so before its answer.
+
+### Exit codes and output
+
+The last line on stdout is the answer.
+
+| Code | Last line on stdout | Meaning |
+|---|---|---|
+| 0 | `takes effect at the next proxy start` | `on` or `off`: the mode file now holds that mode. `off` prints the note about what the ISP sees before it. |
+| 0 | `last_refresh <epoch>\|never` | `status`: the `bridges` rows of `status --tsv` without the group column, in order: `mode<TAB>on\|off`, `count<TAB><n>` (bridge lines in `bridges.env`), `last_refresh<TAB><epoch>\|never`. |
+| 1 | — | Nothing is installed (stderr: ``nice-dns is not installed; run `nice-dns install` ``); the mode file is not written. Or `on`/`off` could not write the mode file: stderr names its path, and the mode and everything else are unchanged. |
+| 2 | — | A usage error (no subcommand, another word, or more than one), with nothing on stdout; or `status` found a file it reads there but unreadable (an `unreadable<TAB><reason>` line, as in `status`). |
