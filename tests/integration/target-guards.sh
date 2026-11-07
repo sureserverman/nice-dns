@@ -1139,6 +1139,14 @@ t_capture_names_every_question_type() {
 t_bridges_toggle_ops_are_guarded() {
   local op v w b
   tg_setup
+  # OD-8 retired mac-runtime-ssh: without the override it is refused first.
+  tg_targets 'mac1	macos	mac1-ssh	SHA256:AAAAtestfingerprintAAAAAAAAAAAAAAAAAAAAAAAA	disposable	2026-09-22'
+  : >"$FAKE_LOG"
+  tg mac-runtime-ssh mac1 --targets "$CASE_DIR/targets.env"
+  assert_nonzero "$TG_RC" "mac-runtime-ssh without NICE_DNS_ALLOW_RUNTIME_MOVE"
+  assert_match 'retired \(OD-8\).*vmnet' "$TG_OUT" "the refusal says why"
+  assert_eq 0 "$(tg_sent)" "nothing sent"
+  NICE_DNS_ALLOW_RUNTIME_MOVE=yes; export NICE_DNS_ALLOW_RUNTIME_MOVE
   tg_targets 'lin1	linux	lin1-ssh	SHA256:AAAAtestfingerprintAAAAAAAAAAAAAAAAAAAAAAAA	disposable	2026-09-22' \
     'mac1	macos	mac1-ssh	SHA256:AAAAtestfingerprintAAAAAAAAAAAAAAAAAAAAAAAA	disposable	2026-09-22'
   for op in mac-runtime-ssh mac-runtime-gui; do
@@ -1192,13 +1200,14 @@ t_bridges_toggle_ops_are_guarded() {
   assert_match 'launchctl kickstart "gui/\$u/org\.nice-dns\.start-container"' "$b" "kickstarts only the stack's start agent"
   assert_match 'end=\$\(\(t0 \+ 900\)\)' "$b" "the wait for the stack is bounded"
   assert_not_match 'bootout|bootstrap' "$b" "and boots nothing out or in"
+  unset NICE_DNS_ALLOW_RUNTIME_MOVE
 }
 
 # bridges-toggle plan, OD-8 (BL-052): when plain ssh cannot see the mac's
 # runtime but the gui session can, every container call goes through
 # `launchctl asuser`, and so does the installer; the runtime is never moved.
 t_mac_gui_runtime_is_reached_through_the_gui_session() {
-  local b
+  local b all
   tg_setup
   tg_remote_tools Darwin
   mkdir -p "$CASE_DIR/home"
@@ -1232,9 +1241,13 @@ FAKE
   assert_match '^sudo -n launchctl asuser [0-9]+ sudo -n -u ' "$(cat "$FAKE_LOG")" "through sudo launchctl asuser"
   assert_not_match 'launchctl (bootout|bootstrap|kickstart)|container system (start|stop)' "$(cat "$FAKE_LOG")" "the runtime is never moved"
   b="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG" | sed -n '/^  install-cell|uninstall-cell)/,/^    exit \$rc ;;$/p')"
-  assert_match '\[ "\$\{ND_GUI:-no\}" = yes \] && gs="sudo -n launchctl asuser' "$b" "the installer runs in the gui session when ssh cannot see the runtime"
-  assert_match '\$gs bash "\./\$inst" "\$NICE_DNS_PROXY" main' "$b" "install"
-  assert_match '\$gs bash "\./\$inst" uninstall' "$b" "and uninstall"
+  assert_match 'gui_run bash "\./\$inst" "\$NICE_DNS_PROXY" main' "$b" "the installer runs in the gui session when ssh cannot see the runtime"
+  assert_match 'gui_run bash "\./\$inst" uninstall' "$b" "and so does the uninstaller"
+  all="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG")"
+  assert_match 'gui_run\(\) \{' "$all" "gui_run is defined for every platform"
+  assert_match 'if \[ "\$\{ND_GUI:-no\}" = yes \]; then' "$all" "and is a no-op unless ND_GUI is yes"
+  assert_match 'CONTAINER_BIN="\$g" && export CONTAINER_BIN' "$all" "the health tool's container calls use the shim too"
+  assert_match 'mv -f "\$g\.\$\$" "\$g"' "$all" "the shim is written by rename"
   assert_not_match '(^|[;&|( ])container ' "$(printf '%s\n' "$b" | grep -v '^[[:space:]]*#')" "its failure diagnostics use ctl, not a bare container"
 }
 

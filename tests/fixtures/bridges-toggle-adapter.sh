@@ -23,6 +23,8 @@
 #   refresh-fails     with bridges off the refresh exits 1
 #   status-stale      status --tsv shows the mode before the last switch
 #   status-stuck-off  status --tsv shows off after the on switch
+#   status-exit2      status --tsv shows the right rows but exits 2
+#   after-blind       the third status read (bt_after's) shows no bridges rows
 # Nothing here touches the host.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -160,10 +162,13 @@ case "$op" in
         cmd_wrap 0 "Restarting the proxy..." "Bridges are on; the proxy restarted and DNS is answering." ;;
       status)
         [ "$(get installed)" = 1 ] || cmd_wrap 1 "schema	nice-dns-status/1" "install	installed	no"
+        put statusn "$(( $(get statusn 0) + 1 ))"
+        [ "$brk" != after-blind ] || [ "$(get statusn)" -lt 3 ] || cmd_wrap 0 "schema	nice-dns-status/1" "install	installed	yes"
         m="$(get mode on)"
         [ "$brk" != status-stale ] || m="$(get prevmode on)"
         [ "$brk" != status-stuck-off ] || [ "$m" != on ] || [ "$(get prevmode on)" != off ] || m=off
-        cmd_wrap 0 "schema	nice-dns-status/1" "install	installed	yes" "bridges	mode	$m" "bridges	count	3" "bridges	last_refresh	never" ;;
+        src=0; [ "$brk" != status-exit2 ] || src=2
+        cmd_wrap "$src" "schema	nice-dns-status/1" "install	installed	yes" "bridges	mode	$m" "bridges	count	3" "bridges	last_refresh	never" ;;
       *) exec bash "$HERE/command-recovery-adapter.sh" "${args[@]}" ;;
     esac ;;
 esac

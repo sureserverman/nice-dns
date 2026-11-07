@@ -169,6 +169,8 @@ t_each_seeded_defect_is_caught() {
     btd_catches status-stale $before bt_off bt_refresh bt_status_off
     btd_catches still-direct $before bt_off bt_refresh bt_status_off bt_on
     btd_catches status-stuck-off $before bt_off bt_refresh bt_status_off bt_on bt_status_on
+    btd_catches status-exit2 $before bt_off bt_refresh bt_status_off
+    btd_catches after-blind $before bt_off bt_refresh bt_status_off bt_on bt_status_on bt_after
   }
 }
 

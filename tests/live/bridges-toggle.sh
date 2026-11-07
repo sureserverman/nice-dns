@@ -189,6 +189,7 @@ bt_status() {
   } >"$d/status-$m.tsv"
   grep -qx "status	bridges	mode	$m" "$d/status-$m.tsv" \
     || fail "status --tsv does not show bridges mode $m: $(grep '^status	' "$d/status-$m.tsv" | tr '\n' ' ')"
+  assert_eq 0 "$(awk -F '\t' '$1 == "status_exit" { print $2 }' "$d/status-$m.tsv")" "status --tsv exited 0 (installed, every file readable)"
 }
 
 # ─────────────────────────── steps ───────────────────────────────────────────
@@ -257,8 +258,11 @@ bt_after() {
   m="$(awk -F '\t' '$1 == "bridges" && $2 == "mode" { print $3; exit }' "$d/cmd-status-after.log")"
   if [ "$m" = off ]; then
     bt_cli "$a" after-on bridges-on || fail "nice-dns bridges on (after): $(tail -n 5 "$d/cmd-after-on.log" | tr '\n' ' ')"
-    m=on
+    bt_cli "$a" status-after-on status
+    m="$(awk -F '\t' '$1 == "bridges" && $2 == "mode" { print $3; exit }' "$d/cmd-status-after-on.log")"
   fi
+  # The step's promise: the target ends with bridges on. No mode read is no pass.
+  [ "$m" = on ] || fail "the target does not end with bridges on (status --tsv mode: ${m:-none})"
   cr_settled "$a"
   printf 'settled\tyes\nbridges_mode\t%s\n' "${m:--}" >"$d/after.tsv"
 }

@@ -417,6 +417,10 @@ case "$op" in
   mac-runtime-ssh|mac-runtime-gui)
     [ "$T_PLATFORM" = macos ] || die "$op is macOS only (the container runtime's launchd domain, BL-052); $alias_ is $T_PLATFORM" ;;
 esac
+# OD-8: moving the runtime broke the mac's vmnet (2026-11-07); refused unless
+# asked for by name.
+[ "$op" != mac-runtime-ssh ] || [ "${NICE_DNS_ALLOW_RUNTIME_MOVE:-}" = yes ] \
+  || die "mac-runtime-ssh is retired (OD-8): moving the container runtime broke the mac's vmnet on 2026-11-07; set NICE_DNS_ALLOW_RUNTIME_MOVE=yes to run it anyway"
 
 case "$op" in
   sever-upstream|heal-upstream|freeze-upstream|thaw-upstream|build-proxy|recreate-proxy|fault-route|heal-route|thaw-on-request|arm-prepare|arm-set|stop-proxy)
@@ -645,16 +649,22 @@ if [ "$(uname -s)" = Darwin ]; then
   plat=macos
   mid=$(ioreg -rd1 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformUUID/ { print $4 }')
   C=$(command -v container || ls /opt/homebrew/bin/container /usr/local/bin/container 2>/dev/null | head -1)
-  # OD-8 (BL-052): ssh cannot see a runtime in launchd gui/<uid>. Then every
-  # container call (and the installer) runs inside the gui session; the
-  # runtime is never moved (moving it broke vmnet on 2026-11-07).
+  # OD-8 (BL-052): with the runtime in launchd gui/<uid>, `container system
+  # status` over ssh says it is not registered (and the installer's datapath
+  # check fails on that), though `container ls` still reaches it. Then every
+  # container call (the health tool's too, through CONTAINER_BIN) and the
+  # installer run inside the gui session, where the start agent runs them;
+  # the runtime is never moved (moving it broke vmnet on 2026-11-07).
   ND_GUI=no
   if [ -n "$C" ] && ! "$C" system status </dev/null >/dev/null 2>&1 &&
     sudo -n launchctl asuser "$(id -u)" sudo -n -u "$(id -un)" "$C" system status </dev/null >/dev/null 2>&1; then
     g="$HOME/.nice-dns-harness-ctl"
+    # Written by rename: a watchdog may run the shim while another op writes it.
     # shellcheck disable=SC2016 # $HOME, $PATH and $@ expand when the shim runs
-    printf '#!/bin/sh\nexec sudo -n launchctl asuser %s sudo -n -u %s env HOME="$HOME" PATH="$PATH" %s "$@"\n' \
-      "$(id -u)" "$(id -un)" "$C" >"$g" && chmod 700 "$g" && C="$g" && ND_GUI=yes
+    printf '#!/bin/sh\nexec sudo -n launchctl asuser %s sudo -n -u %s env HOME="$HOME" PATH="$PATH" "%s" "$@"\n' \
+      "$(id -u)" "$(id -un)" "$C" >"$g.$$" && chmod 700 "$g.$$" && mv -f "$g.$$" "$g" &&
+      C="$g" && ND_GUI=yes && CONTAINER_BIN="$g" && export CONTAINER_BIN
+    rm -f "$g.$$"
   fi
   RESOLVER='172.31.240.250#53'
   HEALTH_LOG="$HOME/Library/Logs/nice-dns-health/health.log"
@@ -668,6 +678,14 @@ else
   XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"; export XDG_RUNTIME_DIR
 fi
 ctl() { "$C" "$@"; }
+# gui_run <cmd...>: cmd inside the mac's gui session when ND_GUI is yes (OD-8).
+gui_run() {
+  if [ "${ND_GUI:-no}" = yes ]; then
+    sudo -n launchctl asuser "$(id -u)" sudo -n -u "$(id -un)" env HOME="$HOME" PATH="$PATH" "$@"
+  else
+    "$@"
+  fi
+}
 # exec never reads this script's stdin (the script itself arrives on it).
 ctl_exec() { "$C" exec "$@" </dev/null; }
 sha_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
@@ -945,12 +963,10 @@ case "$NICE_DNS_OP" in
     printf '%s_cell\t%s/%s\ninstaller\t%s\nsource_sha\t%s\nstarted_utc\t%s\n' "$NICE_DNS_ACTION" "$NICE_DNS_PROXY" "$NICE_DNS_PIHOLE" "$inst" \
       "$NICE_DNS_SOURCE_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     # In the gui session when ssh cannot see the runtime (OD-8).
-    gs=""
-    [ "${ND_GUI:-no}" = yes ] && gs="sudo -n launchctl asuser $(id -u) sudo -n -u $(id -un) env HOME=$HOME PATH=$PATH"
     if [ "$NICE_DNS_ACTION" = uninstall ]; then
-      (cd "$w/nice-dns" && $gs bash "./$inst" uninstall) </dev/null 2>&1
+      (cd "$w/nice-dns" && gui_run bash "./$inst" uninstall) </dev/null 2>&1
     else
-      (cd "$w/nice-dns" && $gs bash "./$inst" "$NICE_DNS_PROXY" main) </dev/null 2>&1
+      (cd "$w/nice-dns" && gui_run bash "./$inst" "$NICE_DNS_PROXY" main) </dev/null 2>&1
     fi
     rc=$?
     # Apple's runtime keeps a guest-side cause (e.g. `internalError: "mount"`,
