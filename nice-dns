@@ -595,6 +595,17 @@ bridges_write() {
   return 1
 }
 
+# bridges_launcher: the installed file that starts the proxy (Linux: its
+# quadlet; macOS: the agent). One from before the switch never passes
+# TOR_BRIDGES, so the proxy would ignore the mode.
+bridges_launcher() {
+  if [ "$ND_CLI_PLATFORM" = macos ]; then
+    printf '%s\n' "${ND_INST_ROOT:-}/usr/local/sbin/start-container.sh"
+  else
+    printf '%s/tor-%s.container\n' "$(nd_platform_quadlet_dir)" "$(recorded_field "$(recorded_manifest)" variant)"
+  fi
+}
+
 # cmd_bridges on|off|status: the bridges mode (TOR_BRIDGES=on|off; absent
 # means on). on/off write it; a changed mode then restarts the proxy as
 # `restart` does the stack: the controller's schedules held, its state lock
@@ -630,6 +641,11 @@ cmd_bridges() {
     bridges_write "$d" "$sub" || return 1
     echo "Bridges are already $sub; nothing restarted."
     return 0
+  fi
+  if ! grep -q 'TOR_BRIDGES' "$(bridges_launcher)" 2>/dev/null; then
+    # shellcheck disable=SC2016  # the backticks are text for the reader
+    err "the installed proxy launcher $(bridges_launcher) predates the bridges switch; the bridges mode is unchanged. Run \`nice-dns update\` first."
+    return 1
   fi
   ND_CLI_TMP="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-restart.XXXXXXXX")" || return 1
   trap restart_cleanup EXIT

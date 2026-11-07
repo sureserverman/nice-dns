@@ -1051,7 +1051,7 @@ t_bridges_not_installed_exits_1_and_writes_nothing() {
 t_bridges_an_unwritable_mode_file_names_the_path() {
   local u d
   for u in $(cl_platforms); do
-    st_world "$u"; d="$CL_HOME/.config/nice-dns"
+    st_world "$u"; bt_restart_fakes; d="$CL_HOME/.config/nice-dns"
     cl_run "$CL_TREE/nice-dns" bridges on
     chmod 500 "$d"
     cl_run "$CL_TREE/nice-dns" bridges off
@@ -1090,6 +1090,12 @@ bt_restart_fakes() {
     : >"$CL_HOME/Library/LaunchAgents/org.nice-dns.health-bridges.plist"
   fi
   echo 1 >"$CL_FAKE/gen"
+  # The installed proxy launcher carries the mode, as an install of this
+  # branch leaves it (Linux: the quadlet; macOS: the agent under ND_INST_ROOT).
+  BT_ROOT="$CL_W/root"; export ND_INST_ROOT="$BT_ROOT"
+  if [ "$CL_UNAME" = Darwin ]; then BT_LAUNCHER="$BT_ROOT/usr/local/sbin/start-container.sh"; else BT_LAUNCHER="$CL_HOME/.config/containers/systemd/tor-haproxy.container"; fi
+  mkdir -p "${BT_LAUNCHER%/*}"
+  printf 'PodmanArgs=--env TOR_BRIDGES\n' >"$BT_LAUNCHER"
   f="$CL_FAKE/proxy-restarted"
   cat >"$f" <<EOF2
 #!/bin/bash
@@ -1250,5 +1256,27 @@ t_bridges_a_mode_path_that_is_a_directory_is_refused() {
     assert_eq 0 "$(grep -cE "$(bt_proxy_restart_pat)" "$CL_LOG")" "$u: nothing restarted"
     assert_not_match 'mode-change' "$(bt_journal)" "$u: nothing journalled"
     cl_assert_released "$u"
+  done
+}
+
+# Stage 1 gate (demo Material 1): a launcher from before the switch would start
+# the proxy without the mode, so the switch would report a change Tor never
+# sees. It is refused before anything is held.
+t_bridges_an_install_older_than_the_switch_is_refused() {
+  local u
+  for u in $(cl_platforms); do
+    st_world "$u"; bt_restart_fakes
+    printf 'EnvironmentFile=%%h/.config/nice-dns/bridges.env\n' >"$BT_LAUNCHER"
+    : >"$CL_LOG"
+    cl_run "$CL_TREE/nice-dns" bridges off
+    assert_rc 1 "$CL_RC" "$u: an older install refuses the switch"
+    assert_match 'nice-dns update' "$CL_ERR" "$u: and says how to get the switch"
+    assert_match "$BT_LAUNCHER" "$CL_ERR" "$u: naming the launcher it read"
+    assert_no_path "$(bt_mode_file)" "$u: the mode is not written"
+    assert_eq "" "$(cl_calls .)" "$u: nothing held or restarted"
+    rm -f "$BT_LAUNCHER"
+    cl_run "$CL_TREE/nice-dns" bridges off
+    assert_rc 1 "$CL_RC" "$u: no launcher at all refuses too"
+    unset ND_INST_ROOT
   done
 }
