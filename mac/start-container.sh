@@ -82,6 +82,8 @@ unset SSH_AUTH_SOCK
 log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >>"$LOG"; }
 run_root_helper() {
   [[ -x "$ROOT_HELPER" ]] || return 1
+  # The agent's own log (~/Library/Logs): the user writes it, not root.
+  # shellcheck disable=SC2024
   sudo -n "$ROOT_HELPER" "$1" >>"$LOG" 2>&1
 }
 
