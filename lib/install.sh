@@ -2348,10 +2348,15 @@ nd_install_macos_prepare_images() {
 # nd_install_macos_bridges: bridges.env, and the proxy's BRIDGEn arguments in
 # ND_INST_BRIDGE_ARGS.
 nd_install_macos_bridges() {
-  local _bridges_file _nbridges=0 _bline
+  local _bridges_file _nbridges=0 _bline _mode=on
+  # The bridges mode (nice-dns bridges on|off), read as data: with
+  # TOR_BRIDGES=off Tor runs direct, so no set is fetched or required.
+  if [ "$(awk -F '=' '$1 == "TOR_BRIDGES" { print $2; exit }' "${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges-mode.env" 2>/dev/null)" = off ]; then
+    _mode=off
+  fi
   # Fetch default obfs4 bridges from the Tor Project on first install, then
   # pass them into the container. Idempotent: bridges.env is reused on re-runs.
-  "$ND_INST_TREE/scripts/fetch-bridges.sh" || return 1
+  if [ "$_mode" = on ]; then "$ND_INST_TREE/scripts/fetch-bridges.sh" || return 1; fi
   # bridges.env is written without surrounding quotes for podman --env-file /
   # systemd EnvironmentFile= compatibility (Linux quadlets), so bash `source`
   # can't be used here — it would split on whitespace inside the obfs4 line.
@@ -2364,13 +2369,17 @@ nd_install_macos_bridges() {
   # contiguously because the image walks BRIDGE1..16 and a gap in the source file
   # would hide everything after it.
   _bridges_file="${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges.env"
-  ND_INST_BRIDGE_ARGS=()
+  ND_INST_BRIDGE_ARGS=( -e "TOR_BRIDGES=${_mode}" )
   while IFS= read -r _bline; do
     [[ -n "$_bline" ]] || continue
     (( _nbridges < 16 )) || break
     _nbridges=$(( _nbridges + 1 ))
     ND_INST_BRIDGE_ARGS+=( -e "BRIDGE${_nbridges}=${_bline}" )
-  done < <(sed -n 's/^BRIDGE[0-9][0-9]*=//p' "$_bridges_file")
+  done < <(sed -n 's/^BRIDGE[0-9][0-9]*=//p' "$_bridges_file" 2>/dev/null)
+  if [ "$_mode" = off ]; then
+    echo "Bridges off: Tor runs direct (keeping $_nbridges bridge(s) from bridges.env for \`nice-dns bridges on\`)."
+    return 0
+  fi
   if (( _nbridges < 3 )); then
     echo "bridges.env yielded $_nbridges bridge(s); need at least 3." >&2
     return 1

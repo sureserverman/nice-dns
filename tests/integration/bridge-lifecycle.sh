@@ -618,3 +618,82 @@ t_boot_selection_is_skipped_when_bridges_are_off() {
   sh -c "$(printf '%s' "$cond" | sed "s#%h#$h#g")"; rc=$?
   assert_rc 0 "$rc" "bridges on and no bridges.env: the boot selection runs"
 }
+
+# Sub-plan 4 Task 1.3: the macOS agent (mac/start-container.sh) reads the
+# bridges mode, passes it into the proxy, and counts it in the bridge
+# fingerprint (Apple's runtime bakes -e at `container run`, so a mode change
+# must recreate the proxy); with bridges off it never fetches a set. Run from
+# the script's own functions with stubs, as recovery-actions does.
+bl_agent() {
+  local sc="$NICE_DNS_ROOT/mac/start-container.sh"
+  {
+    printf 'set -u\n'
+    grep -E '^(TOR_BRIDGES|TOR_BRIDGES_FILE|BRIDGES_FILE|BRIDGE_MAX_SLOTS)=' "$sc"
+    printf 'BRIDGE_ARGS=(); BRIDGE_COUNT=0\n'
+    sed -n '/^load_tor_bridges() {/,/^}/p; /^load_bridges() {/,/^}/p; /^bridge_fingerprint() {/,/^}/p; /^bridges_rotate_needed() {/,/^}/p' "$sc"
+    printf 'TOR_CONTAINER=tor-socat TOR_STATE_DIR=/state TOR_IMAGE=docker.io/sureserver/tor-socat:latest\n'
+    printf 'ensure_container() { printf "container run %%s\\n" "$*"; }\n'
+    printf 'tor_launch() {\n'
+    awk '/^  ensure_container "\$TOR_CONTAINER"/ { f = 1 } f { print } f && !/\\$/ { exit }' "$sc"
+    printf '}\n'
+  } >"$CASE_DIR/agent.sh"
+}
+bl_agent_run() {
+  # $1: what to print after loading (run|fp|rotate)
+  env -i HOME="$CASE_DIR/ahome" PATH="$PATH" XDG_CONFIG_HOME="$CASE_DIR/ahome/.config" BRIDGE_SENTINEL="$CASE_DIR/sentinel" WHAT="$1" bash -c '
+    log() { printf "log: %s\n" "$*"; }
+    shasum() { sha256sum; }
+    . "'"$CASE_DIR"'/agent.sh"
+    load_tor_bridges
+    case "$WHAT" in
+      run) load_bridges; tor_launch ;;
+      fp) load_bridges; bridge_fingerprint ;;
+      old-fp) load_bridges; printf "%s\n" ${BRIDGE_ARGS[@]+"${BRIDGE_ARGS[@]}"} | sha256sum | cut -d" " -f1 ;;
+      rotate) if bridges_rotate_needed; then echo rotate=yes; else echo rotate=no; fi ;;
+    esac' 2>&1
+}
+
+t_macos_agent_honours_the_bridges_mode() {
+  local cfg out fp_on fp_off fp_none
+  bl_agent
+  assert_match 'load_tor_bridges' "$(cat "$CASE_DIR/agent.sh")" "the mode is read by a function of the agent"
+  cfg="$CASE_DIR/ahome/.config/nice-dns"; mkdir -p "$cfg"
+  bl_set "$cfg/bridges.env" 5
+  fp_none="$(bl_agent_run fp)"
+  assert_eq "$(bl_agent_run old-fp)" "$fp_none" "no mode file: the fingerprint is the set's alone (an upgrade recreates nothing)"
+  printf 'TOR_BRIDGES=on\n' >"$cfg/bridges-mode.env"
+  fp_on="$(bl_agent_run fp)"
+  assert_eq "$fp_none" "$fp_on" "on is the same as no mode file"
+  out="$(bl_agent_run run)"
+  assert_match '^container run .* -e TOR_BRIDGES=on ' "$out" "on: the proxy is started with the mode"
+  printf 'TOR_BRIDGES=off\n' >"$cfg/bridges-mode.env"
+  out="$(bl_agent_run run)"
+  assert_match '^container run .* -e TOR_BRIDGES=off ' "$out" "off: the proxy is started direct"
+  assert_match ' -e BRIDGE1=obfs4 ' "$out" "off: the bridge lines still pass (the image ignores them)"
+  fp_off="$(bl_agent_run fp)"
+  assert_ne "$fp_on" "$fp_off" "a mode change alone changes the fingerprint"
+  assert_eq "$fp_off" "$(bl_agent_run fp)" "an unchanged mode keeps it"
+  # No usable set: on fetches one, off never does.
+  rm -f "$cfg/bridges.env"
+  assert_match 'rotate=no' "$(bl_agent_run rotate)" "off and no set: nothing is fetched"
+  assert_match 'bridges off' "$(bl_agent_run rotate)" "and the log says why"
+  printf 'TOR_BRIDGES=on\n' >"$cfg/bridges-mode.env"
+  assert_match 'rotate=yes' "$(bl_agent_run rotate)" "on and no set: a set is fetched"
+}
+
+# The macOS bridge evaluation takes a dnsnet address and the stack lock; with
+# bridges off the adapter itself refuses (exit 3, nothing evaluated), so no
+# caller can spend that on a set it will not use.
+t_macos_bridge_eval_does_nothing_when_bridges_are_off() {
+  (
+    bl_env macos
+    bl_set "$BL_LIVE" 5; bl_set "$CASE_DIR/cand" 7 9
+    printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+    printf 'TOR_BRIDGES=off\n' >"$ND_BRIDGE_CONFIG_DIR/bridges-mode.env"
+    : >"$FAKE_LOG"
+    nd_platform_bridge_eval haproxy .cand 30 "$TMPDIR"
+    assert_rc 3 $? "off: the evaluation is refused as not runnable"
+    assert_eq "" "$(grep ' run --rm ' "$FAKE_LOG")" "off: no evaluation container runs"
+    assert_no_path "$ND_BRIDGE_CONFIG_DIR/.cand" "off: no candidate is written"
+  ) || exit 1
+}

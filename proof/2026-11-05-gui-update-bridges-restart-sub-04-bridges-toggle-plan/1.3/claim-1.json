@@ -1,0 +1,35 @@
+{
+ "baseline": {
+  "elapsed_s": 28.8,
+  "exit": 0,
+  "tail": "run_id=20261107T081316Z-9314bcce artifacts=/home/user/.local/state/nice-dns-tests/runs/20261107T081316Z-9314bcce\nPASS  t_a_crash_looping_proxy_is_not_restarted_to_adopt_a_set\nPASS  t_a_proxy_restarted_since_has_adopted_the_set\nPASS  t_boot_selection_is_skipped_when_a_usable_set_exists\nPASS  t_boot_selection_is_skipped_when_bridges_are_off\nPASS  t_bridges_off_outage_refresh_is_skipped\nPASS  t_bridges_off_refresh_is_skipped_and_changes_nothing\nPASS  t_changed_set_is_adopted_at_next_start_without_restart\nPASS  t_failed_or_thin_evaluation_keeps_the_last_good_set\nPASS  t_filter_never_leaves_fewer_than_three_bridges\nPASS  t_install_schedules_the_daily_refresh\nPASS  t_macos_agent_honours_the_bridges_mode\nPASS  t_macos_bridge_eval_does_nothing_when_bridges_are_off\nPASS  t_macos_installer_retires_the_legacy_bridge_agent_after_the_controller\nPASS  t_macos_probe_uses_dnsnet_and_needs_the_stack\nPASS  t_outage_refresh_is_evaluated_and_rate_limited\nPASS  t_recovery_adopts_a_pending_set_through_the_service_restart\nPASS  t_slow_refresh_never_overwrites_a_newer_set\nPASS  t_unchanged_set_writes_nothing_and_restarts_nothing\nPASS  t_unreachable_distributor_keeps_the_working_pool\nPASS  t_unreadable_tor_state_changes_nothing\nPASS  t_weak_bridge_not_running_is_filtered_without_restart\nPASS  t_weak_bridge_stays_out_after_the_tor_state_is_wiped\nPASS  t_weak_memory_expires\nPASS  t_weak_running_bridge_is_dropped_and_the_proxy_recreated\ngroup integration/bridge-lifecycle: collected=24 passed=24 failed=0\ncollected=24 passed=24 failed=0\nresult=pass run_id=20261107T081316Z-9314bcce artifacts=/home/user/.local/state/nice-dns-tests/runs/20261107T081316Z-9314bcce"
+ },
+ "break_patch": "--- a/mac/start-container.sh\n+++ b/mac/start-container.sh\n@@ -566,7 +566,6 @@\n   ensure_container \"$TOR_CONTAINER\" \\\n     -c 1 -m 512M \\\n     -v \"${TOR_STATE_DIR}:/app/data\" \\\n-    -e \"TOR_BRIDGES=${TOR_BRIDGES}\" \\\n     ${BRIDGE_ARGS[@]+\"${BRIDGE_ARGS[@]}\"} \\\n     \"$TOR_IMAGE\" || return 1\n \n",
+ "build": null,
+ "created": "2026-11-07T08:14:13+00:00",
+ "fingerprint": "3c19dc54a732fe70fb6c1687132d0800fcf0c7edab74590edb2320481f69583e",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "bash scripts: nothing is compiled",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-04-bridges-toggle-plan.md",
+ "red": {
+  "elapsed_s": 28.2,
+  "exit": 1,
+  "tail": "run_id=20261107T081344Z-9992237e artifacts=/home/user/.local/state/nice-dns-tests/runs/20261107T081344Z-9992237e\nPASS  t_a_crash_looping_proxy_is_not_restarted_to_adopt_a_set\nPASS  t_a_proxy_restarted_since_has_adopted_the_set\nPASS  t_boot_selection_is_skipped_when_a_usable_set_exists\nPASS  t_boot_selection_is_skipped_when_bridges_are_off\nPASS  t_bridges_off_outage_refresh_is_skipped\nPASS  t_bridges_off_refresh_is_skipped_and_changes_nothing\nPASS  t_changed_set_is_adopted_at_next_start_without_restart\nPASS  t_failed_or_thin_evaluation_keeps_the_last_good_set\nPASS  t_filter_never_leaves_fewer_than_three_bridges\nPASS  t_install_schedules_the_daily_refresh\nFAIL  t_macos_agent_honours_the_bridges_mode (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261107T081344Z-9992237e/cases/integration-bridge-lifecycle/t_macos_agent_honours_the_bridges_mode/case.log)\n      ASSERT FAIL: on: the proxy is started with the mode: /^container run .* -e TOR_BRIDGES=on / not found in:\n      container run tor-socat -c 1 -m 512M -v /state:/app/data -e BRIDGE1=obfs4 192.0.2.1:443 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1 cert=AAAAtest1 iat-mode=0 -e BRIDGE2=obfs4 192.0.2.2:443 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2 cert=AAAAtest2 iat-mode=0 -e BRIDGE3=obfs4 192.0.2.3:443 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA3 cert=AAAAtest3 iat-mode=0 -e BRIDGE4=obfs4 192.0.2.4:443 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA4 cert=AAAAtest4 iat-mode=0 -e BRIDGE5=obfs4 192.0.2.5:443 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA5 cert=AAAAtest5 iat-mode=0 docker.io/sureserver/tor-socat:latest\nPASS  t_macos_bridge_eval_does_nothing_when_bridges_are_off\nPASS  t_macos_installer_retires_the_legacy_bridge_agent_after_the_controller\nPASS  t_macos_probe_uses_dnsnet_and_needs_the_stack\nPASS  t_outage_refresh_is_evaluated_and_rate_limited\nPASS  t_recovery_adopts_a_pending_set_through_the_service_restart\nPASS  t_slow_refresh_never_overwrites_a_newer_set\nPASS  t_unchanged_set_writes_nothing_and_restarts_nothing\nPASS  t_unreachable_distributor_keeps_the_working_pool\nPASS  t_unreadable_tor_state_changes_nothing\nPASS  t_weak_bridge_not_running_is_filtered_without_restart\nPASS  t_weak_bridge_stays_out_after_the_tor_state_is_wiped\nPASS  t_weak_memory_expires\nPASS  t_weak_running_bridge_is_dropped_and_the_proxy_recreated\ngroup integration/bridge-lifecycle: collected=24 passed=23 failed=1\ncollected=24 passed=23 failed=1\nresult=fail run_id=20261107T081344Z-9992237e artifacts=/home/user/.local/state/nice-dns-tests/runs/20261107T081344Z-9992237e"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "1.3",
+ "test": "bash tests/run.sh integration bridge-lifecycle",
+ "text": "with the mac fakes: the recorded `container run` line carries `-e TOR_BRIDGES=off`",
+ "touched": [
+  "mac/start-container.sh"
+ ],
+ "touched_blobs": {
+  "mac/start-container.sh": "2ab18626496549e53cba93504272afae6db213ae"
+ },
+ "witness_blobs": {
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}

@@ -482,3 +482,31 @@ t_anchor_and_tor_volumes_keep_their_state() {
     if [ "$i" = 1 ]; then assert_match wrote "$TP_OUT" "run 1 writes"; else assert_match kept "$TP_OUT" "run 2 finds it"; fi
   done
 }
+
+# Sub-plan 4 Task 1.3 (class sweep): the macOS installer starts the proxy
+# itself, so it passes the bridges mode as the agent does; with bridges off it
+# never fetches a set, and a host with fewer than 3 bridges still installs
+# (Tor runs direct).
+t_macos_install_honours_the_bridges_mode() {
+  (
+    local line
+    dt_world install-mac fresh
+    ip_install install-mac socat
+    assert_rc 0 "$IP_RC" "default install: $IP_OUT"
+    line="$(grep -E '^container run -d --name tor-socat ' "$FAKE_LOG" | tail -n 1)"
+    assert_match ' -e TOR_BRIDGES=on ' "$line" "no mode file: the proxy starts with bridges on"
+  ) || exit 1
+  (
+    local line
+    dt_world install-mac fresh
+    rm -f "$IP_HOME/.config/nice-dns/bridges.env"
+    printf 'TOR_BRIDGES=off\n' >"$IP_HOME/.config/nice-dns/bridges-mode.env"
+    : >"$FAKE_LOG"
+    ip_install install-mac socat
+    assert_rc 0 "$IP_RC" "bridges off and no set: the install still succeeds: $IP_OUT"
+    line="$(grep -E '^container run -d --name tor-socat ' "$FAKE_LOG" | tail -n 1)"
+    assert_match ' -e TOR_BRIDGES=off ' "$line" "off: the proxy starts direct"
+    assert_not_match 'Fetching default obfs4 bridges|Moat' "$IP_OUT" "off: no bridge set is fetched"
+    assert_no_path "$IP_HOME/.config/nice-dns/bridges.env" "off: no set is written"
+  ) || exit 1
+}
