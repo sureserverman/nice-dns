@@ -62,3 +62,5 @@ live	command-recovery	tests/live/command-recovery.sh	live
 integration	command-recovery-dryrun	tests/integration/command-recovery-dryrun.sh	local
 live	container-faults	tests/live/container-faults.sh	live
 integration	container-faults-dryrun	tests/integration/container-faults-dryrun.sh	local
+live	bridges-toggle	tests/live/bridges-toggle.sh	live
+integration	bridges-toggle-dryrun	tests/integration/bridges-toggle-dryrun.sh	local

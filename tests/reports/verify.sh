@@ -49,6 +49,9 @@
 #   - manifest `minimum SCENARIO N`: its artifact is a nice-dns-sample/1 file
 #     with at least N sample rows;
 #   - manifest `content SCENARIO ERE`: its artifact has a line matching ERE;
+#   - manifest `request SCENARIO COMPONENT PHASE`: its artifact has exactly
+#     one `request_id ID` row, and a `journal EPOCH ID COMPONENT PHASE ...`
+#     row of that same ID (one action's journal rows belong together);
 #   - every nice-dns-sample/1 file (scenario artifact or aggregate samples)
 #     carries the receipt's run_id, the product (or, with no product row,
 #     the nice-dns source) revision, and, for a cell's samples, exactly that
@@ -68,7 +71,7 @@ SIB="${NICE_DNS_SIBLINGS_DIR:-$(cd "$V_ROOT/.." && pwd -P)}"
 SCHEMA='nice-dns-receipt/1'
 REPOS='nice-dns tor-haproxy tor-socat hardened-unbound pi-hole-hardened'
 ARCH_REPOS='tor-haproxy tor-socat hardened-unbound pi-hole-hardened'
-RECEIPTS='baseline transport controller installers soak qualification command-recovery container-faults'
+RECEIPTS='baseline transport controller installers soak qualification command-recovery container-faults bridges-toggle'
 ENTRYPOINTS='install-deb.sh install-deb-hardened.sh install-mac.sh install-mac-hardened.sh'
 TAB="$(printf '\t')"
 
@@ -128,6 +131,8 @@ cmd_manifests() {
           [ -n "${b:-}" ] && [ -z "${c:-}" ] || err "$m.tsv: minimum row needs scenario, count"
           case "$b" in ''|*[!0-9]*) err "$m.tsv: minimum for $a is not a count" ;; esac ;;
         content) ;;   # checked below from the raw row: its pattern may hold tabs
+        request)
+          [ -n "${b:-}" ] && [ -n "${c:-}" ] && [ -z "${d:-}" ] || err "$m.tsv: request row needs scenario, component, phase" ;;
         platforms)
           [ "$a" = all ] && [ -z "${b:-}" ] || err "$m.tsv: platforms row must be 'platforms<TAB>all'" ;;
         *) err "$m.tsv: unknown row type '$kind'" ;;
@@ -137,8 +142,8 @@ cmd_manifests() {
       [ -n "$a" ] || err "$m.tsv: content row has an empty pattern"
     done < <(awk -F '\t' '!/^#/ && $1 == "content" { p = $0; if (!sub(/^[^\t]*\t[^\t]*\t/, "", p)) p = ""; print p }' "$MAN/$m.tsv")
     # shellcheck disable=SC2013 # one word per row: ids, repository names, cell keys
-    for a in $(awk -F '\t' '!/^#/ && ($1 == "minimum" || $1 == "content") { print $2 }' "$MAN/$m.tsv"); do
-      case "$ids" in *"|$a|"*) ;; *) err "$m.tsv: minimum/content for undeclared scenario $a" ;; esac
+    for a in $(awk -F '\t' '!/^#/ && ($1 == "minimum" || $1 == "content" || $1 == "request") { print $2 }' "$MAN/$m.tsv"); do
+      case "$ids" in *"|$a|"*) ;; *) err "$m.tsv: minimum/content/request for undeclared scenario $a" ;; esac
     done
     printf '%s requires %s\n' "$m" "${reqs:-nothing}"
   done
@@ -374,7 +379,7 @@ check_sample_identity() {
 }
 
 check_contents() {
-  local f="$1" d="$2" name="$3" id c a n min pat src head
+  local f="$1" d="$2" name="$3" id c a n min pat src head rc rp
   src="$(awk -F '\t' '$1 == "source" && $2 == "nice-dns" { print $3; exit }' "$f")"
   while IFS="$TAB" read -r _ id c _ a _ _; do
     safe_rel "$d" "$a" || continue
@@ -394,6 +399,11 @@ check_contents() {
     while IFS= read -r pat; do
       grep -Eq -- "$pat" "$d/$a" || err "$f: scenario $id ($c) artifact $a has no line matching /$pat/"
     done < <(manifest_rows "$name" content | awk -F '\t' -v i="$id" '$2 == i { sub(/^[^\t]*\t[^\t]*\t/, ""); print }')
+    while IFS="$TAB" read -r _ _ rc rp; do
+      awk -F '\t' -v c="$rc" -v p="$rp" '$1 == "request_id" { n++; r = $2 } $1 == "journal" { j[$3 "\t" $4 "\t" $5] = 1 }
+        END { exit !(n == 1 && r != "" && r != "-" && ((r "\t" c "\t" p) in j)) }' "$d/$a" \
+        || err "$f: scenario $id ($c) artifact $a has no $rc $rp journal row for its one request_id"
+    done < <(manifest_rows "$name" request | awk -F '\t' -v i="$id" '$2 == i')
   done < <(awk -F '\t' '$1 == "scenario"' "$f")
   # Aggregate sample files under cells/P-X-H/ belong to that cell.
   while IFS="$TAB" read -r _ _ _ a; do

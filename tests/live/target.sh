@@ -222,10 +222,30 @@
 #                    --source-sha SHA from this checkout's `git archive`, sent
 #                    inline. macOS runs it in the user's GUI context (BL-052:
 #                    an install from plain ssh leaves the runtime where the
-#                    start agent cannot see it)
+#                    start agent cannot see it). --mode bridges-on|bridges-off
+#                    runs `nice-dns bridges on|off`, --mode status runs
+#                    `nice-dns status --tsv` (bridges-toggle plan, Task 2.1)
 #   command-report   read-only: each container's start, the command and its
 #                    kept source, the image names, quadlets, agents, units and
 #                    root scripts, and whether each list could be read
+#   proxy-supervisor-lines
+#                    read-only: the running proxy's `tor-supervisor: spawned
+#                    tor pid=N generation=N <how>` lines (<how>: `direct (no
+#                    bridges)` or `with N bridge(s)`), at most the last 20,
+#                    read from the container's own log and filtered in the
+#                    same pipe on the target: no other log line is printed or
+#                    kept, and nothing after the <how> words (bridge lines
+#                    are secret)
+#   mac-runtime-ssh  macOS only (OD-7, BL-052): move the container runtime
+#                    into the ssh-visible launchd domain for an install over
+#                    ssh: boot out every gui/<uid> com.apple.container.*
+#                    service, then `container system start`. Quiesce the
+#                    controller agents first; mac-runtime-gui undoes it
+#   mac-runtime-gui  macOS only: put the runtime back in gui/<uid>:
+#                    `container system stop`, kickstart of
+#                    gui/<uid>/org.nice-dns.start-container, then wait (up to
+#                    900 s) until `container ls` shows Pi-hole, Unbound and a
+#                    proxy running and a fresh name answers
 #   controller-report
 #                    read-only: the controller's install receipt, tick lines,
 #                    state and journals (active and shadow), the bridge set's
@@ -264,7 +284,7 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network freeze-unbound thaw-unbound stop-proxy fresh-name command command-report freeze-service thaw-service pause-container unpause-container stop-container start-container crash-container stop-crash crash-report'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network freeze-unbound thaw-unbound stop-proxy fresh-name command command-report freeze-service thaw-service pause-container unpause-container stop-container start-container crash-container stop-crash crash-report proxy-supervisor-lines mac-runtime-ssh mac-runtime-gui'
 FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
@@ -339,8 +359,8 @@ if [ "$op" = command ]; then
       case "$i_cell" in haproxy/standard|socat/standard) ;; *) die "command --mode install needs --cell haproxy|socat/standard" ;; esac
       [[ "$i_sha" =~ ^[0-9a-f]{40}$ ]] || die "command --mode install needs --source-sha <40-hex commit>"
       [ "$(git -C "$ND_CHECKOUT" cat-file -t "$i_sha" 2>/dev/null)" = commit ] || die "--source-sha $i_sha is not a commit in $ND_CHECKOUT" ;;
-    restart|reinstall|uninstall) [ -z "$i_cell$i_sha" ] || die "--cell/--source-sha are only for command --mode install" ;;
-    *) die "command needs --mode install|restart|reinstall|uninstall" ;;
+    restart|reinstall|uninstall|bridges-on|bridges-off|status) [ -z "$i_cell$i_sha" ] || die "--cell/--source-sha are only for command --mode install" ;;
+    *) die "command needs --mode install|restart|reinstall|uninstall|bridges-on|bridges-off|status" ;;
   esac
 fi
 
@@ -389,6 +409,10 @@ load_targets() {
 
 load_targets "$targets"
 [ "$op" = validate ] && exit 0
+case "$op" in
+  mac-runtime-ssh|mac-runtime-gui)
+    [ "$T_PLATFORM" = macos ] || die "$op is macOS only (the container runtime's launchd domain, BL-052); $alias_ is $T_PLATFORM" ;;
+esac
 
 case "$op" in
   sever-upstream|heal-upstream|freeze-upstream|thaw-upstream|build-proxy|recreate-proxy|fault-route|heal-route|thaw-on-request|arm-prepare|arm-set|stop-proxy)
@@ -1817,6 +1841,8 @@ case "$NICE_DNS_OP" in
         cli="$w/nice-dns/nice-dns"
         set -- install "$NICE_DNS_PROXY" ;;
       reinstall) mac_room || exit 2; set -- reinstall --local ;;
+      bridges-on|bridges-off) set -- bridges "${NICE_DNS_MODE#bridges-}" ;;
+      status) set -- status --tsv ;;
     esac
     printf 'command\t%s\t%s\nstarted_utc\t%s\n' "$cli" "$*" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     if [ "$plat" = macos ]; then
@@ -1982,6 +2008,58 @@ case "$NICE_DNS_OP" in
         awk '/Main process exited/ { split($1, t, "."); print "exit\t" t[1] }
              /Scheduled restart job/ { split($1, t, "."); print "restart\t" t[1] }'
     fi ;;
+  proxy-supervisor-lines)
+    [ "$plat" = macos ] && homebrew_path
+    identity
+    printf 'section\tsupervisor\n'
+    for c in tor-haproxy tor-socat; do
+      running "$c" || continue
+      # Filtered in the pipe: only the spawn lines, cut after their launch
+      # words. The log itself is never printed, kept or written to a file.
+      ctl logs "$c" </dev/null 2>&1 |
+        sed -n -E 's/^.*(tor-supervisor: spawned tor pid=[0-9]+ generation=[0-9]+ (direct \(no bridges\)|with [0-9]+ bridge\(s\))).*$/\1/p' |
+        tail -n 20 | while IFS= read -r l; do printf 'supervisor_line\t%s\t%s\n' "$c" "$l"; done
+    done | redact ;;
+  mac-runtime-ssh)
+    [ "$plat" = macos ] || { echo "mac-runtime-ssh is macOS only" >&2; exit 2; }
+    homebrew_path
+    u=$(id -u)
+    for l in $(launchctl print "gui/$u" </dev/null 2>/dev/null | grep -oE 'com\.apple\.container\.[A-Za-z0-9._-]+' | sort -u); do
+      launchctl print "gui/$u/$l" </dev/null >/dev/null 2>&1 || continue
+      launchctl bootout "gui/$u/$l" </dev/null; printf 'booted_out\tgui/%s/%s\trc=%s\n' "$u" "$l" "$?"
+    done
+    o=$(mktemp "${TMPDIR:-/tmp}/nd-rt.XXXXXX") || exit 1
+    ctl system start </dev/null >"$o" 2>&1; rc=$?
+    tail -n 5 "$o" | redact; rm -f "$o"
+    ctl system status </dev/null >/dev/null 2>&1; st=$?
+    printf 'system_start\trc=%s\nsystem_status\trc=%s\n' "$rc" "$st"
+    [ "$st" = 0 ] ;;
+  mac-runtime-gui)
+    [ "$plat" = macos ] || { echo "mac-runtime-gui is macOS only" >&2; exit 2; }
+    homebrew_path
+    u=$(id -u)
+    ctl system stop </dev/null >/dev/null 2>&1; printf 'system_stop\trc=%s\n' "$?"
+    launchctl kickstart "gui/$u/org.nice-dns.start-container" </dev/null; rc=$?
+    printf 'kickstarted\tgui/%s/org.nice-dns.start-container\trc=%s\n' "$u" "$rc"
+    [ "$rc" = 0 ] || exit 1
+    t0=$(date +%s); end=$((t0 + 900))
+    while :; do
+      n=0
+      running pi-hole && n=$((n + 1))
+      running unbound && n=$((n + 1))
+      if running tor-haproxy || running tor-socat; then n=$((n + 1)); fi
+      st=-
+      if [ "$n" = 3 ]; then
+        st=$(dig "@${RESOLVER%#*}" -p "${RESOLVER#*#}" +time=10 +tries=1 "nd-rt-$(date +%s)-$$.example.com" A 2>/dev/null | awk '/status:/ { sub(/,.*/, "", $6); print $6; exit }')
+        case "$st" in NOERROR|NXDOMAIN)
+          printf 'stack\trunning\t%s\nfresh_name\t%s\nwaited_s\t%s\n' "$n" "$st" "$(( $(date +%s) - t0 ))"; exit 0 ;;
+        esac
+      fi
+      if [ "$(date +%s)" -ge "$end" ]; then
+        printf 'stack\t%s of 3 running\nfresh_name\t%s\nwaited_s\t%s\n' "$n" "${st:-timeout}" "$(( $(date +%s) - t0 ))"; exit 1
+      fi
+      sleep 10
+    done ;;
   sever-upstream) ctl stop "$NICE_DNS_COMPONENT" ;;
   heal-upstream) ctl start "$NICE_DNS_COMPONENT" ;;
   restore)
@@ -2042,7 +2120,7 @@ case "$op" in
     } >"$STATE/receipt.tsv"
     log_op 0
     printf 'snapshot %s -> %s\n' "$alias_" "$STATE/snapshot.tsv" ;;
-  config|health|controller-report|lifecycle-report|route-report|command-report|fresh-name|crash-report)
+  config|health|controller-report|lifecycle-report|route-report|command-report|fresh-name|crash-report|proxy-supervisor-lines)
     # Read-only; the output starts with the identity lines, which are checked.
     preconnect_guards
     probe_identity "$op"
@@ -2066,7 +2144,7 @@ case "$op" in
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network|freeze-unbound|thaw-unbound|stop-proxy|command|freeze-service|thaw-service|pause-container|unpause-container|stop-container|start-container|crash-container|stop-crash)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network|freeze-unbound|thaw-unbound|stop-proxy|command|freeze-service|thaw-service|pause-container|unpause-container|stop-container|start-container|crash-container|stop-crash|mac-runtime-ssh|mac-runtime-gui)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"

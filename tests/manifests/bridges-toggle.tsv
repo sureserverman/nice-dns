@@ -1,0 +1,42 @@
+# Receipt manifest: bridges-toggle. Parsed as data by tests/reports/verify.sh (never sourced).
+# Rows (tab-separated):
+#   platforms all                            the receipt holds an observed cell on every platform
+#   scenario  <id>  per-cell|per-cell-linux|per-cell-macos|global  <meaning>
+#   content   <id>  <ERE>                    the scenario's artifact has a line matching ERE
+#   request   <id>  <component>  <phase>     the artifact's one request_id row names an id that
+#                                            has a journal row of that component and phase
+# One observed cell per platform (bridges-toggle plan, Stage 2): each switch acknowledged
+# for its own request id, the proxy's launch line, a fresh name, the skipped refresh, status.
+platforms	all
+scenario	BT-OFF	per-cell	nice-dns bridges off: the proxy restarts under one acknowledged request, Tor launches direct, a fresh name answers within 10 minutes
+scenario	BT-REFRESH	per-cell	with bridges off the bridge refresh exits 0 and is journaled as skipped
+scenario	BT-STATUS-OFF	per-cell	nice-dns status --tsv shows the bridges mode off
+scenario	BT-ON	per-cell	nice-dns bridges on: the proxy restarts under one acknowledged request, Tor launches with bridges, a fresh name answers within 10 minutes
+scenario	BT-STATUS-ON	per-cell	nice-dns status --tsv shows the bridges mode on
+content	BT-OFF	^mode	off$
+content	BT-OFF	^cli_exit	0$
+content	BT-OFF	^cli_last	Bridges are off; the proxy restarted and DNS is answering\.$
+content	BT-OFF	^request_id	bridges-off-[0-9]+$
+content	BT-OFF	^journal	[0-9]+	bridges-off-[0-9]+	bridges	mode-change	off$
+content	BT-OFF	^journal	[0-9]+	bridges-off-[0-9]+	service	acknowledged	
+request	BT-OFF	bridges	mode-change
+request	BT-OFF	service	acknowledged
+content	BT-OFF	^supervisor	tor-(haproxy|socat)	tor-supervisor: spawned tor pid=[0-9]+ generation=[0-9]+ direct \(no bridges\)$
+content	BT-OFF	^fresh_name	[^	]+	(NOERROR|NXDOMAIN)$
+content	BT-OFF	^elapsed_s	([0-9]{1,2}|[1-5][0-9]{2}|600)$
+content	BT-REFRESH	^refresh_exit	0$
+content	BT-REFRESH	^refresh_result	skipped$
+content	BT-REFRESH	^journal	[0-9]+	br-[0-9]+	bridges	skipped	bridges off$
+content	BT-STATUS-OFF	^status	bridges	mode	off$
+content	BT-ON	^mode	on$
+content	BT-ON	^cli_exit	0$
+content	BT-ON	^cli_last	Bridges are on; the proxy restarted and DNS is answering\.$
+content	BT-ON	^request_id	bridges-on-[0-9]+$
+content	BT-ON	^journal	[0-9]+	bridges-on-[0-9]+	bridges	mode-change	on$
+content	BT-ON	^journal	[0-9]+	bridges-on-[0-9]+	service	acknowledged	
+request	BT-ON	bridges	mode-change
+request	BT-ON	service	acknowledged
+content	BT-ON	^supervisor	tor-(haproxy|socat)	tor-supervisor: spawned tor pid=[0-9]+ generation=[0-9]+ with [0-9]+ bridge\(s\)$
+content	BT-ON	^fresh_name	[^	]+	(NOERROR|NXDOMAIN)$
+content	BT-ON	^elapsed_s	([0-9]{1,2}|[1-5][0-9]{2}|600)$
+content	BT-STATUS-ON	^status	bridges	mode	on$
