@@ -6,13 +6,13 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the
 - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)
   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.
 - Baseline source: this repository at commit
-  `bc5faf3bc85ea528d67acd023e3df6110a0cb731`. Citations are `path:line` at that commit.
+  `f6ed92faf6b8e124f218ca43d5f57e15de4ac9cc`. Citations are `path:line` at that commit.
   The eight-cell baseline receipt measured b85bc9b. The document was first
   written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,
   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02
   re-pins after each change to a cited file (Task 1.1: 04b98cf, Unbound
   anchor and control; Task 1.3: d6c1a1f, Pi-hole HealthCmd; Stage 1 gate: 80d6c18, control refusal; Task 2.1: 9e71d32, route include; Task 2.3: bc846b2, Unbound WORKDIR; Stage 2 gate: 94a9c60, route resolution check). Sub-plan 03 re-pins the same
-  way (Task 1.1: ba144fd, health observations and platform adapters; Task 1.2: e81697f, state directory and boot identity appended to the platform adapters; Task 1.3: 6bf29f3, acknowledged recovery; Stage 1 gate: 4b11779, one controller pass; 20589e8, route recorded on success; Task 2.1: 3a4b4d6, bundle and minute schedules; Task 2.2: d934ed5, bridge lifecycle; Task 2.3: b8b9bb8, shadow install and privacy-safe failure dump; 93a9122, macOS exec reports a missing executable as 127; 674635f, the macOS fallback always rebuilds; 8f10ffe, it rebuilds the whole stack; e6436ad, restart ladder; dca5b57, a stopped macOS container has no generation; Stage 2 gate: 969945e, bridge refresh ownership; 5de0e7d, policy timers from tunables.tsv; close-out: a4eea01, the ladder waits out the first restart's readiness; ca16537, quadlet health checks verify and only report, Wants= not Requires=; c55ea50, probe-route bounded; 778df19, a failed macOS kickstart withdraws its request; 5dff7b7, a Linux adapter comment; 0efca9c, the macOS proxy lookup honours the recovery deadline; pre-merge review: 16d65cb, a runtime fault the platform cannot repair escalates). Sub-plan 4 re-pins the same way (Task 1.1: 509a6de, shared installer preparation in lib/install.sh; 7019cf0, the macOS hardened pi-hole build has no --pull; fdf6179, a first install migrates podman before its builds; Task 1.2: ec2b51c, owned DNS receipts and transactional cutover; Task 1.3: 495241e, immutable release inputs; Stage 1 gate: 58e6472, restores that cannot half-fail; Task 2.1: 57db2a3, private admin credential, host-only DNS, least privilege; Task 2.2: 3148e14, instance state kept across the lifecycle; Task 2.3: 66f1666, legacy profile pins restored and the macOS stack started on a fresh datapath; Stage 2 gate: 3fab8dd, the macOS cache flushed after each resolver change; 7a403df, uninstall removes instance state only after DNS is given back; 66cd340, a macOS rollback stops the builder and restarts the runtime). Sub-plan 5 re-pins the same way (Task 1.2: 3c0308f, Unbound mounts the host route directory and the installers seed it; 0be8182, an unmountable route path fails in preparation; Task 1.3: eaa31a3, a fresh proxy falls back to an exit route; Task 1.4: adf3c1b, a fresh proxy starts Unbound on the exit route; Stage 1 gate: 0e2d2ba, Unbound starts once its route answers, a failed switch keeps the proxy generation, the quadlet is written by rename, the uninstall removes only its own route files; round 2: 6364176, the controller refuses the request id "suspend"; fc63139, a refused route probe ends Unbound's wait at once; Task 2.1: 4acf446, macOS scoped DNS stays on the container bridge; Task 2.2: 3637314, a refresh leaves out bridges that carry streams badly and adopts the set when the running proxy uses one; 34f1d0b, the controller remembers a weak bridge for 30 days; 733cfb1, that memory is written under the controller's pipefail; aa6b7e9, the Linux boot selection's skip really skips). The 2026-10-12 Mullvad findings plan re-pins the same way (Task 1.1: dacb3b4, the installers' comments no longer name the process-substitution one-liner; Stage 1 gate: 13ddba8, Linux builds without --dns, declared resolver literals, the installer drives Mullvad's DNS setting; round 1: 5162e17, Mullvad restore paths and the claims the switch made false; Stage 2 gate: c0af48f, per-device IPv6 hook and install drift; round 1: aeb5494, drift that fails closed; Task 3.1: no cited file changed after aeb5494, contract text written for Mullvad's DNS setting, the per-device IPv6 hook and install drift; Stage 3 gate round 1: 0a90f99, Ethernet and Wi-Fi profiles get ipv6.method disabled, recorded and given back; round 2: 0e4570d, the profile change given back on every path and NetworkManager not answering never read as an answer; round 3: 6ae55f9, no leftover undo list, an uninstall without NetworkManager completes). The 2026-11-05 bridge refresh fix re-pins the same way (774182a, bridge-eval runs as the container's root, not under keep-id). The 2026-11-05 restart policy plan re-pins the same way (Stage 1 gate round 1: d1b1f77, container observations, unit back-off, Pi-hole's check only reports; Stage 2 gate round 1: e3963df, the Pi-hole rule, the paused repair, the crash-loop hold; Stage 3: 0ab8019, awk patterns mawk runs, a frozen Pi-hole's pi.hole timeout counts, the macOS per-container restart not qualified; Stage 3 gate round 1: 5090f6d, only a pi.hole timeout holds Pi-hole's streak; close-out: ae4e67c, a crash loop holds the stack restart for at most 30 minutes). The 2026-11-05 status and update plan re-pins the same way (Stage 1 gate round 1: 8fda2a6, each pass keeps its observations; status reads files only; Task 2.3: 2438546, `nice-dns update` and WF-DNS-005; Stage 2 gate round 1: bc5faf3, the update contract). `check-contracts` fails when a cited file changes
+  way (Task 1.1: ba144fd, health observations and platform adapters; Task 1.2: e81697f, state directory and boot identity appended to the platform adapters; Task 1.3: 6bf29f3, acknowledged recovery; Stage 1 gate: 4b11779, one controller pass; 20589e8, route recorded on success; Task 2.1: 3a4b4d6, bundle and minute schedules; Task 2.2: d934ed5, bridge lifecycle; Task 2.3: b8b9bb8, shadow install and privacy-safe failure dump; 93a9122, macOS exec reports a missing executable as 127; 674635f, the macOS fallback always rebuilds; 8f10ffe, it rebuilds the whole stack; e6436ad, restart ladder; dca5b57, a stopped macOS container has no generation; Stage 2 gate: 969945e, bridge refresh ownership; 5de0e7d, policy timers from tunables.tsv; close-out: a4eea01, the ladder waits out the first restart's readiness; ca16537, quadlet health checks verify and only report, Wants= not Requires=; c55ea50, probe-route bounded; 778df19, a failed macOS kickstart withdraws its request; 5dff7b7, a Linux adapter comment; 0efca9c, the macOS proxy lookup honours the recovery deadline; pre-merge review: 16d65cb, a runtime fault the platform cannot repair escalates). Sub-plan 4 re-pins the same way (Task 1.1: 509a6de, shared installer preparation in lib/install.sh; 7019cf0, the macOS hardened pi-hole build has no --pull; fdf6179, a first install migrates podman before its builds; Task 1.2: ec2b51c, owned DNS receipts and transactional cutover; Task 1.3: 495241e, immutable release inputs; Stage 1 gate: 58e6472, restores that cannot half-fail; Task 2.1: 57db2a3, private admin credential, host-only DNS, least privilege; Task 2.2: 3148e14, instance state kept across the lifecycle; Task 2.3: 66f1666, legacy profile pins restored and the macOS stack started on a fresh datapath; Stage 2 gate: 3fab8dd, the macOS cache flushed after each resolver change; 7a403df, uninstall removes instance state only after DNS is given back; 66cd340, a macOS rollback stops the builder and restarts the runtime). Sub-plan 5 re-pins the same way (Task 1.2: 3c0308f, Unbound mounts the host route directory and the installers seed it; 0be8182, an unmountable route path fails in preparation; Task 1.3: eaa31a3, a fresh proxy falls back to an exit route; Task 1.4: adf3c1b, a fresh proxy starts Unbound on the exit route; Stage 1 gate: 0e2d2ba, Unbound starts once its route answers, a failed switch keeps the proxy generation, the quadlet is written by rename, the uninstall removes only its own route files; round 2: 6364176, the controller refuses the request id "suspend"; fc63139, a refused route probe ends Unbound's wait at once; Task 2.1: 4acf446, macOS scoped DNS stays on the container bridge; Task 2.2: 3637314, a refresh leaves out bridges that carry streams badly and adopts the set when the running proxy uses one; 34f1d0b, the controller remembers a weak bridge for 30 days; 733cfb1, that memory is written under the controller's pipefail; aa6b7e9, the Linux boot selection's skip really skips). The 2026-10-12 Mullvad findings plan re-pins the same way (Task 1.1: dacb3b4, the installers' comments no longer name the process-substitution one-liner; Stage 1 gate: 13ddba8, Linux builds without --dns, declared resolver literals, the installer drives Mullvad's DNS setting; round 1: 5162e17, Mullvad restore paths and the claims the switch made false; Stage 2 gate: c0af48f, per-device IPv6 hook and install drift; round 1: aeb5494, drift that fails closed; Task 3.1: no cited file changed after aeb5494, contract text written for Mullvad's DNS setting, the per-device IPv6 hook and install drift; Stage 3 gate round 1: 0a90f99, Ethernet and Wi-Fi profiles get ipv6.method disabled, recorded and given back; round 2: 0e4570d, the profile change given back on every path and NetworkManager not answering never read as an answer; round 3: 6ae55f9, no leftover undo list, an uninstall without NetworkManager completes). The 2026-11-05 bridge refresh fix re-pins the same way (774182a, bridge-eval runs as the container's root, not under keep-id). The 2026-11-05 restart policy plan re-pins the same way (Stage 1 gate round 1: d1b1f77, container observations, unit back-off, Pi-hole's check only reports; Stage 2 gate round 1: e3963df, the Pi-hole rule, the paused repair, the crash-loop hold; Stage 3: 0ab8019, awk patterns mawk runs, a frozen Pi-hole's pi.hole timeout counts, the macOS per-container restart not qualified; Stage 3 gate round 1: 5090f6d, only a pi.hole timeout holds Pi-hole's streak; close-out: ae4e67c, a crash loop holds the stack restart for at most 30 minutes). The 2026-11-05 status and update plan re-pins the same way (Stage 1 gate round 1: 8fda2a6, each pass keeps its observations; status reads files only; Task 2.3: 2438546, `nice-dns update` and WF-DNS-005; Stage 2 gate round 1: bc5faf3, the update contract). The 2026-11-05 bridges toggle plan re-pins the same way (Task 2.3: f6ed92f, the bridges mode, its switch and the refresh skipped while off). `check-contracts` fails when a cited file changes
   after this commit.
 - Checked by `bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md`.
   The check needs every workflow ID below, every operation ID in
@@ -123,7 +123,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   (pihole/etc/pihole.toml:12-14). The Linux quadlet sets
   `DNS1=127.0.0.1#5335` (deb/quadlet/pi-hole.container:39).
 - On macOS the installer and LaunchAgent override the upstream to
-  `172.31.240.251#5335` (lib/install.sh:2669-2670, mac/start-container.sh:500-501).
+  `172.31.240.251#5335` (lib/install.sh:2678-2679, mac/start-container.sh:527-528).
 - Pi-hole query logging is off in the shipped config
   (pihole/etc/pihole.toml:197). dnsmasq `log-queries` is commented out
   (pihole/etc/dnsmasq.conf:48). baseline: unverified at runtime for both
@@ -164,12 +164,12 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   file and renames it, after the route directory is checked and seeded, so
   the directory never holds a unit with an unfilled placeholder) and both
   macOS launch paths
-  (lib/install.sh:2682, mac/start-container.sh:512), the same directory
+  (lib/install.sh:2691, mac/start-container.sh:539), the same directory
   the controller manages (lib/platform/linux.sh:18,
   lib/platform/macos.sh:22). The installers seed it before Unbound first
   starts with an identity route, cloudflare-exit at generation 1, never the
   compat route (lib/recovery.sh:489-501, lib/install.sh:1997,
-  lib/install.sh:2515); an include already there is the controller's and
+  lib/install.sh:2524); an include already there is the controller's and
   is kept [PRIV-ROUTE-IDENTITY]. Since Sub-plan 5 Task 1.4 every launch
   path that starts Unbound first runs the controller's launcher
   `<controller root>/route-start`: the quadlet's ExecStartPre
@@ -177,11 +177,11 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   deb/persistent-podman.sh:126; deb/persistent-podman.sh:100-106 and
   deb/persistent-podman.sh:129 drop the line with a warning when the path
   cannot go into a unit), the macOS agent before it creates
-  Unbound (mac/start-container.sh:477, called at mac/start-container.sh:508)
-  and the macOS installer's first run (lib/install.sh:2676). The launcher is
-  written at install before any schedule (health/nice-dns-health:807,
-  health/nice-dns-health:1135) and runs `route-start`, which acts only for an
-  active install (health/nice-dns-health:1110-1112). Under the controller's
+  Unbound (mac/start-container.sh:504, called at mac/start-container.sh:535)
+  and the macOS installer's first run (lib/install.sh:2685). The launcher is
+  written at install before any schedule (health/nice-dns-health:813,
+  health/nice-dns-health:1141) and runs `route-start`, which acts only for an
+  active install (health/nice-dns-health:1116-1118). Under the controller's
   state lock (lib/recovery.sh:551), when the proxy is fresh (its generation
   hash, lib/health.sh:325, differs from the state's proxy_gen or, here only,
   cannot be read, lib/recovery.sh:556; the policy takes an unreadable
@@ -265,7 +265,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   [SEC-DNSSEC-SIGNED] [SEC-DNSSEC-UNSIGNED] [SEC-DNSSEC-BOGUS].
   Since Sub-plan 4 Task 2.2 /var/lib/unbound is the volume
   nice-dns-unbound-anchor on both platforms (deb/quadlet/unbound.container:21,
-  lib/install.sh:2681, mac/start-container.sh:511), so a new container keeps
+  lib/install.sh:2690, mac/start-container.sh:538), so a new container keeps
   the anchor's RFC 5011 state; until then each one re-seeded from the image.
 - Resolver management is a Unix socket, `/run/unbound/control.sock`, with
   `control-use-cert: no` and no TCP listener or key files
@@ -350,7 +350,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
 - macOS: Apple `container` gives each container its own address on `dnsnet`.
   The configs hardcode .250/.251/.252 (mac/start-container.sh:24-26). The
   LaunchAgent refuses a stack whose addresses do not match
-  (mac/start-container.sh:238-246, mac/start-container.sh:720-728).
+  (mac/start-container.sh:265-273, mac/start-container.sh:749-757).
 
 ## WF-DNS-002 Recovery
 
@@ -440,32 +440,32 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
 ### Current baseline (observed in source)
 
 - Since Sub-plan 3 Task 2.1, both platform installers end by installing the
-  controller, and fail when it does not install (deb/persistent-podman.sh:359,
+  controller, and fail when it does not install (deb/persistent-podman.sh:369,
   mac/persist.sh:58-59).
   - `install` builds a versioned bundle, then checks that the new bundle
-    loads (health/nice-dns-health:794). Only then does it replace the
-    schedule (health/nice-dns-health:780-862).
+    loads (health/nice-dns-health:800). Only then does it replace the
+    schedule (health/nice-dns-health:786-868).
   - `uninstall` removes only what the install receipt lists
-    (health/nice-dns-health:884-907).
+    (health/nice-dns-health:890-913).
   - Until Task 2.1 no installer installed it; it was installed by hand
     (health/nice-dns-health:14).
   - Deployed hosts still carry the older hand-installed copies. What runs
     there is baseline: unverified.
 - Schedule: `tick`, every minute.
   - Linux: a systemd user timer with `OnCalendar=minutely`,
-    `AccuracySec=5s` and `Persistent=true` (health/nice-dns-health:665-667).
+    `AccuracySec=5s` and `Persistent=true` (health/nice-dns-health:671-673).
     The service runs `<bash> <entrypoint> tick` with
     `TimeoutStartSec=540`, inside the lock lease
-    (health/nice-dns-health:654-656).
+    (health/nice-dns-health:660-662).
   - macOS: the agent's all-wildcard `StartCalendarInterval`
-    (health/nice-dns-health:726-727).
+    (health/nice-dns-health:732-733).
   - Observation mode since Sub-plan 3 Task 2.3: `install --shadow` writes the
-    same unit or agent running `tick --shadow` (health/nice-dns-health:645,
+    same unit or agent running `tick --shadow` (health/nice-dns-health:651,
     628), which records what it would do and never acts, and schedules no
     bridge refresh; a later shadow install stops and removes one
-    (health/nice-dns-health:811-816, 746-750). The receipt records `mode`
-    (health/nice-dns-health:840) and `status` prints it
-    (health/nice-dns-health:934). A plain install activates the same
+    (health/nice-dns-health:817-822, 746-750). The receipt records `mode`
+    (health/nice-dns-health:846) and `status` prints it
+    (health/nice-dns-health:940). A plain install activates the same
     schedule in place. Live shadow behavior is baseline: unverified until
     live/controller-shadow runs.
   - Calendar schedules run after a suspend or sleep, whereas monotonic timers
@@ -494,7 +494,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   live Mac is baseline: unverified.
 - Since the Sub-plan 3 Stage 1 gate, `run` has no outage timer of its own.
   After logging, it hands its observations to the same controller pass as
-  `tick` (health/nice-dns-health:540-555, lib/recovery.sh:983-1039). One
+  `tick` (health/nice-dns-health:546-561, lib/recovery.sh:983-1039). One
   policy, one state, one lock, one cooldown and one restart cap decide
   every action, whichever command the schedule calls. The pass observes,
   decides with lib/policy.sh, acts, and commits the state. Readiness
@@ -502,7 +502,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   an outage observed in that same pass.
 - Before the pass, and outside the lock, the bridges are re-evaluated
   (nd_bridges_refresh) once an observed outage has outlasted the grace. This
-  happens at most once an hour (health/nice-dns-health:522-538). Since the
+  happens at most once an hour (health/nice-dns-health:522-544). Since the
   Stage 2 gate it runs before the pass observes, so the decision never rests
   on observations older than the evaluation. Nothing in
   the controller writes `bridges.env` directly (WF-DNS-004).
@@ -560,7 +560,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
 - Past the restart cap (since 2026-10-30, DEC-021) a full outage restarts the stack
   every `ND_POLICY_RETRY_S`, 1800 s (lib/policy.sh:611, lib/recovery.sh:803,
   lib/platform/linux.sh:194, lib/platform/macos.sh:264). The first escalation of an
-  outage writes one dump (health/nice-dns-health:1156, lib/recovery.sh:808).
+  outage writes one dump (health/nice-dns-health:1162, lib/recovery.sh:808).
 - A missing container is started by name since 2026-10-30
   (lib/platform/linux.sh:226): `start pi-hole.service` did nothing while Pi-hole ran.
   Exit 126 from a stale systemd/private and exit 125 from a reset podman were
@@ -605,7 +605,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   20260925T200235Z-e3b4de89).
 - The schedules still call `run`; Sub-plan 3 Task 2.1 moves them to `tick`.
 - On macOS the start-container agent and bridge-eval share a `mkdir` stack lock
-  (mac/start-container.sh:68, mac/start-container.sh:317, mac/start-container.sh:606).
+  (mac/start-container.sh:71, mac/start-container.sh:344, mac/start-container.sh:634).
   A holder whose stored PID fails `kill -0` is taken over. After a crash, a reused
   PID in that persistent state file blocks the start for up to 600 s. Two waiters
   can also both take over a dead holder. lib/state.sh now provides the
@@ -629,11 +629,11 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   with fakes; on live hosts it is baseline: unverified.
 - Linux container health checks, since the Sub-plan 3 close-out, verify the
   chain and only report. The proxy runs the image's route probe through Tor
-  (deb/quadlet/tor-haproxy.container:64, deb/quadlet/tor-socat.container:29).
+  (deb/quadlet/tor-haproxy.container:69, deb/quadlet/tor-socat.container:34).
   Unbound needs its control socket to answer and its route to resolve in a
   fresh authenticated session, bypassing the cache
   (deb/quadlet/unbound.container:37). Both use `HealthOnFailure=none`
-  (deb/quadlet/tor-haproxy.container:71, deb/quadlet/unbound.container:43):
+  (deb/quadlet/tor-haproxy.container:76, deb/quadlet/unbound.container:43):
   the controller is the one actor that restarts them for a chain fault.
   Before, they were `nc -z` port checks that Podman restarted on: green
   through Sub-plan 1's live Tor freeze while Podman restarted Unbound and
@@ -649,7 +649,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   30 minutes, after which the stack restart follows DEC-021
   (lib/policy.sh:516-522). Every container unit backs off between restarts
   (deb/quadlet/pi-hole.container:62-63, deb/quadlet/unbound.container:59-60,
-  deb/quadlet/tor-haproxy.container:81-82, deb/quadlet/tor-socat.container:44-45).
+  deb/quadlet/tor-haproxy.container:87-88, deb/quadlet/tor-socat.container:50-51).
   Live on mint and the mac, 2026-11-05 (container-faults receipt
   20261105T190652Z-fbcf098f): a frozen Pi-hole, a paused Unbound, a crash
   loop and a stopped Unbound each recovered with no human action.
@@ -667,8 +667,8 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   unverified.
 - The macOS fast path exits when the addresses are correct, Pi-hole answers
   and, since Sub-plan 3 Task 2.3, the proxy image's verifying probe answers
-  through Tor (mac/start-container.sh:182-213, mac/start-container.sh:659-663).
-  Until then a warm cache satisfied it (mac/start-container.sh:652-658): live,
+  through Tor (mac/start-container.sh:209-240, mac/start-container.sh:688-692).
+  Until then a warm cache satisfied it (mac/start-container.sh:681-687): live,
   with Tor frozen, the controller's service fallback was answered "stack
   already healthy" twice and never restarted the proxy. A restart the
   controller decides always rebuilds: nd_platform_restart_proxy leaves
@@ -681,14 +681,14 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   also requires Unbound to resolve over its authenticated route
   (lib/install.sh:965-980).
 - A wedged datapath is detected by a probe between containers
-  (mac/start-container.sh:279-288). The fix is a runtime restart
-  (mac/start-container.sh:672-680).
+  (mac/start-container.sh:306-315). The fix is a runtime restart
+  (mac/start-container.sh:701-709).
 - The stack is rebuilt once only when Tor never bootstrapped
-  (mac/start-container.sh:765-775). If the chain is unhealthy but Tor did
+  (mac/start-container.sh:794-804). If the chain is unhealthy but Tor did
   bootstrap, the script exits without pinning DNS
-  (mac/start-container.sh:754-764). "Bootstrapped" is the image's line
+  (mac/start-container.sh:783-793). "Bootstrapped" is the image's line
   `Tor bootstrapped successfully`, read from the container's log
-  (mac/start-container.sh:132-134). Since Sub-plan 5 Task 1.4 the proxy
+  (mac/start-container.sh:152-154). Since Sub-plan 5 Task 1.4 the proxy
   images print it only once a SOCKS stream through Tor works, to the exit
   resolver or the onion (tor-socat 69efd1f, tor-haproxy 0aa5063: probes in
   the background, Tor's log kept on the data volume with the previous
@@ -719,12 +719,12 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   loopback, and indeterminate while an install is under way. No policy reads
   the observation (lib/health.sh:47-54). The pass logs a security drift at
   err, to syslog and the rolling log, at most once a day per reason
-  (health/nice-dns-health:1046-1059, called at health/nice-dns-health:1210).
+  (health/nice-dns-health:1052-1065, called at health/nice-dns-health:1216).
   `nice-dns-health status` prints the generation, source commit, lock, each
   container's image against the generation's and the :53 publishes;
   `nice-dns-health drift` prints the same and exits 0 current, 1 drift (an
   image off the generation's or not running), 2 security drift, 3 not
-  checked (health/nice-dns-health:997-1040). Both read files and
+  checked (health/nice-dns-health:1003-1046). Both read files and
   `podman inspect` only: nothing re-renders or restarts (DEC-018).
   The pass's report reaches only a host whose controller came from an
   install with this change, and that install records a generation; an
@@ -735,7 +735,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
 ### Platform notes
 
 - Linux: scheduling comes from systemd user units and quadlet
-  `Restart=on-failure` (deb/quadlet/tor-haproxy.container:74). The target is
+  `Restart=on-failure` (deb/quadlet/tor-haproxy.container:80). The target is
   one installed controller entrypoint that the timer calls (ARCH-03).
 - macOS: the LaunchAgent is the only start-time recovery path. It uses sudo
   for a fixed set of helper verbs only (mac/start-container.sudoers:7). The
@@ -902,17 +902,17 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   The builds and the volume hand-over run containers on the default
   network, after which Apple's runtime brings dnsnet containers up with
   their interfaces down, so the runtime is restarted before dnsnet and the
-  stack start (lib/install.sh:2617-2632). A macOS rollback stops the builder
+  stack start (lib/install.sh:2626-2641). A macOS rollback stops the builder
   and restarts the runtime the same way before a previous stack comes back,
   and starts the runtime again if that restart failed
-  (lib/install.sh:2486-2492, lib/install.sh:1073, lib/install.sh:1074-1083).
+  (lib/install.sh:2495-2501, lib/install.sh:1073, lib/install.sh:1074-1083).
 - The resolver is pinned only after the new stack answers an ordinary query
   at the pinned address and Unbound resolves over its authenticated route
   (lib/install.sh:965-980,
   lib/install.sh:986-993), and after the installed
   controller passes its self-check (lib/install.sh:1011-1017).
   Linux: lib/install.sh:1990-2010. macOS:
-  lib/install.sh:2506-2531; `mac/persist.sh` loads the
+  lib/install.sh:2515-2540; `mac/persist.sh` loads the
   start-container agent, whose first run pins every service, only after the
   controller installed and its installed copy passed its self-check
   (mac/persist.sh:58-81). The pin is
@@ -930,7 +930,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
 - Uninstall removes the stack, images, bridge service, controller and, on
   macOS, a debug monitor set up by hand, and gives back the recorded DNS state
   (lib/install.sh:2017-2076,
-  lib/install.sh:2536-2545;
+  lib/install.sh:2545-2554;
   deb/custom-dns-deb:459-563, mac/start-container-root.sh:222-255).
   The Linux helper puts resolv.conf back first and whole (a new file or
   link renamed over it) while `dns=none` still holds NetworkManager off it;
@@ -1044,7 +1044,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   secret `nice-dns-pihole-webpassword` (lib/install.sh:369), which the
   quadlet mounts for uid 1000 (deb/quadlet/pi-hole.container:33-34).
   macOS mounts the directory read-only at /run/secrets at both launch
-  sites (lib/install.sh:2659-2672, mac/start-container.sh:490-503). Both
+  sites (lib/install.sh:2668-2681, mac/start-container.sh:517-530). Both
   images read it through `WEBPASSWORD_FILE` and refuse to start when it is
   missing, unreadable or empty (pihole/nd-start.sh:30-38; the
   hardened base's start.sh, pi-hole-hardened 4574d52). Uninstall removes
@@ -1056,7 +1056,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   (deb/quadlet/pi-hole-standard.conf:13-14); the hardened image keeps
   NET_BIND_SERVICE with no-new-privileges
   (deb/quadlet/pi-hole-hardened.conf:11-13). macOS runs the standard set for
-  both (lib/install.sh:2664). pihole-FTL runs as uid 1000 in both. Pi-hole's
+  both (lib/install.sh:2673). pihole-FTL runs as uid 1000 in both. Pi-hole's
   NTP server and client are off (pihole/etc/pihole.toml:492, 502, 515), so
   it listens on :53, :80 and :443 only (tests/integration/deployment-security.sh)
   [SEC-LEAST-PRIV] [SEC-LISTENERS].
@@ -1078,21 +1078,21 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   once host DNS was given back: a failed or interrupted restore keeps the
   state, the admin password and the current-generation marker for the retry
   or a reinstall (lib/install.sh:2069-2076, called at lib/install.sh:2058 and
-  lib/install.sh:2543) [SEC-OWNED-RESTORE]. Tor state: the Linux volume
+  lib/install.sh:2552) [SEC-OWNED-RESTORE]. Tor state: the Linux volume
   nice-dns-tor-<proxy> (deb/quadlet/tor-haproxy.container:20,
   deb/quadlet/tor-socat.container:16), on macOS
   ~/.local/state/nice-dns/tor-<proxy>, now mounted by the installer's run
-  too (lib/install.sh:2687, mac/start-container.sh:543). The root anchor:
+  too (lib/install.sh:2696, mac/start-container.sh:570). The root anchor:
   WF-DNS-001. The operator's Pi-hole lists (user decision: lists survive,
   configuration comes from the image): gravity.db on the volume
   nice-dns-pihole-lists (pihole/etc/pihole.toml:946,
-  deb/quadlet/pi-hole.container:19, lib/install.sh:2662,
-  mac/start-container.sh:493). Each image keeps its build's gravity.db as a
+  deb/quadlet/pi-hole.container:19, lib/install.sh:2671,
+  mac/start-container.sh:520). Each image keeps its build's gravity.db as a
   seed; pihole/nd-start.sh uses the volume as it is while the seed ids
   match and otherwise carries the operator's rows into the new seed
   (pihole/nd-start.sh:47, pihole/merge-lists.sql), keeping the previous
   file. macOS creates its volumes and hands them to the image's user in the
-  interruption window (lib/install.sh:410-425, lib/install.sh:2514):
+  interruption window (lib/install.sh:410-425, lib/install.sh:2523):
   Apple's volumes start root-owned and empty. Checked per entrypoint by
   tests/integration/lifecycle-transitions.sh, whose failed steps must leave
   the previous deployment exactly as it was [SEC-OWNED-RESTORE].
@@ -1130,7 +1130,9 @@ Sources: ARCH-07, design "Bridge lifecycle".
 #### Steps
 
 1. Refresh daily, outside the startup critical path, when a usable set
-   exists.
+   exists and the bridges mode is on. With the mode off, every refresh is
+   skipped and journalled (`bridges skipped bridges off`), nothing is
+   evaluated, and the pool is kept for the next `on`.
 2. On a fetch or probe failure, keep the previous usable pool and selection.
 3. Validate the new selection and replace it atomically. An unchanged
    selection triggers nothing.
@@ -1145,6 +1147,14 @@ Sources: ARCH-07, design "Bridge lifecycle".
    at least 20 stream uses and under 90% stream success (its path-bias use
    counters), and keeps leaving it out for 30 days. Fewer than 3 bridges
    after that applies nothing.
+8. The owner switches the mode with `nice-dns bridges on|off`. The switch
+   writes `TOR_BRIDGES=on|off` to `bridges-mode.env` atomically, then
+   restarts the proxy (macOS: the stack) as a recovery action:
+   `bridges mode-change <mode>`, then the restart's `requested` and
+   `acknowledged` under one request id, then a fresh name must answer. Off
+   runs Tor direct to its guards, with no obfs4; on uses the kept pool
+   again. An unchanged mode restarts nothing. An install whose proxy
+   launcher predates the switch is refused, with nothing changed.
 
 #### Invariants
 
@@ -1154,6 +1164,11 @@ Sources: ARCH-07, design "Bridge lifecycle".
   [PRIV-NO-SECRETS].
 - Applying a selection is a recovery action with an acknowledgement and a
   readiness check [REC-ACK-READINESS].
+- Switching the bridges mode is a recovery action of the same kind: it
+  holds the controller's lock, is journalled under one request id, and ends
+  only when DNS answers [REC-ACK-READINESS].
+- The mode file is data: it is parsed for its `TOR_BRIDGES` line, never
+  sourced, and it holds no secret.
 
 ### Current baseline (observed in source)
 
@@ -1167,12 +1182,13 @@ Sources: ARCH-07, design "Bridge lifecycle".
   skips when three or more valid lines exist
   (scripts/fetch-bridges.sh:65-89).
 - Linux boot selection: `nice-dns-fetch-bridges.service` runs bridge-eval
-  in manage mode inside the tor image (deb/persistent-podman.sh:216-220). It
-  is a oneshot with `RemainAfterExit=yes` (deb/persistent-podman.sh:202). It
-  also runs at install (deb/persistent-podman.sh:344).
+  in manage mode inside the tor image (deb/persistent-podman.sh:217-221). It
+  is a oneshot with `RemainAfterExit=yes` (deb/persistent-podman.sh:203). It
+  also runs at install (deb/persistent-podman.sh:345).
   - Since Sub-plan 3 Task 2.2, an `ExecCondition` skips it while
-    `bridges.env` holds 3 or more valid bridges
-    (deb/persistent-podman.sh:199). Selection therefore stays out of
+    `bridges.env` holds 3 or more valid bridges, and since the 2026-11-05
+    bridges toggle also while the mode is off (`TOR_BRIDGES=off` in
+    `bridges-mode.env`) (deb/persistent-podman.sh:200). Selection therefore stays out of
     startup's critical path when a usable set exists.
   - Until Sub-plan 5 Task 2.2 (aa6b7e9) that skip never happened: the
     condition exited 1, which `SuccessExitStatus=0 1` also covers, so
@@ -1181,11 +1197,11 @@ Sources: ARCH-07, design "Bridge lifecycle".
     now exits 2, and the install's restart is skipped (mint, same day).
 - Daily refresh since Task 2.2 (BL-019): the controller's
   `nice-dns-health-bridges.timer` (`OnCalendar=daily`, `Persistent=true`;
-  health/nice-dns-health:693) runs `nice-dns-health bridges-refresh`.
+  health/nice-dns-health:699) runs `nice-dns-health bridges-refresh`.
   - The image's bridge-eval writes a candidate, never `bridges.env`
     (lib/platform/linux.sh:303-309). It runs outside the state lock, under
-    a refresh mutex (lib/recovery.sh:1231-1287).
-  - nd_bridges_apply (lib/recovery.sh:1080-1119) holds the lock:
+    a refresh mutex (lib/recovery.sh:1263-1323).
+  - nd_bridges_apply (lib/recovery.sh:1106-1151) holds the lock:
     - a candidate with fewer than 3 valid lines is not applied, so the last
       good set stays;
     - normalized equal sets write nothing;
@@ -1196,30 +1212,30 @@ Sources: ARCH-07, design "Bridge lifecycle".
   - Since Sub-plan 5 Task 2.2, nd_bridges_refresh first reads the running
     proxy's Tor state (`/app/data/tor/state`) and leaves out of the
     candidate every bridge with at least 20 uses and under 90% stream
-    success (lib/recovery.sh:1140-1229, lib/recovery.sh:1243-1253). The
+    success (lib/recovery.sh:1172-1261, lib/recovery.sh:1279-1289). The
     controller remembers each such bridge in `bridges.weak` (state
     directory, 0600, fingerprints only) and leaves it out for 30 days
     (`ND_BRIDGE_WEAK_DAYS`) from its last judgement, because the macOS agent
     deletes Tor's state when the bridge set changes
-    (mac/start-container.sh:128, mac/start-container.sh:536). When the
+    (mac/start-container.sh:148, mac/start-container.sh:563). When the
     running Tor is still configured with a left-out bridge (`listed=1`) and
     a set is pending, it adopts the set through the service restart
-    (lib/recovery.sh:1267-1284). While the proxy is in a crash loop that
+    (lib/recovery.sh:1303-1320). While the proxy is in a crash loop that
     restart is held and journaled `bridges held`; the set stays pending and
-    the proxy reads it at its next start (lib/recovery.sh:1272-1276,
-    lib/recovery.sh:1289-1296). With no readable state and no memory,
+    the proxy reads it at its next start (lib/recovery.sh:1308-1312,
+    lib/recovery.sh:1325-1332). With no readable state and no memory,
     nothing is filtered.
   - The proxy reads the new set at its next natural start. During a
     sustained failure, the Tor restart adopts it through the service restart
-    (lib/recovery.sh:1301-1315, lib/recovery.sh:862-879).
-- Exit 1 is tolerated (deb/persistent-podman.sh:224). A missing `BRIDGE1`
-  fails loudly (deb/persistent-podman.sh:230).
+    (lib/recovery.sh:1337-1351, lib/recovery.sh:862-879).
+- Exit 1 is tolerated (deb/persistent-podman.sh:225). A missing `BRIDGE1`
+  fails loudly (deb/persistent-podman.sh:231).
 - The Linux proxy reads `bridges.env` through `EnvironmentFile=` at
   container start (deb/quadlet/tor-haproxy.container:28). A changed selection
   takes effect only on the next container start.
 - Health recovery re-evaluates with nd_bridges_refresh, at most once an
   hour, once an observed outage has outlasted the grace
-  (health/nice-dns-health:522-538).
+  (health/nice-dns-health:522-544).
   - Until Task 2.2 it ran the raw Moat fetcher
     (deb/persistent-podman.sh:174), which writes an unranked pool into the
     same `bridges.env` (scripts/fetch-bridges.sh:49-51) and could replace an
@@ -1233,10 +1249,10 @@ Sources: ARCH-07, design "Bridge lifecycle".
   2026-10-04: guards sampled since 2026-09-18).
 - macOS daily refresh since Task 2.2: the controller's
   `org.nice-dns.health-bridges` agent (a daily `StartCalendarInterval`,
-  which runs on wake; health/nice-dns-health:757). Its probe container runs
+  which runs on wake; health/nice-dns-health:763). Its probe container runs
   only on `dnsnet`, only while pi-hole, unbound and the proxy run on
   .250/.251/.252, and it holds the start-container agent's stack lock while
-  the probe container exists (lib/platform/macos.sh:312-356).
+  the probe container exists (lib/platform/macos.sh:312-359).
   - `mac/persist.sh` no longer installs the legacy `org.nice-dns.bridge-eval`
     agent. It retires that agent after the controller installs
     (mac/persist.sh:94).
@@ -1250,25 +1266,49 @@ Sources: ARCH-07, design "Bridge lifecycle".
   in its log (mac/bridge-eval.sh:162). It keeps the existing file on failure
   (mac/bridge-eval.sh:171-174).
 - The macOS LaunchAgent refetches only when the pool is missing or
-  incomplete (mac/start-container.sh:162-175, mac/start-container.sh:621-629).
+  incomplete (mac/start-container.sh:182-202, mac/start-container.sh:650-658).
   Until the Stage 2 gate it also refetched after a failed bootstrap, writing
   over a usable set without the controller's lock, base check or `.prev`;
   now it keeps the set, and re-selection is the controller's evaluated
   refresh.
   It recreates Tor only when the bridge fingerprint changed
-  (mac/start-container.sh:523-539). On a change it drops the guard sample
-  and keeps the cache (mac/start-container.sh:128-130). Tor's DataDirectory
-  persists (mac/start-container.sh:42, mac/start-container.sh:543).
-- The macOS installers run the fetcher without `--force`
-  (lib/install.sh:2354). They require at least three bridges
-  (lib/install.sh:2374-2377). Since Sub-plan 4 Task 1.1 both pass every
+  (mac/start-container.sh:550-566). On a change it drops the guard sample
+  and keeps the cache (mac/start-container.sh:148-150). Tor's DataDirectory
+  persists (mac/start-container.sh:45, mac/start-container.sh:570).
+- The macOS installers run the fetcher without `--force`, and only while
+  the bridges mode is on (lib/install.sh:2354-2359). They require at least
+  three bridges (lib/install.sh:2383-2386); with the mode off they fetch and
+  require none and pass `TOR_BRIDGES=off` (lib/install.sh:2372,
+  lib/install.sh:2379-2382). Since Sub-plan 4 Task 1.1 both pass every
   BRIDGEn to the proxy; the hardened one used to pass only BRIDGE1 and
   BRIDGE2.
+- Bridges mode (the 2026-11-05 bridges toggle). `nice-dns bridges
+  on|off|status` (nice-dns:618) writes the mode file by rename
+  (nice-dns:581-596) and refuses an install whose launcher does not pass
+  `TOR_BRIDGES` (nice-dns:645-648). A changed mode takes the controller's
+  lock (nice-dns:659) and runs nd_bridges_mode_change (nice-dns:669), which
+  checks the lock token, journals `mode-change` and restarts the service
+  (lib/recovery.sh:1082-1088). `off` prints what the ISP sees first
+  (nice-dns:665). The consumers read the mode as data: nd_bridges_mode
+  (lib/recovery.sh:1068); the Linux quadlets pass it in through
+  `[Service] EnvironmentFile=-` and `PodmanArgs=--env TOR_BRIDGES`
+  (deb/quadlet/tor-socat.container:26, deb/quadlet/tor-socat.container:42,
+  deb/quadlet/tor-haproxy.container:33, deb/quadlet/tor-haproxy.container:79);
+  the macOS agent loads it (mac/start-container.sh:114, mac/start-container.sh:649)
+  and passes it to the proxy (mac/start-container.sh:571).
+- With the mode off, the refresh journals `bridges skipped bridges off`
+  and returns 3 (lib/recovery.sh:1266-1268). The daily run exits 0 for that
+  (health/nice-dns-health:1243), and the outage path journals it too
+  (health/nice-dns-health:534). The macOS evaluator starts no probe
+  container (lib/platform/macos.sh:343), and the agent fetches no set
+  (mac/start-container.sh:184-188). Live, run 20261107T131054Z-8d4127f8
+  (mint and the mac): both switches acknowledged and a fresh name answered
+  within 39 s, and the refresh was skipped.
 
 ### Platform notes
 
 - Linux: bridge-eval runs host-side through `podman run --user 0:0`
-  (deb/persistent-podman.sh:216). The target adds a daily timer and keeps
+  (deb/persistent-podman.sh:217). The target adds a daily timer and keeps
   the out-of-band selection model.
 - macOS: a second container on another vmnet network wedges `dnsnet`
   (mac/bridge-eval.sh:77-90). Selection must stay on `dnsnet`.
@@ -1321,23 +1361,24 @@ Sub-plan 3; docs/cli-contract.md is the contract the GUIs pin to.
 
 - The controller keeps a decided pass by rename, after nd_recovery_tick
   returns 0 (health/nice-dns-health:283-299, called at
-  health/nice-dns-health:552 for `run` and health/nice-dns-health:1214 for
+  health/nice-dns-health:558 for `run` and health/nice-dns-health:1220 for
   `tick`). `nice-dns-health status` lists its `container:` records
-  (health/nice-dns-health:972).
-- lib/status.sh nd_status_rows prints the rows (lib/status.sh:90-246); every
+  (health/nice-dns-health:978).
+- lib/status.sh nd_status_rows prints the rows (lib/status.sh:117-253; the
+  `bridges` rows through _nd_st_bridges, lib/status.sh:90-111); every
   file it opens goes through _nd_st_reach (lib/status.sh:45-58); epochs are
   plain numbers (lib/status.sh:39); a pass dated after the clock is
-  `stale future` (lib/status.sh:167); the admin row is the credential's path
-  (lib/status.sh:232).
+  `stale future` (lib/status.sh:194); the admin row is the credential's path
+  (lib/status.sh:239).
 - `nice-dns status` sources that library from the checkout or the kept source
-  and adds the install hint (nice-dns:503-562).
+  and adds the install hint (nice-dns:515-574).
 - The check is the only network call, bounded by `timeout 55`
-  (nice-dns:414), and writes the cache by rename into an existing controller
-  state directory only, for the recorded branch only (nice-dns:368-381,
-  nice-dns:392-430). `update` refuses `--local`, installs nothing on
-  `unknown` (nice-dns:470), prints `already current` (nice-dns:480) and
+  (nice-dns:426), and writes the cache by rename into an existing controller
+  state directory only, for the recorded branch only (nice-dns:380-393,
+  nice-dns:404-442). `update` refuses `--local`, installs nothing on
+  `unknown` (nice-dns:482), prints `already current` (nice-dns:492) and
   otherwise runs cmd_reinstall from a clone of the checked branch, then checks
-  again (nice-dns:444-497).
+  again (nice-dns:456-509).
 
 ### Platform notes
 
