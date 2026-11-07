@@ -1,0 +1,38 @@
+{
+ "baseline": {
+  "elapsed_s": 2.6,
+  "exit": 0,
+  "tail": "check-contracts: OK (WF-DNS-001..004 and all operations in /home/user/dev/containers/nice-dns/tests/manifests/privacy-ops.tsv) docs/workflows/dns-lifecycle.md"
+ },
+ "break_patch": "--- a/README.md\n+++ b/README.md\n@@ -26,7 +26,7 @@\n nice-dns reinstall [haproxy|socat] [--hardened|--standard] [--branch B] [--local]\n nice-dns restart\n nice-dns status [--tsv]\n-nice-dns bridges on|off|status\n+nice-dns brdgs on|off|status\n nice-dns update [--check] [--force]\n nice-dns uninstall\n ```\n@@ -36,7 +36,7 @@\n - **`nice-dns reinstall`** installs again with the recorded proxy, Pi-hole flavour and branch; options override them. It clones the branch first. If that fails because DNS is down, the running stack is untouched and `--local` uses the source kept at the last install.\n - **`nice-dns restart`** restarts the whole stack and waits for DNS to answer. It runs no DNS command itself; on macOS the stack's own start script re-pins DNS and bounces Mullvad, as it does whenever it rebuilds. Either way this costs a Tor bootstrap of a minute or more.\n - **`nice-dns status`** says what is installed, what the health controller last saw and did, the bridges, the admin page and the last update check. It only reads files, so it answers at once; `--tsv` prints the same as rows for scripts (docs/cli-contract.md). It exits 1 when nothing is installed and 2 when something it reads cannot be read.\n-- **`nice-dns bridges off`** stops using obfs4 bridges: Tor connects straight to its guards. Use it where the bridges are slow. Your ISP then sees plain Tor connections instead of obfs4 traffic: it can tell you use Tor, though still not what you look up. **`nice-dns bridges on`** goes back to the bridges. Either one restarts the proxy (on macOS, the whole stack) and waits for DNS, which costs a Tor bootstrap; asking for the mode already set restarts nothing. The bridge pool is kept while bridges are off, so `on` uses the last good set again. `nice-dns bridges status` prints the mode, the bridge count and the last refresh. The mode lives in `~/.config/nice-dns/bridges-mode.env`.\n+- **`nice-dns brdgs off`** stops using obfs4 bridges: Tor connects straight to its guards. Use it where the bridges are slow. Your ISP then sees plain Tor connections instead of obfs4 traffic: it can tell you use Tor, though still not what you look up. **`nice-dns brdgs on`** goes back to the bridges. Either one restarts the proxy (on macOS, the whole stack) and waits for DNS, which costs a Tor bootstrap; asking for the mode already set restarts nothing. The bridge pool is kept while bridges are off, so `on` uses the last good set again. `nice-dns brdgs status` prints the mode, the bridge count and the last refresh. The mode lives in `~/.config/nice-dns/bridges-mode.env`.\n - **`nice-dns update`** asks GitHub whether your branch's commit differs from the installed one (usually: is newer). If it does, it installs it like `nice-dns reinstall`, with the recorded choices; `--check` only asks, and `--force` reinstalls even when nothing differs. If it cannot tell (offline, DNS down, or an install from a modified checkout), it installs nothing and says why. An install from a local commit GitHub does not have counts as different, so `update` would install the branch's commit over it.\n - **`nice-dns uninstall`** removes the stack, gives host DNS back, then removes the command.\n \n@@ -147,7 +147,7 @@\n \n A small controller (`nice-dns-health`) checks the chain every minute and\n refreshes the Tor bridges once a day, leaving out bridges that carry\n-queries badly (with `nice-dns bridges off`, the refresh is skipped). See\n+queries badly (with `nice-dns brdgs off`, the refresh is skipped). See\n [health/README.md](health/README.md).\n \n ## Uninstall\n",
+ "build": null,
+ "created": "2026-11-07T13:24:40+00:00",
+ "fingerprint": "198361bb13c57cdad36d0ee1ca7db52a8dba1f9a11f3dfde0652f2b36f0bb4eb",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "docs only",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-04-bridges-toggle-plan.md",
+ "red": {
+  "elapsed_s": 2.6,
+  "exit": 1,
+  "tail": "check-contracts: OK (WF-DNS-001..004 and all operations in /home/user/dev/containers/nice-dns/tests/manifests/privacy-ops.tsv) docs/workflows/dns-lifecycle.md"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "2.3",
+ "test": "bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md && grep -q 'nice-dns bridges' README.md && grep -q 'bridges off' health/README.md && grep -q 'bridges-mode.env' CLAUDE.md",
+ "text": "`bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md && grep -q 'nice-dns bridges' README.md && grep -q 'bridges off' health/README.md && grep -q 'bridges-mode.env' CLAUDE.md`",
+ "touched": [
+  "README.md"
+ ],
+ "touched_blobs": {
+  "README.md": "4dfc79e8095f60bc20e124f60ddf489c7ddf9082"
+ },
+ "witness_blobs": {
+  "README.md": "4dfc79e8095f60bc20e124f60ddf489c7ddf9082",
+  "docs/workflows/dns-lifecycle.md": "e933793c513192166cecb1102151c1842d5d9aee",
+  "health/README.md": "0aed8ec4b294d0f8380813f64c303e559e03fefd",
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}
