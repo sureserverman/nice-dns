@@ -32,6 +32,7 @@ controller	integration	recovery-actions
 controller	integration	controller-interaction
 controller	unit	receipt-verifier
 controller	integration	container-faults-dryrun
+controller	integration	bridges-toggle-dryrun
 installers-transaction	integration	installers-interaction
 installers	unit	harness-contracts
 installers	integration	install-prepare

@@ -1,0 +1,11 @@
+{
+ "created": "2026-11-07T11:10:40+00:00",
+ "fingerprint": "172a76c1a61de3fd0b3d6eab523a09712afae22c5ad0dc792820b97fe174f4e6",
+ "index": 1,
+ "kind": "claim-deviation",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-04-bridges-toggle-plan.md",
+ "schema": 2,
+ "task": "2.1",
+ "text": "`bash -n tests/live/bridges-toggle.sh && shellcheck tests/live/bridges-toggle.sh tests/live/target.sh && bash tests/live/bridges-toggle.sh --dry-run` prints every step and touches no target",
+ "why": "every file in the task's Scope is a test file (tests/live, tests/manifests, tests/reports), and prove-claim refuses a break that touches a test file; the Test's command is the scenario's own --dry-run, so no honest product break exists. The claim (prints every step, touches no target) is held by integration/bridges-toggle-dryrun 9/9 (run 20261107T110941Z-7f816352), which asserts no ssh/podman/container/launchctl call and 14 seeded defects each caught; it is now in the controller stage."
+}
