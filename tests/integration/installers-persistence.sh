@@ -26,6 +26,8 @@ t_real_persistent_podman_renders_its_units() {
       local q u unit pod tmr out rc
       dt_world install-deb resolved
       ps_tree "$IP_W/real"
+      # haproxy runs with bridges off, socat with no mode file (on).
+      if [ "$v" = haproxy ]; then mkdir -p "$IP_HOME/.config/nice-dns"; printf 'TOR_BRIDGES=off\n' >"$IP_HOME/.config/nice-dns/bridges-mode.env"; fi
       mkdir -p "$IP_W/run/systemd/generator" && : >"$IP_W/run/systemd/generator/nice-dns-pod.service"
       : >"$FAKE_ROOT/.systemd/NetworkManager-wait-online.unit"
       ip_run "$IP_W/real/deb/persistent-podman.sh" "$v"
@@ -51,7 +53,13 @@ t_real_persistent_podman_renders_its_units() {
       assert_ne "" "$pod" "$v: the pod is started"; assert_ne "" "$tmr" "$v: the controller's timer is started"
       # podman's --env-file needs bridges.env; with bridges off the selection
       # is skipped, so a host with no set still starts its proxy (direct).
-      assert_file "$IP_HOME/.config/nice-dns/bridges.env" "$v: the proxy's env file exists when no set was selected"
+      # With bridges on nothing is created (review Important 1): a missing set
+      # stops the proxy unit as before.
+      if [ "$v" = haproxy ]; then
+        assert_file "$IP_HOME/.config/nice-dns/bridges.env" "$v: bridges off: the proxy's env file exists when no set was selected"
+      else
+        assert_no_path "$IP_HOME/.config/nice-dns/bridges.env" "$v: bridges on: no empty set is created"
+      fi
       assert_eq 1 "$((pod < tmr))" "$v: the pod (line $pod) starts before the controller's schedule (line $tmr)"
       if command -v systemd-analyze >/dev/null 2>&1; then
         mkdir -p "$IP_W/sa"; cp "$unit" "$IP_W/sa/"

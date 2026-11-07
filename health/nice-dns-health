@@ -1239,6 +1239,8 @@ cmd_bridges_refresh() {
   rm -rf "${t:?}"
   case "$v" in haproxy|socat) ;; *) log_to_file "$(ts) BRIDGES no proxy variant found; nothing refreshed"; echo "$SCRIPT_NAME: no proxy variant found" >&2; return 2 ;; esac
   out="$(nd_bridges_refresh "$v" 2>&1)"; rc=$?
+  # Bridges off is a chosen state, not a failure of the daily schedule.
+  if [ "$rc" -eq 3 ] && printf '%s\n' "$out" | grep -qx 'detail	bridges off'; then rc=0; fi
   log_to_file "$(ts) BRIDGES $(printf '%s\n' "$out" | awk -F '\t' '$1 == "result" { print "result=" $2 }')"
   printf '%s\n' "$out"
   return "$rc"

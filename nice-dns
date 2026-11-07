@@ -580,6 +580,11 @@ cmd_status() {
 # touched. The directory is the installer's; a missing one is not created.
 bridges_write() {
   local f="$1/bridges-mode.env" t
+  # A directory there would take the renamed file inside it, the mode unchanged.
+  if [ -d "$f" ]; then
+    err "could not write $f: it is a directory; the bridges mode is unchanged"
+    return 1
+  fi
   if t="$(mktemp "$1/.bridges-mode.XXXXXX" 2>/dev/null)"; then
     if printf 'TOR_BRIDGES=%s\n' "$2" >"$t" && chmod 644 "$t" && mv -f "$t" "$f"; then
       return 0

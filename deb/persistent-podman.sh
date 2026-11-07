@@ -349,10 +349,13 @@ else
 fi
 # The proxy's podman --env-file needs bridges.env to exist. With bridges off
 # (TOR_BRIDGES=off) the selection above is skipped, so a host with no set
-# gets an empty one and its proxy starts direct.
-# The same path the quadlets read (%h/.config/nice-dns/bridges.env).
+# gets an empty one and its proxy starts direct. With bridges on nothing is
+# created: a missing set stops the proxy unit, as before the mode existed.
+# The same paths the quadlets read (%h/.config/nice-dns/...).
 BRIDGES_ENV="$HOME/.config/nice-dns/bridges.env"
-[ -e "$BRIDGES_ENV" ] || (umask 077 && mkdir -p "${BRIDGES_ENV%/*}" && : >"$BRIDGES_ENV")
+if grep -qx "TOR_BRIDGES=off" "$HOME/.config/nice-dns/bridges-mode.env" 2>/dev/null && [ ! -e "$BRIDGES_ENV" ]; then
+  (umask 077 && : >"$BRIDGES_ENV")
+fi
 
 systemctl --user restart nice-dns-pod.service
 echo "   ✓ Services started."

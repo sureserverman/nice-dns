@@ -1233,3 +1233,22 @@ t_bridges_releases_on_a_signal() {
     assert_eq "" "$(find "$CASE_DIR" -maxdepth 1 -name 'nice-dns-restart.*')" "$u: its temporary directory is gone"
   done
 }
+
+# Stage 1 gate (demo B1): a mode path that is a directory is not written into.
+# `mv` would move the temporary file inside it and the restart would run with
+# the mode unchanged.
+t_bridges_a_mode_path_that_is_a_directory_is_refused() {
+  local u d
+  for u in $(cl_platforms); do
+    st_world "$u"; bt_restart_fakes; d="$CL_HOME/.config/nice-dns"
+    mkdir -p "$d/bridges-mode.env"
+    : >"$CL_LOG"
+    cl_run "$CL_TREE/nice-dns" bridges off
+    assert_rc 1 "$CL_RC" "$u: a directory in place of the mode file fails"
+    assert_match "$d/bridges-mode.env" "$CL_ERR" "$u: the error names the path"
+    assert_eq "" "$(find "$d/bridges-mode.env" -mindepth 1)" "$u: nothing is written inside it"
+    assert_eq 0 "$(grep -cE "$(bt_proxy_restart_pat)" "$CL_LOG")" "$u: nothing restarted"
+    assert_not_match 'mode-change' "$(bt_journal)" "$u: nothing journalled"
+    cl_assert_released "$u"
+  done
+}

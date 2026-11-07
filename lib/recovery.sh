@@ -1126,6 +1126,12 @@ nd_bridges_apply() {
     nd_recovery_journal "br-$(date +%s)" bridges unchanged "the evaluated set equals the running one ($cur)"
     printf 'result\tunchanged\n'; return 0
   fi
+  # A directory there would take the renamed set inside it, unapplied.
+  if [ -d "$live" ] || { [ -e "$live" ] && [ ! -f "$live" ]; }; then
+    nd_state_unlock "$tok"
+    nd_recovery_journal "br-$(date +%s)" bridges not-applied "bridges.env is not a file ($live); the last good set stays"
+    printf 'result\tnot-applied\n'; return 1
+  fi
   [ -f "$live" ] && cp -p "$live" "$live.prev"
   if ! { _nd_br_norm "$cand" | awk '{ printf "BRIDGE%d=%s\n", NR, $0 }' | (umask 077 && cat >"$live.new.$$") \
           && mv -f "$live.new.$$" "$live"; }; then

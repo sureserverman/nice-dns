@@ -657,6 +657,10 @@ t_macos_agent_honours_the_bridges_mode() {
   local cfg out fp_on fp_off fp_none
   bl_agent
   assert_match 'load_tor_bridges' "$(cat "$CASE_DIR/agent.sh")" "the mode is read by a function of the agent"
+  # The main flow, not only this harness, reads the mode before it decides on
+  # a fetch (review Suggestion: deleting that call left every case green).
+  assert_eq 1 "$(awk '/^load_tor_bridges$/ { l = NR } /^if bridges_rotate_needed; then$/ { r = NR } END { print (l && r && l < r) ? 1 : 0 }' "$NICE_DNS_ROOT/mac/start-container.sh")" "the agent reads the mode before bridges_rotate_needed"
+  assert_match '-e "TOR_BRIDGES=' "$(cat "$CASE_DIR/agent.sh")" "the proxy launch carries the mode"
   cfg="$CASE_DIR/ahome/.config/nice-dns"; mkdir -p "$cfg"
   bl_set "$cfg/bridges.env" 5
   fp_none="$(bl_agent_run fp)"
@@ -696,4 +700,40 @@ t_macos_bridge_eval_does_nothing_when_bridges_are_off() {
     assert_eq "" "$(grep ' run --rm ' "$FAKE_LOG")" "off: no evaluation container runs"
     assert_no_path "$ND_BRIDGE_CONFIG_DIR/.cand" "off: no candidate is written"
   ) || exit 1
+}
+
+# Stage 1 gate (demo B1, class sweep): a bridges.env that is a directory is not
+# written into; the refresh says it was not applied.
+t_a_bridge_pool_path_that_is_a_directory_is_not_applied() {
+  local plat out
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      mkdir -p "$BL_LIVE"
+      bl_set "$CASE_DIR/cand" 7 9
+      out="$(nd_bridges_apply "$CASE_DIR/cand" none)"
+      assert_eq not-applied "$(bl_get result "$out")" "$plat: a directory in place of bridges.env is not applied: $out"
+      assert_eq "" "$(find "$BL_LIVE" -mindepth 1)" "$plat: nothing is written inside it"
+      assert_match 'bridges	not-applied	.*bridges\.env is not a file' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: the journal says why"
+    ) || exit 1
+  done
+}
+
+# Stage 1 gate (review Important 2): the daily refresh's skip with bridges off
+# is a success for its scheduler, or its unit reads failed every day.
+t_the_daily_refresh_with_bridges_off_exits_0() {
+  local plat tree rc
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      tree="$CASE_DIR/tree-daily-$plat"; mkdir -p "$tree"
+      cp -R "$NICE_DNS_ROOT/health" "$NICE_DNS_ROOT/lib" "$NICE_DNS_ROOT/routes" "$tree/"; chmod -R go-w "$tree"
+      bl_set "$BL_LIVE" 5
+      printf 'TOR_BRIDGES=off\n' >"$ND_BRIDGE_CONFIG_DIR/bridges-mode.env"
+      bash "$tree/health/nice-dns-health" bridges-refresh >"$CASE_DIR/out" 2>&1; rc=$?
+      assert_rc 0 "$rc" "$plat: a skip with bridges off exits 0: $(cat "$CASE_DIR/out")"
+      assert_match 'result	skipped' "$(cat "$CASE_DIR/out")" "$plat: and says skipped"
+      assert_match 'bridges	skipped	bridges off' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: journalled"
+    ) || exit 1
+  done
 }
