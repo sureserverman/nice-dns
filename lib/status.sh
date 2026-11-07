@@ -66,7 +66,7 @@ _nd_st_short() { case "$1" in "$HOME"/*) printf '~/%s\n' "${1#"$HOME"/}" ;; *) p
 # lib/platform/*.sh nd_platform_state_dir) and the nice-dns command use.
 _nd_st_paths() {
   local state="${XDG_STATE_HOME:-$HOME/.local/state}" cfg="${XDG_CONFIG_HOME:-$HOME/.config}"
-  ND_ST_CONFIG_DIR="$cfg/nice-dns"
+  ND_ST_CONFIG_DIR="${ND_BRIDGE_CONFIG_DIR:-$cfg/nice-dns}"
   case "$1" in
     macos)
       ND_ST_INSTALL_DIR="$HOME/Library/Application Support/nice-dns-install"
@@ -83,13 +83,40 @@ _nd_st_paths() {
   esac
 }
 
+# _nd_st_bridges <config dir> <state dir>: the bridges rows (mode, count,
+# last_refresh), shared by `nice-dns status` and `nice-dns bridges status`.
+# The mode file is read with awk, never sourced (DEC-001). Returns 2 when a
+# file it reads is there but cannot be read.
+_nd_st_bridges() {
+  local cfg="$1" sd="$2" rc=0 bmode=on n=0 refresh=never
+  _nd_st_reach "$cfg/bridges-mode.env" f
+  case $? in
+    0) case "$(awk -F '=' '$1 == "TOR_BRIDGES" { print $2; exit }' "$cfg/bridges-mode.env")" in off) bmode=off ;; esac ;;
+    2) _nd_st_row bridges unreadable "cannot read $(_nd_st_short "$cfg/bridges-mode.env")"; rc=2 ;;
+  esac
+  _nd_st_row bridges mode "$bmode"
+  _nd_st_reach "$cfg/bridges.env" f
+  case $? in
+    0) n="$(awk '/^BRIDGE[0-9]+=/ { n++ } END { print n + 0 }' "$cfg/bridges.env")" ;;
+    2) _nd_st_row bridges unreadable "cannot read $(_nd_st_short "$cfg/bridges.env")"; rc=2 ;;
+  esac
+  _nd_st_row bridges count "$n"
+  _nd_st_reach "$sd/bridges.last" f
+  case $? in
+    0) refresh="$(awk 'NR == 1 { print $1; exit }' "$sd/bridges.last")"; _nd_st_epoch "$refresh" || refresh=never ;;
+    2) _nd_st_row bridges unreadable "cannot read $(_nd_st_short "$sd/bridges.last")"; rc=2 ;;
+  esac
+  _nd_st_row bridges last_refresh "$refresh"
+  return "$rc"
+}
+
 # nd_status_rows <linux|macos>: prints the rows. Returns 0, 1 when nothing
 # is installed, 2 when a file it reads is there but cannot be read (2 wins).
 # ND_STATUS_NOW (epoch) and ND_STATUS_STALE_S (seconds, default 300) are for
 # tests; a value that is not a plain number is ignored.
 nd_status_rows() {
   local plat="${1:-linux}" now stale_s=300 rc=0 st
-  local gen="" m="" mode last verdict age obs n refresh bmode cache r sd
+  local gen="" m="" mode last verdict age obs cache r sd
   now="${ND_STATUS_NOW:-}"
   _nd_st_epoch "$now" || now="$(date +%s)"
   case "${ND_STATUS_STALE_S:-}" in ''|0*|*[!0-9]*|??????*) ;; *) stale_s="$ND_STATUS_STALE_S" ;; esac
@@ -188,27 +215,7 @@ nd_status_rows() {
   esac
 
   # bridges
-  bmode=on
-  _nd_st_reach "$ND_ST_CONFIG_DIR/bridges-mode.env" f
-  case $? in
-    0) case "$(awk -F '=' '$1 == "TOR_BRIDGES" { print $2; exit }' "$ND_ST_CONFIG_DIR/bridges-mode.env")" in off) bmode=off ;; esac ;;
-    2) _nd_st_row bridges unreadable "cannot read $(_nd_st_short "$ND_ST_CONFIG_DIR/bridges-mode.env")"; rc=2 ;;
-  esac
-  _nd_st_row bridges mode "$bmode"
-  n=0
-  _nd_st_reach "$ND_ST_CONFIG_DIR/bridges.env" f
-  case $? in
-    0) n="$(awk '/^BRIDGE[0-9]+=/ { n++ } END { print n + 0 }' "$ND_ST_CONFIG_DIR/bridges.env")" ;;
-    2) _nd_st_row bridges unreadable "cannot read $(_nd_st_short "$ND_ST_CONFIG_DIR/bridges.env")"; rc=2 ;;
-  esac
-  _nd_st_row bridges count "$n"
-  refresh=never
-  _nd_st_reach "$sd/bridges.last" f
-  case $? in
-    0) refresh="$(awk 'NR == 1 { print $1; exit }' "$sd/bridges.last")"; _nd_st_epoch "$refresh" || refresh=never ;;
-    2) _nd_st_row bridges unreadable "cannot read $(_nd_st_short "$sd/bridges.last")"; rc=2 ;;
-  esac
-  _nd_st_row bridges last_refresh "$refresh"
+  _nd_st_bridges "$ND_ST_CONFIG_DIR" "$sd" || rc=2
 
   # update: the cache `nice-dns update --check` writes
   cache="$sd/update-check.tsv"

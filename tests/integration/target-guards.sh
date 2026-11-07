@@ -886,7 +886,7 @@ t_arm_and_build_ops_never_read_the_script_stdin() {
   local b
   assert_eq 'ctl build x >/dev/null 2>' "$(printf 'ctl build x >/dev/null 2>&1; ctl stop y </dev/null >/dev/null; yes | ctl system start\n' | tg_stdin_readers)" \
     "the check finds a call that leaves stdin open, and only that one"
-  for b in 'arm-prepare|arm-set' build-proxy resume-agents; do
+  for b in 'arm-prepare|arm-set' build-proxy resume-agents proxy-supervisor-lines mac-runtime-ssh mac-runtime-gui; do
     assert_match 'ctl |systemctl ' "$(tg_branch "$b")" "$b: the branch was extracted"
     assert_eq "" "$(tg_branch "$b" | tg_stdin_readers)" "$b: no runtime command can swallow the rest of the script"
   done
@@ -1131,4 +1131,153 @@ t_capture_names_every_question_type() {
     out="$(printf '12:00:00.000000 IP 192.168.1.5.40000 > 1.1.1.1.53: 4242+ [1au] %s nd0123abcd.example.com. (52)\n' "$q" | awk -v i=en0 -F ' ' "$prog")"
     assert_eq "packet	en0	out	1.1.1.1	53	nd0123abcd.example.com" "$out" "$q: the probe name is read"
   done
+}
+
+# bridges-toggle plan, Task 2.1: the two macOS runtime moves (OD-7, BL-052)
+# are refused off macOS and without the run's snapshot before anything is
+# sent; the supervisor read is read-only and returns only spawn lines.
+t_bridges_toggle_ops_are_guarded() {
+  local op v w b
+  tg_setup
+  # OD-8 retired mac-runtime-ssh: without the override it is refused first.
+  tg_targets 'mac1	macos	mac1-ssh	SHA256:AAAAtestfingerprintAAAAAAAAAAAAAAAAAAAAAAAA	disposable	2026-09-22'
+  : >"$FAKE_LOG"
+  tg mac-runtime-ssh mac1 --targets "$CASE_DIR/targets.env"
+  assert_nonzero "$TG_RC" "mac-runtime-ssh without NICE_DNS_ALLOW_RUNTIME_MOVE"
+  assert_match 'retired \(OD-8\).*vmnet' "$TG_OUT" "the refusal says why"
+  assert_eq 0 "$(tg_sent)" "nothing sent"
+  NICE_DNS_ALLOW_RUNTIME_MOVE=yes; export NICE_DNS_ALLOW_RUNTIME_MOVE
+  tg_targets 'lin1	linux	lin1-ssh	SHA256:AAAAtestfingerprintAAAAAAAAAAAAAAAAAAAAAAAA	disposable	2026-09-22' \
+    'mac1	macos	mac1-ssh	SHA256:AAAAtestfingerprintAAAAAAAAAAAAAAAAAAAAAAAA	disposable	2026-09-22'
+  for op in mac-runtime-ssh mac-runtime-gui; do
+    : >"$FAKE_LOG"
+    tg "$op" mac1 --targets "$CASE_DIR/targets.env"
+    assert_nonzero "$TG_RC" "$op without a snapshot"
+    assert_match 'no restore snapshot' "$TG_OUT" "$op: the refusal names the snapshot"
+    assert_eq 0 "$(tg_sent)" "$op: nothing sent without a snapshot"
+  done
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  FAKE_PLATFORM=macos; export FAKE_PLATFORM
+  tg snapshot mac1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "mac snapshot: $TG_OUT"
+  FAKE_PLATFORM=linux
+  for v in "mac-runtime-ssh lin1" "mac-runtime-gui lin1" "mac-runtime-ssh mac1 --component tor-socat" \
+           "mac-runtime-gui mac1 --mode default" "proxy-supervisor-lines lin1 --component tor-socat" \
+           "command lin1 --mode bridges-off --cell socat/standard" "command lin1 --mode bridges" \
+           "command lin1 --mode status;id"; do
+    : >"$FAKE_LOG"
+    read -r -a w <<<"$v"
+    tg "${w[0]}" "${w[1]}" --targets "$CASE_DIR/targets.env" "${w[@]:2}"
+    assert_rc 2 "$TG_RC" "[$v] refused: $TG_OUT"
+    assert_eq 0 "$(tg_sent)" "nothing sent for [$v]"
+  done
+  tg mac-runtime-ssh lin1 --targets "$CASE_DIR/targets.env"
+  assert_match 'macOS only' "$TG_OUT" "the Linux refusal says why"
+  FAKE_PLATFORM=macos
+  for op in mac-runtime-ssh mac-runtime-gui; do
+    : >"$FAKE_LOG"
+    tg "$op" mac1 --targets "$CASE_DIR/targets.env"
+    assert_rc 0 "$TG_RC" "$op on the mac after its snapshot: $TG_OUT"
+    assert_match "NICE_DNS_OP=$op " "$(cat "$FAKE_LOG")" "$op sent as data words"
+  done
+  FAKE_PLATFORM=linux
+  for v in bridges-on bridges-off status; do
+    : >"$FAKE_LOG"
+    tg command lin1 --targets "$CASE_DIR/targets.env" --mode "$v"
+    assert_rc 0 "$TG_RC" "command --mode $v: $TG_OUT"
+    assert_match "NICE_DNS_OP=command NICE_DNS_MODE=$v " "$(cat "$FAKE_LOG")" "command --mode $v sent as data words"
+  done
+  b="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG" | sed -n '/^  command)/,/^    exit \$rc ;;$/p')"
+  assert_match 'bridges-on\|bridges-off\) set -- bridges "\$\{NICE_DNS_MODE#bridges-\}"' "$b" "bridges-on|off run nice-dns bridges on|off"
+  assert_match 'status\) set -- status --tsv' "$b" "status runs nice-dns status --tsv"
+  b="$(tg_branch mac-runtime-ssh)"
+  assert_match 'plat" = macos \] \|\| \{' "$b" "mac-runtime-ssh: refused on the target off macOS too"
+  assert_match "grep -oE 'com\\\\\\.apple\\\\\\.container\\\\\\." "$b" "it boots out only com.apple.container.* services"
+  assert_match 'launchctl bootout "gui/\$u/\$l"' "$b" "in gui/<uid>"
+  assert_match 'ctl system start </dev/null' "$b" "then starts the runtime over ssh"
+  b="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG" | sed -n '/^  mac-runtime-gui)/,/^    done ;;$/p')"
+  assert_match 'ctl system stop </dev/null' "$b" "mac-runtime-gui: stops the ssh-domain runtime"
+  assert_match 'launchctl kickstart "gui/\$u/org\.nice-dns\.start-container"' "$b" "kickstarts only the stack's start agent"
+  assert_match 'end=\$\(\(t0 \+ 900\)\)' "$b" "the wait for the stack is bounded"
+  assert_not_match 'bootout|bootstrap' "$b" "and boots nothing out or in"
+  unset NICE_DNS_ALLOW_RUNTIME_MOVE
+}
+
+# bridges-toggle plan, OD-8 (BL-052): when plain ssh cannot see the mac's
+# runtime but the gui session can, every container call goes through
+# `launchctl asuser`, and so does the installer; the runtime is never moved.
+t_mac_gui_runtime_is_reached_through_the_gui_session() {
+  local b all
+  tg_setup
+  tg_remote_tools Darwin
+  mkdir -p "$CASE_DIR/home"
+  HOME="$CASE_DIR/home"; export HOME
+  # Plain container calls fail unless they run inside the fake gui session.
+  cat >"$CASE_DIR/rbin/container" <<'FAKE'
+#!/bin/sh
+printf 'container %s gui=%s\n' "$*" "${ND_FAKE_GUI:-no}" >>"$FAKE_LOG"
+[ "${ND_FAKE_GUI:-}" = 1 ] || { echo "apiserver is not running and not registered with launchd" >&2; exit 1; }
+FAKE
+  cat >"$CASE_DIR/rbin/launchctl" <<'FAKE'
+#!/bin/sh
+printf 'launchctl %s\n' "$*" >>"$FAKE_LOG"
+[ "$1" = asuser ] || exit 0
+shift 2
+ND_FAKE_GUI=1 exec "$@"
+FAKE
+  cat >"$CASE_DIR/rbin/sudo" <<'FAKE'
+#!/bin/sh
+printf 'sudo %s\n' "$*" >>"$FAKE_LOG"
+[ "$1" = -n ] && shift
+[ "$1" = -u ] && shift 2
+exec "$@"
+FAKE
+  chmod 755 "$CASE_DIR"/rbin/*
+  tg_targets 'mac1	macos	mac1-ssh	SHA256:AAAAtestfingerprintAAAAAAAAAAAAAAAAAAAAAAAA	disposable	2026-09-22'
+  tg snapshot mac1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "mac snapshot: $TG_OUT"
+  assert_match '^container list --all gui=1$' "$(cat "$FAKE_LOG")" "the container list ran inside the gui session"
+  assert_not_match '^container list .*gui=no$' "$(cat "$FAKE_LOG")" "and never outside it"
+  assert_match '^sudo -n launchctl asuser [0-9]+ sudo -n -u ' "$(cat "$FAKE_LOG")" "through sudo launchctl asuser"
+  assert_not_match 'launchctl (bootout|bootstrap|kickstart)|container system (start|stop)' "$(cat "$FAKE_LOG")" "the runtime is never moved"
+  b="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG" | sed -n '/^  install-cell|uninstall-cell)/,/^    exit \$rc ;;$/p')"
+  assert_match 'gui_run bash "\./\$inst" "\$NICE_DNS_PROXY" main' "$b" "the installer runs in the gui session when ssh cannot see the runtime"
+  assert_match 'gui_run bash "\./\$inst" uninstall' "$b" "and so does the uninstaller"
+  all="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG")"
+  assert_match 'gui_run\(\) \{' "$all" "gui_run is defined for every platform"
+  assert_match 'if \[ "\$\{ND_GUI:-no\}" = yes \]; then' "$all" "and is a no-op unless ND_GUI is yes"
+  assert_match 'CONTAINER_BIN="\$g" && export CONTAINER_BIN' "$all" "the health tool's container calls use the shim too"
+  assert_match 'mv -f "\$g\.\$\$" "\$g"' "$all" "the shim is written by rename"
+  assert_not_match '(^|[;&|( ])container ' "$(printf '%s\n' "$b" | grep -v '^[[:space:]]*#')" "its failure diagnostics use ctl, not a bare container"
+}
+
+t_supervisor_lines_return_only_spawn_lines() {
+  tg_setup
+  tg_remote_tools Linux
+  cat >"$CASE_DIR/rbin/podman" <<'FAKE'
+#!/bin/sh
+printf 'podman %s\n' "$*" >>"$FAKE_LOG"
+case "$1" in
+  --version) echo 'podman version 5.0.0' ;;
+  ps) echo tor-socat ;;
+  inspect) printf 'tor-socat\trunning\t10.88.0.2\n' ;;
+  logs)
+    echo 'tor-supervisor: selecting bridges via bridge-eval (pool=4, want=3, mode=quality)...'
+    echo 'Bridge obfs4 192.0.2.7:443 0123456789ABCDEF0123456789ABCDEF01234567 cert=QUJDREVGR0hJSktMTU5PUFFSU1RVVldY iat-mode=0'
+    echo 'tor-supervisor: spawned tor pid=12 generation=1 with 3 bridge(s)'
+    echo 'tor-supervisor: bridges off: BRIDGE1..16 ignored' >&2
+    echo '2026-11-07T10:00:00Z tor-supervisor: spawned tor pid=40 generation=2 direct (no bridges) BRIDGE1=obfs4 192.0.2.8:443 cert=c2VjcmV0c2VjcmV0c2VjcmV0'
+    ;;
+esac
+FAKE
+  chmod 755 "$CASE_DIR/rbin/podman"
+  tg proxy-supervisor-lines lin1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "proxy-supervisor-lines needs no snapshot (read-only): $TG_OUT"
+  assert_match '^machine_id	' "$TG_OUT" "it prints the identity first"
+  assert_eq "supervisor_line	tor-socat	tor-supervisor: spawned tor pid=12 generation=1 with 3 bridge(s)
+supervisor_line	tor-socat	tor-supervisor: spawned tor pid=40 generation=2 direct (no bridges)" \
+    "$(printf '%s\n' "$TG_OUT" | grep '^supervisor_line')" "only the spawn lines, cut after their launch words"
+  assert_not_match 'cert=|obfs4|BRIDGE|[0-9A-F]{40}|selecting|ignored' "$TG_OUT" "no other log line and no bridge material"
+  assert_match '^podman logs tor-socat$' "$(cat "$FAKE_LOG")" "read from the container's own log"
+  assert_not_match '^podman (exec|cp|stop|start|restart|kill|rm)' "$(cat "$FAKE_LOG")" "and nothing else is done to it"
 }

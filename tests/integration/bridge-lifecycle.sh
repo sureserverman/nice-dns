@@ -266,7 +266,7 @@ t_boot_selection_is_skipped_when_a_usable_set_exists() {
   # The rendered ExecCondition of the Linux boot unit: \$\$ in the installer
   # heredoc is $$ in the unit, which systemd passes to sh as $.
   cond="$(grep '^ExecCondition=' "$NICE_DNS_ROOT/deb/persistent-podman.sh" | sed -e 's/^ExecCondition=\/usr\/bin\/sh -c //' -e 's/\\\$\\\$/$/g' -e "s/^'//" -e "s/'\$//")"
-  assert_match '^n=\$\(grep' "$cond" "the condition renders"
+  assert_match '^! grep -qx "TOR_BRIDGES=off" %h/\.config/nice-dns/bridges-mode\.env 2>/dev/null \|\| exit 2; n=\$\(grep' "$cond" "the condition renders"
   h="$CASE_DIR/home-cond"; mkdir -p "$h/.config/nice-dns"
   sh -c "$(printf '%s' "$cond" | sed "s#%h#$h#g")"; rc=$?
   assert_rc 0 "$rc" "no bridges.env: the boot selection runs"
@@ -547,6 +547,214 @@ t_a_crash_looping_proxy_is_not_restarted_to_adopt_a_set() {
       assert_eq "" "$(bl_restarts)" "$plat: no restart"
       assert_file "$ND_STATE_DIR/bridges.pending" "$plat: the set waits for the next start"
       assert_match 'bridges	held' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: the journal says why"
+    ) || exit 1
+  done
+}
+
+# Sub-plan 4 Task 1.2 (WF-DNS-004 step 1): with the mode file at
+# TOR_BRIDGES=off nothing is evaluated or applied; the refresh journals why
+# and bridges.env (the pool kept for `on`) stays byte for byte.
+t_bridges_off_refresh_is_skipped_and_changes_nothing() {
+  local plat out rc before
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      bl_set "$BL_LIVE" 5; bl_set "$CASE_DIR/cand" 7 9
+      printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+      printf 'TOR_BRIDGES=off\n' >"$ND_BRIDGE_CONFIG_DIR/bridges-mode.env"
+      before="$(od -c "$BL_LIVE")"
+      out="$(nd_bridges_refresh haproxy)"; rc=$?
+      assert_rc 3 "$rc" "$plat: an off refresh is a skip: $out"
+      assert_eq skipped "$(bl_get result "$out")" "$plat: the result says skipped"
+      assert_eq "$before" "$(od -c "$BL_LIVE")" "$plat: bridges.env is byte-identical"
+      assert_no_path "$BL_LIVE.prev" "$plat: nothing replaced"
+      assert_eq "" "$(grep ' run --rm ' "$FAKE_LOG" 2>/dev/null)" "$plat: no bridge evaluation runs"
+      assert_eq "" "$(bl_restarts)" "$plat: nothing restarted"
+      assert_match 'bridges	skipped	bridges off' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: the journal says bridges off"
+      # Back on: the same refresh evaluates and applies again.
+      printf 'TOR_BRIDGES=on\n' >"$ND_BRIDGE_CONFIG_DIR/bridges-mode.env"
+      out="$(nd_bridges_refresh haproxy)"
+      assert_eq 7 "$(grep -cE '^BRIDGE[0-9]+=obfs4 192\.0\.9\.' "$BL_LIVE")" "$plat: with bridges on the evaluated set is applied: $out"
+    ) || exit 1
+  done
+}
+
+t_bridges_off_outage_refresh_is_skipped() {
+  local plat tree tok now before
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      tree="$CASE_DIR/tree-off-$plat"; mkdir -p "$tree"
+      cp -R "$NICE_DNS_ROOT/health" "$NICE_DNS_ROOT/lib" "$NICE_DNS_ROOT/routes" "$tree/"; chmod -R go-w "$tree"
+      printf 'nameserver 127.0.0.1\n' >"$CASE_DIR/resolv-$plat.conf"; export ND_RESOLV_CONF="$CASE_DIR/resolv-$plat.conf"
+      bl_set "$BL_LIVE" 5; bl_set "$CASE_DIR/cand" 7 9
+      printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+      printf 'TOR_BRIDGES=off\n' >"$ND_BRIDGE_CONFIG_DIR/bridges-mode.env"
+      for p in 18531 18532 18533 853; do echo servfail >"$FAKE/probe/$p"; done
+      now="$(date +%s)"
+      printf 'schema\tnice-dns-controller-state/1\nboot_id\tboot-a\nupdated\t%s\nstarted\t%s\nroute\tcloudflare-exit\noutage_since\t%s\noutage_restarts\t0\nlast_action\t-\nlast_action_at\t-\nrecovery_at\t%s\n' \
+        "$((now - 60))" "$((now - 7200))" "$((now - 3600))" "$((now - 60))" >"$CASE_DIR/seed"
+      tok="$(nd_state_lock)" && nd_state_commit "$tok" 0 "$CASE_DIR/seed" >/dev/null && nd_state_unlock "$tok"
+      before="$(od -c "$BL_LIVE")"
+      bash "$tree/health/nice-dns-health" tick >"$CASE_DIR/t1" 2>&1
+      assert_eq 0 "$(grep -c ' run --rm ' "$FAKE_LOG")" "$plat: an outage with bridges off evaluates nothing: $(cat "$CASE_DIR/t1")"
+      assert_eq "$before" "$(od -c "$BL_LIVE")" "$plat: bridges.env is byte-identical"
+      assert_match 'bridges	skipped	bridges off' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: the journal says bridges off"
+      # Rate-limited like an evaluated refresh: the next tick journals no second skip.
+      bash "$tree/health/nice-dns-health" tick >"$CASE_DIR/t2" 2>&1
+      assert_eq 1 "$(grep -c 'bridges	skipped	bridges off' "$ND_STATE_DIR/recovery.tsv")" "$plat: one skip row an hour, not one a minute"
+    ) || exit 1
+  done
+}
+
+t_boot_selection_is_skipped_when_bridges_are_off() {
+  local cond h rc
+  cond="$(grep '^ExecCondition=' "$NICE_DNS_ROOT/deb/persistent-podman.sh" | sed -e 's/^ExecCondition=\/usr\/bin\/sh -c //' -e 's/\\\$\\\$/$/g' -e "s/^'//" -e "s/'\$//")"
+  h="$CASE_DIR/home-cond-off"; mkdir -p "$h/.config/nice-dns"
+  printf 'TOR_BRIDGES=off\n' >"$h/.config/nice-dns/bridges-mode.env"
+  sh -c "$(printf '%s' "$cond" | sed "s#%h#$h#g")"; rc=$?
+  assert_rc 2 "$rc" "bridges off and no bridges.env: the boot selection is skipped"
+  printf 'TOR_BRIDGES=on\n' >"$h/.config/nice-dns/bridges-mode.env"
+  sh -c "$(printf '%s' "$cond" | sed "s#%h#$h#g")"; rc=$?
+  assert_rc 0 "$rc" "bridges on and no bridges.env: the boot selection runs"
+}
+
+# Sub-plan 4 Task 1.3: the macOS agent (mac/start-container.sh) reads the
+# bridges mode, passes it into the proxy, and counts it in the bridge
+# fingerprint (Apple's runtime bakes -e at `container run`, so a mode change
+# must recreate the proxy); with bridges off it never fetches a set. Run from
+# the script's own functions with stubs, as recovery-actions does.
+bl_agent() {
+  local sc="$NICE_DNS_ROOT/mac/start-container.sh"
+  {
+    printf 'set -u\n'
+    grep -E '^(TOR_BRIDGES|TOR_BRIDGES_FILE|BRIDGES_FILE|BRIDGE_MAX_SLOTS)=' "$sc"
+    printf 'BRIDGE_ARGS=(); BRIDGE_COUNT=0\n'
+    sed -n '/^load_tor_bridges() {/,/^}/p; /^load_bridges() {/,/^}/p; /^bridge_fingerprint() {/,/^}/p; /^bridges_rotate_needed() {/,/^}/p' "$sc"
+    printf 'TOR_CONTAINER=tor-socat TOR_STATE_DIR=/state TOR_IMAGE=docker.io/sureserver/tor-socat:latest\n'
+    printf 'ensure_container() { printf "container run %%s\\n" "$*"; }\n'
+    printf 'tor_launch() {\n'
+    awk '/^  ensure_container "\$TOR_CONTAINER"/ { f = 1 } f { print } f && !/\\$/ { exit }' "$sc"
+    printf '}\n'
+  } >"$CASE_DIR/agent.sh"
+}
+bl_agent_run() {
+  # $1: what to print after loading (run|fp|rotate)
+  env -i HOME="$CASE_DIR/ahome" PATH="$PATH" XDG_CONFIG_HOME="$CASE_DIR/ahome/.config" BRIDGE_SENTINEL="$CASE_DIR/sentinel" WHAT="$1" bash -c '
+    log() { printf "log: %s\n" "$*"; }
+    shasum() { sha256sum; }
+    . "'"$CASE_DIR"'/agent.sh"
+    load_tor_bridges
+    case "$WHAT" in
+      run) load_bridges; tor_launch ;;
+      fp) load_bridges; bridge_fingerprint ;;
+      old-fp) load_bridges; printf "%s\n" ${BRIDGE_ARGS[@]+"${BRIDGE_ARGS[@]}"} | sha256sum | cut -d" " -f1 ;;
+      rotate) if bridges_rotate_needed; then echo rotate=yes; else echo rotate=no; fi ;;
+    esac' 2>&1
+}
+
+t_macos_agent_honours_the_bridges_mode() {
+  local cfg out fp_on fp_off fp_none
+  bl_agent
+  assert_match 'load_tor_bridges' "$(cat "$CASE_DIR/agent.sh")" "the mode is read by a function of the agent"
+  # The main flow, not only this harness, reads the mode before it decides on
+  # a fetch (review Suggestion: deleting that call left every case green).
+  assert_eq 1 "$(awk '/^load_tor_bridges$/ { l = NR } /^if bridges_rotate_needed; then$/ { r = NR } END { print (l && r && l < r) ? 1 : 0 }' "$NICE_DNS_ROOT/mac/start-container.sh")" "the agent reads the mode before bridges_rotate_needed"
+  assert_match '-e "TOR_BRIDGES=' "$(cat "$CASE_DIR/agent.sh")" "the proxy launch carries the mode"
+  cfg="$CASE_DIR/ahome/.config/nice-dns"; mkdir -p "$cfg"
+  bl_set "$cfg/bridges.env" 5
+  fp_none="$(bl_agent_run fp)"
+  assert_eq "$(bl_agent_run old-fp)" "$fp_none" "no mode file: the fingerprint is the set's alone (an upgrade recreates nothing)"
+  printf 'TOR_BRIDGES=on\n' >"$cfg/bridges-mode.env"
+  fp_on="$(bl_agent_run fp)"
+  assert_eq "$fp_none" "$fp_on" "on is the same as no mode file"
+  out="$(bl_agent_run run)"
+  assert_match '^container run .* -e TOR_BRIDGES=on ' "$out" "on: the proxy is started with the mode"
+  printf 'TOR_BRIDGES=off\n' >"$cfg/bridges-mode.env"
+  out="$(bl_agent_run run)"
+  assert_match '^container run .* -e TOR_BRIDGES=off ' "$out" "off: the proxy is started direct"
+  assert_match ' -e BRIDGE1=obfs4 ' "$out" "off: the bridge lines still pass (the image ignores them)"
+  fp_off="$(bl_agent_run fp)"
+  assert_ne "$fp_on" "$fp_off" "a mode change alone changes the fingerprint"
+  assert_eq "$fp_off" "$(bl_agent_run fp)" "an unchanged mode keeps it"
+  # No usable set: on fetches one, off never does.
+  rm -f "$cfg/bridges.env"
+  assert_match 'rotate=no' "$(bl_agent_run rotate)" "off and no set: nothing is fetched"
+  assert_match 'bridges off' "$(bl_agent_run rotate)" "and the log says why"
+  printf 'TOR_BRIDGES=on\n' >"$cfg/bridges-mode.env"
+  assert_match 'rotate=yes' "$(bl_agent_run rotate)" "on and no set: a set is fetched"
+}
+
+# The macOS bridge evaluation takes a dnsnet address and the stack lock; with
+# bridges off the adapter itself refuses (exit 3, nothing evaluated), so no
+# caller can spend that on a set it will not use.
+t_macos_bridge_eval_does_nothing_when_bridges_are_off() {
+  (
+    bl_env macos
+    bl_set "$BL_LIVE" 5; bl_set "$CASE_DIR/cand" 7 9
+    printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+    printf 'TOR_BRIDGES=off\n' >"$ND_BRIDGE_CONFIG_DIR/bridges-mode.env"
+    : >"$FAKE_LOG"
+    nd_platform_bridge_eval haproxy .cand 30 "$TMPDIR"
+    assert_rc 3 $? "off: the evaluation is refused as not runnable"
+    assert_eq "" "$(grep ' run --rm ' "$FAKE_LOG")" "off: no evaluation container runs"
+    assert_no_path "$ND_BRIDGE_CONFIG_DIR/.cand" "off: no candidate is written"
+  ) || exit 1
+}
+
+# Stage 1 gate (demo B1, class sweep): a bridges.env that is a directory is not
+# written into; the refresh says it was not applied.
+t_a_bridge_pool_path_that_is_a_directory_is_not_applied() {
+  local plat out
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      mkdir -p "$BL_LIVE"
+      bl_set "$CASE_DIR/cand" 7 9
+      out="$(nd_bridges_apply "$CASE_DIR/cand" none)"
+      assert_eq not-applied "$(bl_get result "$out")" "$plat: a directory in place of bridges.env is not applied: $out"
+      assert_eq "" "$(find "$BL_LIVE" -mindepth 1)" "$plat: nothing is written inside it"
+      assert_match 'bridges	not-applied	.*bridges\.env is not a file' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: the journal says why"
+    ) || exit 1
+  done
+}
+
+# Stage 1 gate (review Important 2): the daily refresh's skip with bridges off
+# is a success for its scheduler, or its unit reads failed every day.
+t_the_daily_refresh_with_bridges_off_exits_0() {
+  local plat tree rc
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      tree="$CASE_DIR/tree-daily-$plat"; mkdir -p "$tree"
+      cp -R "$NICE_DNS_ROOT/health" "$NICE_DNS_ROOT/lib" "$NICE_DNS_ROOT/routes" "$tree/"; chmod -R go-w "$tree"
+      bl_set "$BL_LIVE" 5
+      printf 'TOR_BRIDGES=off\n' >"$ND_BRIDGE_CONFIG_DIR/bridges-mode.env"
+      bash "$tree/health/nice-dns-health" bridges-refresh >"$CASE_DIR/out" 2>&1; rc=$?
+      assert_rc 0 "$rc" "$plat: a skip with bridges off exits 0: $(cat "$CASE_DIR/out")"
+      assert_match 'result	skipped' "$(cat "$CASE_DIR/out")" "$plat: and says skipped"
+      assert_match 'bridges	skipped	bridges off' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: journalled"
+      assert_no_path "$ND_STATE_DIR/bridges.last" "$plat: a skip is not a refresh (status keeps its last_refresh)"
+    ) || exit 1
+  done
+}
+
+# Close-out evaluator F3: the daily or forced refresh stamps bridges.last when it
+# evaluated a set, so `nice-dns status` shows when the last refresh ran.
+t_an_evaluated_refresh_stamps_the_last_refresh() {
+  local plat tree rc t0 v
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      tree="$CASE_DIR/tree-stamp-$plat"; mkdir -p "$tree"
+      cp -R "$NICE_DNS_ROOT/health" "$NICE_DNS_ROOT/lib" "$NICE_DNS_ROOT/routes" "$tree/"; chmod -R go-w "$tree"
+      bl_set "$BL_LIVE" 5
+      t0="$(date +%s)"
+      bash "$tree/health/nice-dns-health" bridges-refresh >"$CASE_DIR/out-$plat" 2>&1; rc=$?
+      case "$rc" in 0|1) ;; *) fail "$plat: the refresh evaluated (rc 0 or 1), got $rc: $(cat "$CASE_DIR/out-$plat")" ;; esac
+      assert_file "$ND_STATE_DIR/bridges.last" "$plat: bridges.last is written"
+      v="$(cat "$ND_STATE_DIR/bridges.last")"
+      [ "$v" -ge "$t0" ] 2>/dev/null || fail "$plat: bridges.last holds this run's epoch, got [$v]"
     ) || exit 1
   done
 }

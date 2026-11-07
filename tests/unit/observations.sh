@@ -1228,3 +1228,21 @@ t_a_paused_container_is_listed_not_missing() {
   ob_expect runtime healthy '^running: pi-hole unbound tor-haproxy$' "linux: a paused Unbound is listed, not missing"
   ob_expect container:unbound unhealthy '^paused restarts 0$' "linux: its own record says paused"
 }
+
+# Close-out evaluator F1: an ssh command has no XDG_RUNTIME_DIR, so systemctl
+# --user found no bus. The Linux adapter and the installer library default it to
+# /run/user/<uid> when that exists, and never override a value already set.
+t_an_ssh_session_gets_the_user_runtime_dir() {
+  local f out u
+  u="$(id -u)"
+  for f in lib/platform/linux.sh lib/install.sh; do
+    out="$(env -u XDG_RUNTIME_DIR bash -c '. "$1" >/dev/null 2>&1; printf "%s" "${XDG_RUNTIME_DIR:-unset}"' _ "$NICE_DNS_ROOT/$f")"
+    if [ -d "/run/user/$u" ]; then
+      assert_eq "/run/user/$u" "$out" "$f: an unset XDG_RUNTIME_DIR becomes /run/user/$u"
+    else
+      assert_eq unset "$out" "$f: no /run/user/$u here, so it stays unset"
+    fi
+    out="$(XDG_RUNTIME_DIR=/tmp/nd-xdg-set bash -c '. "$1" >/dev/null 2>&1; printf "%s" "$XDG_RUNTIME_DIR"' _ "$NICE_DNS_ROOT/$f")"
+    assert_eq /tmp/nd-xdg-set "$out" "$f: a value already set is kept"
+  done
+}

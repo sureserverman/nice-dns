@@ -1060,6 +1060,32 @@ nd_recovery_tick() {
 #     generation, so a later Tor restart during a sustained failure can adopt
 #     the set through the service restart (nd_recovery_restart_tor); a proxy
 #     that restarted since has adopted it already.
+#   * with bridges off (TOR_BRIDGES=off in bridges-mode.env, nd_bridges_mode)
+#     nothing is evaluated or applied; the pool is kept for `on`.
+
+# nd_bridges_mode: on or off, from bridges-mode.env in the bridge directory
+# (read as data, never sourced, DEC-001). Absent or any other value is on.
+nd_bridges_mode() {
+  case "$(awk -F '=' '$1 == "TOR_BRIDGES" { print $2; exit }' "$(nd_platform_bridge_dir)/bridges-mode.env" 2>/dev/null)" in
+    off) printf 'off\n' ;;
+    *) printf 'on\n' ;;
+  esac
+}
+
+# nd_bridges_mode_change <on|off> <request_id>: the switch of the bridges mode
+# as a recovery action (WF-DNS-004): journal the change, then restart the
+# proxy through the service action (nd_recovery_restart_service: Linux the
+# proxy unit, macOS the stack's agent), acknowledged by a new container start;
+# the controller's next pass observes readiness (DEC-006). The caller has
+# written bridges-mode.env and holds the state lock (ND_RECOVERY_LOCK_TOKEN):
+# unlike the bridge-adoption restart (BL-030), this one never runs without it.
+nd_bridges_mode_change() {
+  case "${1:-}" in on|off) ;; *) _nd_rec_out refused bridges "${2:-}" - - "mode must be on or off"; return 2 ;; esac
+  if ! _nd_rec_id_ok "${2:-}"; then _nd_rec_out refused bridges "${2:-}" - - "bad request id"; return 2; fi
+  _nd_rec_lock_ok "$2" bridges || return 5
+  nd_recovery_journal "$2" bridges mode-change "$1"
+  nd_recovery_restart_service "$2"
+}
 
 _ND_BR_LINE='^BRIDGE[0-9]+=obfs4 [0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]{1,5} [0-9A-F]{40} cert=[A-Za-z0-9+/=]+ iat-mode=[0-2]$'
 
@@ -1099,6 +1125,12 @@ nd_bridges_apply() {
     nd_state_unlock "$tok"
     nd_recovery_journal "br-$(date +%s)" bridges unchanged "the evaluated set equals the running one ($cur)"
     printf 'result\tunchanged\n'; return 0
+  fi
+  # A directory there would take the renamed set inside it, unapplied.
+  if [ -d "$live" ] || { [ -e "$live" ] && [ ! -f "$live" ]; }; then
+    nd_state_unlock "$tok"
+    nd_recovery_journal "br-$(date +%s)" bridges not-applied "bridges.env is not a file ($live); the last good set stays"
+    printf 'result\tnot-applied\n'; return 1
   fi
   [ -f "$live" ] && cp -p "$live" "$live.prev"
   if ! { _nd_br_norm "$cand" | awk '{ printf "BRIDGE%d=%s\n", NR, $0 }' | (umask 077 && cat >"$live.new.$$") \
@@ -1231,6 +1263,10 @@ _nd_br_running_weak() {
 nd_bridges_refresh() {
   local v="${1:-}" d base cand rc t out weak="" listed="" dropped=0 n0 adopted=-
   case "$v" in haproxy|socat) ;; *) printf 'result\trefused\ndetail\tvariant must be haproxy or socat\n'; return 2 ;; esac
+  if [ "$(nd_bridges_mode)" = off ]; then
+    nd_recovery_journal "br-$(date +%s)" bridges skipped "bridges off"
+    printf 'result\tskipped\ndetail\tbridges off\n'; return 3
+  fi
   d="$(nd_platform_bridge_dir)"
   if ! _nd_br_mutex_take; then
     nd_recovery_journal "br-$(date +%s)" bridges skipped "another bridge refresh is running"

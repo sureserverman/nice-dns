@@ -26,6 +26,7 @@ nice-dns install [haproxy|socat] [--hardened] [--branch B]   # from a checkout
 nice-dns reinstall [haproxy|socat] [--hardened|--standard] [--branch B] [--local]
 nice-dns restart
 nice-dns status [--tsv]
+nice-dns bridges on|off|status
 nice-dns update [--check] [--force]
 nice-dns uninstall
 ```
@@ -35,6 +36,7 @@ nice-dns uninstall
 - **`nice-dns reinstall`** installs again with the recorded proxy, Pi-hole flavour and branch; options override them. It clones the branch first. If that fails because DNS is down, the running stack is untouched and `--local` uses the source kept at the last install.
 - **`nice-dns restart`** restarts the whole stack and waits for DNS to answer. It runs no DNS command itself; on macOS the stack's own start script re-pins DNS and bounces Mullvad, as it does whenever it rebuilds. Either way this costs a Tor bootstrap of a minute or more.
 - **`nice-dns status`** says what is installed, what the health controller last saw and did, the bridges, the admin page and the last update check. It only reads files, so it answers at once; `--tsv` prints the same as rows for scripts (docs/cli-contract.md). It exits 1 when nothing is installed and 2 when something it reads cannot be read.
+- **`nice-dns bridges off`** stops using obfs4 bridges: Tor connects straight to its guards. Use it where the bridges are slow. Your ISP then sees plain Tor connections instead of obfs4 traffic: it can tell you use Tor, though still not what you look up. **`nice-dns bridges on`** goes back to the bridges. Either one restarts the proxy (on macOS, the whole stack) and waits for DNS, which costs a Tor bootstrap; asking for the mode already set restarts nothing. The bridge pool is kept while bridges are off, so `on` uses the last good set again. `nice-dns bridges status` prints the mode, the bridge count and the last refresh. The mode lives in `~/.config/nice-dns/bridges-mode.env`.
 - **`nice-dns update`** asks GitHub whether your branch's commit differs from the installed one (usually: is newer). If it does, it installs it like `nice-dns reinstall`, with the recorded choices; `--check` only asks, and `--force` reinstalls even when nothing differs. If it cannot tell (offline, DNS down, or an install from a modified checkout), it installs nothing and says why. An install from a local commit GitHub does not have counts as different, so `update` would install the branch's commit over it.
 - **`nice-dns uninstall`** removes the stack, gives host DNS back, then removes the command.
 
@@ -145,7 +147,8 @@ the second argument is the git branch to install from
 
 A small controller (`nice-dns-health`) checks the chain every minute and
 refreshes the Tor bridges once a day, leaving out bridges that carry
-queries badly. See [health/README.md](health/README.md).
+queries badly (with `nice-dns bridges off`, the refresh is skipped). See
+[health/README.md](health/README.md).
 
 ## Uninstall
 

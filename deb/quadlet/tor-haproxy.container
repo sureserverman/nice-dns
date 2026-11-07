@@ -26,6 +26,11 @@ Volume=nice-dns-tor-haproxy:/app/data
 # becomes healthy. Restoring this hardening would require an image-side
 # change (wrap haproxy in `capsh --addamb=cap_net_bind_service`).
 EnvironmentFile=%h/.config/nice-dns/bridges.env
+# The bridges mode (nice-dns bridges on|off): systemd reads the optional
+# bridges-mode.env ([Service] below) and this passes TOR_BRIDGES in; unset
+# stays unset and the image defaults to on. Not an EnvironmentFile= here:
+# that is podman's --env-file, which takes no `-` and needs the file.
+PodmanArgs=--env TOR_BRIDGES
 # Notify= deliberately NOT set. The Stage 2 design (Notify=healthy, so
 # systemd waits for the HealthCmd to pass) was reverted because it
 # gates the unit's Active=active transition on real DoT resolution
@@ -71,6 +76,7 @@ HealthStartPeriod=300s
 HealthOnFailure=none
 
 [Service]
+EnvironmentFile=-%h/.config/nice-dns/bridges-mode.env
 Restart=on-failure
 # Back off when the container keeps exiting (systemd 254: RestartSteps=,
 # RestartMaxDelaySec=; they need a non-zero RestartSec=). On 2026-11-02 VM

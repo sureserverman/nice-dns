@@ -37,6 +37,12 @@ Usage: nice-dns <command> [options]
       last update check. Reads files only. --tsv prints the
       nice-dns-status/1 rows (docs/cli-contract.md). Exit 0, 1 when
       nothing is installed, 2 when a file it reads cannot be read.
+  bridges on|off|status
+      on/off writes the bridges mode (~/.config/nice-dns/bridges-mode.env)
+      and, when it changed, restarts the proxy and waits for DNS (macOS:
+      the whole stack). With bridges off, your ISP
+      sees plain Tor guard connections instead of obfs4 traffic. status
+      prints the mode, the number of bridges and the last refresh.
   uninstall
       Remove the stack, then this command.
 EOF
@@ -60,7 +66,7 @@ ND_CLI_CMD="$1"
 shift
 
 case "$ND_CLI_CMD" in
-  install|reinstall|restart|uninstall|status|update) ;;
+  install|reinstall|restart|uninstall|status|update|bridges) ;;
   -h|--help|help) usage; exit 0 ;;
   *) bad_usage "unknown command '$ND_CLI_CMD'" ;;
 esac
@@ -291,13 +297,9 @@ restart_take_lock() {
   done
 }
 
-cmd_restart() {
-  [ $# -eq 0 ] || bad_usage "unknown option '$1' for restart"
-  local rc=0
-  if ! recorded_manifest >/dev/null || [ ! -f "$ND_CLI_ROOT/lib/install.sh" ]; then
-    err "$ND_CLI_NOT_INSTALLED"
-    return 1
-  fi
+# restart_load_libs: the installer's and the controller's libraries, as a
+# restart (the stack's or the proxy's) uses them.
+restart_load_libs() {
   ND_PLATFORM="$ND_CLI_PLATFORM"
   export ND_PLATFORM
   # shellcheck disable=SC1091  # the source root is found at run time
@@ -310,6 +312,16 @@ cmd_restart() {
   ND_INST_SRC="$ND_CLI_ROOT"
   # shellcheck disable=SC2034
   ND_INST_TREE="$ND_CLI_ROOT"
+}
+
+cmd_restart() {
+  [ $# -eq 0 ] || bad_usage "unknown option '$1' for restart"
+  local rc=0
+  if ! recorded_manifest >/dev/null || [ ! -f "$ND_CLI_ROOT/lib/install.sh" ]; then
+    err "$ND_CLI_NOT_INSTALLED"
+    return 1
+  fi
+  restart_load_libs || return 1
   ND_CLI_TMP="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-restart.XXXXXXXX")" || return 1
   trap restart_cleanup EXIT
   trap 'exit 129' HUP
@@ -561,6 +573,118 @@ cmd_status() {
   return "$rc"
 }
 
+# ─── bridges ─────────────────────────────────────────────────────────────────
+
+# bridges_write <dir> <on|off>: bridges-mode.env, one line, 0644, renamed over
+# from a temporary file in the same directory. bridges.env (the pool) is never
+# touched. The directory is the installer's; a missing one is not created.
+bridges_write() {
+  local f="$1/bridges-mode.env" t
+  # A directory there would take the renamed file inside it, the mode unchanged.
+  if [ -d "$f" ]; then
+    err "could not write $f: it is a directory; the bridges mode is unchanged"
+    return 1
+  fi
+  if t="$(mktemp "$1/.bridges-mode.XXXXXX" 2>/dev/null)"; then
+    if printf 'TOR_BRIDGES=%s\n' "$2" >"$t" && chmod 644 "$t" && mv -f "$t" "$f"; then
+      return 0
+    fi
+    rm -f "$t"
+  fi
+  err "could not write $f; the bridges mode is unchanged"
+  return 1
+}
+
+# bridges_launcher: the installed file that starts the proxy (Linux: its
+# quadlet; macOS: the agent). One from before the switch never passes
+# TOR_BRIDGES, so the proxy would ignore the mode.
+bridges_launcher() {
+  if [ "$ND_CLI_PLATFORM" = macos ]; then
+    printf '%s\n' "${ND_INST_ROOT:-}/usr/local/sbin/start-container.sh"
+  else
+    printf '%s/tor-%s.container\n' "$(nd_platform_quadlet_dir)" "$(recorded_field "$(recorded_manifest)" variant)"
+  fi
+}
+
+# cmd_bridges on|off|status: the bridges mode (TOR_BRIDGES=on|off; absent
+# means on). on/off write it; a changed mode then restarts the proxy as
+# `restart` does the stack: the controller's schedules held, its state lock
+# taken, the restart journalled and acknowledged (lib/recovery.sh
+# nd_bridges_mode_change), then a wait for DNS; released on every exit. An
+# unchanged mode restarts nothing. status prints the `bridges` rows of
+# `status --tsv` without the group column. The mode file is never sourced
+# (DEC-001). Exit: 0, 1 not installed, busy, the file cannot be written or
+# the restart or DNS failed, 2 usage, or (status) a file it reads cannot be read.
+cmd_bridges() {
+  local sub="${1:-}" d rows rc=0
+  local lib="$ND_CLI_ROOT/lib/status.sh" plat="$ND_CLI_ROOT/lib/platform/$ND_CLI_PLATFORM.sh"
+  [ $# -eq 1 ] || bad_usage "bridges takes one of on, off, status"
+  case "$sub" in on|off|status) ;; *) bad_usage "unknown option '$sub' for bridges" ;; esac
+  if ! recorded_manifest >/dev/null || [ ! -f "$lib" ] || [ ! -f "$plat" ] \
+     || { [ "$sub" != status ] && { [ ! -f "$ND_CLI_ROOT/lib/install.sh" ] || [ ! -f "$ND_CLI_ROOT/lib/recovery.sh" ]; }; }; then
+    err "$ND_CLI_NOT_INSTALLED"
+    return 1
+  fi
+  # shellcheck disable=SC1090  # the source root is found at run time
+  . "$plat" || return 1
+  # shellcheck disable=SC1090
+  . "$lib" || return 1
+  d="$(nd_platform_bridge_dir)"
+  if [ "$sub" = status ]; then
+    _nd_st_paths "$ND_CLI_PLATFORM"
+    rows="$(_nd_st_bridges "$d" "$ND_ST_STATE_DIR")" || rc=$?
+    printf '%s\n' "$rows" | cut -f 2-
+    return "$rc"
+  fi
+  restart_load_libs || return 1
+  if [ "$(nd_bridges_mode)" = "$sub" ]; then
+    bridges_write "$d" "$sub" || return 1
+    echo "Bridges are already $sub; nothing restarted."
+    return 0
+  fi
+  if ! grep -q 'TOR_BRIDGES' "$(bridges_launcher)" 2>/dev/null; then
+    # shellcheck disable=SC2016  # the backticks are text for the reader
+    err "the installed proxy launcher $(bridges_launcher) predates the bridges switch; the bridges mode is unchanged. Run \`nice-dns update\` first."
+    return 1
+  fi
+  ND_CLI_TMP="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-restart.XXXXXXXX")" || return 1
+  trap restart_cleanup EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  # shellcheck disable=SC2034  # read by the sourced lib/install.sh
+  ND_INST_HELD=""
+  ND_CLI_RELEASE=1
+  nd_install_hold_controller
+  if ! restart_take_lock; then
+    err "the controller is still busy; the bridges mode is unchanged. Try again in a few minutes."
+    return 1
+  fi
+  bridges_write "$d" "$sub" || return 1
+  if [ "$sub" = off ]; then
+    echo "Bridges are off. Your ISP will see plain Tor guard connections instead of"
+    echo "obfs4 traffic: it can tell you use Tor, though still not what you look up."
+  fi
+  echo "Restarting the proxy..."
+  ND_RECOVERY_LOCK_TOKEN="$ND_CLI_LOCK" nd_bridges_mode_change "$sub" "bridges-$sub-$(date +%s)" >"$ND_CLI_TMP/rec" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    err "bridges $sub is written, but the proxy restart failed (exit $rc: $(awk -F '\t' '$1 == "detail" { print $2; exit }' "$ND_CLI_TMP/rec")); it takes effect at the next proxy start."
+    # The mode is written, so `nice-dns bridges <mode>` again restarts nothing: say how to apply it now.
+    # shellcheck disable=SC2016  # the backticks are text for the reader
+    err 'Run `nice-dns restart` to apply it now, or check `nice-dns-health status`.'
+    return 1
+  fi
+  nd_state_unlock "$ND_CLI_LOCK" >/dev/null 2>&1
+  ND_CLI_LOCK=""
+  nd_platform_wait_restarted "${ND_CLI_REBUILD_S:-300}" || rc=$?
+  if [ "$rc" -ne 0 ] || ! nd_install_wait_ready 2>/dev/null; then
+    # shellcheck disable=SC2016  # the backticks are text for the reader
+    err 'the proxy restarted, but DNS is not answering yet. Check `nice-dns-health status`.'
+    return 1
+  fi
+  echo "Bridges are $sub; the proxy restarted and DNS is answering."
+}
+
 case "$ND_CLI_CMD" in
   install) cmd_install "$@" ;;
   uninstall) cmd_uninstall "$@" ;;
@@ -568,4 +692,5 @@ case "$ND_CLI_CMD" in
   restart) cmd_restart "$@" ;;
   status) cmd_status "$@" ;;
   update) cmd_update "$@" ;;
+  bridges) cmd_bridges "$@" ;;
 esac

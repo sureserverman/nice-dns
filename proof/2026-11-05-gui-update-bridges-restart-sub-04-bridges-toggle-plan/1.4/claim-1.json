@@ -1,0 +1,35 @@
+{
+ "baseline": {
+  "elapsed_s": 325.1,
+  "exit": 0,
+  "tail": "PASS  t_hung_runtime_is_bounded_and_cleaned\nPASS  t_image_restart_request_is_acknowledged_with_new_generation\nPASS  t_image_silence_is_not_acknowledged\nPASS  t_lost_lock_stops_every_action_before_it_changes_anything\nPASS  t_macos_agent_refetches_bridges_only_without_a_usable_set\nPASS  t_macos_restart_rebuilds_even_when_the_cache_answers\nPASS  t_macos_stopped_container_has_no_generation\nPASS  t_missing_container_is_started_by_name\nPASS  t_no_code_path_writes_the_unacknowledged_flag\nPASS  t_pihole_restart_is_refused_without_the_lock_and_in_shadow\nPASS  t_pihole_restart_journals_requested_acknowledged_ready\nPASS  t_pihole_restart_without_a_new_generation_is_not_acknowledged\nPASS  t_proxy_restart_goes_straight_to_the_service_restart\nPASS  t_readiness_is_per_request_and_corroborated_by_unbound\nPASS  t_request_write_is_never_an_acknowledgement\nPASS  t_route_switch_is_applied_without_touching_tor\nPASS  t_runtime_repair_acts_only_on_its_fault\nPASS  t_shadow_route_decision_writes_nothing_to_stderr\nPASS  t_stack_restart_brings_back_a_missing_proxy\nPASS  t_stack_restart_is_acknowledged_by_a_new_generation\nPASS  t_the_linux_adapter_lists_containers_paused_or_running\nPASS  t_the_pod_restart_repair_is_rate_limited\nPASS  t_tick_active_records_request_acknowledgement_then_readiness\nPASS  t_tick_readiness_times_out_as_not_ready\nPASS  t_tick_records_a_route_only_once_applied\nPASS  t_tick_records_a_route_that_already_runs\nPASS  t_tick_shadow_records_but_never_acts\nPASS  t_tick_skips_while_another_pass_holds_the_lock\nPASS  t_two_processes_racing_one_tick_wins\nPASS  t_unbound_probe_route_is_bounded\nPASS  t_unbound_restart_is_refused_without_the_lock_and_in_shadow\nPASS  t_unbound_restart_journals_requested_acknowledged_ready\nPASS  t_unbound_restart_without_a_new_generation_is_not_acknowledged\nPASS  t_unbound_without_probe_tool_is_ready_uncorroborated_on_both_platforms\nPASS  t_unreachable_proxy_gets_the_verified_service_restart\nPASS  t_unsupported_image_falls_back_once_to_a_verified_service_restart\nPASS  t_waits_are_bounded_in_wall_clock_seconds\ngroup integration/recovery-actions: collected=46 passed=46 failed=0\ncollected=46 passed=46 failed=0\nresult=pass run_id=20261107T094338Z-896e6145 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261107T094338Z-896e6145"
+ },
+ "break_patch": "--- a/nice-dns\n+++ b/nice-dns\n@@ -666,6 +666,7 @@\n     echo \"obfs4 traffic: it can tell you use Tor, though still not what you look up.\"\n   fi\n   echo \"Restarting the proxy...\"\n+  nd_state_unlock \"$ND_CLI_LOCK\" >/dev/null 2>&1; ND_CLI_LOCK=\"\"\n   ND_RECOVERY_LOCK_TOKEN=\"$ND_CLI_LOCK\" nd_bridges_mode_change \"$sub\" \"bridges-$sub-$(date +%s)\" >\"$ND_CLI_TMP/rec\" 2>&1 || rc=$?\n   if [ \"$rc\" -ne 0 ]; then\n     err \"bridges $sub is written, but the proxy restart failed (exit $rc: $(awk -F '\\t' '$1 == \"detail\" { print $2; exit }' \"$ND_CLI_TMP/rec\")); it takes effect at the next proxy start.\"\n",
+ "build": null,
+ "created": "2026-11-07T09:49:03+00:00",
+ "fingerprint": "f901a9b8330af65e1f6c10ae724f9127f5bf5e398726a18d0c15eea19fde1d0b",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "bash scripts: nothing is compiled",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-04-bridges-toggle-plan.md",
+ "red": {
+  "elapsed_s": 132.2,
+  "exit": 1,
+  "tail": "PASS  t_reinstall_uses_the_recorded_choices\nPASS  t_restart_failure_is_reported_and_releases\nPASS  t_restart_releases_on_a_signal\nPASS  t_restart_runs_once_between_hold_and_release\nPASS  t_restart_waits_for_a_running_pass_and_gives_up_cleanly\nPASS  t_restart_without_an_answer_says_so_and_releases\nPASS  t_root_is_refused_with_the_installers_message\nPASS  t_status_command_prints_rows_and_sections_with_its_exit_codes\nPASS  t_status_epochs_are_plain_numbers_and_a_future_pass_is_stale\nPASS  t_status_flags_a_stale_or_missing_pass_and_still_prints_it\nPASS  t_status_hint_survives_an_unreadable_state\nPASS  t_status_is_in_the_help\nPASS  t_status_never_reads_an_unreadable_file_as_absent\nPASS  t_status_not_installed_names_the_curl_line_and_exits_1\nPASS  t_status_route_absent_until_chosen_and_journal_fields_stay_aligned\nPASS  t_status_rows_cover_every_group_without_running_anything\nPASS  t_status_unreadable_state_exits_2\nPASS  t_status_values_carry_no_control_characters\nPASS  t_the_readiness_wait_keeps_to_its_stated_limit\nPASS  t_unknown_commands_and_options_are_usage_errors\nPASS  t_unsupported_platform_is_refused\nPASS  t_update_a_failed_install_names_reinstall_local\nPASS  t_update_cache_names_no_commit_for_an_unclean_record\nPASS  t_update_check_bounds_its_wait_under_a_minute\nPASS  t_update_check_compares_the_recorded_commit_with_the_branch\nPASS  t_update_check_of_another_branch_keeps_no_cache\nPASS  t_update_check_reads_only_its_own_branch_line\nPASS  t_update_check_takes_only_branch\nPASS  t_update_check_unknown_changes_nothing_but_the_cache\nPASS  t_update_check_with_nothing_installed\nPASS  t_update_check_without_a_controller_keeps_no_cache_and_creates_nothing\nPASS  t_update_current_installs_nothing_unless_forced\nPASS  t_update_from_a_checkout_still_installs_the_branch\nPASS  t_update_installed_but_not_current_is_exit_11\nPASS  t_update_installs_the_recorded_choices_when_available\nPASS  t_update_refuses_local_and_widens_nothing\nPASS  t_update_unknown_installs_nothing\ngroup integration/nice-dns-cli: collected=63 passed=62 failed=1\ncollected=63 passed=62 failed=1\nresult=fail run_id=20261107T094651Z-5eb19683 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261107T094651Z-5eb19683"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "1.4",
+ "test": "bash tests/run.sh integration nice-dns-cli && bash tests/run.sh integration recovery-actions",
+ "text": "with the fakes: the lock is held during the restart (red if the restart runs with the lock free), the journal rows appear, an unchanged mode journals nothing and restarts nothing, a signal releases the schedules",
+ "touched": [
+  "nice-dns"
+ ],
+ "touched_blobs": {
+  "nice-dns": "23dffb316d77a12498f69320af801cab7e9706d8"
+ },
+ "witness_blobs": {
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}

@@ -149,6 +149,12 @@ the proxy image's `bridge-eval` and writes the result to
   17 s in the live tests on Linux, no query leaves the machine meanwhile.
   At most one such restart per refresh.
 
+With `nice-dns bridges off` (`TOR_BRIDGES=off` in
+`~/.config/nice-dns/bridges-mode.env`), Tor runs without bridges, so every
+refresh is skipped: the journal gets `bridges skipped bridges off`, nothing
+is evaluated, `nice-dns-health bridges-refresh` exits 0, and `bridges.env`
+is kept for `nice-dns bridges on`.
+
 The journal (`recovery.tsv` in the state directory) records each refresh,
 the bridges left out (by a 12-character fingerprint prefix) and any restart.
 

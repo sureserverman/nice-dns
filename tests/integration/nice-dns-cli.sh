@@ -960,3 +960,324 @@ t_update_cache_names_no_commit_for_an_unclean_record() {
   cl_run "$CL_TREE/nice-dns" update --check
   assert_eq - "$(awk -F '\t' '$1 == "local_commit" { print $2 }' "$ST_SD/update-check.tsv")" "local_commit is - when the record names no commit"
 }
+
+# ─────────────── Bridges toggle plan, Task 1.1: nice-dns bridges ────────────
+
+# bt_mode_file: the mode file the toggle writes (absent means on).
+bt_mode_file() { printf '%s\n' "$CL_HOME/.config/nice-dns/bridges-mode.env"; }
+
+t_bridges_off_and_on_write_the_mode_line() {
+  local u f pool
+  for u in $(cl_platforms); do
+    st_world "$u"; bt_restart_fakes; f="$(bt_mode_file)"
+    pool="$(cat "$CL_HOME/.config/nice-dns/bridges.env")"
+    cl_run "$CL_TREE/nice-dns" bridges off
+    assert_rc 0 "$CL_RC" "$u: bridges off: $CL_ERR"
+    assert_file "$f" "$u: off writes the mode file"
+    assert_eq "TOR_BRIDGES=off" "$(cat "$f")" "$u: off writes exactly one line"
+    assert_eq 1 "$(wc -l <"$f" | tr -d ' ')" "$u: and only that line"
+    assert_eq 644 "$(stat -c %a "$f")" "$u: the mode file is 0644"
+    assert_match "ISP" "$CL_OUT" "$u: off says what the ISP sees"
+    assert_match "Tor guard" "$CL_OUT" "$u: plain Tor guard connections"
+    assert_match "obfs4" "$CL_OUT" "$u: instead of obfs4 traffic"
+    assert_eq "Bridges are off; the proxy restarted and DNS is answering." "$(printf '%s\n' "$CL_OUT" | tail -n 1)" "$u: off: the last line"
+    assert_eq "" "$(find "$CL_HOME/.config/nice-dns" -name '.bridges-mode*')" "$u: no temporary file is left"
+    assert_eq "$pool" "$(cat "$CL_HOME/.config/nice-dns/bridges.env")" "$u: the bridge pool is untouched"
+    cl_run "$CL_TREE/nice-dns" bridges on
+    assert_rc 0 "$CL_RC" "$u: bridges on: $CL_ERR"
+    assert_eq "TOR_BRIDGES=on" "$(cat "$f")" "$u: on writes on"
+    assert_eq 644 "$(stat -c %a "$f")" "$u: still 0644"
+    assert_not_match "Tor guard" "$CL_OUT" "$u: on carries no privacy note"
+    assert_eq "Bridges are on; the proxy restarted and DNS is answering." "$(printf '%s\n' "$CL_OUT" | tail -n 1)" "$u: on: the last line"
+    assert_eq "$pool" "$(cat "$CL_HOME/.config/nice-dns/bridges.env")" "$u: the bridge pool is still untouched"
+  done
+}
+
+t_bridges_status_reads_the_mode_back() {
+  local u
+  for u in $(cl_platforms); do
+    st_world "$u"; bt_restart_fakes
+    cl_run "$CL_TREE/nice-dns" bridges status
+    assert_rc 0 "$CL_RC" "$u: bridges status: $CL_ERR"
+    assert_eq "mode	on
+count	3
+last_refresh	$((ST_NOW - 3600))" "$CL_OUT" "$u: absent means on, with the pool size and the last refresh"
+    cl_run "$CL_TREE/nice-dns" bridges off
+    cl_run "$CL_TREE/nice-dns" bridges status
+    assert_rc 0 "$CL_RC" "$u: bridges status after off: $CL_ERR"
+    assert_eq "mode	off
+count	3
+last_refresh	$((ST_NOW - 3600))" "$CL_OUT" "$u: status reads off back"
+    ND_STATUS_NOW="$ST_NOW" cl_run "$CL_TREE/nice-dns" status --tsv
+    assert_match "^bridges	mode	off$" "$CL_OUT" "$u: status --tsv shows the mode"
+    cl_run "$CL_TREE/nice-dns" bridges on
+    : >"$CL_LOG"
+    ND_STATUS_NOW="$ST_NOW" cl_run "$CL_TREE/nice-dns" status --tsv
+    assert_match "^bridges	mode	on$" "$CL_OUT" "$u: and on again"
+    cl_run "$CL_TREE/nice-dns" bridges status
+    assert_eq "" "$(cl_calls .)" "$u: bridges status runs nothing"
+  done
+}
+
+t_bridges_bad_arguments_are_usage_errors() {
+  local args
+  st_world Linux
+  for args in "bridges" "bridges frobnicate" "bridges On" "bridges off on" "bridges status --tsv" "bridges --help"; do
+    # shellcheck disable=SC2086  # each row is a word list
+    cl_run "$CL_TREE/nice-dns" $args
+    assert_rc 2 "$CL_RC" "[$args] is a usage error"
+    assert_match '^Usage: nice-dns' "$CL_ERR" "[$args]: usage on stderr"
+    assert_eq "" "$CL_OUT" "[$args]: nothing on stdout"
+    assert_no_path "$(bt_mode_file)" "[$args]: no mode file"
+  done
+}
+
+t_bridges_not_installed_exits_1_and_writes_nothing() {
+  local u sub
+  for u in $(cl_platforms); do
+    for sub in off on status; do
+      cl_world "$u"; mkdir -p "$CL_HOME/.config/nice-dns"
+      cl_run "$CL_TREE/nice-dns" bridges "$sub"
+      assert_rc 1 "$CL_RC" "$u bridges $sub: exit 1"
+      # shellcheck disable=SC2016  # the backticks are text for the reader
+      assert_match 'nice-dns is not installed; run `nice-dns install`' "$CL_ERR" "$u bridges $sub: the message"
+      assert_eq "" "$CL_OUT" "$u bridges $sub: nothing on stdout"
+      assert_no_path "$(bt_mode_file)" "$u bridges $sub: the mode file is not written"
+      assert_eq "" "$(cl_calls .)" "$u bridges $sub: nothing ran"
+    done
+  done
+}
+
+t_bridges_an_unwritable_mode_file_names_the_path() {
+  local u d
+  for u in $(cl_platforms); do
+    st_world "$u"; bt_restart_fakes; d="$CL_HOME/.config/nice-dns"
+    cl_run "$CL_TREE/nice-dns" bridges on
+    chmod 500 "$d"
+    cl_run "$CL_TREE/nice-dns" bridges off
+    chmod 700 "$d"
+    assert_nonzero "$CL_RC" "$u: an unwritable directory fails"
+    assert_match "$d/bridges-mode.env" "$CL_ERR" "$u: the error names the path"
+    assert_not_match "takes effect" "$CL_OUT" "$u: no success line"
+    assert_eq "TOR_BRIDGES=on" "$(cat "$(bt_mode_file)")" "$u: the mode is unchanged"
+    assert_eq "" "$(find "$d" -name '.bridges-mode*')" "$u: no temporary file is left"
+    rm -rf "${d:?}"
+    cl_run "$CL_TREE/nice-dns" bridges off
+    assert_nonzero "$CL_RC" "$u: a missing config directory fails"
+    assert_match "$d/bridges-mode.env" "$CL_ERR" "$u: and names the path"
+    assert_no_path "$d" "$u: nothing is created"
+  done
+}
+
+t_bridges_is_in_the_help() {
+  cl_world Linux
+  cl_run "$CL_TREE/nice-dns" --help
+  assert_match "^  bridges on\|off\|status" "$CL_OUT" "--help lists bridges"
+}
+
+# ─────── Bridges toggle plan, Task 1.4: a mode change restarts the proxy ─────
+
+# bt_restart_fakes: st_world plus a runtime that answers. A proxy restart
+# (Linux: its unit; macOS: the agent's kickstart) starts a new container and
+# records whether the controller's state lock was held at that moment.
+bt_restart_fakes() {
+  local f
+  CL_RESTART_PLAT=linux
+  if [ "$CL_UNAME" = Darwin ]; then
+    CL_RESTART_PLAT=macos
+    mkdir -p "$CL_HOME/Library/LaunchAgents"
+    : >"$CL_HOME/Library/LaunchAgents/org.nice-dns.health.plist"
+    : >"$CL_HOME/Library/LaunchAgents/org.nice-dns.health-bridges.plist"
+  fi
+  echo 1 >"$CL_FAKE/gen"
+  # The installed proxy launcher carries the mode, as an install of this
+  # branch leaves it (Linux: the quadlet; macOS: the agent under ND_INST_ROOT).
+  BT_ROOT="$CL_W/root"; export ND_INST_ROOT="$BT_ROOT"
+  if [ "$CL_UNAME" = Darwin ]; then BT_LAUNCHER="$BT_ROOT/usr/local/sbin/start-container.sh"; else BT_LAUNCHER="$CL_HOME/.config/containers/systemd/tor-haproxy.container"; fi
+  mkdir -p "${BT_LAUNCHER%/*}"
+  printf 'PodmanArgs=--env TOR_BRIDGES\n' >"$BT_LAUNCHER"
+  f="$CL_FAKE/proxy-restarted"
+  cat >"$f" <<EOF2
+#!/bin/bash
+if [ -L "$ST_SD/lock" ]; then echo "proxy restart: lock held" >>"$CL_LOG"; else echo "proxy restart: lock free" >>"$CL_LOG"; fi
+echo \$(( \$(cat "$CL_FAKE/gen") + 1 )) >"$CL_FAKE/gen"
+EOF2
+  chmod +x "$f"
+  cat >"$CL_FAKE/podman" <<EOF2
+#!/bin/bash
+echo "podman \$*" >>"$CL_LOG"
+case "\$1" in
+  ps) printf 'pi-hole\nunbound\ntor-haproxy\n' ;;
+  inspect) echo "id\$(cat "$CL_FAKE/gen") 2026-11-07T00:00:0\$(cat "$CL_FAKE/gen")Z running" ;;
+esac
+exit 0
+EOF2
+  cat >"$CL_FAKE/container" <<EOF2
+#!/bin/bash
+echo "container \$*" >>"$CL_LOG"
+case "\$1" in
+  ls) g="\$(cat "$CL_FAKE/gen")"
+      printf 'ID IMAGE STATE STARTED\npi-hole p running t%s\nunbound u running t%s\ntor-haproxy t running t%s\n' "\$g" "\$g" "\$g" ;;
+esac
+exit 0
+EOF2
+  cat >"$CL_FAKE/systemctl" <<EOF2
+#!/bin/bash
+echo "systemctl \$*" >>"$CL_LOG"
+case "\$*" in
+  *is-active*) exit 0 ;;
+  *"restart tor-"*)
+    [ -f "$CL_FAKE/restart_rc" ] && { echo "the restart broke" >&2; exit "\$(cat "$CL_FAKE/restart_rc")"; }
+    "$CL_FAKE/proxy-restarted" ;;
+esac
+exit 0
+EOF2
+  cat >"$CL_FAKE/launchctl" <<EOF2
+#!/bin/bash
+echo "launchctl \$*" >>"$CL_LOG"
+case "\$*" in
+  *kickstart*)
+    [ -f "$CL_FAKE/restart_rc" ] && { echo "the restart broke" >&2; exit "\$(cat "$CL_FAKE/restart_rc")"; }
+    rm -f "\$HOME/.local/state/nice-dns/restart-requested"
+    "$CL_FAKE/proxy-restarted" ;;
+  print*) printf '\tstate = not running\n' ;;
+esac
+exit 0
+EOF2
+  chmod +x "$CL_FAKE"/*
+}
+bt_proxy_restart_pat() { if [ "$CL_RESTART_PLAT" = linux ]; then echo '^systemctl --user restart tor-haproxy\.service$'; else echo '^launchctl kickstart -k gui/'; fi; }
+bt_journal() { cat "$ST_SD/recovery.tsv" 2>/dev/null; }
+
+t_bridges_a_mode_change_restarts_the_proxy_under_the_lock() {
+  local u m id hold rs rel
+  for u in $(cl_platforms); do
+    st_world "$u"; bt_restart_fakes
+    for m in off on; do
+      : >"$CL_LOG"
+      cl_run "$CL_TREE/nice-dns" bridges "$m"
+      assert_rc 0 "$CL_RC" "$u bridges $m: $CL_ERR"
+      assert_eq "TOR_BRIDGES=$m" "$(cat "$(bt_mode_file)")" "$u: $m is written"
+      assert_eq 1 "$(grep -cE "$(bt_proxy_restart_pat)" "$CL_LOG")" "$u $m: one proxy restart"
+      assert_eq "proxy restart: lock held" "$(grep '^proxy restart:' "$CL_LOG")" "$u $m: the state lock is held during the restart"
+      hold="$(cl_line "$(cl_hold_pat)" tail)"; rs="$(cl_line "$(bt_proxy_restart_pat)" head)"; rel="$(cl_line "$(cl_release_pat)" head)"
+      [ -n "$hold" ] && [ "$hold" -lt "$rs" ] && [ "$rs" -lt "$rel" ] || fail "$u $m: hold, restart, release in that order:
+$(cat "$CL_LOG")"
+      cl_assert_released "$u $m"
+      id="$(awk -F '\t' -v m="$m" '$3 == "bridges" && $4 == "mode-change" && $5 == m { print $2 }' "$ST_SD/recovery.tsv" | tail -n 1)"
+      assert_match "^bridges-$m-[0-9]+\$" "$id" "$u $m: the change is journalled under its own request"
+      assert_match "$id	service	requested	" "$(bt_journal)" "$u $m: requested"
+      assert_match "$id	service	acknowledged	" "$(bt_journal)" "$u $m: acknowledged"
+      assert_match '^dig ' "$(cat "$CL_LOG")" "$u $m: DNS is checked after the restart"
+      assert_eq "Bridges are $m; the proxy restarted and DNS is answering." "$(printf '%s\n' "$CL_OUT" | tail -n 1)" "$u $m: the last line"
+    done
+  done
+}
+
+t_bridges_an_unchanged_mode_restarts_nothing() {
+  local u
+  for u in $(cl_platforms); do
+    st_world "$u"; bt_restart_fakes
+    : >"$CL_LOG"
+    cl_run "$CL_TREE/nice-dns" bridges on
+    assert_rc 0 "$CL_RC" "$u: on over no mode file (on): $CL_ERR"
+    assert_eq "TOR_BRIDGES=on" "$(cat "$(bt_mode_file)")" "$u: the mode is written"
+    assert_eq "Bridges are already on; nothing restarted." "$(printf '%s\n' "$CL_OUT" | tail -n 1)" "$u: the last line"
+    assert_eq "" "$(cl_calls .)" "$u: nothing held, restarted or checked"
+    assert_not_match 'mode-change' "$(bt_journal)" "$u: nothing journalled"
+    cl_run "$CL_TREE/nice-dns" bridges off
+    : >"$CL_LOG"
+    cl_run "$CL_TREE/nice-dns" bridges off
+    assert_rc 0 "$CL_RC" "$u: off again: $CL_ERR"
+    assert_eq "" "$(cl_calls .)" "$u: off over off runs nothing"
+    assert_eq 1 "$(grep -c 'mode-change' "$ST_SD/recovery.tsv")" "$u: one change, one journal row"
+  done
+}
+
+t_bridges_a_failed_restart_names_the_written_mode() {
+  st_world Linux; bt_restart_fakes
+  echo 5 >"$CL_FAKE/restart_rc"
+  cl_run "$CL_TREE/nice-dns" bridges off
+  assert_rc 1 "$CL_RC" "a failed restart fails"
+  assert_match 'next proxy start' "$CL_ERR" "the error says when the mode applies"
+  assert_match 'Run `nice-dns restart` to apply it now' "$CL_ERR" "and how to apply it now (asking for off again restarts nothing)"
+  assert_eq "TOR_BRIDGES=off" "$(cat "$(bt_mode_file)")" "the mode stays written"
+  assert_eq "" "$(cl_calls '^dig ')" "no DNS wait after a failed restart"
+  cl_assert_released Linux
+}
+
+t_bridges_a_busy_controller_changes_nothing() {
+  local d="$CASE_DIR/state-busy-br"
+  st_world Linux; bt_restart_fakes
+  mkdir -p "$d"; chmod 700 "$d"
+  ln -s "nd-lock:$$:$(cat /proc/sys/kernel/random/boot_id):$(date +%s):tok" "$d/lock"
+  ND_STATE_DIR="$d" ND_CLI_LOCK_TRIES=1 cl_run "$CL_TREE/nice-dns" bridges off
+  assert_rc 1 "$CL_RC" "a busy controller refuses: $CL_ERR"
+  assert_match 'still busy' "$CL_ERR" "the message"
+  assert_no_path "$(bt_mode_file)" "the mode is not written"
+  assert_eq 0 "$(grep -cE "$(bt_proxy_restart_pat)" "$CL_LOG")" "no restart while a pass runs"
+  cl_assert_released Linux
+}
+
+t_bridges_releases_on_a_signal() {
+  local u pid i
+  for u in $(cl_platforms); do
+    st_world "$u"; bt_restart_fakes
+    : >"$CL_FAKE/no_dns"
+    HOME="$CL_HOME" PATH="$CL_FAKE:$PATH" TMPDIR="$CASE_DIR" XDG_STATE_HOME="" XDG_CONFIG_HOME="" ND_INST_READY_TRIES=50 \
+      bash "$CL_TREE/nice-dns" bridges off >"$CL_W/out" 2>"$CL_W/err" &
+    pid=$!
+    i=0
+    until grep -q '^dig ' "$CL_LOG"; do
+      i=$((i + 1)); [ "$i" -lt 100 ] || { kill "$pid" 2>/dev/null; fail "$u: the wait never began"; }
+      sleep 0.1
+    done
+    kill -TERM "$pid"
+    wait "$pid"
+    assert_rc 143 "$?" "$u: the signal ends it"
+    cl_assert_released "$u"
+    assert_no_path "$ST_SD/lock" "$u: the lock is given back"
+    assert_eq "" "$(find "$CASE_DIR" -maxdepth 1 -name 'nice-dns-restart.*')" "$u: its temporary directory is gone"
+  done
+}
+
+# Stage 1 gate (demo B1): a mode path that is a directory is not written into.
+# `mv` would move the temporary file inside it and the restart would run with
+# the mode unchanged.
+t_bridges_a_mode_path_that_is_a_directory_is_refused() {
+  local u d
+  for u in $(cl_platforms); do
+    st_world "$u"; bt_restart_fakes; d="$CL_HOME/.config/nice-dns"
+    mkdir -p "$d/bridges-mode.env"
+    : >"$CL_LOG"
+    cl_run "$CL_TREE/nice-dns" bridges off
+    assert_rc 1 "$CL_RC" "$u: a directory in place of the mode file fails"
+    assert_match "$d/bridges-mode.env" "$CL_ERR" "$u: the error names the path"
+    assert_eq "" "$(find "$d/bridges-mode.env" -mindepth 1)" "$u: nothing is written inside it"
+    assert_eq 0 "$(grep -cE "$(bt_proxy_restart_pat)" "$CL_LOG")" "$u: nothing restarted"
+    assert_not_match 'mode-change' "$(bt_journal)" "$u: nothing journalled"
+    cl_assert_released "$u"
+  done
+}
+
+# Stage 1 gate (demo Material 1): a launcher from before the switch would start
+# the proxy without the mode, so the switch would report a change Tor never
+# sees. It is refused before anything is held.
+t_bridges_an_install_older_than_the_switch_is_refused() {
+  local u
+  for u in $(cl_platforms); do
+    st_world "$u"; bt_restart_fakes
+    printf 'EnvironmentFile=%%h/.config/nice-dns/bridges.env\n' >"$BT_LAUNCHER"
+    : >"$CL_LOG"
+    cl_run "$CL_TREE/nice-dns" bridges off
+    assert_rc 1 "$CL_RC" "$u: an older install refuses the switch"
+    assert_match 'nice-dns update' "$CL_ERR" "$u: and says how to get the switch"
+    assert_match "$BT_LAUNCHER" "$CL_ERR" "$u: naming the launcher it read"
+    assert_no_path "$(bt_mode_file)" "$u: the mode is not written"
+    assert_eq "" "$(cl_calls .)" "$u: nothing held or restarted"
+    rm -f "$BT_LAUNCHER"
+    cl_run "$CL_TREE/nice-dns" bridges off
+    assert_rc 1 "$CL_RC" "$u: no launcher at all refuses too"
+    unset ND_INST_ROOT
+  done
+}

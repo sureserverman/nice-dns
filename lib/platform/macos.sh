@@ -338,6 +338,9 @@ _nd_mac_stack_lock() {
 nd_platform_bridge_eval() {
   local d bin n rc
   d="$(nd_platform_bridge_dir)"
+  # Bridges off (TOR_BRIDGES=off in bridges-mode.env, read as data): no set
+  # is evaluated, so no probe container takes a dnsnet address for one.
+  [ "$(awk -F '=' '$1 == "TOR_BRIDGES" { print $2; exit }' "$d/bridges-mode.env" 2>/dev/null)" = off ] && return 3
   bin="$(nd_platform_runtime_bin)" || return 3
   nd_platform_runtime_list "$3" "$4/running" >/dev/null 2>&1 || return 3
   n="$(grep -cx -e pi-hole -e unbound -e "tor-$1" "$4/running")"

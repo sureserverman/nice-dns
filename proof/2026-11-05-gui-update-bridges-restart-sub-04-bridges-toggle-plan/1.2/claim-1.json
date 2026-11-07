@@ -1,0 +1,37 @@
+{
+ "baseline": {
+  "elapsed_s": 30.4,
+  "exit": 0,
+  "tail": "run_id=20261107T080322Z-012ed25f artifacts=/home/user/.local/state/nice-dns-tests/runs/20261107T080322Z-012ed25f\nPASS  t_a_crash_looping_proxy_is_not_restarted_to_adopt_a_set\nPASS  t_a_proxy_restarted_since_has_adopted_the_set\nPASS  t_boot_selection_is_skipped_when_a_usable_set_exists\nPASS  t_boot_selection_is_skipped_when_bridges_are_off\nPASS  t_bridges_off_outage_refresh_is_skipped\nPASS  t_bridges_off_refresh_is_skipped_and_changes_nothing\nPASS  t_changed_set_is_adopted_at_next_start_without_restart\nPASS  t_failed_or_thin_evaluation_keeps_the_last_good_set\nPASS  t_filter_never_leaves_fewer_than_three_bridges\nPASS  t_install_schedules_the_daily_refresh\nPASS  t_macos_installer_retires_the_legacy_bridge_agent_after_the_controller\nPASS  t_macos_probe_uses_dnsnet_and_needs_the_stack\nPASS  t_outage_refresh_is_evaluated_and_rate_limited\nPASS  t_recovery_adopts_a_pending_set_through_the_service_restart\nPASS  t_slow_refresh_never_overwrites_a_newer_set\nPASS  t_unchanged_set_writes_nothing_and_restarts_nothing\nPASS  t_unreachable_distributor_keeps_the_working_pool\nPASS  t_unreadable_tor_state_changes_nothing\nPASS  t_weak_bridge_not_running_is_filtered_without_restart\nPASS  t_weak_bridge_stays_out_after_the_tor_state_is_wiped\nPASS  t_weak_memory_expires\nPASS  t_weak_running_bridge_is_dropped_and_the_proxy_recreated\ngroup integration/bridge-lifecycle: collected=22 passed=22 failed=0\ncollected=22 passed=22 failed=0\nresult=pass run_id=20261107T080322Z-012ed25f artifacts=/home/user/.local/state/nice-dns-tests/runs/20261107T080322Z-012ed25f\nrun_id=20261107T080350Z-2a3cdfb2 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261107T080350Z-2a3cdfb2\nPASS  t_proxy_units_read_the_optional_bridges_mode\nPASS  t_quadlets_back_off_and_only_the_controller_restarts_on_health\nPASS  t_real_persist_templates_and_orders_the_agent\nPASS  t_real_persistent_podman_renders_its_units\ngroup integration/installers-persistence: collected=4 passed=4 failed=0\ncollected=4 passed=4 failed=0\nresult=pass run_id=20261107T080350Z-2a3cdfb2 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261107T080350Z-2a3cdfb2"
+ },
+ "break_patch": "--- a/deb/quadlet/tor-haproxy.container\n+++ b/deb/quadlet/tor-haproxy.container\n@@ -30,7 +30,6 @@\n # bridges-mode.env ([Service] below) and this passes TOR_BRIDGES in; unset\n # stays unset and the image defaults to on. Not an EnvironmentFile= here:\n # that is podman's --env-file, which takes no `-` and needs the file.\n-PodmanArgs=--env TOR_BRIDGES\n # Notify= deliberately NOT set. The Stage 2 design (Notify=healthy, so\n # systemd waits for the HealthCmd to pass) was reverted because it\n # gates the unit's Active=active transition on real DoT resolution\n--- a/deb/quadlet/tor-socat.container\n+++ b/deb/quadlet/tor-socat.container\n@@ -23,7 +23,6 @@\n # bridges-mode.env ([Service] below) and this passes TOR_BRIDGES in; unset\n # stays unset and the image defaults to on. Not an EnvironmentFile= here:\n # that is podman's --env-file, which takes no `-` and needs the file.\n-PodmanArgs=--env TOR_BRIDGES\n # Notify= deliberately not set \u2014 see tor-haproxy.container for the\n # full rationale. Short version: tying the unit's Active=active to\n # real DoT resolution success makes the whole stack fail to start\n",
+ "build": null,
+ "created": "2026-11-07T08:04:23+00:00",
+ "fingerprint": "450bc5aa14a7d6be9e03f263a02689b302cf40bab8bde72e93a3a31ae921d166",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "bash scripts: nothing is compiled",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-04-bridges-toggle-plan.md",
+ "red": {
+  "elapsed_s": 30.6,
+  "exit": 1,
+  "tail": "PASS  t_recovery_adopts_a_pending_set_through_the_service_restart\nPASS  t_slow_refresh_never_overwrites_a_newer_set\nPASS  t_unchanged_set_writes_nothing_and_restarts_nothing\nPASS  t_unreachable_distributor_keeps_the_working_pool\nPASS  t_unreadable_tor_state_changes_nothing\nPASS  t_weak_bridge_not_running_is_filtered_without_restart\nPASS  t_weak_bridge_stays_out_after_the_tor_state_is_wiped\nPASS  t_weak_memory_expires\nPASS  t_weak_running_bridge_is_dropped_and_the_proxy_recreated\ngroup integration/bridge-lifecycle: collected=22 passed=22 failed=0\ncollected=22 passed=22 failed=0\nresult=pass run_id=20261107T080353Z-c67d0242 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261107T080353Z-c67d0242\nrun_id=20261107T080421Z-e41ca33d artifacts=/home/user/.local/state/nice-dns-tests/runs/20261107T080421Z-e41ca33d\nFAIL  t_proxy_units_read_the_optional_bridges_mode (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261107T080421Z-e41ca33d/cases/integration-installers-persistence/t_proxy_units_read_the_optional_bridges_mode/case.log)\n      # RestartMaxDelaySec=; they need a non-zero RestartSec=). On 2026-11-02 VM\n      # memory exhaustion aborted haproxy (rc 134) and its unit restarted every\n      # 3 s for 20 hours, about 1100 times an hour: StartLimitBurst never trips\n      # at that cadence. Now the delay grows from 3 s to 5 min in 5 steps.\n      RestartSec=3s\n      RestartSteps=5\n      RestartMaxDelaySec=300s\n      TimeoutStopSec=70\n      Environment=PODMAN_SYSTEMD_UNIT=%n\n      KillMode=mixed\n      ExecStop=/usr/bin/podman rm -v -f -i tor-haproxy\n      ExecStopPost=-/usr/bin/podman rm -v -f -i tor-haproxy\n      Delegate=yes\n      Type=notify\n      NotifyAccess=all\n      SyslogIdentifier=%N\n      ExecStart=/usr/bin/podman run --name tor-haproxy --replace --rm --cgroups=split --sdnotify=conmon -d -v nice-dns-tor-haproxy:/app/data --env-file %h/.config/nice-dns/bridges.env --health-cmd \"nice-dns-route-probe 853 tor.cloudflare-dns.com\" --health-interval 60s --health-on-failure none --health-retries 3 --health-start-period 300s --health-timeout 15s --pod nice-dns docker.io/sureserver/tor-haproxy:latest\n      \n      [Install]\n      WantedBy=default.target\nPASS  t_quadlets_back_off_and_only_the_controller_restarts_on_health\nPASS  t_real_persist_templates_and_orders_the_agent\nPASS  t_real_persistent_podman_renders_its_units\ngroup integration/installers-persistence: collected=4 passed=3 failed=1\ncollected=4 passed=3 failed=1\nresult=fail run_id=20261107T080421Z-e41ca33d artifacts=/home/user/.local/state/nice-dns-tests/runs/20261107T080421Z-e41ca33d"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "1.2",
+ "test": "bash tests/run.sh integration bridge-lifecycle && bash tests/run.sh integration installers-persistence",
+ "text": "the rendered services carry `--env-file` for bridges.env, `--env TOR_BRIDGES` and the optional service `EnvironmentFile=-` (quadlet dry-run)",
+ "touched": [
+  "deb/quadlet/tor-haproxy.container",
+  "deb/quadlet/tor-socat.container"
+ ],
+ "touched_blobs": {
+  "deb/quadlet/tor-haproxy.container": "5b5c66aa3f8bacea5c7827ca1fbc583fb22442e8",
+  "deb/quadlet/tor-socat.container": "ef6b1c485199d977eaaf2f60081096c0265cd1aa"
+ },
+ "witness_blobs": {
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}

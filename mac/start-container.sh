@@ -27,6 +27,9 @@ TOR_IP=172.31.240.252
 TOR_CONTAINER="tor-${VARIANT}"
 HEALTH_PROBE=cloudflare.com
 BRIDGES_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges.env"
+# The bridges mode (nice-dns bridges on|off): TOR_BRIDGES=off runs Tor direct.
+TOR_BRIDGES_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges-mode.env"
+TOR_BRIDGES=on
 FETCH_BRIDGES_BIN=/usr/local/sbin/nice-dns-fetch-bridges.sh
 # Tor's DataDirectory, bind-mounted so it survives container recreation.
 # The image puts DataDirectory under $DATA_DIR (/app/data), so mounting that
@@ -79,6 +82,8 @@ unset SSH_AUTH_SOCK
 log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >>"$LOG"; }
 run_root_helper() {
   [[ -x "$ROOT_HELPER" ]] || return 1
+  # The agent's own log (~/Library/Logs): the user writes it, not root.
+  # shellcheck disable=SC2024
   sudo -n "$ROOT_HELPER" "$1" >>"$LOG" 2>&1
 }
 
@@ -104,10 +109,25 @@ load_bridges() {
   (( BRIDGE_COUNT >= 3 ))
 }
 
+# load_tor_bridges: TOR_BRIDGES from bridges-mode.env, read as data (never
+# sourced); absent or any other value is on, as in the image.
+load_tor_bridges() {
+  TOR_BRIDGES=on
+  if [[ "$(awk -F '=' '$1 == "TOR_BRIDGES" { print $2; exit }' "$TOR_BRIDGES_FILE" 2>/dev/null)" == off ]]; then
+    TOR_BRIDGES=off
+  fi
+  return 0
+}
+
 # Covers the whole set, so going from 3 bridges to 7 counts as a change and
-# correctly triggers the recreate + guard-state prune below.
+# correctly triggers the recreate + guard-state prune below. Bridges off is
+# part of it (the mode is baked at `container run` too); bridges on hashes
+# the set alone, as before the mode existed, so an upgrade recreates nothing.
 bridge_fingerprint() {
-  printf '%s\n' ${BRIDGE_ARGS[@]+"${BRIDGE_ARGS[@]}"} | shasum -a 256 | cut -d' ' -f1
+  {
+    if [[ "${TOR_BRIDGES:-on}" == off ]]; then printf 'TOR_BRIDGES=off\n'; fi
+    printf '%s\n' ${BRIDGE_ARGS[@]+"${BRIDGE_ARGS[@]}"}
+  } | shasum -a 256 | cut -d' ' -f1
 }
 
 # Tor's DataDirectory holds two kinds of state with opposite lifetimes:
@@ -160,6 +180,13 @@ dns_healthy() {
 # the controller's evaluated refresh (nd_bridges_refresh), which never
 # overwrites a newer set and keeps .prev. The sentinel is cleared either way.
 bridges_rotate_needed() {
+  # Bridges off: whatever set exists is kept for `on`; none is fetched.
+  if [[ "${TOR_BRIDGES:-on}" == off ]]; then
+    load_bridges || true
+    rm -f "$BRIDGE_SENTINEL"
+    log "bridges off (TOR_BRIDGES=off); no bridge set fetched"
+    return 1
+  fi
   if ! load_bridges; then
     log "bridges.env missing or incomplete; fetching a set"
     rm -f "$BRIDGE_SENTINEL"
@@ -541,6 +568,7 @@ start_or_create_stack() {
   ensure_container "$TOR_CONTAINER" \
     -c 1 -m 512M \
     -v "${TOR_STATE_DIR}:/app/data" \
+    -e "TOR_BRIDGES=${TOR_BRIDGES:-on}" \
     ${BRIDGE_ARGS[@]+"${BRIDGE_ARGS[@]}"} \
     "$TOR_IMAGE" || return 1
 
@@ -618,6 +646,7 @@ acquire_stack_lock || exit 1
 # refetch only when it's missing/incomplete or the previous run failed to
 # bootstrap (BRIDGE_SENTINEL, set at the bottom of this script).
 mkdir -p "$(dirname "$BRIDGE_SENTINEL")"
+load_tor_bridges
 if bridges_rotate_needed; then
   if [[ -x "$FETCH_BRIDGES_BIN" ]]; then
     "$FETCH_BRIDGES_BIN" --force >>"$LOG" 2>&1 \

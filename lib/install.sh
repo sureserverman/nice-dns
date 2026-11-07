@@ -7,7 +7,8 @@
 # Sourced by an entrypoint after it has staged its source tree (an in-tree
 # checkout, or a clone of the requested branch): it sets ND_INST_SRC (that
 # tree), ND_INST_ORIGIN (checkout|clone) and, for a clone, ND_INST_CLEANUP.
-# Sourcing only defines functions and constants.
+# Sourcing only defines functions and constants, and on Linux defaults
+# XDG_RUNTIME_DIR (below).
 #
 # The install is split in two:
 #   preparation   nd_install_begin, nd_install_<platform>_host_prereqs,
@@ -46,6 +47,13 @@
 # Portability: Bash 3.2 (macOS /bin/bash): no associative arrays, ${v,,},
 # mapfile or declare -g. State files are data: read with awk/read and checked
 # against a strict format, never sourced or evaluated.
+
+# An ssh command has no login session, so XDG_RUNTIME_DIR is unset and
+# `systemctl --user` cannot find the user bus that linger keeps at
+# /run/user/<uid> ("Failed to connect to bus", close-out evaluator 2026-11-07).
+if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -d "/run/user/$(id -u)" ]; then
+  XDG_RUNTIME_DIR="/run/user/$(id -u)"; export XDG_RUNTIME_DIR
+fi
 
 ND_INST_SCHEMA='nice-dns-install-prepare/1'
 # One build policy per platform, shared by the standard and hardened
@@ -2348,10 +2356,15 @@ nd_install_macos_prepare_images() {
 # nd_install_macos_bridges: bridges.env, and the proxy's BRIDGEn arguments in
 # ND_INST_BRIDGE_ARGS.
 nd_install_macos_bridges() {
-  local _bridges_file _nbridges=0 _bline
+  local _bridges_file _nbridges=0 _bline _mode=on
+  # The bridges mode (nice-dns bridges on|off), read as data: with
+  # TOR_BRIDGES=off Tor runs direct, so no set is fetched or required.
+  if [ "$(awk -F '=' '$1 == "TOR_BRIDGES" { print $2; exit }' "${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges-mode.env" 2>/dev/null)" = off ]; then
+    _mode=off
+  fi
   # Fetch default obfs4 bridges from the Tor Project on first install, then
   # pass them into the container. Idempotent: bridges.env is reused on re-runs.
-  "$ND_INST_TREE/scripts/fetch-bridges.sh" || return 1
+  if [ "$_mode" = on ]; then "$ND_INST_TREE/scripts/fetch-bridges.sh" || return 1; fi
   # bridges.env is written without surrounding quotes for podman --env-file /
   # systemd EnvironmentFile= compatibility (Linux quadlets), so bash `source`
   # can't be used here — it would split on whitespace inside the obfs4 line.
@@ -2364,13 +2377,17 @@ nd_install_macos_bridges() {
   # contiguously because the image walks BRIDGE1..16 and a gap in the source file
   # would hide everything after it.
   _bridges_file="${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges.env"
-  ND_INST_BRIDGE_ARGS=()
+  ND_INST_BRIDGE_ARGS=( -e "TOR_BRIDGES=${_mode}" )
   while IFS= read -r _bline; do
     [[ -n "$_bline" ]] || continue
     (( _nbridges < 16 )) || break
     _nbridges=$(( _nbridges + 1 ))
     ND_INST_BRIDGE_ARGS+=( -e "BRIDGE${_nbridges}=${_bline}" )
-  done < <(sed -n 's/^BRIDGE[0-9][0-9]*=//p' "$_bridges_file")
+  done < <(sed -n 's/^BRIDGE[0-9][0-9]*=//p' "$_bridges_file" 2>/dev/null)
+  if [ "$_mode" = off ]; then
+    echo "Bridges off: Tor runs direct (keeping $_nbridges bridge(s) from bridges.env for \`nice-dns bridges on\`)."
+    return 0
+  fi
   if (( _nbridges < 3 )); then
     echo "bridges.env yielded $_nbridges bridge(s); need at least 3." >&2
     return 1

@@ -1,0 +1,35 @@
+{
+ "baseline": {
+  "elapsed_s": 32.2,
+  "exit": 0,
+  "tail": "run_id=20261107T093826Z-64d708b9 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261107T093826Z-64d708b9\nPASS  t_a_bridge_pool_path_that_is_a_directory_is_not_applied\nPASS  t_a_crash_looping_proxy_is_not_restarted_to_adopt_a_set\nPASS  t_a_proxy_restarted_since_has_adopted_the_set\nPASS  t_boot_selection_is_skipped_when_a_usable_set_exists\nPASS  t_boot_selection_is_skipped_when_bridges_are_off\nPASS  t_bridges_off_outage_refresh_is_skipped\nPASS  t_bridges_off_refresh_is_skipped_and_changes_nothing\nPASS  t_changed_set_is_adopted_at_next_start_without_restart\nPASS  t_failed_or_thin_evaluation_keeps_the_last_good_set\nPASS  t_filter_never_leaves_fewer_than_three_bridges\nPASS  t_install_schedules_the_daily_refresh\nPASS  t_macos_agent_honours_the_bridges_mode\nPASS  t_macos_bridge_eval_does_nothing_when_bridges_are_off\nPASS  t_macos_installer_retires_the_legacy_bridge_agent_after_the_controller\nPASS  t_macos_probe_uses_dnsnet_and_needs_the_stack\nPASS  t_outage_refresh_is_evaluated_and_rate_limited\nPASS  t_recovery_adopts_a_pending_set_through_the_service_restart\nPASS  t_slow_refresh_never_overwrites_a_newer_set\nPASS  t_the_daily_refresh_with_bridges_off_exits_0\nPASS  t_unchanged_set_writes_nothing_and_restarts_nothing\nPASS  t_unreachable_distributor_keeps_the_working_pool\nPASS  t_unreadable_tor_state_changes_nothing\nPASS  t_weak_bridge_not_running_is_filtered_without_restart\nPASS  t_weak_bridge_stays_out_after_the_tor_state_is_wiped\nPASS  t_weak_memory_expires\nPASS  t_weak_running_bridge_is_dropped_and_the_proxy_recreated\ngroup integration/bridge-lifecycle: collected=26 passed=26 failed=0\ncollected=26 passed=26 failed=0\nresult=pass run_id=20261107T093826Z-64d708b9 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261107T093826Z-64d708b9\nrun_id=20261107T093856Z-1b6b39ff artifacts=/home/user/.local/state/nice-dns-tests/runs/20261107T093856Z-1b6b39ff\nPASS  t_proxy_units_read_the_optional_bridges_mode\nPASS  t_quadlets_back_off_and_only_the_controller_restarts_on_health\nPASS  t_real_persist_templates_and_orders_the_agent\nPASS  t_real_persistent_podman_renders_its_units\ngroup integration/installers-persistence: collected=4 passed=4 failed=0\ncollected=4 passed=4 failed=0\nresult=pass run_id=20261107T093856Z-1b6b39ff artifacts=/home/user/.local/state/nice-dns-tests/runs/20261107T093856Z-1b6b39ff"
+ },
+ "break_patch": "--- a/lib/recovery.sh\n+++ b/lib/recovery.sh\n@@ -1263,10 +1263,6 @@\n nd_bridges_refresh() {\n   local v=\"${1:-}\" d base cand rc t out weak=\"\" listed=\"\" dropped=0 n0 adopted=-\n   case \"$v\" in haproxy|socat) ;; *) printf 'result\\trefused\\ndetail\\tvariant must be haproxy or socat\\n'; return 2 ;; esac\n-  if [ \"$(nd_bridges_mode)\" = off ]; then\n-    nd_recovery_journal \"br-$(date +%s)\" bridges skipped \"bridges off\"\n-    printf 'result\\tskipped\\ndetail\\tbridges off\\n'; return 3\n-  fi\n   d=\"$(nd_platform_bridge_dir)\"\n   if ! _nd_br_mutex_take; then\n     nd_recovery_journal \"br-$(date +%s)\" bridges skipped \"another bridge refresh is running\"\n",
+ "build": null,
+ "created": "2026-11-07T09:39:27+00:00",
+ "fingerprint": "f901a9b8330af65e1f6c10ae724f9127f5bf5e398726a18d0c15eea19fde1d0b",
+ "index": 2,
+ "kind": "claim",
+ "named_break": "a candidate is applied",
+ "no_build_reason": "bash scripts: nothing is compiled",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-04-bridges-toggle-plan.md",
+ "red": {
+  "elapsed_s": 28.7,
+  "exit": 1,
+  "tail": "run_id=20261107T093859Z-11a98133 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261107T093859Z-11a98133\nPASS  t_a_bridge_pool_path_that_is_a_directory_is_not_applied\nPASS  t_a_crash_looping_proxy_is_not_restarted_to_adopt_a_set\nPASS  t_a_proxy_restarted_since_has_adopted_the_set\nPASS  t_boot_selection_is_skipped_when_a_usable_set_exists\nPASS  t_boot_selection_is_skipped_when_bridges_are_off\nPASS  t_bridges_off_outage_refresh_is_skipped\nFAIL  t_bridges_off_refresh_is_skipped_and_changes_nothing (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261107T093859Z-11a98133/cases/integration-bridge-lifecycle/t_bridges_off_refresh_is_skipped_and_changes_nothing/case.log)\n      ASSERT FAIL: linux: an off refresh is a skip: result\tchanged\n      dropped\t0\n      adopted\t-: expected exit 3 got 0\nPASS  t_changed_set_is_adopted_at_next_start_without_restart\nPASS  t_failed_or_thin_evaluation_keeps_the_last_good_set\nPASS  t_filter_never_leaves_fewer_than_three_bridges\nPASS  t_install_schedules_the_daily_refresh\nPASS  t_macos_agent_honours_the_bridges_mode\nPASS  t_macos_bridge_eval_does_nothing_when_bridges_are_off\nPASS  t_macos_installer_retires_the_legacy_bridge_agent_after_the_controller\nPASS  t_macos_probe_uses_dnsnet_and_needs_the_stack\nPASS  t_outage_refresh_is_evaluated_and_rate_limited\nPASS  t_recovery_adopts_a_pending_set_through_the_service_restart\nPASS  t_slow_refresh_never_overwrites_a_newer_set\nFAIL  t_the_daily_refresh_with_bridges_off_exits_0 (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261107T093859Z-11a98133/cases/integration-bridge-lifecycle/t_the_daily_refresh_with_bridges_off_exits_0/case.log)\n      ASSERT FAIL: linux: a skip with bridges off exits 0: result\tnot-applied: expected exit 0 got 1\nPASS  t_unchanged_set_writes_nothing_and_restarts_nothing\nPASS  t_unreachable_distributor_keeps_the_working_pool\nPASS  t_unreadable_tor_state_changes_nothing\nPASS  t_weak_bridge_not_running_is_filtered_without_restart\nPASS  t_weak_bridge_stays_out_after_the_tor_state_is_wiped\nPASS  t_weak_memory_expires\nPASS  t_weak_running_bridge_is_dropped_and_the_proxy_recreated\ngroup integration/bridge-lifecycle: collected=26 passed=24 failed=2\ncollected=26 passed=24 failed=2\nresult=fail run_id=20261107T093859Z-11a98133 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261107T093859Z-11a98133"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "1.2",
+ "test": "bash tests/run.sh integration bridge-lifecycle && bash tests/run.sh integration installers-persistence",
+ "text": "with the mode off a refresh journals `skipped` and leaves `bridges.env` byte-identical (red if a candidate is applied)",
+ "touched": [
+  "lib/recovery.sh"
+ ],
+ "touched_blobs": {
+  "lib/recovery.sh": "066e087096f2b2df349769aab1e1d95035220a8e"
+ },
+ "witness_blobs": {
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}

@@ -195,8 +195,9 @@ Type=oneshot
 # them without a restart. Exit 2, not 1: SuccessExitStatus= below also covers
 # ExecCondition, and a status it lists counts as a pass, so exit 1 ran the
 # selection at every install and boot over the controller's set (live on
-# mint, 2026-10-05). \$\$ is a literal \$ for systemd.
-ExecCondition=/usr/bin/sh -c 'n=\$\$(grep -cE "^BRIDGE[0-9]+=obfs4 " %h/.config/nice-dns/bridges.env 2>/dev/null); [ "\$\${n:-0}" -lt 3 ] || exit 2'
+# mint, 2026-10-05). \$\$ is a literal \$ for systemd. With bridges off
+# (TOR_BRIDGES=off in bridges-mode.env) the selection is skipped too.
+ExecCondition=/usr/bin/sh -c '! grep -qx "TOR_BRIDGES=off" %h/.config/nice-dns/bridges-mode.env 2>/dev/null || exit 2; n=\$\$(grep -cE "^BRIDGE[0-9]+=obfs4 " %h/.config/nice-dns/bridges.env 2>/dev/null); [ "\$\${n:-0}" -lt 3 ] || exit 2'
 # RemainAfterExit: run once per boot before the proxy (Wants=/After= from the
 # tor quadlets); a container restart won't re-trigger the ~150s manage cycle.
 RemainAfterExit=yes
@@ -345,6 +346,15 @@ if systemctl --user restart nice-dns-fetch-bridges.service 2>/dev/null; then
   echo "   ✓ Bridges selected → ~/.config/nice-dns/bridges.env"
 else
   echo "   ! bridge-eval manage run failed; proxy will use existing bridges.env (if any)." >&2
+fi
+# The proxy's podman --env-file needs bridges.env to exist. With bridges off
+# (TOR_BRIDGES=off) the selection above is skipped, so a host with no set
+# gets an empty one and its proxy starts direct. With bridges on nothing is
+# created: a missing set stops the proxy unit, as before the mode existed.
+# The same paths the quadlets read (%h/.config/nice-dns/...).
+BRIDGES_ENV="$HOME/.config/nice-dns/bridges.env"
+if grep -qx "TOR_BRIDGES=off" "$HOME/.config/nice-dns/bridges-mode.env" 2>/dev/null && [ ! -e "$BRIDGES_ENV" ]; then
+  (umask 077 && : >"$BRIDGES_ENV")
 fi
 
 systemctl --user restart nice-dns-pod.service
