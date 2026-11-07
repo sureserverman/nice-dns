@@ -1239,6 +1239,9 @@ cmd_bridges_refresh() {
   rm -rf "${t:?}"
   case "$v" in haproxy|socat) ;; *) log_to_file "$(ts) BRIDGES no proxy variant found; nothing refreshed"; echo "$SCRIPT_NAME: no proxy variant found" >&2; return 2 ;; esac
   out="$(nd_bridges_refresh "$v" 2>&1)"; rc=$?
+  # A refresh that evaluated a set (0 applied/unchanged, 1 kept the last good
+  # set) is the last refresh `nice-dns status` reports; a skip or a refusal is not.
+  case "$rc" in 0|1) (umask 077 && date +%s >"$(nd_platform_state_dir)/bridges.last") ;; esac
   # Bridges off is a chosen state, not a failure of the daily schedule.
   if [ "$rc" -eq 3 ] && printf '%s\n' "$out" | grep -qx 'detail	bridges off'; then rc=0; fi
   log_to_file "$(ts) BRIDGES $(printf '%s\n' "$out" | awk -F '\t' '$1 == "result" { print "result=" $2 }')"

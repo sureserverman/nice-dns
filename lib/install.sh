@@ -7,7 +7,8 @@
 # Sourced by an entrypoint after it has staged its source tree (an in-tree
 # checkout, or a clone of the requested branch): it sets ND_INST_SRC (that
 # tree), ND_INST_ORIGIN (checkout|clone) and, for a clone, ND_INST_CLEANUP.
-# Sourcing only defines functions and constants.
+# Sourcing only defines functions and constants, and on Linux defaults
+# XDG_RUNTIME_DIR (below).
 #
 # The install is split in two:
 #   preparation   nd_install_begin, nd_install_<platform>_host_prereqs,
@@ -46,6 +47,13 @@
 # Portability: Bash 3.2 (macOS /bin/bash): no associative arrays, ${v,,},
 # mapfile or declare -g. State files are data: read with awk/read and checked
 # against a strict format, never sourced or evaluated.
+
+# An ssh command has no login session, so XDG_RUNTIME_DIR is unset and
+# `systemctl --user` cannot find the user bus that linger keeps at
+# /run/user/<uid> ("Failed to connect to bus", close-out evaluator 2026-11-07).
+if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -d "/run/user/$(id -u)" ]; then
+  XDG_RUNTIME_DIR="/run/user/$(id -u)"; export XDG_RUNTIME_DIR
+fi
 
 ND_INST_SCHEMA='nice-dns-install-prepare/1'
 # One build policy per platform, shared by the standard and hardened

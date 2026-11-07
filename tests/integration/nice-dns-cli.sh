@@ -1200,6 +1200,7 @@ t_bridges_a_failed_restart_names_the_written_mode() {
   cl_run "$CL_TREE/nice-dns" bridges off
   assert_rc 1 "$CL_RC" "a failed restart fails"
   assert_match 'next proxy start' "$CL_ERR" "the error says when the mode applies"
+  assert_match 'Run `nice-dns restart` to apply it now' "$CL_ERR" "and how to apply it now (asking for off again restarts nothing)"
   assert_eq "TOR_BRIDGES=off" "$(cat "$(bt_mode_file)")" "the mode stays written"
   assert_eq "" "$(cl_calls '^dig ')" "no DNS wait after a failed restart"
   cl_assert_released Linux

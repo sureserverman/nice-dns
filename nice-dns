@@ -669,8 +669,9 @@ cmd_bridges() {
   ND_RECOVERY_LOCK_TOKEN="$ND_CLI_LOCK" nd_bridges_mode_change "$sub" "bridges-$sub-$(date +%s)" >"$ND_CLI_TMP/rec" 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     err "bridges $sub is written, but the proxy restart failed (exit $rc: $(awk -F '\t' '$1 == "detail" { print $2; exit }' "$ND_CLI_TMP/rec")); it takes effect at the next proxy start."
+    # The mode is written, so `nice-dns bridges <mode>` again restarts nothing: say how to apply it now.
     # shellcheck disable=SC2016  # the backticks are text for the reader
-    err 'Check `nice-dns-health status`.'
+    err 'Run `nice-dns restart` to apply it now, or check `nice-dns-health status`.'
     return 1
   fi
   nd_state_unlock "$ND_CLI_LOCK" >/dev/null 2>&1

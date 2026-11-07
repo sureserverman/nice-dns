@@ -10,6 +10,13 @@
 #                          (default $XDG_STATE_HOME/nice-dns/unbound-route)
 #   ND_UNBOUND_CONTAINER   Unbound container name (default unbound)
 
+# An ssh command has no login session, so XDG_RUNTIME_DIR is unset and
+# `systemctl --user` cannot find the user bus that linger keeps at
+# /run/user/<uid> ("Failed to connect to bus", close-out evaluator 2026-11-07).
+if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -d "/run/user/$(id -u)" ]; then
+  XDG_RUNTIME_DIR="/run/user/$(id -u)"; export XDG_RUNTIME_DIR
+fi
+
 nd_platform_name() { printf 'linux\n'; }
 
 nd_platform_route_addr() { printf '127.0.0.1\n'; }

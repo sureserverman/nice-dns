@@ -734,6 +734,27 @@ t_the_daily_refresh_with_bridges_off_exits_0() {
       assert_rc 0 "$rc" "$plat: a skip with bridges off exits 0: $(cat "$CASE_DIR/out")"
       assert_match 'result	skipped' "$(cat "$CASE_DIR/out")" "$plat: and says skipped"
       assert_match 'bridges	skipped	bridges off' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: journalled"
+      assert_no_path "$ND_STATE_DIR/bridges.last" "$plat: a skip is not a refresh (status keeps its last_refresh)"
+    ) || exit 1
+  done
+}
+
+# Close-out evaluator F3: the daily or forced refresh stamps bridges.last when it
+# evaluated a set, so `nice-dns status` shows when the last refresh ran.
+t_an_evaluated_refresh_stamps_the_last_refresh() {
+  local plat tree rc t0 v
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      tree="$CASE_DIR/tree-stamp-$plat"; mkdir -p "$tree"
+      cp -R "$NICE_DNS_ROOT/health" "$NICE_DNS_ROOT/lib" "$NICE_DNS_ROOT/routes" "$tree/"; chmod -R go-w "$tree"
+      bl_set "$BL_LIVE" 5
+      t0="$(date +%s)"
+      bash "$tree/health/nice-dns-health" bridges-refresh >"$CASE_DIR/out-$plat" 2>&1; rc=$?
+      case "$rc" in 0|1) ;; *) fail "$plat: the refresh evaluated (rc 0 or 1), got $rc: $(cat "$CASE_DIR/out-$plat")" ;; esac
+      assert_file "$ND_STATE_DIR/bridges.last" "$plat: bridges.last is written"
+      v="$(cat "$ND_STATE_DIR/bridges.last")"
+      [ "$v" -ge "$t0" ] 2>/dev/null || fail "$plat: bridges.last holds this run's epoch, got [$v]"
     ) || exit 1
   done
 }
