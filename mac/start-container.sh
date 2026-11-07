@@ -123,7 +123,7 @@ load_tor_bridges() {
 # the set alone, as before the mode existed, so an upgrade recreates nothing.
 bridge_fingerprint() {
   {
-    if [[ "$TOR_BRIDGES" == off ]]; then printf 'TOR_BRIDGES=off\n'; fi
+    if [[ "${TOR_BRIDGES:-on}" == off ]]; then printf 'TOR_BRIDGES=off\n'; fi
     printf '%s\n' ${BRIDGE_ARGS[@]+"${BRIDGE_ARGS[@]}"}
   } | shasum -a 256 | cut -d' ' -f1
 }
@@ -179,7 +179,7 @@ dns_healthy() {
 # overwrites a newer set and keeps .prev. The sentinel is cleared either way.
 bridges_rotate_needed() {
   # Bridges off: whatever set exists is kept for `on`; none is fetched.
-  if [[ "$TOR_BRIDGES" == off ]]; then
+  if [[ "${TOR_BRIDGES:-on}" == off ]]; then
     load_bridges || true
     rm -f "$BRIDGE_SENTINEL"
     log "bridges off (TOR_BRIDGES=off); no bridge set fetched"
@@ -566,7 +566,7 @@ start_or_create_stack() {
   ensure_container "$TOR_CONTAINER" \
     -c 1 -m 512M \
     -v "${TOR_STATE_DIR}:/app/data" \
-    -e "TOR_BRIDGES=${TOR_BRIDGES}" \
+    -e "TOR_BRIDGES=${TOR_BRIDGES:-on}" \
     ${BRIDGE_ARGS[@]+"${BRIDGE_ARGS[@]}"} \
     "$TOR_IMAGE" || return 1
 
