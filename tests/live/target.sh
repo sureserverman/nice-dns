@@ -2086,10 +2086,12 @@ case "$NICE_DNS_OP" in
         tail -n 20 | while IFS= read -r l; do printf 'supervisor_line\t%s\t%s\n' "$c" "$l"; done
     done | redact ;;
   helper-report)
+    identity
     if [ "$plat" = macos ]; then h=/usr/local/libexec/nice-dns-helper; d=/usr/local/libexec/nice-dns; else h=/usr/libexec/nice-dns-helper; d=/usr/libexec/nice-dns; fi
     printf 'helper_path\t%s\nuser_uid\t%s\n' "$h" "$(id -u)"
     if [ -f "$h" ]; then
-      if [ "$plat" = macos ]; then om=$(stat -f '%u %Lp' "$h"); else om=$(stat -c '%u %a' "$h"); fi
+      # BSD %Lp drops the setuid digit; %Mp%Lp keeps it (4755).
+      if [ "$plat" = macos ]; then om=$(stat -f '%u %Mp%Lp' "$h"); else om=$(stat -c '%u %a' "$h"); fi
       printf 'helper\tpresent\nhelper_owner\t%s\nhelper_mode\t%s\nhelper_version\t%s\n' "${om%% *}" "${om##* }" "$("$h" --version </dev/null 2>/dev/null || echo unknown)"
     else
       printf 'helper\tabsent\n'

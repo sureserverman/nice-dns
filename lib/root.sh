@@ -29,8 +29,10 @@ ND_ROOT_HELPER_MAC=/usr/local/libexec/nice-dns-helper
 # _nd_root_uid_of <path>: its owner's uid (GNU or BSD stat).
 _nd_root_uid_of() { stat -c %u "$1" 2>/dev/null || stat -f %u "$1" 2>/dev/null; }
 
-# _nd_root_mode_of <path>: its permission bits in octal (GNU or BSD stat).
-_nd_root_mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null; }
+# _nd_root_mode_of <path>: its permission bits in octal, the setuid, setgid
+# and sticky digit included (GNU %a: 4755, 755; BSD %Mp%Lp: 4755, 0755; BSD
+# %Lp alone drops that digit, so a setuid helper read as 755).
+_nd_root_mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Mp%Lp "$1" 2>/dev/null; }
 
 # _nd_root_helper_file_deb: prints the helper's path when it is installed: an
 # executable, root-owned regular file.
