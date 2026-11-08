@@ -214,8 +214,14 @@ skipped.
 - **Home directories that are symlinks** (some immutable-distro layouts,
   `/home -> /var/home`) are refused by the no-symlink rule. A home with a
   trailing slash is refused as malformed.
-- **Polkit retention.** A polkit rule with `auth_admin_keep` lets a second
-  request within the retention window skip the prompt.
+- **Polkit retention.** `auth_admin_keep` lets a second request within the
+  five-minute window skip the prompt. The installer runs every pkexec of an
+  install from one runner process (lib/root.sh, OD-11) so the prompt is shown
+  once; for those five minutes any request that runner makes is authorised,
+  and the runner runs only this helper's path.
+- **A reused uid inherits the macOS helper.** The owner file names a uid. If
+  that user is deleted without an uninstall and the uid is given to a new
+  admin, the new admin gets the passwordless helper.
 - **Only mode bits are checked.** macOS ACLs and file flags (`uchg`,
   `restricted`) are not looked at, on the root-held chain or on caller paths.
 - **A user-owned or group-writable `/usr/local` fails closed.** The root-held
@@ -228,8 +234,10 @@ skipped.
 - **Groups.** `getgrouplist` on macOS reflects directory-service membership
   as the C library reports it; if `admin` membership is nested or the list is
   truncated the user is refused (fail closed).
-- **Exit codes from root-ops** can be 126/127 if bash itself fails inside the
-  script; the helper cannot rewrite them without hiding a real status.
-- **macOS support code is untested on macOS here.** The tables, grammar and
-  flow are tested for both platforms on any host; the getgrouplist and
-  privilege calls for macOS are built behind `cfg` and reviewed, not run.
+- **Exit codes from root-ops** pass through unchanged. On Linux, where pkexec
+  uses 126/127 for a dismissed or refused authorisation, deb/root-ops turns a
+  step's own 126/127 into 125; mac/root-ops needs no such mapping.
+- **The privileged macOS calls are not exercised by the tests.** The crate's
+  whole test suite builds and passes on the Mac (getgrouplist included), but
+  setuid, setgroups and the exec as root are only run by the live install
+  (Sub-plan 5 Task 2.6).

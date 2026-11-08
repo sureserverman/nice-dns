@@ -28,8 +28,12 @@
 # paths. None of this is honoured as root.
 # TRUST: the tree is the caller's own, so the scripts and files root
 # installs or runs from it are the caller's too: under sudo that grants the
-# user nothing a terminal sudo does not; the setuid helper (Stage 2) must
-# run a root-owned copy of root-ops and of the files it runs.
+# user nothing a terminal sudo does not. The setuid helper (gui/helper, its
+# THREAT-MODEL.md) runs the root-held copy of this file
+# (/usr/local/libexec/nice-dns/root-ops, from install-helper) with the
+# caller's tree, for the one admin user its owner file names, with no
+# password: any program running as that user can get root through it (the
+# owner's choice, OD-10).
 set -euo pipefail
 
 # As root, nothing of the caller's environment is trusted but the caller
@@ -53,6 +57,11 @@ fi
 
 ME="root-ops"
 _die() { echo "$ME: $2" >&2; exit "$1"; }
+
+# The nice-dns-helper version this root-ops is written for (gui/helper's
+# crate version; the `version` verb prints it). lib/root.sh reads this line
+# to decide whether the installed helper can be used.
+ND_HELPER_VERSION=0.1.0
 
 ND_ROOT_TEST=0
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
@@ -95,10 +104,22 @@ _owned_root() {
   esac
 }
 
+# _file_arg <path>: an absolute path with no empty, . or .. component and no
+# symlink anywhere in it, naming a regular file.
+_file_arg() {
+  local p="$1" d
+  case "$p" in /*) ;; *) return 1 ;; esac
+  case "$p/" in *//*|*/./*|*/../*) return 1 ;; esac
+  [ -f "$p" ] && [ ! -L "$p" ] || return 1
+  d="$(cd -P -- "$(dirname -- "$p")" 2>/dev/null && pwd -P)" || return 1
+  [ "$d/$(basename -- "$p")" = "$p" ]
+}
+
 # Validate the verb and its arguments before anything runs.
 _check() {
   case "$VERB" in
-    host-prereqs) _args 0 ;;
+    host-prereqs|version|remove-helper) _args 0 ;;
+    install-helper) _args 1; _file_arg "$1" || _die 2 "verb 'install-helper': '$1' is not a plain absolute file path" ;;
     persist) _args 1; case "$1" in haproxy|socat) ;; *) _die 2 "verb 'persist': variant must be 'haproxy' or 'socat', not '$1'" ;; esac ;;
     teardown) _args 1; case "$1" in reinstall|uninstall) ;; *) _die 2 "verb 'teardown': mode must be 'reinstall' or 'uninstall', not '$1'" ;; esac ;;
     agent) _args 1; _agent_verb "$1" || _die 2 "verb 'agent': unknown helper verb '$1'" ;;
@@ -136,6 +157,12 @@ case "$T" in /*) ;; *) _die 1 "ND_ROOT_TREE: '$T' is not an absolute path" ;; es
 [ "$(_uid_of "$T")" = "$UID_OF" ] || _die 1 "ND_ROOT_TREE: '$T' is not owned by $U"
 [ -f "$T/lib/install.sh" ] && [ ! -L "$T/lib/install.sh" ] || _die 1 "ND_ROOT_TREE: '$T' holds no lib/install.sh"
 
+# The helper's files (install-helper puts them there, remove-helper removes
+# them): the setuid binary, and beside the root-held root-ops copy it
+# runs, the owner file naming the one user it serves (OD-10).
+ND_HELPER_BIN="$R/usr/local/libexec/nice-dns-helper"
+ND_HELPER_DIR="$R/usr/local/libexec/nice-dns"
+
 # _root_dirs_ok: /usr/local and /usr/local/sbin, where the helpers live and
 # the LaunchAgent's passwordless rule runs one of them, are directories owned
 # by root (or, in a test run, the test user) and writable by no one else; a
@@ -143,7 +170,7 @@ case "$T" in /*) ;; *) _die 1 "ND_ROOT_TREE: '$T' is not an absolute path" ;; es
 _root_dirs_ok() {
   local d own=0
   [ "$ND_ROOT_TEST" = 1 ] && own="$(id -u)"
-  for d in "$R/usr/local" "$R/usr/local/sbin"; do
+  for d in "$R/usr/local" "$R/usr/local/sbin" "$R/usr/local/libexec" "$ND_HELPER_DIR"; do
     [ -e "$d" ] || [ -L "$d" ] || continue
     if [ -L "$d" ] || [ -z "$(find "$d" -maxdepth 0 \( -user 0 -o -user "$own" \) ! -perm -g+w ! -perm -o+w)" ]; then
       _die 1 "$d must be a directory owned by root and writable by no one else; not touched"
@@ -268,6 +295,47 @@ v_restore() {
   _r mkdir -p "$(dirname "$p")" && _r install -m "$mode" "$tmp" "$p"
 }
 
+# remove-helper: the helper, its owner file and its root-held root-ops
+# (install-helper), the last root step of an uninstall, so every step before
+# it can still go through them. A helper-run remove-helper is that very copy:
+# bash keeps the file it reads open.
+v_remove_helper() {
+  _root_dirs_ok
+  _r rm -f "$ND_HELPER_BIN" "$ND_HELPER_DIR/root-ops" "$ND_HELPER_DIR/owner" "$ND_HELPER_DIR/.root-ops.new"
+  if _r test -d "$ND_HELPER_DIR" </dev/null; then _r rmdir "$ND_HELPER_DIR" 2>/dev/null || true; fi
+}
+
+# version: the helper version this root-ops expects.
+v_version() { printf '%s\n' "$ND_HELPER_VERSION"; }
+
+# install-helper <binary>: the setuid helper (root:wheel 4755) a program
+# without a terminal runs (gui/helper, THREAT-MODEL.md), the owner file
+# naming the one user it serves (this install's, OD-10) and a root-held copy
+# of this root-ops for it to run, after the same directory check persist
+# makes. The binary arrives last, so no helper exists before the files it
+# needs. install(1) unlinks a file before it writes the new one, so a
+# root-ops this replaces while it runs keeps reading the old one; the setuid
+# bit is set after the owner, which chown would clear.
+v_install_helper() {
+  local tmp
+  _root_dirs_ok
+  [ -f "$T/mac/root-ops" ] && [ ! -L "$T/mac/root-ops" ] || _die 1 "install-helper: $T/mac/root-ops is not a file"
+  tmp="$(mktemp)"
+  # shellcheck disable=SC2064  # the path is fixed now
+  trap "rm -f '$tmp'" EXIT
+  printf '%s\n' "$UID_OF" >"$tmp"
+  _r install -d -m 755 "$(dirname "$ND_HELPER_DIR")" "$ND_HELPER_DIR"
+  _r install -m 644 "$tmp" "$ND_HELPER_DIR/owner"
+  # Under a temporary name, then renamed: a helper call during the install
+  # never finds a part-written copy.
+  _r install -m 755 "$T/mac/root-ops" "$ND_HELPER_DIR/.root-ops.new"
+  [ "$ND_ROOT_TEST" = 1 ] || _r chown 0:0 "$ND_HELPER_DIR/.root-ops.new"
+  _r mv -f "$ND_HELPER_DIR/.root-ops.new" "$ND_HELPER_DIR/root-ops"
+  _r install -m 755 "$1" "$ND_HELPER_BIN"
+  [ "$ND_ROOT_TEST" = 1 ] || _r chown 0:0 "$ND_HELPER_BIN" "$ND_HELPER_DIR/owner"
+  _r chmod 4755 "$ND_HELPER_BIN"
+}
+
 # One label per line at this indent: the allow-list the stage gates read.
 case "$VERB" in
   host-prereqs) v_host_prereqs ;;
@@ -276,4 +344,7 @@ case "$VERB" in
   agent) v_agent "$1" ;;
   save-previous) v_save_previous "$1" ;;
   restore) v_restore "$1" "$2" ;;
+  install-helper) v_install_helper "$1" ;;
+  remove-helper) v_remove_helper ;;
+  version) v_version ;;
 esac

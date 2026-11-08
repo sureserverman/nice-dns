@@ -12,10 +12,19 @@
 # first root step (the ownership check) runs before the helper is refreshed,
 # take a helper of any version: dns runs the tree's deb/custom-dns-deb, whose
 # verbs every root-ops since the helper's first allows.
+# On macOS the setuid helper is used the same way (no pkexec, no runner:
+# the setuid bit is the authorisation) when it is root-owned, mode 4755, its
+# owner file names this user (the helper serves no one else, OD-10) and it
+# is the version the tree's root-ops expects; agent, the first root step
+# there, and install-helper take any version.
+# On both, "the version the tree expects" also means the root-held root-ops
+# copy the helper runs is byte for byte the tree's: a copy left by an older
+# install, or a rollback to an older tree, keeps to sudo.
 # ND_INST_ROOT (the fixture tests' root prefix) also makes "root-owned" mean
 # owned by the test user, or by ND_INST_ROOT_OWNER (a uid) when that is set;
 # neither is read without ND_INST_ROOT.
 ND_ROOT_HELPER_DEB=/usr/libexec/nice-dns-helper
+ND_ROOT_HELPER_MAC=/usr/local/libexec/nice-dns-helper
 
 # _nd_root_uid_of <path>: its owner's uid (GNU or BSD stat).
 _nd_root_uid_of() { stat -c %u "$1" 2>/dev/null || stat -f %u "$1" 2>/dev/null; }
@@ -65,12 +74,22 @@ _nd_root_tree_ok() {
   done
 }
 
+# _nd_root_held_is_tree <deb|mac>: 0 when the root-held root-ops copy the
+# helper runs is the tree's root-ops.
+_nd_root_held_is_tree() {
+  local held
+  case "$1" in deb) held=/usr/libexec/nice-dns/root-ops ;; *) held=/usr/local/libexec/nice-dns/root-ops ;; esac
+  cmp -s "${ND_INST_ROOT:-}$held" "$ND_INST_TREE/$1/root-ops"
+}
+
 # _nd_root_helper_deb [any]: prints the helper's path when it can be used.
 _nd_root_helper_deb() {
   local h
   h="$(_nd_root_helper_file_deb)" || return 1
   _nd_root_tree_ok || return 1
-  [ "${1:-}" = any ] || _nd_root_helper_version_ok_deb || return 1
+  if [ "${1:-}" != any ]; then
+    _nd_root_helper_version_ok_deb && _nd_root_held_is_tree deb || return 1
+  fi
   printf '%s\n' "$h"
 }
 
@@ -177,4 +196,54 @@ nd_root_deb() {
   fi
   sudo bash "${ND_INST_TREE:?}"/deb/root-ops "$@"
 }
-nd_root_mac() { sudo bash "${ND_INST_TREE:?}"/mac/root-ops "$@"; }
+# _nd_root_helper_file_mac: prints the macOS helper's path when it is
+# installed: a root-owned regular file, setuid, mode 4755.
+_nd_root_helper_file_mac() {
+  local h="${ND_INST_ROOT:-}$ND_ROOT_HELPER_MAC" want=0
+  [ -n "${ND_INST_ROOT:-}" ] && want="${ND_INST_ROOT_OWNER:-$(id -u)}"
+  [ -f "$h" ] && [ ! -L "$h" ] && [ -x "$h" ] || return 1
+  [ "$(_nd_root_uid_of "$h")" = "$want" ] || return 1
+  [ "$(_nd_root_mode_of "$h")" = 4755 ] || return 1
+  printf '%s\n' "$h"
+}
+
+# _nd_root_helper_mine_mac: 0 when the helper's owner file names this user,
+# the only one it serves (gui/helper caller.rs); another user's install
+# keeps to sudo and, with a staged helper, takes the helper over.
+_nd_root_helper_mine_mac() {
+  local o=""
+  IFS= read -r o <"${ND_INST_ROOT:-}/usr/local/libexec/nice-dns/owner" 2>/dev/null || return 1
+  [ "$o" = "$(id -u)" ]
+}
+
+# _nd_root_helper_version_ok_mac: 0 when its --version is the one the tree's
+# mac/root-ops expects.
+_nd_root_helper_version_ok_mac() {
+  local h v w
+  h="$(_nd_root_helper_file_mac)" || return 1
+  w="$(sed -n 's/^ND_HELPER_VERSION=\([0-9][0-9.]*\)$/\1/p' "$ND_INST_TREE/mac/root-ops" 2>/dev/null | head -n 1)"
+  v="$("$h" --version 2>/dev/null)" || return 1
+  [ -n "$w" ] && [ "$v" = "$w" ]
+}
+
+# _nd_root_helper_mac [any]: prints the macOS helper's path when it can be used.
+_nd_root_helper_mac() {
+  local h
+  h="$(_nd_root_helper_file_mac)" || return 1
+  _nd_root_helper_mine_mac || return 1
+  _nd_root_tree_ok || return 1
+  if [ "${1:-}" != any ]; then
+    _nd_root_helper_version_ok_mac && _nd_root_held_is_tree mac || return 1
+  fi
+  printf '%s\n' "$h"
+}
+
+nd_root_mac() {
+  local h rc=0 any=""
+  case "${1:-}" in install-helper|agent) any=any ;; esac
+  if h="$(_nd_root_helper_mac $any)"; then
+    "$h" --tree "${ND_INST_TREE:?}" "$@" || rc=$?
+    return "$rc"
+  fi
+  sudo bash "${ND_INST_TREE:?}"/mac/root-ops "$@"
+}

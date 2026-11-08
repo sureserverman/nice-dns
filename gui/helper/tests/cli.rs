@@ -62,7 +62,7 @@ fn list_verbs_deb_and_mac_print_the_tables_one_name_per_line() {
     assert_eq!(mac.status.code(), Some(0));
     assert_eq!(
         lines(&mac),
-        ["host-prereqs", "persist", "teardown", "agent", "save-previous", "restore", "version", "install-helper"]
+        ["host-prereqs", "persist", "teardown", "agent", "save-previous", "restore", "version", "install-helper", "remove-helper"]
     );
 }
 

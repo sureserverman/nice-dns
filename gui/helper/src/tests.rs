@@ -345,7 +345,7 @@ fn grammar_deb_install_helper_two_files() {
 
 #[test]
 fn grammar_mac_zero_arg_verbs() {
-    for v in ["host-prereqs", "version"] {
+    for v in ["host-prereqs", "version", "remove-helper"] {
         ok(Mac, v, &[]);
         bad(Mac, v, &["x"]);
     }
@@ -445,7 +445,7 @@ const DEB_NAMES: &[&str] = &[
 ];
 const MAC_NAMES: &[&str] = &[
     "host-prereqs", "persist", "teardown", "agent", "save-previous", "restore", "version",
-    "install-helper",
+    "install-helper", "remove-helper",
 ];
 
 fn sorted(v: &[&str]) -> Vec<String> {

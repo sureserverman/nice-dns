@@ -539,6 +539,15 @@ t_helper_linux_wrong_version_or_owner_is_not_trusted() {
   assert_match "^pkexec $II_HELPER --tree $IP_TREE install-helper $II_ASSET " "$(cat "$FAKE_LOG")" "old helper, staged: replaced through itself"
   assert_eq "" "$(grep -E '^sudo bash [^ ]*/root-ops ' "$FAKE_LOG")" "old helper, staged: no sudo"
   cmp -s "$II_ASSET" "$II_HELPER" || fail "old helper, staged: the staged asset is installed"
+  # A held root-ops that is not the tree's, at the right version (an older
+  # install's, or a rollback's): only the dns verbs go through the helper.
+  : >"$FAKE_LOG"; ii_next_head 10
+  printf '# older copy\n' >>"$FAKE_ROOT/usr/libexec/nice-dns/root-ops"
+  ip_install install-deb socat
+  assert_rc 0 "$IP_RC" "stale copy: $IP_OUT"
+  assert_eq "" "$(grep -E '^pkexec ' "$FAKE_LOG" | grep -vE "^pkexec $II_HELPER --tree $IP_TREE dns [a-z]+$")" "stale copy: only dns verbs go through the helper"
+  assert_match "^sudo bash $IP_TREE/deb/root-ops pin$" "$(cat "$FAKE_LOG")" "stale copy: sudo for the rest"
+  cp "$IP_TREE/deb/root-ops" "$FAKE_ROOT/usr/libexec/nice-dns/root-ops"
   # A helper that is not root-owned (here: owned by another uid), a symlink or
   # not executable is never run.
   : >"$FAKE_LOG"; ii_next_head 7
@@ -618,4 +627,117 @@ t_root_ops_expects_the_crates_helper_version() {
   else
     echo "note: no xmllint or polkit DTD here; the DTD check is skipped"
   fi
+}
+
+# ─────────── the helper path (Sub-plan 5 Task 2.3: macOS, setuid) ───────────
+
+# ii_mac_helper_world: ii_helper_world on macOS; the helper is the setuid
+# binary under /usr/local/libexec.
+ii_mac_helper_world() {
+  dt_world install-mac "$(dt_fresh_state install-mac)"
+  ip_tree "$IP_HOME/src/nice-dns"
+  IP_TREE="$IP_HOME/src/nice-dns"
+  II_ASSET="$IP_HOME/staged/nice-dns-helper"
+  ip_fake_helper "$II_ASSET" "" mac
+  chmod -R go-w "$IP_HOME"
+  II_HELPER="$FAKE_ROOT/usr/local/libexec/nice-dns-helper"
+}
+
+t_helper_macos_root_steps_go_through_the_setuid_helper() {
+  local n
+  ii_mac_helper_world
+  # A staged helper: installed through sudo, root:wheel 4755 (here: the test
+  # user), with the owner file and the root-held root-ops; then every later
+  # root step goes through it, the new helper first asked its version.
+  ND_INST_HELPER_STAGED="$II_ASSET" ip_install install-mac haproxy
+  assert_rc 0 "$IP_RC" "staged: the install: $IP_OUT"
+  n="$(grep -nE "^sudo bash $IP_TREE/mac/root-ops install-helper $II_ASSET$" "$FAKE_LOG" | cut -d: -f1)"
+  assert_ne "" "$n" "staged: install-helper ran through sudo"
+  assert_eq 4755 "$(stat -c %a "$II_HELPER")" "staged: the helper is setuid, 4755"
+  assert_eq "$(id -u)" "$(cat "$FAKE_ROOT/usr/local/libexec/nice-dns/owner")" "staged: the owner file names the installing user"
+  cmp -s "$IP_TREE/mac/root-ops" "$FAKE_ROOT/usr/local/libexec/nice-dns/root-ops" || fail "staged: the root-held root-ops is this tree's"
+  assert_eq "" "$(tail -n +"$((n + 1))" "$FAKE_LOG" | grep -E '^sudo bash [^ ]*/root-ops ')" "staged: no root-ops sudo line after the helper is in"
+  assert_eq "nice-dns-helper --tree $IP_TREE version" "$(tail -n +"$((n + 1))" "$FAKE_LOG" | grep -E '^nice-dns-helper ' | head -n 1)" "staged: the new helper is asked its root-ops version first"
+  assert_eq "$(sed -n 's/^ND_HELPER_VERSION=//p' "$IP_TREE/mac/root-ops")" "$(ii_manifest_helper)" "staged: the generation records the helper's version"
+  # A reinstall: no root-ops sudo line at all; the helper stays.
+  : >"$FAKE_LOG"; ii_next_head 2
+  ip_install install-mac socat
+  assert_rc 0 "$IP_RC" "reinstall: $IP_OUT"
+  assert_eq "" "$(grep -E '^sudo bash [^ ]*/root-ops ' "$FAKE_LOG")" "reinstall: every root step goes through the helper"
+  assert_match "^nice-dns-helper --tree $IP_TREE agent check$" "$(cat "$FAKE_LOG")" "reinstall: the ownership check"
+  # The teardown runs from the private build copy under HOME
+  # (nd_install_macos_stage_tree), which the helper takes too.
+  assert_match "^nice-dns-helper --tree $IP_HOME/\\.nice-dns-install\\.[A-Za-z0-9]+/nice-dns teardown reinstall$" "$(cat "$FAKE_LOG")" "reinstall: the teardown, from the build copy"
+  assert_file "$II_HELPER" "reinstall: the helper stays"
+}
+
+t_helper_macos_wrong_mode_owner_or_version_is_not_trusted() {
+  ii_mac_helper_world
+  ND_INST_HELPER_STAGED="$II_ASSET" dt_installed install-mac
+  # Not setuid: never run; sudo, as from a terminal.
+  chmod 755 "$II_HELPER"
+  ip_install install-mac socat
+  assert_rc 0 "$IP_RC" "not setuid: $IP_OUT"
+  assert_eq "" "$(grep -E '^nice-dns-helper ' "$FAKE_LOG")" "not setuid: the helper is not run"
+  assert_match "^sudo bash [^ ]*/mac/root-ops teardown reinstall$" "$(cat "$FAKE_LOG")" "not setuid: sudo"
+  chmod 4755 "$II_HELPER"
+  # Owned by another uid: never run.
+  : >"$FAKE_LOG"; ii_next_head 3
+  ND_INST_ROOT_OWNER=$(($(id -u) + 1)) ip_install install-mac socat
+  assert_rc 0 "$IP_RC" "foreign owner: $IP_OUT"
+  assert_eq "" "$(grep -E '^nice-dns-helper ' "$FAKE_LOG")" "foreign owner: the helper is not run"
+  # An older helper runs only the agent verbs (the ownership check among them).
+  : >"$FAKE_LOG"; ii_next_head 4
+  ip_fake_helper "$II_HELPER" 0.0.9; chmod 4755 "$II_HELPER"
+  ip_install install-mac socat
+  assert_rc 0 "$IP_RC" "old helper: $IP_OUT"
+  assert_match "^nice-dns-helper --tree $IP_TREE agent check$" "$(cat "$FAKE_LOG")" "old helper: the ownership check goes through it"
+  assert_eq "" "$(grep -E '^nice-dns-helper ' "$FAKE_LOG" | grep -vE "^nice-dns-helper --tree [^ ]+ agent [a-z-]+$")" "old helper: only agent verbs go through it"
+  assert_eq 0.0.9 "$(ii_manifest_helper)" "old helper: its version is recorded"
+  # A held root-ops that is not the tree's, at the right version: only the
+  # agent verbs go through the helper.
+  : >"$FAKE_LOG"; ii_next_head 5
+  ip_fake_helper "$II_HELPER" "" mac; chmod 4755 "$II_HELPER"
+  printf '# older copy\n' >>"$FAKE_ROOT/usr/local/libexec/nice-dns/root-ops"
+  ip_install install-mac socat
+  assert_rc 0 "$IP_RC" "stale copy: $IP_OUT"
+  assert_eq "" "$(grep -E '^nice-dns-helper ' "$FAKE_LOG" | grep -vE "^nice-dns-helper --tree [^ ]+ agent [a-z-]+$")" "stale copy: only agent verbs go through the helper"
+  assert_match "^sudo bash [^ ]*/mac/root-ops teardown reinstall$" "$(cat "$FAKE_LOG")" "stale copy: sudo for the rest"
+  # An owner file naming another user: the helper is not used at all, and a
+  # staged helper is installed for this user, through sudo.
+  : >"$FAKE_LOG"; ii_next_head 6
+  cp "$IP_TREE/mac/root-ops" "$FAKE_ROOT/usr/local/libexec/nice-dns/root-ops"
+  echo $(($(id -u) + 1)) >"$FAKE_ROOT/usr/local/libexec/nice-dns/owner"
+  ip_install install-mac socat
+  assert_rc 0 "$IP_RC" "another owner: $IP_OUT"
+  assert_eq "" "$(grep -E '^nice-dns-helper ' "$FAKE_LOG")" "another owner: the helper is not run"
+  : >"$FAKE_LOG"; ii_next_head 7
+  ND_INST_HELPER_STAGED="$II_ASSET" ip_install install-mac socat
+  assert_rc 0 "$IP_RC" "another owner, staged: $IP_OUT"
+  assert_match "^sudo bash $IP_TREE/mac/root-ops install-helper $II_ASSET$" "$(cat "$FAKE_LOG")" "another owner, staged: installed through sudo"
+  assert_eq "$(id -u)" "$(cat "$FAKE_ROOT/usr/local/libexec/nice-dns/owner")" "another owner, staged: the helper is now this user's"
+}
+
+t_helper_macos_uninstall_removes_it() {
+  ii_mac_helper_world
+  ND_INST_HELPER_STAGED="$II_ASSET" dt_installed install-mac
+  ip_install install-mac uninstall
+  assert_rc 0 "$IP_RC" "uninstall: $IP_OUT"
+  assert_match "^nice-dns-helper --tree [^ ]* teardown uninstall$" "$(cat "$FAKE_LOG")" "uninstall: through the helper"
+  # Every root step of the uninstall, the DNS restore after the teardown
+  # among them, went through the helper; removing it is the last.
+  assert_eq "" "$(grep -E '^sudo bash [^ ]*/root-ops ' "$FAKE_LOG")" "uninstall: no root step needed sudo"
+  assert_match "^nice-dns-helper --tree [^ ]* agent restore$" "$(cat "$FAKE_LOG")" "uninstall: the DNS restore goes through the helper"
+  assert_eq "nice-dns-helper --tree $IP_TREE remove-helper" "$(grep -E '^(nice-dns-helper|sudo bash [^ ]*/root-ops) ' "$FAKE_LOG" | tail -n 1)" "uninstall: removing the helper is the last root step"
+  assert_no_path "$II_HELPER" "uninstall: the helper is gone"
+  assert_no_path "$FAKE_ROOT/usr/local/libexec/nice-dns" "uninstall: its owner file, root-ops copy and directory are gone"
+  # A helper that cannot be removed is passwordless root left behind: the
+  # uninstall fails and says how to remove it.
+  ii_mac_helper_world
+  ND_INST_HELPER_STAGED="$II_ASSET" dt_installed install-mac
+  printf '^sudo rm -f [^ ]*/usr/local/libexec/nice-dns-helper \n' >"$FAKE/fail"
+  ip_install install-mac uninstall
+  assert_nonzero "$IP_RC" "helper not removed: the uninstall fails"
+  assert_match "nice-dns-helper, a setuid root program, was NOT removed" "$IP_OUT" "helper not removed: says so"
+  rm -f "$FAKE/fail"
 }

@@ -485,7 +485,7 @@ v_uninstall() {
   # Last, so an uninstall that fails earlier can be retried through them: the
   # helper, its root-held root-ops and its polkit action (install-helper). A
   # helper-run uninstall is that very copy: bash keeps the file it reads open.
-  _r rm -f "$ND_HELPER_BIN" "$ND_HELPER_DIR/root-ops" "$ND_HELPER_POLICY"
+  _r rm -f "$ND_HELPER_BIN" "$ND_HELPER_DIR/root-ops" "$ND_HELPER_DIR/.root-ops.new" "$ND_HELPER_POLICY"
   if _r test -d "$ND_HELPER_DIR" </dev/null; then _r rmdir "$ND_HELPER_DIR" 2>/dev/null || true; fi
 }
 
@@ -578,8 +578,11 @@ v_version() { printf '%s\n' "$ND_HELPER_VERSION"; }
 v_install_helper() {
   cmp -s "$2" "$T/deb/org.nice-dns.policy" || _die 1 "install-helper: $2 is not this tree's deb/org.nice-dns.policy"
   [ -f "$T/deb/root-ops" ] && [ ! -L "$T/deb/root-ops" ] || _die 1 "install-helper: $T/deb/root-ops is not a file"
-  _r install -d -m 755 "$ND_HELPER_DIR" "$(dirname "$ND_HELPER_BIN")" "$(dirname "$ND_HELPER_POLICY")"
-  _r install -m 755 "$T/deb/root-ops" "$ND_HELPER_DIR/root-ops"
+  _r install -d -m 755 "$(dirname "$ND_HELPER_BIN")" "$ND_HELPER_DIR" "$(dirname "$(dirname "$ND_HELPER_POLICY")")" "$(dirname "$ND_HELPER_POLICY")"
+  # Under a temporary name, then renamed: a helper call during the install
+  # never finds a part-written copy.
+  _r install -m 755 "$T/deb/root-ops" "$ND_HELPER_DIR/.root-ops.new"
+  _r mv -f "$ND_HELPER_DIR/.root-ops.new" "$ND_HELPER_DIR/root-ops"
   _r install -m 644 "$T/deb/org.nice-dns.policy" "$ND_HELPER_POLICY"
   _r install -m 755 "$1" "$ND_HELPER_BIN"
 }

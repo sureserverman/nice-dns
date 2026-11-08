@@ -97,6 +97,7 @@ pub const MAC_VERBS: &[Verb] = &[
     v("restore", Args::Restore),
     v("version", Args::None),
     v("install-helper", Args::Files(1)),
+    v("remove-helper", Args::None),
 ];
 
 pub const DEB_OWNED: &[&str] = &[

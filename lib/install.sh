@@ -1345,7 +1345,7 @@ _nd_inst_hardened_sibling() {
 nd_install_linux_host_prereqs() {
   # The helper first, so a run without a terminal takes every later root step
   # through the version this tree expects.
-  nd_install_linux_helper || return 1
+  nd_install_helper deb || return 1
   # The podman PPA's priority pin, a half-configured PPA repaired, and the
   # base packages (deb/root-ops host-packages says why each one).
   nd_root_deb host-packages
@@ -1458,24 +1458,32 @@ EOF
 # ND_INST_HELPER_STAGED, by default <generation>/nice-dns-helper).
 _nd_inst_helper_staged() { printf '%s\n' "${ND_INST_HELPER_STAGED:-$ND_INST_STATE/generations/$ND_INST_GEN/nice-dns-helper}"; }
 
-# _nd_inst_helper_current: 0 when the installed helper is the version this
-# tree expects and runs this tree's root-ops (wherever the tree is).
+# _nd_inst_helper_current <deb|mac>: 0 when the installed helper is the
+# version this tree expects and runs this tree's root-ops (wherever the tree
+# is).
 _nd_inst_helper_current() {
-  _nd_root_helper_version_ok_deb &&
-    cmp -s "${ND_INST_ROOT:-}/usr/libexec/nice-dns/root-ops" "$ND_INST_TREE/deb/root-ops"
+  "_nd_root_helper_version_ok_$1" && _nd_root_held_is_tree "$1" || return 1
+  # A macOS helper serves only the user its owner file names.
+  [ "$1" = deb ] || _nd_root_helper_mine_mac
 }
 
-# nd_install_linux_helper: installs or replaces the helper through root-ops
-# install-helper when this install staged one and the installed one is
-# missing, another version or runs another root-ops. The generation records
-# the helper the host has afterwards: `helper <version>`, or `helper absent`.
-nd_install_linux_helper() {
-  local s h v=absent
+# nd_install_helper <deb|mac>: installs or replaces the helper through
+# root-ops install-helper when this install staged one and the installed one
+# is missing, another version or runs another root-ops (Linux: with the
+# tree's polkit policy; macOS: setuid, for this user, OD-10). The generation
+# records the helper the host has afterwards: `helper <version>`, or
+# `helper absent`.
+nd_install_helper() {
+  local os="$1" s h v=absent
   s="$(_nd_inst_helper_staged)"
-  if [ -f "$s" ] && ! _nd_inst_helper_current; then
+  if [ -f "$s" ] && ! _nd_inst_helper_current "$os"; then
     echo "▸ Installing nice-dns-helper (for actions without a terminal)"
-    nd_root_deb install-helper "$s" "$ND_INST_TREE/deb/org.nice-dns.policy" || return 1
-    if ! _nd_inst_helper_current; then
+    if [ "$os" = deb ]; then
+      nd_root_deb install-helper "$s" "$ND_INST_TREE/deb/org.nice-dns.policy" || return 1
+    else
+      nd_root_mac install-helper "$s" || return 1
+    fi
+    if ! _nd_inst_helper_current "$os"; then
       _nd_inst_err "the nice-dns-helper just installed is not the version this tree's root-ops expects, or does not run it"
       return 1
     fi
@@ -1484,15 +1492,15 @@ nd_install_linux_helper() {
     # the helper does not take (a clone in /tmp) keeps to sudo; the next
     # install from the kept source uses the helper.
     if _nd_root_tree_ok; then
-      v="$(nd_root_deb version)" || return 1
-      if [ "$v" != "$(sed -n 's/^ND_HELPER_VERSION=//p' "$ND_INST_TREE/deb/root-ops")" ]; then
+      if [ "$os" = deb ]; then v="$(nd_root_deb version)" || return 1; else v="$(nd_root_mac version)" || return 1; fi
+      if [ "$v" != "$(sed -n 's/^ND_HELPER_VERSION=//p' "$ND_INST_TREE/$os/root-ops")" ]; then
         _nd_inst_err "the root-ops nice-dns-helper runs answers version '$v', not this tree's"
         return 1
       fi
     fi
     v=absent
   fi
-  if h="$(_nd_root_helper_file_deb)"; then
+  if h="$("_nd_root_helper_file_$os")"; then
     v="$("$h" --version 2>/dev/null)" || v=""
     case "$v" in ''|*[!0-9A-Za-z.+-]*) v=unknown ;; esac
   fi
@@ -2039,6 +2047,9 @@ nd_install_linux_activate_images() {
 # teardown.
 nd_install_macos_host_prereqs() {
   local pkg
+  # The helper first, so a run without a terminal takes every later root step
+  # through the version this tree expects.
+  nd_install_helper mac || return 1
   # -- Homebrew + container + Rosetta + git --
   if ! command -v brew >/dev/null; then
     echo "Homebrew not found. Install from https://brew.sh and re-run." >&2
@@ -2393,14 +2404,21 @@ nd_install_macos_activate() {
 # and controller, and gives back every network service's DNS servers recorded
 # before nice-dns.
 nd_install_macos_uninstall() {
-  local ep sd dns_ok=1
+  local ep sd dns_ok=1 helper_ok=1
   ND_INST_TREE="$ND_INST_SRC"
   nd_install_macos_teardown uninstall
   ep="$(_nd_inst_controller_entry)"
   if [ -n "$ep" ] && [ -f "$ep" ]; then bash "$ep" uninstall || true; fi
   _nd_inst_dns_helper restore || dns_ok=0
+  # The helper goes last, so every root step above could use it. Left
+  # behind it is passwordless root for its owner, so the uninstall fails.
+  nd_root_mac remove-helper || helper_ok=0
   _nd_inst_uninstall_state "$dns_ok"
-  _nd_inst_uninstall_verdict "$dns_ok"
+  _nd_inst_uninstall_verdict "$dns_ok" || return 1
+  if [ "$helper_ok" = 0 ]; then
+    _nd_inst_err "nice-dns-helper, a setuid root program, was NOT removed. Remove it: sudo rm -rf /usr/local/libexec/nice-dns-helper /usr/local/libexec/nice-dns"
+    return 1
+  fi
 }
 
 # nd_install_macos_build_images: the local builds, in the interruption window.

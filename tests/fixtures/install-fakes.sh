@@ -570,16 +570,19 @@ ip_run() {
 }
 ip_install() { ip_run "$IP_TREE/$1.sh" "${@:2}"; }
 
-# ip_fake_helper <file> [version]: a stand-in for gui/helper's nice-dns-helper
-# (default version: the one deb/root-ops expects). --version prints it; any
-# other call is `--tree <dir> <verb> [args]`, which it runs as the real one
-# does, through the root-held root-ops copy, in root-ops' test mode (the fake
-# sudo logs each root step root-ops takes).
+# ip_fake_helper <file> [version] [deb|mac]: a stand-in for gui/helper's
+# nice-dns-helper (default version: the one that platform's root-ops expects,
+# deb by default). --version prints it; any
+# other call is `--tree <dir> <verb> [args]`, logged as `nice-dns-helper
+# <args>` and run as the real one does, through the root-held root-ops copy
+# beside it (<dir of the helper>/nice-dns/root-ops, as /usr/libexec and
+# /usr/local/libexec hold them), in root-ops' test mode (the fake sudo logs
+# each root step root-ops takes).
 ip_fake_helper() {
-  local v="${2:-$(sed -n 's/^ND_HELPER_VERSION=//p' "$NICE_DNS_ROOT/deb/root-ops")}"
+  local v="${2:-$(sed -n 's/^ND_HELPER_VERSION=//p' "$NICE_DNS_ROOT/${3:-deb}/root-ops")}"
   mkdir -p "$(dirname "$1")"
   # shellcheck disable=SC2016  # expanded by the helper
-  printf '#!/bin/sh\n[ "$1" = --version ] && { echo %s; exit 0; }\n[ "$1" = --tree ] || exit 2\nND_ROOT_TREE="$2"; shift 2\nND_ROOT_TEST_SUDO="$(command -v sudo)" ND_ROOT_TEST_IN=1 ND_DNS_TEST_ROOT="$FAKE_ROOT"\nexport ND_ROOT_TREE ND_ROOT_TEST_SUDO ND_ROOT_TEST_IN ND_DNS_TEST_ROOT\nexec bash "$FAKE_ROOT/usr/libexec/nice-dns/root-ops" "$@"\n' "$v" >"$1"
+  printf '#!/bin/sh\n[ "$1" = --version ] && { echo %s; exit 0; }\n[ "$1" = --tree ] || exit 2\nl="nice-dns-helper"; for a in "$@"; do l="$l $a"; done; printf "%%s\\n" "$l" >>"$FAKE_LOG"\nND_ROOT_TREE="$2"; shift 2\nND_ROOT_TEST_SUDO="$(command -v sudo)" ND_ROOT_TEST_IN=1 ND_DNS_TEST_ROOT="$FAKE_ROOT"\nexport ND_ROOT_TREE ND_ROOT_TEST_SUDO ND_ROOT_TEST_IN ND_DNS_TEST_ROOT\nexec bash "$(dirname "$0")/nice-dns/root-ops" "$@"\n' "$v" >"$1"
   chmod 755 "$1"
 }
 

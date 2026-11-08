@@ -94,3 +94,5 @@ sudo rm -f /etc/sudoers.d/start-podman /usr/local/sbin/start-podman.sh /usr/loca
 sudo ifconfig lo0 -alias 127.0.0.53
 sudo launchctl print system/com.apple.mDNSResponder
 sudo bash <W>/src/nice-dns/mac/start-container-root.sh restore
+sudo rm -f <W>/root/usr/local/libexec/nice-dns-helper <W>/root/usr/local/libexec/nice-dns/root-ops <W>/root/usr/local/libexec/nice-dns/owner <W>/root/usr/local/libexec/nice-dns/.root-ops.new
+sudo test -d <W>/root/usr/local/libexec/nice-dns
