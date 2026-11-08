@@ -46,6 +46,22 @@ install needs that sibling checkout next to nice-dns.
 The previous generation's images stay on the host (lib/install.sh prunes only
 older ones), so a failed install rolls back to what ran before.
 
+## What an install runs as root
+
+Every root-run step of an install, uninstall or rollback is a verb of one
+entry point in the tree being installed: `deb/root-ops` on Linux and
+`mac/root-ops` (Bash 3.2) on macOS. The installers call it as
+`sudo bash <tree>/<os>/root-ops <verb> [args]` (`lib/root.sh`), so a
+terminal install asks for sudo once and keeps the credential fresh with
+`sudo -n -v` until it ends. root-ops checks the verb and its arguments
+against its allow-list before anything runs: an unknown verb or argument
+exits 2, a run as a user other than root exits 1. The rollback's root files
+are root-ops' own fixed list; a rollback hands it the saved bytes on stdin
+and never a path to open as root. As root it trusts nothing of the caller's
+environment but `ND_ROOT_USER`, `ND_ROOT_HOME`, `ND_ROOT_TREE` and
+`SUDO_USER`. The one root step outside it is `install-deb.sh`'s
+`apt-get install git` before the source is cloned, when no tree exists yet.
+
 ## Updating the lock
 
 Run this on a maintainer machine with curl, podman, python3 and cosign:
