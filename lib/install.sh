@@ -908,23 +908,25 @@ _nd_inst_restore_files() {
       [ "$s" = absent ] || cp -Rp "$ND_INST_RB/$s" "$p"
     elif [ "$who" = root ] && [ "$ND_INST_PLATFORM" = linux ]; then
       # root-ops takes the bytes on stdin; the path and mode are its own list's.
+      rc=0
       if [ "$s" = absent ]; then
-        nd_root_deb restore "$p" absent
+        nd_root_deb restore "$p" absent || rc=$?
       else
-        nd_root_deb restore "$p" - <"$ND_INST_RB/$s"
+        nd_root_deb restore "$p" - <"$ND_INST_RB/$s" || rc=$?
       fi
+      [ "$rc" = 0 ] || echo "! $p was not restored (root-ops exit $rc); the next install or uninstall puts it right." >&2
     elif [ "$who" = root ]; then
       # A sudoers rule that does not pass visudo is not restored (exit 5).
+      rc=0
       if [ "$s" = absent ]; then
-        nd_root_mac restore "$p" absent
+        nd_root_mac restore "$p" absent || rc=$?
       else
-        rc=0; nd_root_mac restore "$p" - <"$ND_INST_RB/$s" || rc=$?
-        if [ "$rc" = 5 ]; then
-          echo "! The saved $p does not pass visudo; not restoring it. The start-container agent cannot run its root helper until the next install." >&2
-        elif [ "$rc" != 0 ]; then
-          # Any other failure is the failed command's, as the sudo line was.
-          (exit "$rc")
-        fi
+        nd_root_mac restore "$p" - <"$ND_INST_RB/$s" || rc=$?
+      fi
+      if [ "$rc" = 5 ]; then
+        echo "! The saved $p does not pass visudo; not restoring it. The start-container agent cannot run its root helper until the next install." >&2
+      elif [ "$rc" != 0 ]; then
+        echo "! $p was not restored (root-ops exit $rc); the next install or uninstall puts it right." >&2
       fi
     elif [ "$s" = absent ]; then
       rm -f "$p"
@@ -1333,15 +1335,9 @@ _nd_inst_hardened_sibling() {
 # AppArmor, sysctl, subuid/subgid, cgroup delegation and linger. None of it
 # interrupts the running stack or host DNS.
 nd_install_linux_host_prereqs() {
-  # Packages, the podman PPA (and its priority pin), the passt AppArmor
-  # profile, the low-port sysctl, subordinate ids, cgroup delegation and
-  # lingering: deb/root-ops host-prereqs, which says why each one is there.
-  # Whether the user had subordinate ids before (ND_INST_ETC is where the id
-  # files are read in the fixture tests) decides the migrate below.
-  local subids_added=0
-  grep -q "^$USER:" "${ND_INST_ETC:-/etc}/subuid" 2>/dev/null || subids_added=1
-  grep -q "^$USER:" "${ND_INST_ETC:-/etc}/subgid" 2>/dev/null || subids_added=1
-  nd_root_deb host-prereqs
+  # The podman PPA's priority pin, a half-configured PPA repaired, and the
+  # base packages (deb/root-ops host-packages says why each one).
+  nd_root_deb host-packages
 
   # Ensure user-level registries.conf knows about docker.io
   local CONFIG
@@ -1374,6 +1370,53 @@ location = "registry-1.docker.io"
 EOF
   fi
 
+  # Ensure Podman >= 5.3.0. The .pod quadlet type itself only exists in Podman
+  # 5.0+, so a stale 4.x binary will silently ignore deb/quadlet/nice-dns.pod
+  # and `systemctl --user restart nice-dns-pod.service` fails with
+  # "Unit nice-dns-pod.service not found." Re-check after the upgrade so we
+  # fail fast with a clear message instead of bombing out later in
+  # persistent-podman.sh.
+  local MIN_PODMAN="5.3.0" CUR_PODMAN MIN_CRUN="1.14.3" CUR_CRUN pkg
+  CUR_PODMAN=$(podman --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' || echo "0.0.0")
+  if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
+    echo "Podman $CUR_PODMAN < $MIN_PODMAN — upgrading via ppa:sejug/podman..."
+    # The PPA, the packages it replaces and the diverted man page, then
+    # podman and crun from it (deb/root-ops podman-upgrade).
+    nd_root_deb podman-upgrade
+    # Re-check that the upgrade actually moved us to >= 5.3.0. The PPA does not
+    # ship every Ubuntu release / arch combo, and apt-get can return success
+    # without changing the binary version (no candidate, version held, etc.).
+    CUR_PODMAN=$(podman --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' || echo "0.0.0")
+    if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
+      echo "ERROR: Podman is still at $CUR_PODMAN after the upgrade attempt." >&2
+      echo "       nice-dns requires Podman >= $MIN_PODMAN (the .pod quadlet" >&2
+      echo "       type was added in Podman 5.0). Check whether ppa:sejug/podman" >&2
+      echo "       has a build for $(lsb_release -cs 2>/dev/null || uname -m):" >&2
+      echo "         apt-cache policy podman" >&2
+      echo "       If no PPA candidate is available for your Ubuntu release/arch," >&2
+      echo "       upgrade to a release that ships Podman 5.x natively (Ubuntu 25.04+)." >&2
+      exit 1
+    fi
+  fi
+
+  # Ensure crun >= 1.14.3 (older versions reject OCI runtime-spec 1.2.x from Podman 5)
+  CUR_CRUN=$(crun --version 2>/dev/null | grep -oP 'crun version \K\d+\.\d+(\.\d+)?' || echo "0.0.0")
+  if ! printf '%s\n%s\n' "$MIN_CRUN" "$CUR_CRUN" | sort -V -C; then
+    echo "crun $CUR_CRUN < $MIN_CRUN — upgrading via ppa:sejug/podman..."
+    nd_root_deb crun-upgrade
+  fi
+
+  # The passt AppArmor profile and the low-port sysctl, then the
+  # subordinate id ranges below (deb/root-ops host-setup).
+
+  # Add UID/GID mappings for current user if missing. Accept any pre-existing
+  # range — usermod --add-sub{u,g}ids fails if the user already has an entry
+  # and we have no reason to force our specific range over whatever is there.
+  # ND_INST_ETC is where the id files are read (the fixture tests).
+  local subids_added=0
+  grep -q "^$USER:" "${ND_INST_ETC:-/etc}/subuid" 2>/dev/null || subids_added=1
+  grep -q "^$USER:" "${ND_INST_ETC:-/etc}/subgid" 2>/dev/null || subids_added=1
+  nd_root_deb host-setup
   # Ranges added just now reach podman only through `podman system migrate`,
   # and the image builds below need them. It stops the user's running
   # containers (podman-system-migrate(1)), but a user who had no ranges runs
@@ -1388,6 +1431,10 @@ EOF
     fi
     podman system migrate
   fi
+
+  # cgroups v2 delegation for systemd services, and lingering for the
+  # user's services (deb/root-ops host-linger).
+  nd_root_deb host-linger
 
   # Re-exec the user's systemd manager so it picks up the new cgroup
   # delegation config. daemon-reload only affects PID 1 (system level);
@@ -1753,10 +1800,13 @@ _nd_inst_linux_mullvad_resolves() {
 # and the controller passed its self-check. The pin itself is the helper's.
 nd_install_linux_pin() {
   ND_INST_PINNED=1
-  # The pin disables IPv6 in each Ethernet and Wi-Fi profile; a rollback of
-  # this install gives those back (with no run list the undo does nothing).
+  # The boot-time pin service, the NetworkManager lockdown and the IPv6
+  # switch on the devices there are (deb/root-ops pin-setup).
+  nd_root_deb pin-setup
+  # Then each Ethernet and Wi-Fi profile gets ipv6.method disabled, which a
+  # rollback of this install gives back (DEC-020), and the pin itself
+  # (deb/root-ops pin).
   ND_INST_V6_PROFILES=1
-  # The boot-time pin service, the NetworkManager lockdown, IPv6 off, the pin.
   nd_root_deb pin
   _nd_inst_linux_mullvad_loopback
 }

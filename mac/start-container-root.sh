@@ -10,7 +10,8 @@
 #                re-bootstrap Mullvad if we took it down.
 #
 # Installer verbs (Sub-plan 4 Task 1.2; ARCH-06, WF-DNS-003). They run under
-# the operator's own sudo during an install or uninstall and are never in the
+# the operator's own sudo during an install or uninstall, through mac/root-ops
+# agent (whose root run resets PATH and the environment), and are never in the
 # LaunchAgent's NOPASSWD rule (mac/start-container.sudoers):
 # snapshot:      record every network service's DNS servers before nice-dns
 #                pins them (first install only; a reinstall keeps the first

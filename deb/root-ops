@@ -38,12 +38,17 @@
 set -euo pipefail
 
 # As root, nothing of the caller's environment is trusted but the caller
-# variables. Before anything is defined: the functions it exported and every
-# other variable go (APT_CONFIG reaches apt-get, TMPDIR mktemp, BASH_FUNC_*
-# the commands themselves). BASH_ENV runs before any script line can act, so
-# a caller that is not sudo (which resets the environment) must clear it
-# itself: the helper does (gui/helper, Stage 2).
-if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+# variables: the functions it exported and every other variable go before
+# anything is defined (APT_CONFIG reaches apt-get, TMPDIR mktemp, BASH_FUNC_*
+# the commands themselves). This is defence in depth for a sudo caller, whose
+# environment sudo has already reset. It cannot protect against a caller that
+# hands over an environment of its own: bash reads BASH_ENV and the dynamic
+# loader LD_* before this line, an exported function can shadow the builtins
+# this very loop uses, and a variable whose name is not an identifier is not
+# listed. So a caller that is not sudo must start root-ops with an empty
+# environment (env -i, bash --noprofile --norc), as the helper does (gui/helper,
+# Stage 2).
+if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
   for f in $(compgen -A function); do unset -f "$f"; done
   for v in $(compgen -e); do
     case "$v" in ND_ROOT_USER|ND_ROOT_HOME|ND_ROOT_TREE|SUDO_USER) ;; *) unset "$v" 2>/dev/null || true ;; esac
@@ -102,7 +107,7 @@ _owned_root() {
 # Validate the verb and its arguments before anything runs.
 _check() {
   case "$VERB" in
-    host-prereqs|interrupt-prereqs|pin|profiles-done|profiles-undo|nm-reload|uninstall|fix-bin-owner|nm-wait-dropin) _args 0 ;;
+    host-packages|podman-upgrade|crun-upgrade|host-setup|host-linger|interrupt-prereqs|pin-setup|pin|profiles-done|profiles-undo|nm-reload|uninstall|fix-bin-owner|nm-wait-dropin) _args 0 ;;
     dns) _args 1; _dns_verb "$1" || _die 2 "verb 'dns': unknown helper verb '$1'" ;;
     save-previous) _args 1; _owned_root "$1" >/dev/null || _die 2 "verb 'save-previous': '$1' is not a file nice-dns owns" ;;
     restore) _args 2; _owned_root "$1" >/dev/null || _die 2 "verb 'restore': '$1' is not a file nice-dns owns"
@@ -119,14 +124,14 @@ if [ "$ND_ROOT_TEST" = 1 ]; then
   U="${ND_ROOT_USER:-${USER:-$(id -un)}}" H="${ND_ROOT_HOME:-$HOME}" UID_OF="$(id -u)"
 else
   U="${ND_ROOT_USER:-${SUDO_USER:-}}"
-  case "$U" in ''|root|-*|*[!A-Za-z0-9._-]*) _die 1 "ND_ROOT_USER: '$U' is not a non-root user name" ;; esac
+  case "$U" in ''|root|-*|*[!A-Za-z0-9._-]*) _die 1 "ND_ROOT_USER: '$U' is not a non-root user name" ;; *[!0-9]*) ;; *) _die 1 "ND_ROOT_USER: '$U' is all digits, which id and getent read as a uid" ;; esac
   UID_OF="$(id -u "$U" 2>/dev/null)" || _die 1 "ND_ROOT_USER: no user '$U'"
   [ "$UID_OF" -ne 0 ] || _die 1 "ND_ROOT_USER: '$U' is root"
   DB_HOME="$(getent passwd "$U" | cut -d: -f6)" || DB_HOME=""
   H="${ND_ROOT_HOME:-$DB_HOME}"
   [ -n "$H" ] && [ "$H" = "$DB_HOME" ] || _die 1 "ND_ROOT_HOME: '$H' is not $U's home"
 fi
-case "$U" in ''|root|-*|*[!A-Za-z0-9._-]*) _die 1 "ND_ROOT_USER: '$U' is not a non-root user name" ;; esac
+case "$U" in ''|root|-*|*[!A-Za-z0-9._-]*) _die 1 "ND_ROOT_USER: '$U' is not a non-root user name" ;; *[!0-9]*) ;; *) _die 1 "ND_ROOT_USER: '$U' is all digits, which id and getent read as a uid" ;; esac
 case "$H" in /*) ;; *) _die 1 "ND_ROOT_HOME: '$H' is not an absolute path" ;; esac
 T="${ND_ROOT_TREE:-$(cd "$(dirname "$0")/.." && pwd -P)}"
 case "$T" in /*) ;; *) _die 1 "ND_ROOT_TREE: '$T' is not an absolute path" ;; esac
@@ -136,10 +141,13 @@ case "$T" in /*) ;; *) _die 1 "ND_ROOT_TREE: '$T' is not an absolute path" ;; es
 
 # ─────────────────────────── the verbs ───────────────────────────────────────
 
-# host-prereqs: packages, the podman PPA, the passt profile, the low-port
-# sysctl, subordinate ids, cgroup delegation and lingering
-# (lib/install.sh nd_install_linux_host_prereqs).
-v_host_prereqs() {
+# host-packages, podman-upgrade, crun-upgrade, host-setup, host-linger: the
+# root steps of lib/install.sh nd_install_linux_host_prereqs, in its order;
+# it checks the podman and crun versions itself, as the user.
+#
+# host-packages: the PPA's priority pin, a half-configured PPA repaired, and
+# the base packages.
+v_host_packages() {
   # Pin all sejug/podman PPA packages (podman, crun, containers-common, ...) at
   # priority 600 so apt installs the PPA's coherent stack rather than mixing with
   # Ubuntu archive versions. Inert if the PPA isn't added yet.
@@ -162,62 +170,47 @@ v_host_prereqs() {
   # is the host's dig: the install's readiness wait and the controller's
   # observations query the stack with it.
   _r apt-get install -yq --no-install-recommends git podman netavark aardvark-dns catatonit bind9-dnsutils
+}
 
-  # Ensure Podman >= 5.3.0. The .pod quadlet type itself only exists in Podman
-  # 5.0+, so a stale 4.x binary will silently ignore deb/quadlet/nice-dns.pod
-  # and `systemctl --user restart nice-dns-pod.service` fails with
-  # "Unit nice-dns-pod.service not found." Re-check after the upgrade so we
-  # fail fast with a clear message instead of bombing out later in
-  # persistent-podman.sh.
-  local MIN_PODMAN="5.3.0" CUR_PODMAN MIN_CRUN="1.14.3" CUR_CRUN pkg
-  CUR_PODMAN=$(podman --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' || echo "0.0.0")
-  if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
-    echo "Podman $CUR_PODMAN < $MIN_PODMAN — upgrading via ppa:sejug/podman..."
+# podman-upgrade: podman and crun from the sejug/podman PPA, when the
+# installer found podman older than 5.3.0 (lib/install.sh
+# nd_install_linux_host_prereqs, which checks the version as the user,
+# with the user's PATH, before and after).
+v_podman_upgrade() {
+  local pkg
+  _r add-apt-repository -y ppa:sejug/podman
+  _r apt-get update -q
+  _r apt-get install -yq --fix-broken
+  # PPA's containers-common replaces golang-github-containers-{common,image}
+  # from Ubuntu repos; remove them first to avoid dpkg file conflicts
+  for pkg in golang-github-containers-common golang-github-containers-image; do
+    if dpkg -l "$pkg" 2>/dev/null | grep -q '^ii'; then
+      _r dpkg --remove --force-depends "$pkg"
+    fi
+  done
+  # Ubuntu's podman-compose and PPA's podman both ship
+  # /usr/share/man/man1/podman-compose.1.gz; divert *before* installing the
+  # PPA podman so dpkg doesn't fail with a file conflict. Must happen before
+  # the `apt-get install podman crun` below.
+  _r dpkg-divert --add --rename --package podman \
+    --divert /usr/share/man/man1/podman-compose.1.gz.dpkg-divert \
+    /usr/share/man/man1/podman-compose.1.gz 2>/dev/null || true
+  _r apt-get install -yq --no-install-recommends podman crun
+}
+
+# crun-upgrade: crun from the PPA, when the installer found it older than
+# 1.14.3.
+v_crun_upgrade() {
+  if ! grep -rqs 'sejug/podman' /etc/apt/sources.list.d/ 2>/dev/null; then
     _r add-apt-repository -y ppa:sejug/podman
     _r apt-get update -q
-    _r apt-get install -yq --fix-broken
-    # PPA's containers-common replaces golang-github-containers-{common,image}
-    # from Ubuntu repos; remove them first to avoid dpkg file conflicts
-    for pkg in golang-github-containers-common golang-github-containers-image; do
-      if dpkg -l "$pkg" 2>/dev/null | grep -q '^ii'; then
-        _r dpkg --remove --force-depends "$pkg"
-      fi
-    done
-    # Ubuntu's podman-compose and PPA's podman both ship
-    # /usr/share/man/man1/podman-compose.1.gz; divert *before* installing the
-    # PPA podman so dpkg doesn't fail with a file conflict. Must happen before
-    # the `apt-get install podman crun` below.
-    _r dpkg-divert --add --rename --package podman \
-      --divert /usr/share/man/man1/podman-compose.1.gz.dpkg-divert \
-      /usr/share/man/man1/podman-compose.1.gz 2>/dev/null || true
-    _r apt-get install -yq --no-install-recommends podman crun
-    # Re-check that the upgrade actually moved us to >= 5.3.0. The PPA does not
-    # ship every Ubuntu release / arch combo, and apt-get can return success
-    # without changing the binary version (no candidate, version held, etc.).
-    CUR_PODMAN=$(podman --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' || echo "0.0.0")
-    if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
-      echo "ERROR: Podman is still at $CUR_PODMAN after the upgrade attempt." >&2
-      echo "       nice-dns requires Podman >= $MIN_PODMAN (the .pod quadlet" >&2
-      echo "       type was added in Podman 5.0). Check whether ppa:sejug/podman" >&2
-      echo "       has a build for $(lsb_release -cs 2>/dev/null || uname -m):" >&2
-      echo "         apt-cache policy podman" >&2
-      echo "       If no PPA candidate is available for your Ubuntu release/arch," >&2
-      echo "       upgrade to a release that ships Podman 5.x natively (Ubuntu 25.04+)." >&2
-      exit 1
-    fi
   fi
+  _r apt-get install -yq --no-install-recommends crun
+}
 
-  # Ensure crun >= 1.14.3 (older versions reject OCI runtime-spec 1.2.x from Podman 5)
-  CUR_CRUN=$(crun --version 2>/dev/null | grep -oP 'crun version \K\d+\.\d+(\.\d+)?' || echo "0.0.0")
-  if ! printf '%s\n%s\n' "$MIN_CRUN" "$CUR_CRUN" | sort -V -C; then
-    echo "crun $CUR_CRUN < $MIN_CRUN — upgrading via ppa:sejug/podman..."
-    if ! grep -rqs 'sejug/podman' /etc/apt/sources.list.d/ 2>/dev/null; then
-      _r add-apt-repository -y ppa:sejug/podman
-      _r apt-get update -q
-    fi
-    _r apt-get install -yq --no-install-recommends crun
-  fi
-
+# host-setup: the passt profile, the low-port sysctl and the user's
+# subordinate id ranges.
+v_host_setup() {
   # pasta is a symlink to passt, so AppArmor applies the passt profile.
   # Ubuntu Noble's stock passt (0.0~git20240220) ships a profile written before
   # Podman 5.x rootless-netns. The PPA upgrades the binary but marks the
@@ -263,12 +256,16 @@ APPARMOR
   # Add UID/GID mappings for current user if missing. Accept any pre-existing
   # range — usermod --add-sub{u,g}ids fails if the user already has an entry
   # and we have no reason to force our specific range over whatever is there.
-  if ! grep -q "^$U:" "$ETC/subuid" 2>/dev/null; then
+  if ! awk -F: -v u="$U" '$1 == u { f = 1 } END { exit !f }' "$ETC/subuid" 2>/dev/null; then
     _r usermod --add-subuids 100000-165535 "$U"
   fi
-  if ! grep -q "^$U:" "$ETC/subgid" 2>/dev/null; then
+  if ! awk -F: -v u="$U" '$1 == u { f = 1 } END { exit !f }' "$ETC/subgid" 2>/dev/null; then
     _r usermod --add-subgids 100000-165535 "$U"
   fi
+}
+
+# host-linger: cgroups v2 delegation and lingering for the user.
+v_host_linger() {
   # Enable cgroups v2 delegation for systemd services
   _r mkdir -p /etc/systemd/system/user@.service.d
   _r tee /etc/systemd/system/user@.service.d/delegate.conf >/dev/null << EOF
@@ -387,6 +384,10 @@ EOF
       _r "$hook" "$d" up || true
     done
   fi
+}
+
+# _ipv6_profiles: the per-profile switch (DEC-020) and the legacy grub drop-in.
+_ipv6_profiles() {
   # The hook alone leaves a window: NetworkManager sends pre-up only after it
   # set up IP, so each activation sent MLD and a duplicate-address check from
   # :: (Stage 3 gate capture, 2026-10-12). Each Ethernet and Wi-Fi profile on
@@ -410,9 +411,10 @@ EOF
   fi
 }
 
-# pin: the boot-time pin service and its helper, the NetworkManager pieces,
-# IPv6 off, then the pin itself (lib/install.sh nd_install_linux_pin).
-v_pin() {
+# pin-setup: the boot-time pin service and its helper, the NetworkManager
+# pieces and the IPv6 switch on the devices there are (lib/install.sh
+# nd_install_linux_pin).
+v_pin_setup() {
   _r mkdir -p "$R/etc/systemd/system" "$R/usr/bin"
   _r install -m 644 "$T/deb/custom-dns-deb.service" "$R/etc/systemd/system/custom-dns-deb.service"
   _r install -m 755 "$T/deb/custom-dns-deb" "$R/usr/bin/custom-dns-deb"
@@ -421,6 +423,12 @@ v_pin() {
   _r systemctl enable custom-dns-deb.service
   _nm_lockdown
   _ipv6_disable
+}
+
+# pin: each Ethernet and Wi-Fi profile's IPv6 off (the installer has set its
+# undo flag just before), the legacy grub drop-in gone, then the pin itself.
+v_pin() {
+  _ipv6_profiles
   _r "$R/usr/bin/custom-dns-deb" pin
 }
 
@@ -453,6 +461,7 @@ v_dns() { _r bash "$T/deb/custom-dns-deb" "$1"; }
 # rollback copy, which the caller writes into its own state; exit 4 when the
 # file is absent (lib/install.sh nd_install_save_previous).
 v_save_previous() {
+  [ -L "$1" ] && _die 1 "save-previous: $1 is a symlink; not read"
   if _r test -f "$1" </dev/null; then
     _r cat "$1" </dev/null
   else
@@ -467,6 +476,7 @@ v_save_previous() {
 v_restore() {
   local p="$1" mode tmp
   mode="$(_owned_root "$p")"
+  [ -L "$p" ] && _die 1 "restore: $p is a symlink; not written"
   if [ "$2" = absent ]; then
     _r rm -f "$p"
     return 0
@@ -491,9 +501,11 @@ v_fix_bin_owner() {
     _die 1 "fix-bin-owner: $d is not a directory (or is a symlink)"
   fi
   cd -P -- "$d" || _die 1 "fix-bin-owner: cannot enter $d"
-  [ "$(pwd -P)" = "$d" ] || _die 1 "fix-bin-owner: $d moved while it was checked"
+  # The kernel's record of this process's directory (bash's pwd -P is only
+  # its own cached $PWD, which a rename leaves stale).
+  [ "$(readlink /proc/self/cwd)" = "$d" ] || _die 1 "fix-bin-owner: $d moved while it was checked"
   if [ "$ND_ROOT_TEST" = 1 ]; then g="$(id -g)"; else g="$(id -g "$U")"; fi
-  _r chown -R -P "$UID_OF:$g" .
+  _r chown -R -P --preserve-root "$UID_OF:$g" .
 }
 
 # nm-wait-dropin: network-online.target waits for real connectivity
@@ -520,8 +532,13 @@ NMOEOF
 
 # One label per line at this indent: the allow-list the stage gates read.
 case "$VERB" in
-  host-prereqs) v_host_prereqs ;;
+  host-packages) v_host_packages ;;
+  podman-upgrade) v_podman_upgrade ;;
+  crun-upgrade) v_crun_upgrade ;;
+  host-setup) v_host_setup ;;
+  host-linger) v_host_linger ;;
   interrupt-prereqs) v_interrupt_prereqs ;;
+  pin-setup) v_pin_setup ;;
   pin) v_pin ;;
   profiles-done) v_profiles_done ;;
   profiles-undo) v_profiles_undo ;;

@@ -166,7 +166,7 @@ if [ ! -w "$BRIDGES_BIN_DIR" ]; then
   echo "   ! $BRIDGES_BIN_DIR is not writable by $(whoami):"
   ls -ld "$BRIDGES_BIN_DIR" >&2
   echo "   • giving it back to $(id -u):$(id -g) as root..."
-  if nd_root_deb fix-bin-owner; then
+  if nd_root_deb fix-bin-owner && [ -w "$BRIDGES_BIN_DIR" ]; then
     echo "   ✓ ownership repaired."
   else
     echo "   ✗ chown failed. Re-run after:"  >&2

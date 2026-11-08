@@ -33,12 +33,17 @@
 set -euo pipefail
 
 # As root, nothing of the caller's environment is trusted but the caller
-# variables. Before anything is defined: the functions it exported and every
-# other variable go (APT_CONFIG reaches apt-get, TMPDIR mktemp, BASH_FUNC_*
-# the commands themselves). BASH_ENV runs before any script line can act, so
-# a caller that is not sudo (which resets the environment) must clear it
-# itself: the helper does (gui/helper, Stage 2).
-if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+# variables: the functions it exported and every other variable go before
+# anything is defined (APT_CONFIG reaches apt-get, TMPDIR mktemp, BASH_FUNC_*
+# the commands themselves). This is defence in depth for a sudo caller, whose
+# environment sudo has already reset. It cannot protect against a caller that
+# hands over an environment of its own: bash reads BASH_ENV and the dynamic
+# loader LD_* before this line, an exported function can shadow the builtins
+# this very loop uses, and a variable whose name is not an identifier is not
+# listed. So a caller that is not sudo must start root-ops with an empty
+# environment (env -i, bash --noprofile --norc), as the helper does (gui/helper,
+# Stage 2).
+if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
   for f in $(compgen -A function); do unset -f "$f"; done
   for v in $(compgen -e); do
     case "$v" in ND_ROOT_USER|ND_ROOT_HOME|ND_ROOT_TREE|SUDO_USER) ;; *) unset "$v" 2>/dev/null || true ;; esac
@@ -114,7 +119,7 @@ if [ "$ND_ROOT_TEST" = 1 ]; then
   U="${ND_ROOT_USER:-${USER:-$(id -un)}}" H="${ND_ROOT_HOME:-$HOME}" UID_OF="$(id -u)"
 else
   U="${ND_ROOT_USER:-${SUDO_USER:-}}"
-  case "$U" in ''|root|-*|*[!A-Za-z0-9._-]*) _die 1 "ND_ROOT_USER: '$U' is not a non-root user name" ;; esac
+  case "$U" in ''|root|-*|*[!A-Za-z0-9._-]*) _die 1 "ND_ROOT_USER: '$U' is not a non-root user name" ;; *[!0-9]*) ;; *) _die 1 "ND_ROOT_USER: '$U' is all digits, which id and getent read as a uid" ;; esac
   UID_OF="$(id -u "$U" 2>/dev/null)" || _die 1 "ND_ROOT_USER: no user '$U'"
   [ "$UID_OF" -ne 0 ] || _die 1 "ND_ROOT_USER: '$U' is root"
   # A value with a space comes on the line after the label.
@@ -123,13 +128,28 @@ else
   H="${ND_ROOT_HOME:-$DB_HOME}"
   [ -n "$H" ] && [ "$H" = "$DB_HOME" ] || _die 1 "ND_ROOT_HOME: '$H' is not $U's home"
 fi
-case "$U" in ''|root|-*|*[!A-Za-z0-9._-]*) _die 1 "ND_ROOT_USER: '$U' is not a non-root user name" ;; esac
+case "$U" in ''|root|-*|*[!A-Za-z0-9._-]*) _die 1 "ND_ROOT_USER: '$U' is not a non-root user name" ;; *[!0-9]*) ;; *) _die 1 "ND_ROOT_USER: '$U' is all digits, which id and getent read as a uid" ;; esac
 case "$H" in /*) ;; *) _die 1 "ND_ROOT_HOME: '$H' is not an absolute path" ;; esac
 T="${ND_ROOT_TREE:-$(cd "$(dirname "$0")/.." && pwd -P)}"
 case "$T" in /*) ;; *) _die 1 "ND_ROOT_TREE: '$T' is not an absolute path" ;; esac
 [ -d "$T" ] && [ "$(cd "$T" && pwd -P)" = "$T" ] || _die 1 "ND_ROOT_TREE: '$T' is not a directory without a symlink component"
 [ "$(_uid_of "$T")" = "$UID_OF" ] || _die 1 "ND_ROOT_TREE: '$T' is not owned by $U"
 [ -f "$T/lib/install.sh" ] && [ ! -L "$T/lib/install.sh" ] || _die 1 "ND_ROOT_TREE: '$T' holds no lib/install.sh"
+
+# _root_dirs_ok: /usr/local and /usr/local/sbin, where the helpers live and
+# the LaunchAgent's passwordless rule runs one of them, are directories owned
+# by root (or, in a test run, the test user) and writable by no one else; a
+# directory that does not exist yet is fine (persist creates it).
+_root_dirs_ok() {
+  local d own=0
+  [ "$ND_ROOT_TEST" = 1 ] && own="$(id -u)"
+  for d in "$R/usr/local" "$R/usr/local/sbin"; do
+    [ -e "$d" ] || [ -L "$d" ] || continue
+    if [ -L "$d" ] || [ -z "$(find "$d" -maxdepth 0 \( -user 0 -o -user "$own" \) ! -perm -g+w ! -perm -o+w)" ]; then
+      _die 1 "$d must be a directory owned by root and writable by no one else; not touched"
+    fi
+  done
+}
 
 # ─────────────────────────── the verbs ───────────────────────────────────────
 
@@ -146,6 +166,7 @@ v_host_prereqs() {
 # checked the directories first).
 v_persist() {
   local tmp_sudoers
+  _root_dirs_ok
   tmp_sudoers="$(mktemp)"
   # shellcheck disable=SC2064  # the path is fixed now
   trap "rm -f '$tmp_sudoers'" EXIT
@@ -177,6 +198,7 @@ v_persist() {
 # nd_install_macos_teardown, which unloads the user's agents first).
 v_teardown() {
   local mode="$1" _d
+  _root_dirs_ok
   if [ "$mode" = uninstall ]; then
     _r rm -f "$R/usr/local/sbin/nice-dns-debug-monitor.sh"
   fi
@@ -214,6 +236,8 @@ v_agent() { _r bash "$T/mac/start-container-root.sh" "$1"; }
 # save-previous <path>: an owned root file's bytes on stdout; exit 4 when
 # the file is absent (lib/install.sh nd_install_save_previous).
 v_save_previous() {
+  _root_dirs_ok
+  [ -L "$1" ] && _die 1 "save-previous: $1 is a symlink; not read"
   if _r test -f "$1" </dev/null; then
     _r cat "$1" </dev/null
   else
@@ -228,6 +252,8 @@ v_save_previous() {
 v_restore() {
   local p="$1" mode tmp
   mode="$(_owned_root "$p")"
+  _root_dirs_ok
+  [ -L "$p" ] && _die 1 "restore: $p is a symlink; not written"
   if [ "$2" = absent ]; then
     _r rm -f "$p"
     return 0

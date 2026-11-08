@@ -232,17 +232,18 @@ ro_owned() { if [ "$1" = deb ]; then echo /usr/bin/custom-dns-deb; else echo /et
 # the mode the list records.
 t_root_ops_owns_the_rollback_list() {
   local w="$CASE_DIR/rl" os plat p mode who n=0
-  mkdir -p "$w/bin"
+  mkdir -p "$w/bin" "$w/root/usr/local/sbin" "$w/root/etc/sudoers.d"
+  chmod 755 "$w/root/usr/local" "$w/root/usr/local/sbin"
   printf '#!/bin/sh\nprintf "sudo %%s\\n" "$*" >>"%s/log"\n' "$w" >"$w/bin/sudo"; chmod 755 "$w/bin/sudo"
   for os in $(ro_oses); do
     if [ "$os" = deb ]; then plat=linux; else plat=macos; fi
     while IFS="$(printf '\t')" read -r _ p mode who; do
       [ "$who" = root ] || continue
       n=$((n + 1)); : >"$w/log"
-      printf 'x\n' | ND_ROOT_TEST_SUDO="$w/bin/sudo" ND_INST_ROOT='' TMPDIR="$w" bash "$NICE_DNS_ROOT/$os/root-ops" restore "$p" - >/dev/null 2>&1
+      printf 'x\n' | ND_ROOT_TEST_SUDO="$w/bin/sudo" ND_INST_ROOT="$w/root" TMPDIR="$w" bash "$NICE_DNS_ROOT/$os/root-ops" restore "$p" - >/dev/null 2>&1
       assert_match "^sudo install -m $mode [^ ]* $p\$" "$(cat "$w/log")" "$os: root-ops restores $p with mode $mode"
     done <<ROWS
-$(HOME=/nonexistent ND_INST_ROOT='' ND_INST_PLATFORM="$plat" ND_INST_SRC="$NICE_DNS_ROOT" bash -c '. "$1/lib/install.sh"; _nd_inst_owned_paths' _ "$NICE_DNS_ROOT")
+$(HOME=/nonexistent ND_INST_ROOT="$w/root" ND_INST_PLATFORM="$plat" ND_INST_SRC="$NICE_DNS_ROOT" bash -c '. "$1/lib/install.sh"; _nd_inst_owned_paths' _ "$NICE_DNS_ROOT")
 ROWS
     assert_eq 1 "$(( n >= 5 ))" "$os: the list has its root rows ($n)"
   done
@@ -292,4 +293,109 @@ t_bash32_parses_mac_root_ops() {
   # (which once removed root-ops' own functions), for deb/root-ops too.
   assert_match '^deb-unknown=2$' "$out" "deb/root-ops as root: an unknown verb exits 2: $out"
   assert_not_match 'command not found' "$out" "no function of root-ops is lost as root: $out"
+}
+
+# The podman and crun versions are read as the installing user, with the
+# user's PATH (a podman in /usr/local/bin or ~/.local/bin counts), never by
+# root-ops with root's PATH (Stage 1 gate review, 2026-11-08).
+t_versions_are_read_as_the_user() {
+  assert_eq "" "$(grep -nE '(podman|crun) --version' "$NICE_DNS_ROOT/deb/root-ops" || true)" "root-ops reads no version"
+  assert_match 'podman --version' "$(awk '/^nd_install_linux_host_prereqs\(\)/,/^}/' "$NICE_DNS_ROOT/lib/install.sh")" "the installer does"
+}
+
+# fix-bin-owner gives ~/.local/bin back to the user from the directory it
+# entered and checked, and refuses a symlinked ~/.local or ~/.local/bin.
+t_root_ops_fix_bin_owner() {
+  local w="$CASE_DIR/fbo" rc out
+  mkdir -p "$w/bin" "$w/h1/.local/bin" "$w/h2" "$w/h3/.local" "$w/elsewhere/bin"
+  # shellcheck disable=SC2016  # expanded by the stub
+  printf '#!/bin/sh\nprintf "sudo %%s|%%s\\n" "$*" "$(pwd -P)" >>"%s/log"\n' "$w" >"$w/bin/sudo"; chmod 755 "$w/bin/sudo"
+  : >"$w/log"
+  rc=0; out="$(cd / && ND_ROOT_TEST_SUDO="$w/bin/sudo" HOME="$w/h1" bash "$NICE_DNS_ROOT/deb/root-ops" fix-bin-owner 2>&1)" || rc=$?
+  assert_eq 0 "$rc" "a real ~/.local/bin: $out"
+  assert_eq "sudo chown -R -P --preserve-root $(id -u):$(id -g) .|$w/h1/.local/bin" "$(cat "$w/log")" "chown runs from the directory it checked"
+  ln -s "$w/elsewhere" "$w/h2/.local"
+  ln -s "$w/elsewhere/bin" "$w/h3/.local/bin"
+  for h in h2 h3; do
+    : >"$w/log"
+    rc=0; out="$(ND_ROOT_TEST_SUDO="$w/bin/sudo" HOME="$w/$h" bash "$NICE_DNS_ROOT/deb/root-ops" fix-bin-owner 2>&1)" || rc=$?
+    assert_eq 1 "$rc" "$h: a symlinked component is refused: $out"
+    assert_eq "" "$(cat "$w/log")" "$h: nothing ran"
+  done
+}
+
+# A root file root-ops reads or writes back is never a symlink, and the
+# macOS helpers' directories must be root's (here the test user's) and
+# writable by no one else, for every verb that touches them.
+t_root_ops_refuses_symlinks_and_open_dirs() {
+  local w="$CASE_DIR/sym" os p rc out
+  mkdir -p "$w/bin" "$w/r/usr/bin" "$w/r/usr/local/sbin" "$w/r/etc/sudoers.d"
+  chmod 755 "$w/r/usr/local" "$w/r/usr/local/sbin"
+  printf '#!/bin/sh\nprintf "sudo %%s\\n" "$*" >>"%s/log"\n' "$w" >"$w/bin/sudo"; chmod 755 "$w/bin/sudo"
+  ln -s /etc/hostname "$w/r/usr/bin/custom-dns-deb"
+  ln -s /etc/hostname "$w/r/usr/local/sbin/start-container.sh"
+  for os in deb mac; do
+    if [ "$os" = deb ]; then p="$w/r/usr/bin/custom-dns-deb"; else p="$w/r/usr/local/sbin/start-container.sh"; fi
+    : >"$w/log"
+    rc=0; out="$(ND_ROOT_TEST_SUDO="$w/bin/sudo" ND_INST_ROOT="$w/r" bash "$NICE_DNS_ROOT/$os/root-ops" save-previous "$p" 2>&1)" || rc=$?
+    assert_eq 1 "$rc" "$os: save-previous refuses a symlink: $out"
+    rc=0; out="$(printf 'x\n' | ND_ROOT_TEST_SUDO="$w/bin/sudo" ND_INST_ROOT="$w/r" TMPDIR="$w" bash "$NICE_DNS_ROOT/$os/root-ops" restore "$p" - 2>&1)" || rc=$?
+    assert_eq 1 "$rc" "$os: restore refuses a symlink: $out"
+    assert_eq "" "$(cat "$w/log")" "$os: nothing ran"
+  done
+  rm -f "$w/r/usr/local/sbin/start-container.sh"
+  chmod 775 "$w/r/usr/local/sbin"
+  for v in "persist socat" "teardown reinstall" "save-previous $w/r/usr/local/sbin/start-container.sh"; do
+    : >"$w/log"
+    rc=0
+    # shellcheck disable=SC2086  # the words are the call
+    out="$(ND_ROOT_TEST_SUDO="$w/bin/sudo" ND_INST_ROOT="$w/r" bash "$NICE_DNS_ROOT/mac/root-ops" $v 2>&1)" || rc=$?
+    assert_eq 1 "$rc" "mac $v: a group-writable /usr/local/sbin is refused: $out"
+    assert_eq "" "$(cat "$w/log")" "mac $v: nothing ran"
+  done
+}
+
+# A root-ops refusal (exit 2) stops the installer like any failed root step
+# (Stage 1 Outcome 2; owner, 2026-11-08: shown by this case, since no user
+# input reaches root-ops as an argument). The installer copy in the world is
+# edited to hand root-ops a malformed call: at the first root step the
+# install aborts with nothing changed; at a root step inside the interruption
+# it rolls back to the deployment it replaced.
+t_root_ops_refusal_aborts_or_rolls_back() {
+  local plat
+  for plat in $(ii_platforms); do
+    (
+      local os ep dns0 dep0 call
+      os="$(ii_os "$plat")"; ep="install-$os"
+      # The first root step: the ownership check.
+      dt_world "$ep" "$(dt_fresh_state "$ep")"
+      dns0="$(dt_dns_state)"
+      # shellcheck disable=SC2016  # the literal call text
+      if [ "$plat" = linux ]; then call='nd_root_deb dns "$1"'; else call='nd_root_mac agent "$1"'; fi
+      grep -qF "$call" "$IP_TREE/lib/install.sh" || fail "$plat: the call to mangle is in lib/install.sh"
+      sed -i "s|$(printf '%s' "$call" | sed 's/[$"]/\\&/g')|${call%\"}-bad\"|" "$IP_TREE/lib/install.sh"
+      ip_install "$ep" socat
+      assert_nonzero "$IP_RC" "$plat: the install fails at the refused first step: $IP_OUT"
+      assert_match "root-ops: verb '(dns|agent)': unknown helper verb 'check-bad'" "$IP_OUT" "$plat: root-ops names the refused call"
+      assert_eq "$dns0" "$(dt_dns_state)" "$plat: host DNS is untouched"
+      assert_eq "" "$(grep -E '^sudo bash [^ ]*/root-ops ' "$FAKE_LOG" | grep -v ' check-bad$')" "$plat: no other root step ran"
+      assert_no_path "$IP_STATE/current" "$plat: nothing is installed"
+      # A root step inside the interruption: the pin (Linux), the teardown (macOS).
+      dt_world "$ep" "$(dt_fresh_state "$ep")"
+      dt_installed "$ep"
+      dep0="$(dt_deploy_state)"; dns0="$(dt_dns_state)"
+      if [ "$plat" = linux ]; then
+        sed -i 's|^  nd_root_deb pin$|  nd_root_deb pin bad|' "$IP_TREE/lib/install.sh"
+      else
+        # shellcheck disable=SC2016  # the literal call text
+        sed -i 's|^  nd_root_mac teardown "\$mode"$|  nd_root_mac teardown "$mode" bad|' "$IP_TREE/lib/install.sh"
+      fi
+      ip_install "$ep" socat
+      assert_nonzero "$IP_RC" "$plat: the reinstall fails at the refused step: $IP_OUT"
+      assert_match "root-ops: verb '(pin|teardown)' takes [0-9]+ argument\(s\), got [0-9]+" "$IP_OUT" "$plat: root-ops names the refused verb"
+      assert_match 'Rolled back to the previous deployment' "$IP_OUT" "$plat: the installer rolls back"
+      assert_eq "$dep0" "$(dt_deploy_state)" "$plat: the deployment it replaced is back"
+      assert_eq "$dns0" "$(dt_dns_state)" "$plat: host DNS is as it was"
+    ) || exit 1
+  done
 }
