@@ -1,0 +1,20 @@
+schema	nice-dns-assets-lock/1
+# Reviewed, immutable release assets of this nice-dns tree (Sub-plan 5 Task
+# 2.4). Parsed as data by lib/install.sh and scripts/update-assets-lock.sh;
+# never sourced. Refresh with scripts/update-assets-lock.sh --write after a
+# release and review the diff (docs/release-inputs.md): a sha256 changes only
+# in a reviewed commit.
+#
+# Rows (tab-separated):
+#   release <tag>                the nice-dns release the assets come from
+#                                (.github/workflows/release.yml), or none
+#   asset <role> <platform> <arch> <url> <sha256>
+#     role      helper: nice-dns-helper (gui/helper), the privileged helper
+#               a program without a terminal runs
+#     platform  linux | macos
+#     arch      amd64 | arm64
+#     url       https://github.com/sureserverman/nice-dns/releases/download/<tag>/<file>
+#     sha256    64 lowercase hex digits; an install refuses any other bytes
+#
+# With no asset for a host, an install goes on without the helper and says so.
+release	none

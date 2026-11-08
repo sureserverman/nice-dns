@@ -245,6 +245,16 @@ case "$me" in
     while [ $# -gt 0 ]; do case "$1" in -o) o="$2"; shift ;; https://*) u="$1" ;; esac; shift; done
     case "$u" in
       */mac/check-runtime.sh) cp "$FAKE/upstream/mac/check-runtime.sh" "$o" ;;
+      # A release asset (Sub-plan 5 Task 2.4): each attempt takes the next
+      # exit status from $FAKE/asset_rcs (0, or 6 for a failed lookup), then
+      # gets $FAKE/asset's bytes; with no $FAKE/asset it is not found (22).
+      https://github.com/sureserverman/nice-dns/releases/download/*)
+        if [ -s "$FAKE/asset_rcs" ]; then
+          r="$(head -n 1 "$FAKE/asset_rcs")"; sed -i 1d "$FAKE/asset_rcs"
+          [ "$r" = 0 ] || exit "$r"
+        fi
+        [ -f "$FAKE/asset" ] || exit 22
+        cp "$FAKE/asset" "$o" ;;
       *) exit 22 ;;
     esac
     exit 0 ;;

@@ -559,3 +559,76 @@ INNER
   done
   [ "$n" -gt 0 ] || assert_eq 0 0 "no macOS entrypoint selected"
 }
+
+# ─────────── the helper's release asset (Sub-plan 5 Task 2.4) ───────────
+
+# ip_asset_world <entrypoint>: a world (root steps take effect under
+# FAKE_ROOT) whose tree pins a helper asset for this host in
+# release/assets.lock; $FAKE/asset, a stand-in helper, holds the bytes the
+# fake curl serves, IP_ASSET_SHA their sha256. A second argument pins
+# another sha.
+ip_asset_world() {
+  local plat arch os
+  dt_world "$1" "$(dt_fresh_state "$1")"
+  if [ "$(ip_platform "$1")" = linux ]; then os=deb; else os=mac; fi
+  ip_fake_helper "$FAKE/asset" "" "$os"
+  IP_ASSET_SHA="$(sha256sum "$FAKE/asset" | cut -d' ' -f1)"
+  if [ "$(ip_platform "$1")" = linux ]; then plat=linux arch=amd64; else plat=macos arch=arm64; fi
+  printf 'schema\tnice-dns-assets-lock/1\nrelease\tv1.0.0\nasset\thelper\t%s\t%s\thttps://github.com/sureserverman/nice-dns/releases/download/v1.0.0/nice-dns-helper-%s-%s\t%s\n' \
+    "$plat" "$arch" "$plat" "$arch" "${2:-$IP_ASSET_SHA}" >"$IP_TREE/release/assets.lock"
+}
+
+# ip_staged_helper: the helper file the current install's generation holds.
+ip_staged_helper() { find "$IP_STATE/generations" -name nice-dns-helper -type f 2>/dev/null | head -n 1; }
+
+t_helper_asset_good_sha_is_staged_and_installed() {
+  local ep os
+  for ep in install-deb install-mac; do
+    ip_asset_world "$ep"
+    ip_install "$ep" haproxy
+    assert_rc 0 "$IP_RC" "$ep: the install: $IP_OUT"
+    assert_match '^curl -fsSL https://github\.com/sureserverman/nice-dns/releases/download/v1\.0\.0/nice-dns-helper-' "$(cat "$FAKE_LOG")" "$ep: the asset is fetched"
+    cmp -s "$FAKE/asset" "$(ip_staged_helper)" || fail "$ep: the generation holds the downloaded helper"
+    if [ "$ep" = install-deb ]; then os=deb; else os=mac; fi
+    assert_match "^sudo bash $IP_TREE/$os/root-ops install-helper $(ip_staged_helper)( |$)" "$(cat "$FAKE_LOG")" "$ep: and installs it"
+    assert_not_match 'GUI actions needing root will not work' "$IP_OUT" "$ep: nothing to report"
+  done
+}
+
+t_helper_asset_wrong_sha_is_refused_and_the_install_goes_on() {
+  local ep
+  for ep in install-deb install-mac; do
+    ip_asset_world "$ep" "$(printf '%064d' 0)"
+    ip_install "$ep" haproxy
+    assert_rc 0 "$IP_RC" "$ep: the install goes on: $IP_OUT"
+    assert_eq "" "$(ip_staged_helper)" "$ep: the mismatched file is not kept"
+    assert_eq "" "$(find "$IP_STATE/generations" -name nice-dns-helper.part 2>/dev/null)" "$ep: nor its partial download"
+    assert_eq "" "$(grep -E '^sudo bash [^ ]*/root-ops install-helper' "$FAKE_LOG")" "$ep: nothing is installed"
+    assert_match "sha256 is not the one release/assets.lock pins; it was not installed: GUI actions needing root will not work until a reinstall with network" "$IP_OUT" "$ep: says why"
+  done
+}
+
+t_helper_asset_lookup_failures_are_retried_three_times() {
+  # Two failed lookups, then the download: the helper is staged.
+  ip_asset_world install-deb
+  printf '6\n6\n0\n' >"$FAKE/asset_rcs"
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "two lookups fail: $IP_OUT"
+  assert_eq 3 "$(grep -c '^curl -fsSL https://github\.com/' "$FAKE_LOG")" "two lookups fail: three attempts"
+  assert_eq 2 "$(grep -c '^sleep 20$' "$FAKE_LOG")" "two lookups fail: 20 s apart"
+  cmp -s "$FAKE/asset" "$(ip_staged_helper)" || fail "two lookups fail: then the helper is staged"
+  # Three failed lookups: the install goes on without it, and its last lines say so.
+  ip_asset_world install-deb
+  printf '6\n6\n6\n' >"$FAKE/asset_rcs"
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "three lookups fail: the install goes on: $IP_OUT"
+  assert_eq 3 "$(grep -c '^curl -fsSL https://github\.com/' "$FAKE_LOG")" "three lookups fail: three attempts, no more"
+  assert_eq "" "$(ip_staged_helper)" "three lookups fail: no helper"
+  assert_match 'download failed \(curl exit 6\): GUI actions needing root will not work until a reinstall with network' "$(printf '%s\n' "$IP_OUT" | tail -n 3)" "three lookups fail: the summary says so"
+  # Another failure (here: not found) is not retried.
+  ip_asset_world install-deb
+  printf '22\n' >"$FAKE/asset_rcs"
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "not found: the install goes on: $IP_OUT"
+  assert_eq 1 "$(grep -c '^curl -fsSL https://github\.com/' "$FAKE_LOG")" "not found: one attempt"
+}

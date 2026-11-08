@@ -620,6 +620,8 @@ _nd_inst_publish_command() {
 # line to add; no shell profile is edited.
 nd_install_command_notice() {
   local d
+  # An install that went on without the helper says so again, last.
+  [ -z "${ND_INST_HELPER_NOTE:-}" ] || echo "$ND_INST_HELPER_NOTE"
   d="$(_nd_inst_command_dir)" || return 0
   [ -x "$d/nice-dns" ] || return 0
   # shellcheck disable=SC2016  # $PATH is text for the reader's profile
@@ -1467,6 +1469,82 @@ _nd_inst_helper_current() {
   [ "$1" = deb ] || _nd_root_helper_mine_mac
 }
 
+# The release assets (release/assets.lock, Sub-plan 5 Task 2.4).
+ND_INST_ASSETS_SCHEMA=nice-dns-assets-lock/1
+ND_INST_HELPER_MISSING="GUI actions needing root will not work until a reinstall with network"
+
+# _nd_inst_assets_check <lock>: 0 when every row has the lock's grammar
+# (lengths are counted, not matched with {n}: mawk 1.3.4 has no intervals).
+_nd_inst_assets_check() {
+  local bad
+  if [ -L "$1" ] || [ ! -f "$1" ]; then _nd_inst_err "no release/assets.lock in the source tree"; return 1; fi
+  [ "$(head -n 1 "$1")" = "schema$ND_INST_TAB$ND_INST_ASSETS_SCHEMA" ] \
+    || { _nd_inst_err "$1 is not a $ND_INST_ASSETS_SCHEMA lock"; return 1; }
+  bad="$(awk -F '\t' '
+    NR == 1 || /^#/ || NF == 0 { next }
+    $1 == "release" && NF == 2 && ($2 == "none" || $2 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) { rel++; next }
+    $1 == "asset" && NF == 6 && $2 == "helper" && ($3 == "linux" || $3 == "macos") && ($4 == "amd64" || $4 == "arm64") \
+      && index($5, "https://github.com/sureserverman/nice-dns/releases/download/v") == 1 && $5 !~ /[^A-Za-z0-9._\/:-]/ && $5 !~ /\.\./ \
+      && length($6) == 64 && $6 !~ /[^0-9a-f]/ { k = $3 "/" $4; if (k in seen) { print FNR ": a second asset for " k; next } seen[k] = 1; next }
+    { print FNR ": " $0 }
+    END { if (rel != 1) print "the lock needs exactly one release row" }' "$1")"
+  [ -z "$bad" ] || { _nd_inst_err "malformed $1: $bad"; return 1; }
+}
+
+# _nd_inst_asset_arch: this host's asset arch (amd64 | arm64), or nothing.
+_nd_inst_asset_arch() {
+  case "$(uname -m)" in x86_64|amd64) echo amd64 ;; aarch64|arm64) echo arm64 ;; esac
+}
+
+# _nd_inst_stage_helper: downloads this host's helper asset into the
+# generation (preparation; release/bootstrap.tsv `assets`) and keeps it only
+# when its sha256 is the lock's. A name lookup that fails (cold DNS, BL-044)
+# is tried three times, 20 s apart. Without an asset, a download or a
+# matching file, the install goes on without the helper and says so, now and
+# in its last lines (ND_INST_HELPER_NOTE). A malformed lock fails the
+# install. With ND_INST_HELPER_STAGED set (the fixture tests), nothing is
+# fetched.
+_nd_inst_stage_helper() {
+  local lock="$ND_INST_TREE/release/assets.lock" plat arch row url sha dst tries=1 rc got
+  [ -z "${ND_INST_HELPER_STAGED:-}" ] || return 0
+  _nd_inst_assets_check "$lock" || return 1
+  if [ "$ND_INST_PLATFORM" = linux ]; then plat=linux; else plat=macos; fi
+  arch="$(_nd_inst_asset_arch)"
+  row="$(awk -F '\t' -v p="$plat" -v a="$arch" '$1 == "asset" && $2 == "helper" && $3 == p && $4 == a { print $5 "\t" $6; exit }' "$lock")"
+  if [ -z "$row" ]; then
+    ND_INST_HELPER_NOTE="! No nice-dns-helper release asset for $plat/${arch:-$(uname -m)} in release/assets.lock: $ND_INST_HELPER_MISSING."
+    echo "$ND_INST_HELPER_NOTE" >&2
+    return 0
+  fi
+  url="${row%%"$ND_INST_TAB"*}" sha="${row#*"$ND_INST_TAB"}"
+  dst="$(_nd_inst_helper_staged)"
+  rm -f "$dst" "$dst.part"
+  echo "▸ Fetching nice-dns-helper ($plat/$arch)"
+  while :; do
+    rc=0
+    curl -fsSL "$url" -o "$dst.part" || rc=$?
+    [ "$rc" != 0 ] || break
+    rm -f "$dst.part"
+    if [ "$rc" = 6 ] && [ "$tries" -lt 3 ]; then
+      tries=$((tries + 1))
+      echo "  the name lookup failed; trying again in 20 s ($tries of 3)" >&2
+      sleep 20
+      continue
+    fi
+    ND_INST_HELPER_NOTE="! The nice-dns-helper download failed (curl exit $rc): $ND_INST_HELPER_MISSING."
+    echo "$ND_INST_HELPER_NOTE" >&2
+    return 0
+  done
+  got="$(health_sha_file "$dst.part")" || got=""
+  if [ "$got" != "$sha" ]; then
+    rm -f "$dst.part"
+    ND_INST_HELPER_NOTE="! The nice-dns-helper download's sha256 is not the one release/assets.lock pins; it was not installed: $ND_INST_HELPER_MISSING."
+    echo "$ND_INST_HELPER_NOTE" >&2
+    return 0
+  fi
+  chmod 755 "$dst.part" && mv -f "$dst.part" "$dst"
+}
+
 # nd_install_helper <deb|mac>: installs or replaces the helper through
 # root-ops install-helper when this install staged one and the installed one
 # is missing, another version or runs another root-ops (Linux: with the
@@ -1475,6 +1553,7 @@ _nd_inst_helper_current() {
 # `helper absent`.
 nd_install_helper() {
   local os="$1" s h v=absent
+  _nd_inst_stage_helper || return 1
   s="$(_nd_inst_helper_staged)"
   if [ -f "$s" ] && ! _nd_inst_helper_current "$os"; then
     echo "▸ Installing nice-dns-helper (for actions without a terminal)"

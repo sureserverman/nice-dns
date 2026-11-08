@@ -341,3 +341,90 @@ STUB
   assert_eq "" "$(printf '%s\n' "$out" | grep -E 'Traceback|has no linux/')" "and does not report missing builds"
   assert_eq "$(cat "$RI_LOCK")" "$(cat "$w/images.lock")" "and leaves the lock as it was"
 }
+
+# The release assets lock (Sub-plan 5 Task 2.4): its grammar, under gawk and
+# under mawk 1.3.4 (the awk of mint and Ubuntu 24.04), when that is here.
+t_assets_lock_grammar_is_enforced() {
+  local a ok_lock="$CASE_DIR/ok.lock" bad n sha url out awks=awk
+  command -v mawk >/dev/null 2>&1 && awks="awk mawk"
+  sha="$(printf 'nice-dns-helper' | sha256sum | cut -d' ' -f1)"
+  url=https://github.com/sureserverman/nice-dns/releases/download/v1.0.0/nice-dns-helper-linux-amd64
+  printf 'schema\tnice-dns-assets-lock/1\n# a comment\nrelease\tv1.0.0\nasset\thelper\tlinux\tamd64\t%s\t%s\n' "$url" "$sha" >"$ok_lock"
+  for a in $awks; do
+    mkdir -p "$CASE_DIR/bin-$a"; ln -sf "$(command -v "$a")" "$CASE_DIR/bin-$a/awk"
+    for f in "$NICE_DNS_ROOT/release/assets.lock" "$ok_lock"; do
+      out="$(PATH="$CASE_DIR/bin-$a:$PATH" bash -c '. "$1/lib/install.sh" && _nd_inst_assets_check "$2"' x "$NICE_DNS_ROOT" "$f" 2>&1)"
+      assert_rc 0 "$?" "$a: $(basename "$f") is well formed: $out"
+    done
+    n=0
+    while IFS= read -r bad; do
+      n=$((n + 1))
+      printf '%b' "$bad" >"$CASE_DIR/bad$n.lock"
+      out="$(PATH="$CASE_DIR/bin-$a:$PATH" bash -c '. "$1/lib/install.sh" && _nd_inst_assets_check "$2"' x "$NICE_DNS_ROOT" "$CASE_DIR/bad$n.lock" 2>&1)"
+      assert_rc 1 "$?" "$a: malformed lock $n is refused: $bad"
+      assert_match 'release/assets.lock|assets-lock|malformed' "$out" "$a: lock $n: says why"
+    done <<LOCKS
+schema\tnice-dns-images-lock/1\nrelease\tnone\n
+schema\tnice-dns-assets-lock/1\n
+schema\tnice-dns-assets-lock/1\nrelease\tnone\nrelease\tv1.0.0\n
+schema\tnice-dns-assets-lock/1\nrelease\t1.0\n
+schema\tnice-dns-assets-lock/1\nrelease\tv1.0.0\nasset\thelper\tlinux\tamd64\t$url\t${sha%?}\n
+schema\tnice-dns-assets-lock/1\nrelease\tv1.0.0\nasset\thelper\tlinux\tamd64\t$url\t$(printf '%s' "$sha" | tr a-f A-F)\n
+schema\tnice-dns-assets-lock/1\nrelease\tv1.0.0\nasset\thelper\tlinux\tamd64\thttps://example.com/nice-dns-helper\t$sha\n
+schema\tnice-dns-assets-lock/1\nrelease\tv1.0.0\nasset\thelper\tlinux\tamd64\thttps://github.com/sureserverman/nice-dns/releases/download/v1.0.0/../x\t$sha\n
+schema\tnice-dns-assets-lock/1\nrelease\tv1.0.0\nasset\thelper\twindows\tamd64\t$url\t$sha\n
+schema\tnice-dns-assets-lock/1\nrelease\tv1.0.0\nasset\tother\tlinux\tamd64\t$url\t$sha\n
+schema\tnice-dns-assets-lock/1\nrelease\tv1.0.0\nasset\thelper\tlinux\tamd64\t$url\t$sha\nasset\thelper\tlinux\tamd64\t$url\t$sha\n
+schema\tnice-dns-assets-lock/1\nrelease\tv1.0.0\nimage\tx\n
+LOCKS
+    assert_eq 12 "$n" "$a: every malformed lock was tried"
+  done
+  # An install from a tree with a malformed assets lock is refused before it
+  # changes anything.
+  ri_env install-deb
+  printf 'schema\tnice-dns-assets-lock/1\nrelease\tlatest\n' >"$IP_TREE/release/assets.lock"
+  ip_install install-deb
+  ri_refused install-deb "a malformed assets lock"
+}
+
+t_assets_refresh_script_checks_and_writes() {
+  local w="$CASE_DIR/assets" b out rc n
+  b="$w/bin"; mkdir -p "$b" "$w/rel/v1.0.0"
+  for n in linux-amd64 linux-arm64 macos-arm64; do
+    printf 'helper %s\n' "$n" >"$w/rel/v1.0.0/nice-dns-helper-$n"
+    (cd "$w/rel/v1.0.0" && sha256sum "nice-dns-helper-$n" >"nice-dns-helper-$n.sha256")
+  done
+  # The release as GitHub serves it: the latest tag, and each download.
+  cat >"$b/curl" <<STUB
+#!/bin/sh
+o="" u=""
+while [ \$# -gt 0 ]; do case "\$1" in -o) o="\$2"; shift ;; https://*) u="\$1" ;; esac; shift; done
+case "\$u" in
+  https://api.github.com/repos/sureserverman/nice-dns/releases/latest) printf '{\n  "tag_name": "v1.0.0",\n  "name": "v1.0.0"\n}\n' ;;
+  https://github.com/sureserverman/nice-dns/releases/download/*) f="$w/rel/\${u#https://github.com/sureserverman/nice-dns/releases/download/}"; [ -f "\$f" ] || exit 22; cp "\$f" "\$o" ;;
+  *) exit 22 ;;
+esac
+STUB
+  chmod 755 "$b/curl"
+  cp "$NICE_DNS_ROOT/release/assets.lock" "$w/assets.lock"
+  out="$(PATH="$b:$PATH" bash "$NICE_DNS_ROOT/scripts/update-assets-lock.sh" --lock "$w/assets.lock" 2>&1)"; rc=$?
+  assert_rc 1 "$rc" "a lock behind the release is drift: $out"
+  assert_eq "$(cat "$NICE_DNS_ROOT/release/assets.lock")" "$(cat "$w/assets.lock")" "without --write the lock is untouched"
+  out="$(PATH="$b:$PATH" bash "$NICE_DNS_ROOT/scripts/update-assets-lock.sh" --lock "$w/assets.lock" --write 2>&1)"; rc=$?
+  assert_rc 0 "$rc" "--write: $out"
+  assert_eq 3 "$(grep -c '^asset' "$w/assets.lock")" "--write records the three assets"
+  assert_match "$(printf '^release\tv1\\.0\\.0$')" "$(cat "$w/assets.lock")" "and the release"
+  assert_match "$(printf 'asset\thelper\tmacos\tarm64\thttps://github.com/sureserverman/nice-dns/releases/download/v1.0.0/nice-dns-helper-macos-arm64\t')$(cut -d' ' -f1 "$w/rel/v1.0.0/nice-dns-helper-macos-arm64.sha256")$" "$(cat "$w/assets.lock")" "each row is the asset's url and sha256"
+  assert_eq "$(grep '^#' "$NICE_DNS_ROOT/release/assets.lock")" "$(grep '^#' "$w/assets.lock")" "the comments are kept"
+  out="$(PATH="$b:$PATH" bash -c '. "$1/lib/install.sh" && _nd_inst_assets_check "$2"' x "$NICE_DNS_ROOT" "$w/assets.lock" 2>&1)"
+  assert_rc 0 "$?" "the written lock is one an install reads: $out"
+  out="$(PATH="$b:$PATH" bash "$NICE_DNS_ROOT/scripts/update-assets-lock.sh" --lock "$w/assets.lock" 2>&1)"; rc=$?
+  assert_rc 0 "$rc" "then the lock matches: $out"
+  # A binary whose bytes are not its .sha256's: an error, nothing written.
+  printf 'tampered\n' >"$w/rel/v1.0.0/nice-dns-helper-linux-arm64"
+  cp "$w/assets.lock" "$w/before.lock"
+  out="$(PATH="$b:$PATH" bash "$NICE_DNS_ROOT/scripts/update-assets-lock.sh" --lock "$w/assets.lock" --write 2>&1)"; rc=$?
+  assert_rc 2 "$rc" "a tampered asset is an error: $out"
+  assert_match "nice-dns-helper-linux-arm64's bytes do not match its .sha256" "$out" "it names the asset"
+  assert_eq "$(cat "$w/before.lock")" "$(cat "$w/assets.lock")" "nothing is written"
+}

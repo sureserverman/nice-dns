@@ -67,6 +67,20 @@ that user owns with no symlink in its path: a tree owned by root or by
 another user is refused (exit 1). The podman and crun versions are read by
 the installer, as the user, before root-ops upgrades either.
 
+Once `nice-dns-helper` is installed (below) and is the version the tree's
+root-ops expects, its root-held copy of root-ops is the tree's, and the tree
+is one the helper takes (under `$HOME`, owned by the user, writable by no
+group or other), `lib/root.sh` runs the verb through the helper instead of
+sudo, terminal or not. The helper runs the root-held copy of root-ops
+(`/usr/libexec/nice-dns/root-ops`, `/usr/local/libexec/nice-dns/root-ops`)
+with an empty environment. On Linux pkexec starts it and polkit asks for an
+administrator's password once per install, then once more each five minutes
+of a long one: one runner process makes every pkexec call (OD-11). A
+dismissed or refused dialog is `authorisation cancelled` or `not authorised`,
+and the install aborts or rolls back as for any failed step. On macOS it is
+setuid root and asks nothing; it serves only the admin user its owner file
+names (OD-10). Anything else keeps to sudo.
+
 The root steps outside it: `install-deb.sh` and `install-deb-hardened.sh`
 run `apt-get install git` before the source is cloned, when no tree exists
 yet; and, outside any install, the macOS LaunchAgent runs its own root
@@ -102,3 +116,44 @@ Then:
 Refresh at least with every sibling image release, and whenever an upstream
 base carries a security fix. Pinning must not freeze a vulnerable input
 (ARCH-05).
+
+## Release assets: the privileged helper
+
+`nice-dns-helper` (`gui/helper`) is the one program a GUI, or any caller
+without a terminal, runs to take a root step: through pkexec and polkit on
+Linux, as a setuid program on macOS (`gui/helper/THREAT-MODEL.md`). It is
+built by `.github/workflows/release.yml` on every `v*` tag, for
+`linux/amd64`, `linux/arm64` and `macos/arm64`, and attached to that GitHub
+release with a `.sha256` beside each binary.
+
+`release/assets.lock` pins them: a `release <tag>` row (`none` before the
+first release) and one `asset helper <platform> <arch> <url> <sha256>` row
+each. During preparation an install:
+
+1. checks the lock's grammar (a malformed lock fails the install before it
+   changes anything);
+2. downloads this host's asset with `curl -fsSL` into the new generation
+   (declared in `release/bootstrap.tsv` as `assets`), trying a failed name
+   lookup three times, 20 s apart (BL-044);
+3. keeps the file only when its sha256 is the lock's, and installs it
+   through root-ops `install-helper` when the installed helper is missing,
+   another version, runs another root-ops or (macOS) serves another user.
+
+With no asset for the host, a failed download or a sha256 that differs, the
+install goes on without the helper and says
+`GUI actions needing root will not work until a reinstall with network`,
+also in its last lines. A file that does not match is never installed.
+
+To pin a new release, after the workflow's run succeeded:
+
+```sh
+scripts/update-assets-lock.sh                 # report: exit 0 current, 1 drift, 2 error
+scripts/update-assets-lock.sh --write         # record the latest release (or --tag vX.Y.Z)
+```
+
+The script fetches each asset and its `.sha256`, refuses a binary whose bytes
+are not its `.sha256`'s, and writes the `release` and `asset` rows only.
+Commit the lock on its own. `ND_HELPER_VERSION` in `deb/root-ops` and
+`mac/root-ops` must be the helper crate's version
+(`tests/integration/installers-interaction.sh`
+`t_root_ops_expects_the_crates_helper_version`).
