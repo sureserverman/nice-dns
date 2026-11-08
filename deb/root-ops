@@ -20,7 +20,9 @@
 #                 symlink component, owned by that user, holding
 #                 lib/install.sh. Default: this script's own tree.
 #
-# Exit status: the verb's own; 1 when not run as root, or a caller variable
+# Exit status: the verb's own, except that a step's 126 or 127 becomes 125
+# (pkexec uses those two for a dismissed or refused authorisation, and
+# lib/root.sh reports them so); 1 when not run as root, or a caller variable
 # is refused; 2 for an unknown verb or a malformed argument, before anything
 # runs.
 #
@@ -32,9 +34,12 @@
 # TRUST: the tree is the caller's own (ND_ROOT_TREE is owned by that user),
 # so the scripts root runs from it (custom-dns-deb, 91-nice-dns-ipv6) and the
 # bytes a rollback restores are the caller's too. Under sudo that grants the
-# user nothing a terminal sudo does not. A caller without a terminal (the
-# nice-dns-helper binary, Stage 2) must therefore run a root-owned copy of
-# root-ops and of the files it runs, never the user's tree.
+# user nothing a terminal sudo does not. A caller without a terminal goes
+# through nice-dns-helper (gui/helper, its THREAT-MODEL.md), which pkexec
+# runs only after an administrator's password: it runs the root-held copy of
+# this file (/usr/libexec/nice-dns/root-ops, from install-helper) with the
+# caller's tree, checked as under the caller's home and owned by the caller
+# (OD-10). The files root runs from that tree are the caller's, as under sudo.
 set -euo pipefail
 
 # As root, nothing of the caller's environment is trusted but the caller
@@ -58,6 +63,13 @@ fi
 
 ME="root-ops"
 _die() { echo "$ME: $2" >&2; exit "$1"; }
+_nd_exit() { case "$1" in 126|127) exit 125 ;; esac; }
+trap '_nd_exit $?' EXIT
+
+# The nice-dns-helper version this root-ops is written for (gui/helper's
+# crate version; the `version` verb prints it). lib/root.sh reads this line
+# to decide whether the installed helper can be used.
+ND_HELPER_VERSION=0.1.0
 
 ND_ROOT_TEST=0
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
@@ -104,10 +116,28 @@ _owned_root() {
   esac
 }
 
+# _file_arg <path>: an absolute path with no empty, . or .. component and no
+# symlink anywhere in it, naming a regular file.
+_file_arg() {
+  local p="$1" d
+  case "$p" in /*) ;; *) return 1 ;; esac
+  case "$p/" in *//*|*/./*|*/../*) return 1 ;; esac
+  [ -f "$p" ] && [ ! -L "$p" ] || return 1
+  d="$(cd -P -- "$(dirname -- "$p")" 2>/dev/null && pwd -P)" || return 1
+  [ "$d/$(basename -- "$p")" = "$p" ]
+}
+
+# The helper's files (install-helper puts them there, uninstall removes them).
+ND_HELPER_BIN="$R/usr/libexec/nice-dns-helper"
+ND_HELPER_DIR="$R/usr/libexec/nice-dns"
+ND_HELPER_POLICY="$R/usr/share/polkit-1/actions/org.nice-dns.policy"
+
 # Validate the verb and its arguments before anything runs.
 _check() {
   case "$VERB" in
-    host-packages|podman-upgrade|crun-upgrade|host-setup|host-linger|interrupt-prereqs|pin-setup|pin|profiles-done|profiles-undo|nm-reload|uninstall|fix-bin-owner|nm-wait-dropin) _args 0 ;;
+    host-packages|podman-upgrade|crun-upgrade|host-setup|host-linger|interrupt-prereqs|pin-setup|pin|profiles-done|profiles-undo|nm-reload|uninstall|fix-bin-owner|nm-wait-dropin|version) _args 0 ;;
+    install-helper) _args 2; _file_arg "$1" || _die 2 "verb 'install-helper': '$1' is not a plain absolute file path"
+      _file_arg "$2" || _die 2 "verb 'install-helper': '$2' is not a plain absolute file path" ;;
     dns) _args 1; _dns_verb "$1" || _die 2 "verb 'dns': unknown helper verb '$1'" ;;
     save-previous) _args 1; _owned_root "$1" >/dev/null || _die 2 "verb 'save-previous': '$1' is not a file nice-dns owns" ;;
     restore) _args 2; _owned_root "$1" >/dev/null || _die 2 "verb 'restore': '$1' is not a file nice-dns owns"
@@ -452,6 +482,11 @@ v_uninstall() {
     fi
   fi
   _r systemctl daemon-reload
+  # Last, so an uninstall that fails earlier can be retried through them: the
+  # helper, its root-held root-ops and its polkit action (install-helper). A
+  # helper-run uninstall is that very copy: bash keeps the file it reads open.
+  _r rm -f "$ND_HELPER_BIN" "$ND_HELPER_DIR/root-ops" "$ND_HELPER_POLICY"
+  if _r test -d "$ND_HELPER_DIR" </dev/null; then _r rmdir "$ND_HELPER_DIR" 2>/dev/null || true; fi
 }
 
 # dns <verb>: the tree's DNS helper (lib/install.sh _nd_inst_dns_helper).
@@ -530,6 +565,25 @@ NMOEOF
   _r systemctl daemon-reload
 }
 
+# version: the helper version this root-ops expects.
+v_version() { printf '%s\n' "$ND_HELPER_VERSION"; }
+
+# install-helper <binary> <policy>: the helper a program without a terminal
+# runs through pkexec (gui/helper), a root-held copy of this root-ops for it to
+# run, and the polkit action that binds pkexec to it. The policy argument
+# must match this tree's deb/org.nice-dns.policy (a guard against a wrong
+# call, not against the caller, whose tree it is), and the tree's file is what
+# gets installed. install(1) unlinks a file before it writes the new one, so a
+# root-ops this replaces while it runs keeps reading the old one.
+v_install_helper() {
+  cmp -s "$2" "$T/deb/org.nice-dns.policy" || _die 1 "install-helper: $2 is not this tree's deb/org.nice-dns.policy"
+  [ -f "$T/deb/root-ops" ] && [ ! -L "$T/deb/root-ops" ] || _die 1 "install-helper: $T/deb/root-ops is not a file"
+  _r install -d -m 755 "$ND_HELPER_DIR" "$(dirname "$ND_HELPER_BIN")" "$(dirname "$ND_HELPER_POLICY")"
+  _r install -m 755 "$T/deb/root-ops" "$ND_HELPER_DIR/root-ops"
+  _r install -m 644 "$T/deb/org.nice-dns.policy" "$ND_HELPER_POLICY"
+  _r install -m 755 "$1" "$ND_HELPER_BIN"
+}
+
 # One label per line at this indent: the allow-list the stage gates read.
 case "$VERB" in
   host-packages) v_host_packages ;;
@@ -549,4 +603,6 @@ case "$VERB" in
   restore) v_restore "$1" "$2" ;;
   fix-bin-owner) v_fix_bin_owner ;;
   nm-wait-dropin) v_nm_wait_dropin ;;
+  install-helper) v_install_helper "$1" "$2" ;;
+  version) v_version ;;
 esac

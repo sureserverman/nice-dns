@@ -399,3 +399,223 @@ t_root_ops_refusal_aborts_or_rolls_back() {
     ) || exit 1
   done
 }
+
+# ─────────── the helper path (Sub-plan 5 Task 2.2: Linux, pkexec) ───────────
+
+# ii_helper_world: a Linux world whose tree is under HOME (the helper refuses
+# any other) and a staged helper asset. Sets II_ASSET, II_HELPER (the installed
+# helper's path), II_OUTSIDE (the world's first tree, outside HOME).
+ii_helper_world() {
+  dt_world install-deb "$(dt_fresh_state install-deb)"
+  II_OUTSIDE="$IP_TREE"
+  ip_tree "$IP_HOME/src/nice-dns"
+  IP_TREE="$IP_HOME/src/nice-dns"
+  II_ASSET="$IP_HOME/staged/nice-dns-helper"
+  ip_fake_helper "$II_ASSET"
+  # The helper takes no tree its group or others can write (the runner's
+  # umask may be 002).
+  chmod -R go-w "$IP_HOME"
+  II_HELPER="$FAKE_ROOT/usr/libexec/nice-dns-helper"
+}
+
+# ii_manifest_helper: the current generation's `helper` row value.
+ii_manifest_helper() {
+  awk -F '\t' '$1 == "helper" { print $2; exit }' "$IP_STATE/generations/$(cat "$IP_STATE/current")/prepare.tsv"
+}
+
+# ii_next_head: a new source commit, so each install is its own generation.
+ii_next_head() { printf '%040d\n' "$1" >"$FAKE/git_head"; }
+
+t_helper_linux_root_steps_go_through_pkexec() {
+  local n
+  ii_helper_world
+  # No helper anywhere: every root step is a sudo line, none a pkexec one.
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "no helper: the install: $IP_OUT"
+  assert_eq "" "$(grep -E '^pkexec ' "$FAKE_LOG")" "no helper: nothing goes through pkexec"
+  assert_match "^sudo bash $IP_TREE/deb/root-ops pin$" "$(cat "$FAKE_LOG")" "no helper: the pin is a sudo line"
+  assert_eq absent "$(ii_manifest_helper)" "no helper: the generation records it absent"
+  # A staged helper: installed through sudo (there is none yet), then every
+  # later root step goes through pkexec and the helper.
+  : >"$FAKE_LOG"; ii_next_head 1
+  ND_INST_HELPER_STAGED="$II_ASSET" ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "staged: the install: $IP_OUT"
+  n="$(grep -nE "^sudo bash $IP_TREE/deb/root-ops install-helper $II_ASSET $IP_TREE/deb/org.nice-dns.policy$" "$FAKE_LOG" | cut -d: -f1)"
+  assert_ne "" "$n" "staged: install-helper ran through sudo"
+  assert_eq "" "$(tail -n +"$((n + 1))" "$FAKE_LOG" | grep -E '^sudo bash [^ ]*/root-ops ')" "staged: no root-ops sudo line after the helper is in"
+  assert_eq "pkexec $II_HELPER --tree $IP_TREE version" "$(tail -n +"$((n + 1))" "$FAKE_LOG" | grep -E '^pkexec ' | head -n 1)" "staged: the new helper is asked its root-ops version first"
+  assert_match "^pkexec $II_HELPER --tree $IP_TREE pin$" "$(cat "$FAKE_LOG")" "staged: the pin goes through pkexec"
+  cmp -s "$II_ASSET" "$II_HELPER" || fail "staged: the helper installed is the staged asset"
+  cmp -s "$IP_TREE/deb/root-ops" "$FAKE_ROOT/usr/libexec/nice-dns/root-ops" || fail "staged: the root-held root-ops is this tree's"
+  cmp -s "$IP_TREE/deb/org.nice-dns.policy" "$FAKE_ROOT/usr/share/polkit-1/actions/org.nice-dns.policy" || fail "staged: the polkit action is installed"
+  assert_eq "$(sed -n 's/^ND_HELPER_VERSION=//p' "$IP_TREE/deb/root-ops")" "$(ii_manifest_helper)" "staged: the generation records the helper's version"
+  # A reinstall with nothing staged: no root-ops sudo line at all.
+  : >"$FAKE_LOG"; : >"$FAKE/pkexec-ppids"; ii_next_head 2
+  ip_install install-deb socat
+  assert_rc 0 "$IP_RC" "reinstall: $IP_OUT"
+  assert_eq "" "$(grep -E '^sudo bash [^ ]*/root-ops ' "$FAKE_LOG")" "reinstall: every root step goes through the helper"
+  assert_ne "" "$(grep -E "^pkexec $II_HELPER --tree $IP_TREE " "$FAKE_LOG")" "reinstall: through pkexec"
+  assert_match "^pkexec $II_HELPER --tree $IP_TREE dns check$" "$(cat "$FAKE_LOG")" "reinstall: the DNS helper's verbs too"
+  # One process ran every pkexec of the install, so polkit asks once (OD-11),
+  # though the calls come from subshells and deb/persistent-podman.sh.
+  assert_eq 1 "$(sort -u "$FAKE/pkexec-ppids" | wc -l | tr -d ' ')" "reinstall: every pkexec has one parent, the runner"
+  assert_eq "" "$(find "$IP_W/tmp" -maxdepth 1 -name 'nice-dns-root.*')" "reinstall: the runner and its directory are gone"
+  # A tree its group can write (a checkout under umask 002) is refused by the
+  # helper, so it keeps to sudo.
+  : >"$FAKE_LOG"; ii_next_head 4; chmod g+w "$IP_TREE"
+  ip_install install-deb socat
+  assert_rc 0 "$IP_RC" "group-writable tree: $IP_OUT"
+  assert_eq "" "$(grep -E '^pkexec ' "$FAKE_LOG")" "group-writable tree: nothing goes through pkexec"
+  chmod g-w "$IP_TREE"
+  # And a directory between it and HOME that its group can write.
+  : >"$FAKE_LOG"; ii_next_head 5; chmod g+w "$IP_HOME/src"
+  ip_install install-deb socat
+  assert_rc 0 "$IP_RC" "group-writable parent: $IP_OUT"
+  assert_eq "" "$(grep -E '^pkexec ' "$FAKE_LOG")" "group-writable parent: nothing goes through pkexec"
+  chmod g-w "$IP_HOME/src"
+  # A tree outside HOME, which the helper would refuse: sudo, as from a terminal.
+  : >"$FAKE_LOG"; ii_next_head 3; IP_TREE="$II_OUTSIDE"
+  ip_install install-deb socat
+  assert_rc 0 "$IP_RC" "outside HOME: $IP_OUT"
+  assert_eq "" "$(grep -E '^pkexec ' "$FAKE_LOG")" "outside HOME: nothing goes through pkexec"
+  assert_match "^sudo bash $IP_TREE/deb/root-ops pin$" "$(cat "$FAKE_LOG")" "outside HOME: sudo"
+}
+
+t_helper_linux_refused_authorisation_aborts_or_rolls_back() {
+  local rc msg dns0 dep0
+  for rc in 126 127; do
+    if [ "$rc" = 126 ]; then msg='authorisation cancelled'; else msg='not authorised'; fi
+    ii_helper_world
+    ND_INST_HELPER_STAGED="$II_ASSET" dt_installed install-deb
+    # Refused at the first root step (the ownership check): nothing changes.
+    dns0="$(dt_dns_state)"; dep0="$(dt_deploy_state)"
+    echo "$rc" >"$FAKE/pkexec_rc"
+    ip_install install-deb socat
+    assert_nonzero "$IP_RC" "$rc first step: the install fails"
+    assert_match "nice-dns: $msg" "$IP_OUT" "$rc first step: says so"
+    assert_eq 1 "$(grep -cE '^pkexec ' "$FAKE_LOG")" "$rc first step: nothing after the refused call"
+    assert_eq "" "$(grep -E '^sudo bash [^ ]*/root-ops ' "$FAKE_LOG")" "$rc first step: no sudo either"
+    assert_eq "$dns0" "$(dt_dns_state)" "$rc first step: host DNS is untouched"
+    assert_eq "$dep0" "$(dt_deploy_state)" "$rc first step: the deployment is untouched"
+    # Refused at the pin, inside the interruption: the install rolls back.
+    : >"$FAKE_LOG"; ii_next_head 5
+    printf '^pkexec [^ ]* --tree [^ ]* pin$\n' >"$FAKE/pkexec_on"
+    ip_install install-deb socat
+    assert_nonzero "$IP_RC" "$rc pin: the install fails"
+    assert_match "nice-dns: $msg" "$IP_OUT" "$rc pin: says so"
+    assert_match 'Rolled back to the previous deployment' "$IP_OUT" "$rc pin: and rolls back"
+    assert_eq "$dep0" "$(dt_deploy_state)" "$rc pin: the deployment it replaced is back"
+    assert_eq "$dns0" "$(dt_dns_state)" "$rc pin: host DNS is as it was"
+    # Refused at the pin and at every root step after it: the rollback cannot
+    # give everything back, and says so.
+    : >"$FAKE_LOG"; ii_next_head 6; : >"$FAKE/pkexec_after"
+    ip_install install-deb socat
+    assert_nonzero "$IP_RC" "$rc rollback refused: the install fails"
+    assert_match "nice-dns: $msg" "$IP_OUT" "$rc rollback refused: says why"
+    assert_match "was not restored \\(root-ops exit $rc\\)" "$IP_OUT" "$rc rollback refused: each refused restore says so"
+    rm -f "$FAKE/pkexec_rc" "$FAKE/pkexec_on" "$FAKE/pkexec_after" "$FAKE/pkexec_refusing"
+  done
+}
+
+t_helper_linux_wrong_version_or_owner_is_not_trusted() {
+  local other
+  ii_helper_world
+  ND_INST_HELPER_STAGED="$II_ASSET" dt_installed install-deb
+  # An older helper runs only the dns verbs (which every version allows, the
+  # ownership check among them); sudo runs every other root step, and the generation records the
+  # version found.
+  ip_fake_helper "$II_HELPER" 0.0.9
+  ip_install install-deb socat
+  assert_rc 0 "$IP_RC" "old helper: $IP_OUT"
+  assert_match "^pkexec $II_HELPER --tree $IP_TREE dns check$" "$(cat "$FAKE_LOG")" "old helper: the ownership check goes through it"
+  assert_eq "" "$(grep -E '^pkexec ' "$FAKE_LOG" | grep -vE "^pkexec $II_HELPER --tree $IP_TREE dns [a-z]+$")" "old helper: only dns verbs go through it"
+  assert_match "^sudo bash $IP_TREE/deb/root-ops pin$" "$(cat "$FAKE_LOG")" "old helper: the pin is a sudo line"
+  assert_eq 0.0.9 "$(ii_manifest_helper)" "old helper: its version is recorded"
+  # With a staged one, install-helper goes through the old helper (any
+  # version may replace itself), and the rest through the new one.
+  : >"$FAKE_LOG"; ii_next_head 6
+  ND_INST_HELPER_STAGED="$II_ASSET" ip_install install-deb socat
+  assert_rc 0 "$IP_RC" "old helper, staged: $IP_OUT"
+  assert_match "^pkexec $II_HELPER --tree $IP_TREE install-helper $II_ASSET " "$(cat "$FAKE_LOG")" "old helper, staged: replaced through itself"
+  assert_eq "" "$(grep -E '^sudo bash [^ ]*/root-ops ' "$FAKE_LOG")" "old helper, staged: no sudo"
+  cmp -s "$II_ASSET" "$II_HELPER" || fail "old helper, staged: the staged asset is installed"
+  # A helper that is not root-owned (here: owned by another uid), a symlink or
+  # not executable is never run.
+  : >"$FAKE_LOG"; ii_next_head 7
+  other=$(($(id -u) + 1))
+  ND_INST_ROOT_OWNER="$other" ip_install install-deb socat
+  assert_rc 0 "$IP_RC" "foreign owner: $IP_OUT"
+  assert_eq "" "$(grep -E '^pkexec ' "$FAKE_LOG")" "foreign owner: the helper is not trusted"
+  : >"$FAKE_LOG"; ii_next_head 8
+  mv "$II_HELPER" "$II_HELPER.real"; ln -s "$II_HELPER.real" "$II_HELPER"
+  ip_install install-deb socat
+  assert_rc 0 "$IP_RC" "symlink: $IP_OUT"
+  assert_eq "" "$(grep -E '^pkexec ' "$FAKE_LOG")" "symlink: the helper is not trusted"
+  rm -f "$II_HELPER"; mv "$II_HELPER.real" "$II_HELPER"; chmod 644 "$II_HELPER"
+  : >"$FAKE_LOG"; ii_next_head 9
+  ip_install install-deb socat
+  assert_rc 0 "$IP_RC" "not executable: $IP_OUT"
+  assert_eq "" "$(grep -E '^pkexec ' "$FAKE_LOG")" "not executable: the helper is not run"
+}
+
+t_helper_linux_uninstall_removes_it() {
+  ii_helper_world
+  ND_INST_HELPER_STAGED="$II_ASSET" dt_installed install-deb
+  assert_file "$II_HELPER" "installed: the helper"
+  ip_install install-deb uninstall
+  assert_rc 0 "$IP_RC" "uninstall: $IP_OUT"
+  assert_match "^pkexec $II_HELPER --tree $IP_TREE uninstall$" "$(cat "$FAKE_LOG")" "uninstall: through the helper"
+  assert_no_path "$II_HELPER" "uninstall: the helper is gone"
+  assert_no_path "$FAKE_ROOT/usr/libexec/nice-dns" "uninstall: its root-ops copy and directory are gone"
+  assert_no_path "$FAKE_ROOT/usr/share/polkit-1/actions/org.nice-dns.policy" "uninstall: the polkit action is gone"
+}
+
+t_root_ops_maps_a_steps_126_and_127_to_125() {
+  local s rc
+  s="$CASE_DIR/step"
+  # A step root-ops runs that exits 126 or 127 (a command missing on the
+  # host) must not read as pkexec's dismissed or refused authorisation.
+  for rc in 126 127 9; do
+    printf '#!/bin/sh\nexit %s\n' "$rc" >"$s"; chmod 755 "$s"
+    ND_ROOT_TEST_SUDO="$s" bash "$NICE_DNS_ROOT/deb/root-ops" dns check >/dev/null 2>&1
+    case "$rc" in 9) assert_rc 9 "$?" "a step's 9 passes through" ;; *) assert_rc 125 "$?" "a step's $rc becomes 125" ;; esac
+  done
+}
+
+t_root_ops_install_helper_refuses_before_running_anything() {
+  local s ro="$NICE_DNS_ROOT/deb/root-ops" pol="$NICE_DNS_ROOT/deb/org.nice-dns.policy" f out
+  s="$CASE_DIR/sudo"; printf '#!/bin/sh\necho "$*" >>"%s/ran"\n' "$CASE_DIR" >"$s"; chmod 755 "$s"
+  f="$CASE_DIR/asset"; : >"$f"; ln -s "$f" "$CASE_DIR/link"
+  for args in "rel/asset $pol" "$CASE_DIR/link $pol" "$CASE_DIR/./asset $pol" "$CASE_DIR/missing $pol" "$f" "$f $pol extra" "$f $CASE_DIR"; do
+    # shellcheck disable=SC2086  # each case is a word list
+    out="$(ND_ROOT_TEST_SUDO="$s" bash "$ro" install-helper $args 2>&1)"
+    assert_rc 2 "$?" "install-helper $args: refused"
+    assert_match "verb 'install-helper'" "$out" "install-helper $args: names the verb"
+  done
+  # A policy file that is not the tree's own: refused before anything is installed.
+  printf '<policyconfig/>\n' >"$CASE_DIR/other.policy"
+  out="$(ND_ROOT_TEST_SUDO="$s" bash "$ro" install-helper "$f" "$CASE_DIR/other.policy" 2>&1)"
+  assert_rc 1 "$?" "another policy: refused"
+  assert_match "is not this tree's deb/org.nice-dns.policy" "$out" "another policy: says why"
+  assert_no_path "$CASE_DIR/ran" "no root step ran for any refused call"
+  out="$(ND_ROOT_TEST_SUDO="$s" bash "$ro" version 2>&1)"
+  assert_eq "$(sed -n 's/^ND_HELPER_VERSION=//p' "$ro")" "$out" "version prints the helper version root-ops expects"
+}
+
+t_root_ops_expects_the_crates_helper_version() {
+  local want crate
+  want="$(sed -n 's/^ND_HELPER_VERSION=//p' "$NICE_DNS_ROOT/deb/root-ops")"
+  crate="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$NICE_DNS_ROOT/gui/helper/Cargo.toml" | head -n 1)"
+  assert_ne "" "$want" "deb/root-ops names the helper version it expects"
+  assert_eq "$crate" "$want" "deb/root-ops expects gui/helper's crate version"
+  # The policy binds pkexec to the path the installer runs and asks for an
+  # administrator, kept a few minutes.
+  assert_match '<annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/nice-dns-helper</annotate>' "$(cat "$NICE_DNS_ROOT/deb/org.nice-dns.policy")" "the policy names the helper's path"
+  assert_eq 3 "$(grep -c '>auth_admin_keep<' "$NICE_DNS_ROOT/deb/org.nice-dns.policy")" "any, inactive and active ask for an administrator"
+  if command -v xmllint >/dev/null 2>&1 && [ -f /usr/share/polkit-1/policyconfig-1.dtd ]; then
+    xmllint --noout --dtdvalid /usr/share/polkit-1/policyconfig-1.dtd "$NICE_DNS_ROOT/deb/org.nice-dns.policy"
+    assert_rc 0 "$?" "the policy is valid against polkit's DTD"
+  else
+    echo "note: no xmllint or polkit DTD here; the DTD check is skipped"
+  fi
+}

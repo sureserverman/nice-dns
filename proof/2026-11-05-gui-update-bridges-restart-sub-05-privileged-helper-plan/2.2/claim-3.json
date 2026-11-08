@@ -1,0 +1,36 @@
+{
+ "baseline": {
+  "elapsed_s": 247.2,
+  "exit": 0,
+  "tail": "PASS  t_restart_failure_is_reported_and_releases\nPASS  t_restart_releases_on_a_signal\nPASS  t_restart_runs_once_between_hold_and_release\nPASS  t_restart_waits_for_a_running_pass_and_gives_up_cleanly\nPASS  t_restart_without_an_answer_says_so_and_releases\nPASS  t_root_is_refused_with_the_installers_message\nPASS  t_status_command_prints_rows_and_sections_with_its_exit_codes\nPASS  t_status_epochs_are_plain_numbers_and_a_future_pass_is_stale\nPASS  t_status_flags_a_stale_or_missing_pass_and_still_prints_it\nPASS  t_status_helper_rows_read_the_file_and_the_generation\nPASS  t_status_hint_survives_an_unreadable_state\nPASS  t_status_is_in_the_help\nPASS  t_status_never_reads_an_unreadable_file_as_absent\nPASS  t_status_not_installed_names_the_curl_line_and_exits_1\nPASS  t_status_route_absent_until_chosen_and_journal_fields_stay_aligned\nPASS  t_status_rows_cover_every_group_without_running_anything\nPASS  t_status_unreadable_state_exits_2\nPASS  t_status_values_carry_no_control_characters\nPASS  t_the_readiness_wait_keeps_to_its_stated_limit\nPASS  t_unknown_commands_and_options_are_usage_errors\nPASS  t_unsupported_platform_is_refused\nPASS  t_update_a_failed_install_names_reinstall_local\nPASS  t_update_cache_names_no_commit_for_an_unclean_record\nPASS  t_update_check_bounds_its_wait_under_a_minute\nPASS  t_update_check_compares_the_recorded_commit_with_the_branch\nPASS  t_update_check_of_another_branch_keeps_no_cache\nPASS  t_update_check_reads_only_its_own_branch_line\nPASS  t_update_check_takes_only_branch\nPASS  t_update_check_unknown_changes_nothing_but_the_cache\nPASS  t_update_check_with_nothing_installed\nPASS  t_update_check_without_a_controller_keeps_no_cache_and_creates_nothing\nPASS  t_update_current_installs_nothing_unless_forced\nPASS  t_update_from_a_checkout_still_installs_the_branch\nPASS  t_update_installed_but_not_current_is_exit_11\nPASS  t_update_installs_the_recorded_choices_when_available\nPASS  t_update_refuses_local_and_widens_nothing\nPASS  t_update_unknown_installs_nothing\ngroup integration/nice-dns-cli: collected=64 passed=64 failed=0\ncollected=64 passed=64 failed=0\nresult=pass run_id=20261108T164958Z-dad4589f artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T164958Z-dad4589f"
+ },
+ "break_patch": "--- a/lib/root.sh\n+++ b/lib/root.sh\n@@ -173,7 +173,7 @@\n       126) echo \"nice-dns: authorisation cancelled\" >&2 ;;\n       127) echo \"nice-dns: not authorised\" >&2 ;;\n     esac\n-    return \"$rc\"\n+    [ \"$rc\" != 0 ] || return 0\n   fi\n   sudo bash \"${ND_INST_TREE:?}\"/deb/root-ops \"$@\"\n }\n",
+ "build": null,
+ "created": "2026-11-08T16:53:45+00:00",
+ "fingerprint": "1d586746b30bcaaed4aadd24698b06d4b5723e73fcb8fe3f72c54d2c26db3363",
+ "index": 3,
+ "kind": "claim",
+ "named_break": "the install proceeds",
+ "no_build_reason": "shell scripts, no build",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-05-privileged-helper-plan.md",
+ "red": {
+  "elapsed_s": 94.0,
+  "exit": 1,
+  "tail": "run_id=20261108T165211Z-c0a4ca9f artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T165211Z-c0a4ca9f\nPASS  t_bash32_parses_mac_root_ops\nPASS  t_bootstrap_use_is_declared\nFAIL  t_helper_linux_refused_authorisation_aborts_or_rolls_back (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261108T165211Z-c0a4ca9f/cases/integration-installers-interaction/t_helper_linux_refused_authorisation_aborts_or_rolls_back/case.log)\n      ASSERT FAIL: 126 first step: the install fails: expected a non-zero exit\nFAIL  t_helper_linux_root_steps_go_through_pkexec (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261108T165211Z-c0a4ca9f/cases/integration-installers-interaction/t_helper_linux_root_steps_go_through_pkexec/case.log)\n      ASSERT FAIL: staged: no root-ops sudo line after the helper is in: expected [] got [sudo bash /home/user/.local/state/nice-dns-tests/runs/20261108T165211Z-c0a4ca9f/cases/integration-installers-interaction/t_helper_linux_root_steps_go_through_pkexec/w-install-deb/home/src/nice-dns/deb/root-ops save-previous /home/user/.local/state/nice-dns-tests/runs/20261108T165211Z-c0a4ca9f/cases/integration-installers-interaction/t_helper_linux_root_steps_go_through_pkexec/w-install-deb/root/etc/systemd/system/NetworkManager-wait-online.service.d/10-wait-for-connectivity.conf]\nPASS  t_helper_linux_uninstall_removes_it\nFAIL  t_helper_linux_wrong_version_or_owner_is_not_trusted (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261108T165211Z-c0a4ca9f/cases/integration-installers-interaction/t_helper_linux_wrong_version_or_owner_is_not_trusted/case.log)\n      ASSERT FAIL: old helper, staged: no sudo: expected [] got [sudo bash /home/user/.local/state/nice-dns-tests/runs/20261108T165211Z-c0a4ca9f/cases/integration-installers-interaction/t_helper_linux_wrong_version_or_owner_is_not_trusted/w-install-deb/home/src/nice-dns/deb/root-ops save-previous /home/user/.local/state/nice-dns-tests/runs/20261108T165211Z-c0a4ca9f/cases/integration-installers-interaction/t_helper_linux_wrong_version_or_owner_is_not_trusted/w-install-deb/root/etc/systemd/system/NetworkManager-wait-online.service.d/10-wait-for-connectivity.conf]\nPASS  t_lifecycle_restores_exactly_what_it_owns\nPASS  t_no_step_points_the_host_at_public_dns\nPASS  t_root_ops_expects_the_crates_helper_version\nPASS  t_root_ops_fix_bin_owner\nPASS  t_root_ops_install_helper_refuses_before_running_anything\nPASS  t_root_ops_maps_a_steps_126_and_127_to_125\nPASS  t_root_ops_owns_the_rollback_list\nPASS  t_root_ops_refusal_aborts_or_rolls_back\nPASS  t_root_ops_refuses_before_running_anything\nPASS  t_root_ops_refuses_symlinks_and_open_dirs\nPASS  t_root_steps_are_the_recorded_ones\nPASS  t_versions_are_read_as_the_user\ngroup integration/installers-interaction: collected=18 passed=15 failed=3\ncollected=18 passed=15 failed=3\nresult=fail run_id=20261108T165211Z-c0a4ca9f artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T165211Z-c0a4ca9f"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "2.2",
+ "test": "xmllint --noout --dtdvalid /usr/share/polkit-1/policyconfig-1.dtd deb/org.nice-dns.policy 2>/dev/null || python3 -c 'import xml.dom.minidom,sys; xml.dom.minidom.parse(\"deb/org.nice-dns.policy\")'; bash tests/run.sh integration installers-interaction && bash tests/run.sh integration nice-dns-cli",
+ "text": "a fake exit 126 aborts with `authorisation cancelled` before any change (red if the install proceeds)",
+ "touched": [
+  "lib/root.sh"
+ ],
+ "touched_blobs": {
+  "lib/root.sh": "1dd06abf4e0d758fbe9c17a27a75ab4d8bad77cd"
+ },
+ "witness_blobs": {
+  "deb/org.nice-dns.policy": "607ff12b5a6fd7063edbc7f5550f7b7f9d73d6a7",
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}

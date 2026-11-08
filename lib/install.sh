@@ -312,6 +312,9 @@ nd_install_begin() {
     _nd_inst_manifest_row "$ND_INST_MANIFEST" rollback "$ND_INST_PREV" "$rb" || return 1
   fi
   echo "▸ Preparing generation $ND_INST_GEN (source $ND_INST_ORIGIN, commit $ND_INST_COMMIT; previous $ND_INST_PREV, rollback $rb)"
+  # One process runs every pkexec of this install, so polkit asks once
+  # (lib/root.sh, OD-11). It is started here, by the entrypoint's own shell.
+  [ "$ND_INST_PLATFORM" != linux ] || nd_root_runner_start || true
 }
 
 # nd_install_config_dir: ~/.config/nice-dns, where bridges.env lives. Nothing
@@ -526,6 +529,7 @@ nd_install_finish() {
   _nd_inst_publish_command
   _nd_inst_prune
   _nd_inst_sudo_keepalive_stop
+  nd_root_runner_stop
   echo "▸ Generation $ND_INST_GEN is active (previous: $ND_INST_PREV)."
 }
 
@@ -575,6 +579,9 @@ _nd_inst_publish_source() {
   for item in $ND_INST_SOURCE_ITEMS; do
     cp -Rp "$ND_INST_SRC/$item" "$new/" || { rm -rf "${new:?}"; return 1; }
   done
+  # nice-dns-helper refuses a tree that its group or others can write (a clone
+  # under umask 002), and a reinstall --local runs from this copy.
+  chmod -R go-w "$new" || { rm -rf "${new:?}"; return 1; }
   chmod 755 "$new"
   if [ -e "$dst" ]; then
     mv "$dst" "$old" || { rm -rf "${new:?}"; return 1; }
@@ -1083,6 +1090,7 @@ _nd_inst_exit_trap() {
     _nd_inst_rollback
   fi
   _nd_inst_sudo_keepalive_stop
+  nd_root_runner_stop
   [ -z "${ND_INST_CLEANUP:-}" ] || rm -rf "${ND_INST_CLEANUP:?}"
   [ -z "${ND_INST_WORK:-}" ] || rm -rf "${ND_INST_WORK:?}"
   exit "$rc"
@@ -1335,6 +1343,9 @@ _nd_inst_hardened_sibling() {
 # AppArmor, sysctl, subuid/subgid, cgroup delegation and linger. None of it
 # interrupts the running stack or host DNS.
 nd_install_linux_host_prereqs() {
+  # The helper first, so a run without a terminal takes every later root step
+  # through the version this tree expects.
+  nd_install_linux_helper || return 1
   # The podman PPA's priority pin, a half-configured PPA repaired, and the
   # base packages (deb/root-ops host-packages says why each one).
   nd_root_deb host-packages
@@ -1440,6 +1451,52 @@ EOF
   # delegation config. daemon-reload only affects PID 1 (system level);
   # the user instance keeps the old settings until re-exec or reboot.
   systemctl --user daemon-reexec
+}
+
+# The helper a program without a terminal runs (Sub-plan 5 Stage 2): the
+# release asset this install staged (Task 2.4 downloads it to
+# ND_INST_HELPER_STAGED, by default <generation>/nice-dns-helper).
+_nd_inst_helper_staged() { printf '%s\n' "${ND_INST_HELPER_STAGED:-$ND_INST_STATE/generations/$ND_INST_GEN/nice-dns-helper}"; }
+
+# _nd_inst_helper_current: 0 when the installed helper is the version this
+# tree expects and runs this tree's root-ops (wherever the tree is).
+_nd_inst_helper_current() {
+  _nd_root_helper_version_ok_deb &&
+    cmp -s "${ND_INST_ROOT:-}/usr/libexec/nice-dns/root-ops" "$ND_INST_TREE/deb/root-ops"
+}
+
+# nd_install_linux_helper: installs or replaces the helper through root-ops
+# install-helper when this install staged one and the installed one is
+# missing, another version or runs another root-ops. The generation records
+# the helper the host has afterwards: `helper <version>`, or `helper absent`.
+nd_install_linux_helper() {
+  local s h v=absent
+  s="$(_nd_inst_helper_staged)"
+  if [ -f "$s" ] && ! _nd_inst_helper_current; then
+    echo "▸ Installing nice-dns-helper (for actions without a terminal)"
+    nd_root_deb install-helper "$s" "$ND_INST_TREE/deb/org.nice-dns.policy" || return 1
+    if ! _nd_inst_helper_current; then
+      _nd_inst_err "the nice-dns-helper just installed is not the version this tree's root-ops expects, or does not run it"
+      return 1
+    fi
+    # Then the helper path end to end before anything relies on it: its
+    # root-held root-ops answers with the version this tree expects. A tree
+    # the helper does not take (a clone in /tmp) keeps to sudo; the next
+    # install from the kept source uses the helper.
+    if _nd_root_tree_ok; then
+      v="$(nd_root_deb version)" || return 1
+      if [ "$v" != "$(sed -n 's/^ND_HELPER_VERSION=//p' "$ND_INST_TREE/deb/root-ops")" ]; then
+        _nd_inst_err "the root-ops nice-dns-helper runs answers version '$v', not this tree's"
+        return 1
+      fi
+    fi
+    v=absent
+  fi
+  if h="$(_nd_root_helper_file_deb)"; then
+    v="$("$h" --version 2>/dev/null)" || v=""
+    case "$v" in ''|*[!0-9A-Za-z.+-]*) v=unknown ;; esac
+  fi
+  _nd_inst_manifest_row "$ND_INST_MANIFEST" helper "$v"
 }
 
 # nd_install_linux_prepare_images: builds unbound and pi-hole (and the hardened
@@ -1689,6 +1746,7 @@ _nd_inst_linux_prep_exit() {
     _nd_inst_mullvad_restore "$ND_INST_STATE/generations/$ND_INST_GEN/mullvad-dns.tsv" before_install
   fi
   _nd_inst_sudo_keepalive_stop
+  nd_root_runner_stop
   [ -z "${ND_INST_CLEANUP:-}" ] || rm -rf "${ND_INST_CLEANUP:?}"
   exit "$rc"
 }
@@ -1843,6 +1901,7 @@ nd_install_linux_activate() {
 nd_install_linux_uninstall() {
   local ref ep sd dns_ok=1
   ND_INST_TREE="$ND_INST_SRC"
+  nd_root_runner_start || true
   nd_install_linux_stop_stack
   systemctl --user disable --now nice-dns-fetch-bridges.service 2>/dev/null || true
   rm -f "$HOME/.config/systemd/user/nice-dns-fetch-bridges.service" "$HOME/.local/bin/nice-dns-fetch-bridges"
@@ -1875,6 +1934,7 @@ nd_install_linux_uninstall() {
   _nd_inst_linux_mullvad_resolves
   # The pin helper and the legacy grub drop-in go.
   nd_root_deb uninstall
+  nd_root_runner_stop
   _nd_inst_uninstall_state "$dns_ok"
   _nd_inst_uninstall_verdict "$dns_ok"
 }

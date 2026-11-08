@@ -537,7 +537,7 @@ st_rows() {
     chmod +x "$b/$t"
   done
   : >"$CL_W/st-calls.log"
-  ST_OUT="$(HOME="$CL_HOME" PATH="$b" XDG_STATE_HOME="" XDG_CONFIG_HOME="" XDG_DATA_HOME="" ND_STATUS_NOW="$ST_NOW" \
+  ST_OUT="$(HOME="$CL_HOME" PATH="$b" XDG_STATE_HOME="" XDG_CONFIG_HOME="" XDG_DATA_HOME="" ND_STATUS_NOW="$ST_NOW" ND_INST_ROOT="${ST_ROOT:-}" \
     /bin/bash -c '. "$1" && nd_status_rows "$2"' st "$NICE_DNS_ROOT/lib/status.sh" "$ST_PLAT" 2>"$CL_W/st-err")"
   ST_RC=$?
   ST_CALLS="$(cat "$CL_W/st-calls.log")"
@@ -553,7 +553,7 @@ t_status_rows_cover_every_group_without_running_anything() {
     assert_rc 0 "$ST_RC" "$u: rows: $(cat "$CL_W/st-err")"
     assert_eq "" "$ST_CALLS" "$u: status runs no probe, runtime, scheduler or network tool"
     assert_eq "schema	nice-dns-status/1" "$(printf '%s\n' "$ST_OUT" | head -n 1)" "$u: the schema line comes first"
-    for g in install controller obs route bridges update admin recent; do
+    for g in install controller obs route bridges update helper admin recent; do
       assert_match "^$g	" "$ST_OUT" "$u: the $g group is there"
     done
     assert_eq yes "$(st_val install installed)" "$u: installed"
@@ -575,6 +575,32 @@ t_status_rows_cover_every_group_without_running_anything() {
     assert_eq "$CL_HOME/secret/pihole_webpassword" "$(st_val admin password_path)" "$u: the admin password's path, never the password"
     n="$(printf '%s\n' "$ST_OUT" | awk -F '\t' '$1 == "recent" { print $2 "\t" $3 "\t" $4 }' | tr '\n' '|')"
     assert_eq "$((ST_NOW - 97))	route:r3	result3|$((ST_NOW - 96))	route:r4	result4|$((ST_NOW - 95))	route:r5	result5|$((ST_NOW - 94))	route:r6	result6|$((ST_NOW - 93))	route:r7	result7|" "$n" "$u: the last five journal rows, oldest first"
+  done
+}
+
+t_status_helper_rows_read_the_file_and_the_generation() {
+  local u h
+  for u in $(cl_platforms); do
+    st_world "$u"
+    if [ "$u" = Linux ]; then h=/usr/libexec/nice-dns-helper; else h=/usr/local/libexec/nice-dns-helper; fi
+    # ST_ROOT is st_rows' ND_INST_ROOT, which prefixes the root paths as in
+    # the installer fixtures.
+    ST_ROOT="$CL_W/root"
+    st_rows
+    assert_rc 0 "$ST_RC" "$u: rows: $(cat "$CL_W/st-err")"
+    assert_eq "$h" "$(st_val helper path)" "$u: the helper's path"
+    assert_eq no "$(st_val helper installed)" "$u: no helper file"
+    assert_eq unknown "$(st_val helper version)" "$u: no helper row in the generation"
+    mkdir -p "$ST_ROOT${h%/*}"
+    printf '#!/bin/sh\necho RAN >>"%s/helper-ran"\n' "$CL_W" >"$ST_ROOT$h"
+    chmod 755 "$ST_ROOT$h"
+    printf 'helper\t0.1.0\n' >>"$ST_INST/generations/g1/prepare.tsv"
+    st_rows
+    assert_eq yes "$(st_val helper installed)" "$u: the helper is installed"
+    assert_eq 0.1.0 "$(st_val helper version)" "$u: the version the generation recorded"
+    assert_no_path "$CL_W/helper-ran" "$u: status never runs the helper"
+    assert_eq "" "$ST_CALLS" "$u: nor any probe"
+    ST_ROOT=""
   done
 }
 
@@ -630,7 +656,7 @@ t_status_command_prints_rows_and_sections_with_its_exit_codes() {
     ND_STATUS_NOW="$ST_NOW" cl_run "$CL_TREE/nice-dns" status --tsv
     assert_rc 0 "$CL_RC" "$u: status --tsv: $CL_ERR"
     assert_eq "schema	nice-dns-status/1" "$(printf '%s\n' "$CL_OUT" | head -n 1)" "$u: --tsv starts with the schema line"
-    bad="$(printf '%s\n' "$CL_OUT" | awk -F '\t' 'NR > 1 && ($1 !~ /^(install|controller|obs|route|bridges|update|admin|recent)$/ || NF < 3)')"
+    bad="$(printf '%s\n' "$CL_OUT" | awk -F '\t' 'NR > 1 && ($1 !~ /^(install|controller|obs|route|bridges|update|helper|admin|recent)$/ || NF < 3)')"
     assert_eq "" "$bad" "$u: every other row is a known group with a key and a value"
     assert_eq "" "$(cl_calls '^(podman|container|dig|systemctl|launchctl|git) ')" "$u: status runs no runtime, scheduler, resolver or git"
     ND_STATUS_NOW="$ST_NOW" cl_run "$CL_TREE/nice-dns" status

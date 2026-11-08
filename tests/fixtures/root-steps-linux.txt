@@ -166,3 +166,5 @@ sudo bash <W>/src/nice-dns/deb/custom-dns-deb restore
 sudo rm -f <W>/root/usr/bin/custom-dns-deb
 sudo test -f <W>/root/etc/default/grub.d/99-nice-dns-ipv6.cfg
 sudo systemctl daemon-reload
+sudo rm -f <W>/root/usr/libexec/nice-dns-helper <W>/root/usr/libexec/nice-dns/root-ops <W>/root/usr/share/polkit-1/actions/org.nice-dns.policy
+sudo test -d <W>/root/usr/libexec/nice-dns

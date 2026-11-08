@@ -13,7 +13,7 @@
 # a path under $FAKE_ROOT; systemctl, sysctl and networksetup then keep their
 # state under $FAKE_ROOT. Everything else stays a logged no-op.
 
-IP_TOOLS="awk basename bash cat chmod cmp cp cut date dirname env find grep head id install ln ls mkdir mktemp mv od readlink rm rmdir sed seq sh sha256sum sort stat tail tee test touch tr uniq wc xargs yes"
+IP_TOOLS="awk basename bash cat chmod cmp cp cut date dirname env find grep head id install ln ls mkdir mkfifo mktemp mv od readlink rm rmdir sed seq sh sha256sum sort stat tail tee test touch tr uniq wc xargs yes"
 IP_ALL="install-deb install-deb-hardened install-mac install-mac-hardened"
 
 # The interruption predicate (requirement 4): a call that interrupts the
@@ -114,6 +114,21 @@ do_build() {
   return 0
 }
 case "$me" in
+  pkexec)
+    # The helper path (Sub-plan 5 Task 2.2): polkit refuses with the status in
+    # $FAKE/pkexec_rc (126 dismissed, 127 not authorised), for every call or,
+    # with $FAKE/pkexec_on (an ERE), the calls it matches, and with
+    # $FAKE/pkexec_after every call after the first it matches; otherwise the
+    # program runs, as this user (ip_fake_helper writes the helper). Each call
+    # logs its parent's pid, polkit's subject, to $FAKE/pkexec-ppids.
+    printf '%s\n' "$PPID" >>"$FAKE/pkexec-ppids"
+    if [ -s "$FAKE/pkexec_rc" ]; then
+      if [ ! -s "$FAKE/pkexec_on" ] || [ -f "$FAKE/pkexec_refusing" ] || printf '%s\n' "$l" | grep -Eq -f "$FAKE/pkexec_on"; then
+        [ ! -f "$FAKE/pkexec_after" ] || : >"$FAKE/pkexec_refusing"
+        exit "$(cat "$FAKE/pkexec_rc")"
+      fi
+    fi
+    exec "$@" ;;
   sudo)
     # root-ops runs as this user in its test mode (Sub-plan 5): each root
     # step it takes comes back to this stub through ND_ROOT_TEST_SUDO and is
@@ -435,7 +450,7 @@ STUB
     ln -s fakecmd "$b/$s"
   done
   if [ "$plat" = linux ]; then
-    for s in podman crun; do ln -s fakecmd "$b/$s"; done
+    for s in podman crun pkexec; do ln -s fakecmd "$b/$s"; done
   else
     for s in container brew softwareupdate sw_vers networksetup launchctl ifconfig dscacheutil killall pfctl route; do ln -s fakecmd "$b/$s"; done
   fi
@@ -550,10 +565,23 @@ ip_run() {
   IP_OUT="$(cd "$cwd" && env -i HOME="$IP_HOME" USER=tester LOGNAME=tester PATH="${IP_PATH_EXTRA:+$IP_PATH_EXTRA:}$IP_BIN" \
     TMPDIR="$IP_W/tmp" XDG_STATE_HOME="$IP_HOME/.local/state" XDG_CONFIG_HOME="$IP_HOME/.config" \
     XDG_RUNTIME_DIR="$IP_W/run" FAKE="$FAKE" FAKE_LOG="$FAKE_LOG" FAKE_UNAME="$IP_UNAME" FAKE_ARCH="$IP_ARCH" \
-    ND_INST_ETC="$IP_W/etc" ND_INST_SUDO_KEEPALIVE=0 ND_INST_REQUIRE_SIGNATURES="${ND_INST_REQUIRE_SIGNATURES:-}" FAKE_ROOT="${FAKE_ROOT:-}" ND_INST_ROOT="${FAKE_ROOT:-}" ND_PERSIST_ROOT="${ND_PERSIST_ROOT:-}" bash "$@" 2>&1 </dev/null)"
+    ND_INST_ETC="$IP_W/etc" ND_INST_SUDO_KEEPALIVE=0 ND_INST_REQUIRE_SIGNATURES="${ND_INST_REQUIRE_SIGNATURES:-}" FAKE_ROOT="${FAKE_ROOT:-}" ND_INST_ROOT="${FAKE_ROOT:-}" ND_PERSIST_ROOT="${ND_PERSIST_ROOT:-}" ND_INST_HELPER_STAGED="${ND_INST_HELPER_STAGED:-}" ND_INST_ROOT_OWNER="${ND_INST_ROOT_OWNER:-}" bash "$@" 2>&1 </dev/null)"
   IP_RC=$?
 }
 ip_install() { ip_run "$IP_TREE/$1.sh" "${@:2}"; }
+
+# ip_fake_helper <file> [version]: a stand-in for gui/helper's nice-dns-helper
+# (default version: the one deb/root-ops expects). --version prints it; any
+# other call is `--tree <dir> <verb> [args]`, which it runs as the real one
+# does, through the root-held root-ops copy, in root-ops' test mode (the fake
+# sudo logs each root step root-ops takes).
+ip_fake_helper() {
+  local v="${2:-$(sed -n 's/^ND_HELPER_VERSION=//p' "$NICE_DNS_ROOT/deb/root-ops")}"
+  mkdir -p "$(dirname "$1")"
+  # shellcheck disable=SC2016  # expanded by the helper
+  printf '#!/bin/sh\n[ "$1" = --version ] && { echo %s; exit 0; }\n[ "$1" = --tree ] || exit 2\nND_ROOT_TREE="$2"; shift 2\nND_ROOT_TEST_SUDO="$(command -v sudo)" ND_ROOT_TEST_IN=1 ND_DNS_TEST_ROOT="$FAKE_ROOT"\nexport ND_ROOT_TREE ND_ROOT_TEST_SUDO ND_ROOT_TEST_IN ND_DNS_TEST_ROOT\nexec bash "$FAKE_ROOT/usr/libexec/nice-dns/root-ops" "$@"\n' "$v" >"$1"
+  chmod 755 "$1"
+}
 
 ip_lines() { grep -nE -f <(printf '%s\n' "$2") "$1" 2>/dev/null || true; }
 ip_first() { ip_lines "$1" "$2" | head -n 1 | cut -d: -f1; }
