@@ -59,8 +59,19 @@ exits 2, a run as a user other than root exits 1. The rollback's root files
 are root-ops' own fixed list; a rollback hands it the saved bytes on stdin
 and never a path to open as root. As root it trusts nothing of the caller's
 environment but `ND_ROOT_USER`, `ND_ROOT_HOME`, `ND_ROOT_TREE` and
-`SUDO_USER`. The one root step outside it is `install-deb.sh`'s
-`apt-get install git` before the source is cloned, when no tree exists yet.
+`SUDO_USER`; that is defence in depth for sudo, which has already reset the
+environment, and a caller that is not sudo must start root-ops with an empty
+one. It acts only for an existing user other than root, whose home is the
+one the password database (macOS: the directory service) names, on a tree
+that user owns with no symlink in its path: a tree owned by root or by
+another user is refused (exit 1). The podman and crun versions are read by
+the installer, as the user, before root-ops upgrades either.
+
+The root steps outside it: `install-deb.sh` and `install-deb-hardened.sh`
+run `apt-get install git` before the source is cloned, when no tree exists
+yet; and, outside any install, the macOS LaunchAgent runs its own root
+helper through its passwordless rule (`mac/start-container.sh`,
+`mac/start-container.sudoers`).
 
 ## Updating the lock
 
