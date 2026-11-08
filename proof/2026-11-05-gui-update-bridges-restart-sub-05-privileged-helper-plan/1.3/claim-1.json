@@ -1,22 +1,22 @@
 {
  "baseline": {
-  "elapsed_s": 2.2,
+  "elapsed_s": 2.1,
   "exit": 0,
   "tail": "check-contracts: OK (WF-DNS-001..004 and all operations in /home/user/dev/containers/nice-dns/tests/manifests/privacy-ops.tsv) docs/workflows/dns-lifecycle.md"
  },
- "break_patch": "--- a/lib/install.sh\t2026-11-08 10:37:27.154823252 +0000\n+++ b/lib/install.sh\t2026-11-08 10:37:27.166750672 +0000\n@@ -1824,6 +1824,7 @@\n   _nd_inst_linux_mullvad_uninstall || dns_ok=0\n   _nd_inst_linux_mullvad_resolves\n   # The pin helper and the legacy grub drop-in go.\n+  sudo rm -f \"$ND_INST_ROOT/usr/bin/custom-dns-deb\"\n   nd_root_deb uninstall\n   _nd_inst_uninstall_state \"$dns_ok\"\n   _nd_inst_uninstall_verdict \"$dns_ok\"\n",
+ "break_patch": "--- a/lib/install.sh\t2026-11-08 13:28:53.309738833 +0000\n+++ b/lib/install.sh\t2026-11-08 13:28:53.309982601 +0000\n@@ -1874,6 +1874,7 @@\n   _nd_inst_linux_mullvad_uninstall || dns_ok=0\n   _nd_inst_linux_mullvad_resolves\n   # The pin helper and the legacy grub drop-in go.\n+  sudo rm -f \"$ND_INST_ROOT/usr/bin/custom-dns-deb\"\n   nd_root_deb uninstall\n   _nd_inst_uninstall_state \"$dns_ok\"\n   _nd_inst_uninstall_verdict \"$dns_ok\"\n",
  "build": null,
- "created": "2026-11-08T10:37:39+00:00",
- "fingerprint": "45595147dd76c7dc8fc1ae9213847e70ddf974059139c558b180494d4697e092",
+ "created": "2026-11-08T13:47:50+00:00",
+ "fingerprint": "64346adb51dd08ed86f9e212526b989ab11ec217947021283c4b1903d4ec703b",
  "index": 1,
  "kind": "claim",
  "named_break": null,
- "no_build_reason": "shell: grep and the contract check read the tree as checked out",
+ "no_build_reason": "shell: the tests run the tree as checked out",
  "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-05-privileged-helper-plan.md",
  "red": {
   "elapsed_s": 0.0,
   "exit": 1,
-  "tail": "lib/install.sh:1827:  sudo rm -f \"$ND_INST_ROOT/usr/bin/custom-dns-deb\""
+  "tail": "lib/install.sh:1877:  sudo rm -f \"$ND_INST_ROOT/usr/bin/custom-dns-deb\""
  },
  "schema": 2,
  "shell": "bash",
@@ -27,14 +27,14 @@
   "lib/install.sh"
  ],
  "touched_blobs": {
-  "lib/install.sh": "db8c36f3b3e4d4c92e0bca43fdb4e3fa61d7c66e"
+  "lib/install.sh": "e008bb3be9148a933e3ea4de124ee5b86878ab3b"
  },
  "witness_blobs": {
-  "deb/persistent-podman.sh": "7f93bde48cdbe645aef0a980da2f4a5a4d285d3e",
-  "docs/workflows/dns-lifecycle.md": "07fc767c3d27846bb22b4122c43cadb972a5cd60",
+  "deb/persistent-podman.sh": "a47899fe999b7657e7dfaaa46095949572ed6ffa",
+  "docs/workflows/dns-lifecycle.md": "04311cddecd51d70a8e7c2012851cbf950fbc802",
   "install-deb.sh": "83651904edb54a4e9ebcc1a4811aa23e8b581e16",
   "install-mac.sh": "b089d3bc675938a90ebda28fcf34989082270626",
-  "lib/install.sh": "db8c36f3b3e4d4c92e0bca43fdb4e3fa61d7c66e",
+  "lib/install.sh": "e008bb3be9148a933e3ea4de124ee5b86878ab3b",
   "mac/persist.sh": "b40e3084fed9bbca01f37212d00c94bf540588af",
   "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
  }
