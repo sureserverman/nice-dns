@@ -46,6 +46,15 @@
 #                    1.1), so no platform depends on GitHub main any more. The
 #                    installer's output is streamed back; it may carry bridge
 #                    lines, so keep it out of portable evidence.
+#   helper-report    read-only (Sub-plan 5 Task 2.6): nice-dns-helper on the
+#                    target (present, owner uid, mode, --version), the sha256
+#                    of the root-held root-ops it runs, and on Linux the polkit
+#                    action and test rule, on macOS its owner file.
+#   polkit-test-rule --mode add|remove, Linux only: a temporary polkit rule,
+#                    /etc/polkit-1/rules.d/90-nice-dns-test.rules, granting the
+#                    target user org.nice-dns.helper with no password, so a run
+#                    without a terminal needs no one at the screen. Never
+#                    shipped; the group removes it whatever happens.
 #   uninstall-cell   the same entrypoint and archive, run with `uninstall`
 #                    (--cell names the entrypoint; the proxy is ignored).
 #   lifecycle-report read-only (Sub-plan 4 Task 2.3): the installed generation
@@ -288,7 +297,7 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network freeze-unbound thaw-unbound stop-proxy fresh-name command command-report freeze-service thaw-service pause-container unpause-container stop-container start-container crash-container stop-crash crash-report proxy-supervisor-lines mac-runtime-ssh mac-runtime-gui'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network freeze-unbound thaw-unbound stop-proxy fresh-name command command-report freeze-service thaw-service pause-container unpause-container stop-container start-container crash-container stop-crash crash-report proxy-supervisor-lines mac-runtime-ssh mac-runtime-gui helper-report polkit-test-rule'
 FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
@@ -343,7 +352,8 @@ fi
 case "$op" in install-cell|uninstall-cell) ;; command) [ -z "$i_hsha" ] || die "--hardened-sha is not valid for command" ;; *) [ -z "$i_cell$i_hsha" ] || die "--cell/--hardened-sha are only valid for install-cell, uninstall-cell and command" ;; esac
 case "$op" in install-cell|uninstall-cell|build-proxy|install-controller|install-agent|arm-prepare|command) ;; *) [ -z "$i_sha" ] || die "--source-sha is only valid for install-cell, uninstall-cell, build-proxy, install-controller, install-agent, arm-prepare and command" ;; esac
 case "$op" in fault-route|heal-route|route-apply) ;; *) [ -z "$i_route" ] || die "--route is only valid for fault-route, heal-route and route-apply" ;; esac
-case "$op" in install-controller|set-tunables|arm-set|command) ;; *) [ -z "$i_mode" ] || die "--mode is only valid for install-controller, set-tunables, arm-set and command" ;; esac
+case "$op" in install-controller|set-tunables|arm-set|command|polkit-test-rule) ;; *) [ -z "$i_mode" ] || die "--mode is only valid for install-controller, set-tunables, arm-set, command and polkit-test-rule" ;; esac
+if [ "$op" = polkit-test-rule ]; then case "$i_mode" in add|remove) ;; *) die "polkit-test-rule needs --mode add|remove" ;; esac; fi
 case "$op" in arm-prepare) [[ "$i_ptag" =~ ^v[0-9]+(\.[0-9]+)*$ ]] || die "arm-prepare needs --proxy-tag vN[.N]" ;; *) [ -z "$i_ptag" ] || die "--proxy-tag is only valid for arm-prepare" ;; esac
 if [ "$op" = arm-set ]; then case "$i_mode" in baseline|candidate) ;; *) die "arm-set needs --mode baseline|candidate" ;; esac; fi
 if [ "$op" = arm-prepare ]; then
@@ -363,8 +373,8 @@ if [ "$op" = command ]; then
       case "$i_cell" in haproxy/standard|socat/standard) ;; *) die "command --mode install needs --cell haproxy|socat/standard" ;; esac
       [[ "$i_sha" =~ ^[0-9a-f]{40}$ ]] || die "command --mode install needs --source-sha <40-hex commit>"
       [ "$(git -C "$ND_CHECKOUT" cat-file -t "$i_sha" 2>/dev/null)" = commit ] || die "--source-sha $i_sha is not a commit in $ND_CHECKOUT" ;;
-    restart|reinstall|uninstall|bridges-on|bridges-off|status) [ -z "$i_cell$i_sha" ] || die "--cell/--source-sha are only for command --mode install" ;;
-    *) die "command needs --mode install|restart|reinstall|uninstall|bridges-on|bridges-off|status" ;;
+    restart|reinstall|uninstall|reinstall-helper|uninstall-helper|bridges-on|bridges-off|status) [ -z "$i_cell$i_sha" ] || die "--cell/--source-sha are only for command --mode install" ;;
+    *) die "command needs --mode install|restart|reinstall|uninstall|reinstall-helper|uninstall-helper|bridges-on|bridges-off|status" ;;
   esac
 fi
 
@@ -1874,18 +1884,39 @@ case "$NICE_DNS_OP" in
         rm -f "$ND_SOURCE_TGZ"
         cli="$w/nice-dns/nice-dns"
         set -- install "$NICE_DNS_PROXY" ;;
-      reinstall) mac_room || exit 2; set -- reinstall --local ;;
+      reinstall|reinstall-helper) mac_room || exit 2; set -- reinstall --local ;;
+      uninstall-helper) set -- uninstall ;;
       bridges-on|bridges-off) set -- bridges "${NICE_DNS_MODE#bridges-}" ;;
       status) set -- status --tsv ;;
     esac
+    # The -helper modes (Sub-plan 5 Task 2.6): the command runs with a sudo
+    # first on its PATH that logs its arguments and fails, so it succeeds only
+    # if no root step needed sudo, i.e. every one went through nice-dns-helper.
+    p="$PATH" sd=""
+    case "$NICE_DNS_MODE" in *-helper)
+      sd=$(mktemp -d "${TMPDIR:-/tmp}/nd-nosudo.XXXXXX") || exit 1
+      printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/calls"\nexit 1\n' "$sd" >"$sd/sudo"; chmod 755 "$sd/sudo"; : >"$sd/calls"
+      p="$sd:$PATH" ;;
+    esac
+    t0=$(date +%s)
     printf 'command\t%s\t%s\nstarted_utc\t%s\n' "$cli" "$*" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     if [ "$plat" = macos ]; then
-      sudo -n launchctl asuser "$(id -u)" sudo -n -u "$(id -un)" env HOME="$HOME" PATH="$PATH" bash "$cli" "$@" </dev/null 2>&1
+      sudo -n launchctl asuser "$(id -u)" sudo -n -u "$(id -un)" env HOME="$HOME" PATH="$p" bash "$cli" "$@" </dev/null 2>&1
     else
-      bash "$cli" "$@" </dev/null 2>&1
+      PATH="$p" bash "$cli" "$@" </dev/null 2>&1
     fi
     rc=$?
     printf 'finished_utc\t%s\ncommand_exit\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc"
+    if [ -n "$sd" ]; then
+      printf 'sudo_calls\t%s\nsudo_root_ops\t%s\n' "$(grep -c . "$sd/calls")" "$(grep -c root-ops "$sd/calls")"
+      sed 's/^/sudo_call\t/' "$sd/calls"
+      rm -rf "$sd"
+      if [ "$plat" = linux ]; then
+        # pkexec's own log of each program it ran (the helper, and its verb).
+        journalctl _COMM=pkexec --since "@$t0" -o cat </dev/null 2>/dev/null |
+          sed -n 's/.*COMMAND=\(.*\)\]$/pkexec\t\1/p'
+      fi
+    fi
     exit $rc ;;
   command-report)
     [ "$plat" = macos ] && homebrew_path
@@ -2054,6 +2085,38 @@ case "$NICE_DNS_OP" in
         sed -n -E 's/^.*(tor-supervisor: spawned tor pid=[0-9]+ generation=[0-9]+ (direct \(no bridges\)|with [0-9]+ bridge\(s\))).*$/\1/p' |
         tail -n 20 | while IFS= read -r l; do printf 'supervisor_line\t%s\t%s\n' "$c" "$l"; done
     done | redact ;;
+  helper-report)
+    if [ "$plat" = macos ]; then h=/usr/local/libexec/nice-dns-helper; d=/usr/local/libexec/nice-dns; else h=/usr/libexec/nice-dns-helper; d=/usr/libexec/nice-dns; fi
+    printf 'helper_path\t%s\nuser_uid\t%s\n' "$h" "$(id -u)"
+    if [ -f "$h" ]; then
+      if [ "$plat" = macos ]; then om=$(stat -f '%u %Lp' "$h"); else om=$(stat -c '%u %a' "$h"); fi
+      printf 'helper\tpresent\nhelper_owner\t%s\nhelper_mode\t%s\nhelper_version\t%s\n' "${om%% *}" "${om##* }" "$("$h" --version </dev/null 2>/dev/null || echo unknown)"
+    else
+      printf 'helper\tabsent\n'
+    fi
+    if [ -f "$d/root-ops" ]; then
+      if command -v sha256sum >/dev/null 2>&1; then s=$(sha256sum "$d/root-ops" | cut -d' ' -f1); else s=$(shasum -a 256 "$d/root-ops" | cut -d' ' -f1); fi
+      printf 'held_root_ops_sha\t%s\n' "$s"
+    else
+      printf 'held_root_ops_sha\tabsent\n'
+    fi
+    if [ -d "$d" ]; then printf 'helper_dir\tpresent\n'; else printf 'helper_dir\tabsent\n'; fi
+    if [ "$plat" = macos ]; then
+      if [ -f "$d/owner" ]; then printf 'owner_file\t%s\n' "$(head -n 1 "$d/owner")"; else printf 'owner_file\tabsent\n'; fi
+    else
+      if [ -f /usr/share/polkit-1/actions/org.nice-dns.policy ]; then printf 'policy\tpresent\n'; else printf 'policy\tabsent\n'; fi
+      if sudo -n test -f /etc/polkit-1/rules.d/90-nice-dns-test.rules </dev/null; then printf 'polkit_test_rule\tpresent\n'; else printf 'polkit_test_rule\tabsent\n'; fi
+    fi ;;
+  polkit-test-rule)
+    [ "$plat" = linux ] || { echo "polkit-test-rule is Linux only" >&2; exit 2; }
+    f=/etc/polkit-1/rules.d/90-nice-dns-test.rules
+    case "$NICE_DNS_MODE" in
+      add)
+        printf '// nice-dns live test (tests/live/helper-install.sh): never shipped; polkit-test-rule remove deletes it.\npolkit.addRule(function(action, subject) {\n  if (action.id == "org.nice-dns.helper" && subject.user == "%s") { return polkit.Result.YES; }\n});\n' "$(id -un)" |
+          sudo -n tee "$f" >/dev/null && sudo -n chmod 644 "$f" || exit 1 ;;
+      remove) sudo -n rm -f "$f" || exit 1 ;;
+    esac
+    if sudo -n test -f "$f" </dev/null; then printf 'polkit_test_rule\tpresent\n'; else printf 'polkit_test_rule\tabsent\n'; fi ;;
   mac-runtime-ssh)
     [ "$plat" = macos ] || { echo "mac-runtime-ssh is macOS only" >&2; exit 2; }
     homebrew_path
@@ -2154,7 +2217,7 @@ case "$op" in
     } >"$STATE/receipt.tsv"
     log_op 0
     printf 'snapshot %s -> %s\n' "$alias_" "$STATE/snapshot.tsv" ;;
-  config|health|controller-report|lifecycle-report|route-report|command-report|fresh-name|crash-report|proxy-supervisor-lines)
+  config|health|controller-report|lifecycle-report|route-report|command-report|fresh-name|crash-report|proxy-supervisor-lines|helper-report)
     # Read-only; the output starts with the identity lines, which are checked.
     preconnect_guards
     probe_identity "$op"
@@ -2178,7 +2241,7 @@ case "$op" in
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network|freeze-unbound|thaw-unbound|stop-proxy|command|freeze-service|thaw-service|pause-container|unpause-container|stop-container|start-container|crash-container|stop-crash|mac-runtime-ssh|mac-runtime-gui)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network|freeze-unbound|thaw-unbound|stop-proxy|command|freeze-service|thaw-service|pause-container|unpause-container|stop-container|start-container|crash-container|stop-crash|mac-runtime-ssh|mac-runtime-gui|polkit-test-rule)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"
