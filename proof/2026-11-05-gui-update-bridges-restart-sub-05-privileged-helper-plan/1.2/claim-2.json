@@ -1,0 +1,36 @@
+{
+ "baseline": {
+  "elapsed_s": 168.1,
+  "exit": 0,
+  "tail": "run_id=20261108T102914Z-c95b50a2 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T102914Z-c95b50a2\nPASS  t_bash32_parses_mac_root_ops\nPASS  t_bootstrap_use_is_declared\nPASS  t_lifecycle_restores_exactly_what_it_owns\nPASS  t_no_step_points_the_host_at_public_dns\nPASS  t_root_ops_owns_the_rollback_list\nPASS  t_root_ops_refuses_before_running_anything\nPASS  t_root_steps_are_the_recorded_ones\ngroup integration/installers-interaction: collected=7 passed=7 failed=0\ncollected=7 passed=7 failed=0\nresult=pass run_id=20261108T102914Z-c95b50a2 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T102914Z-c95b50a2\nrun_id=20261108T103020Z-5f5bda46 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T103020Z-5f5bda46\nPASS  t_anchor_and_tor_volumes_keep_their_state\nPASS  t_command_and_source_follow_the_install\nPASS  t_every_transition_keeps_the_instance_state\nPASS  t_failed_uninstall_keeps_the_command\nPASS  t_installed_bundle_works_after_the_checkout_moves\nPASS  t_linux_quadlets_mount_the_instance_state\nPASS  t_macos_install_honours_the_bridges_mode\nPASS  t_macos_launch_paths_mount_the_instance_state\nPASS  t_pihole_lists_survive_restart_image_switch_and_back\ngroup integration/lifecycle-transitions: collected=9 passed=9 failed=0\ncollected=9 passed=9 failed=0\nresult=pass run_id=20261108T103020Z-5f5bda46 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T103020Z-5f5bda46"
+ },
+ "break_patch": "--- a/mac/root-ops\t2026-11-08 10:22:08.610941833 +0000\n+++ b/mac/root-ops\t2026-11-08 10:22:08.620507028 +0000\n@@ -237,6 +237,7 @@\n   _r mkdir -p \"$(dirname \"$p\")\" && _r install -m \"$mode\" \"$tmp\" \"$p\"\n }\n \n+case \"$VERB\" in host-prereqs) : ;& *) : ;; esac\n # One label per line at this indent: the allow-list the stage gates read.\n case \"$VERB\" in\n   host-prereqs) v_host_prereqs ;;\n",
+ "build": null,
+ "created": "2026-11-08T10:33:08+00:00",
+ "fingerprint": "54ec43ed493a2fab79f04b8ae7e10a417006388888e16c761795994b4b7eccb5",
+ "index": 2,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "shell: the fixture tests run the tree as checked out",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-05-privileged-helper-plan.md",
+ "red": {
+  "elapsed_s": 65.4,
+  "exit": 1,
+  "tail": "run_id=20261108T103202Z-635800f5 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T103202Z-635800f5\nFAIL  t_bash32_parses_mac_root_ops (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261108T103202Z-635800f5/cases/integration-installers-interaction/t_bash32_parses_mac_root_ops/case.log)\n      ASSERT FAIL: bash 3.2 run: /src/mac/root-ops: line 240: syntax error near unexpected token `&'\n      /src/mac/root-ops: line 240: `case \"$VERB\" in host-prereqs) : ;& *) : ;; esac': expected exit 0 got 91\nPASS  t_bootstrap_use_is_declared\nPASS  t_lifecycle_restores_exactly_what_it_owns\nPASS  t_no_step_points_the_host_at_public_dns\nPASS  t_root_ops_owns_the_rollback_list\nPASS  t_root_ops_refuses_before_running_anything\nPASS  t_root_steps_are_the_recorded_ones\ngroup integration/installers-interaction: collected=7 passed=6 failed=1\ncollected=7 passed=6 failed=1\nresult=fail run_id=20261108T103202Z-635800f5 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T103202Z-635800f5"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "1.2",
+ "test": "shellcheck mac/root-ops && bash tests/run.sh integration installers-interaction && bash tests/run.sh integration lifecycle-transitions",
+ "text": "a new case t_bash32_parses_mac_root_ops in installers-interaction has Bash 3.2 (the docker.io/library/bash:3.2 image, as tests/unit/state-policy.sh uses it) parse mac/root-ops with its -n flag (red on a Bash 4 construct)",
+ "touched": [
+  "mac/root-ops"
+ ],
+ "touched_blobs": {
+  "mac/root-ops": "350920951daf4c1f10400cd4903ae483a4802caa"
+ },
+ "witness_blobs": {
+  "mac/root-ops": "350920951daf4c1f10400cd4903ae483a4802caa",
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}

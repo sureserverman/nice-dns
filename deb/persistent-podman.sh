@@ -146,7 +146,7 @@ echo
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BRIDGES_BIN_DIR="$HOME/.local/bin"
 # Root steps go through deb/root-ops (lib/root.sh nd_root_deb).
-ND_INST_TREE="${ND_INST_TREE:-$PROJECT_ROOT}"
+ND_INST_TREE="$PROJECT_ROOT"
 # shellcheck source=lib/root.sh
 . "$PROJECT_ROOT/lib/root.sh"
 BRIDGES_BIN="$BRIDGES_BIN_DIR/nice-dns-fetch-bridges"

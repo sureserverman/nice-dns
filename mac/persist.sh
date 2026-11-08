@@ -20,35 +20,22 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 for d in "${ND_PERSIST_ROOT:-}/usr/local" "${ND_PERSIST_ROOT:-}/usr/local/sbin"; do
   [ -e "$d" ] || [ -L "$d" ] || continue
   if [ -L "$d" ] || [ -z "$(find "$d" -maxdepth 0 -user root ! -perm -g+w ! -perm -o+w)" ]; then
-    echo "$d must be a directory owned by root and writable by no one else: the agent's passwordless rule would let this user replace its root helper. Fix its owner and mode (sudo chown root:wheel; sudo chmod 755) and re-run." >&2
+    echo "$d must be a directory owned by root and writable by no one else: the agent's passwordless rule would let this user replace its root helper. Fix its owner and mode (as root: chown root:wheel; chmod 755) and re-run." >&2
     exit 1
   fi
 done
 
-# -- sudoers: allow the LaunchAgent to run only the pre/post helper --
-tmp_sudoers="$(mktemp)"
-trap 'rm -f "$tmp_sudoers"' EXIT
-sed "s/__USERNAME__/$(whoami)/" "$HERE/start-container.sudoers" > "$tmp_sudoers"
-# Checked before it goes live: a rule sudo cannot parse breaks sudo for
-# everyone.
-sudo visudo -cf "$tmp_sudoers"
-sudo install -m 440 "$tmp_sudoers" /etc/sudoers.d/start-container
-sudo visudo -cf /etc/sudoers.d/start-container
-
-# -- install scripts (ensure /usr/local/sbin exists on fresh macOS) --
-sudo install -d -m 755 /usr/local/sbin
-sudo install -m 755 "$HERE/start-container.sh"            /usr/local/sbin/start-container.sh
-sudo install -m 755 "$HERE/start-container-root.sh"       /usr/local/sbin/start-container-root.sh
-# fetch-bridges.sh is invoked from start-container.sh at every LaunchAgent
-# fire so the stack always uses the fastest bridges from the current network.
-sudo install -m 755 "$HERE/../scripts/fetch-bridges.sh"   /usr/local/sbin/nice-dns-fetch-bridges.sh
-# Host-side bridge selection. fetch-bridges.sh deliberately does not rank the
-# pool it writes — a TCP probe cannot tell a working bridge from one that is
-# TCP-open but PT-dead — and the proxy consumes bridges.env as-is, so without
-# this every fetched bridge became a Bridge line, dead ones included. Linux has
-# had the equivalent since deb/persistent-podman.sh grew its
-# nice-dns-fetch-bridges.service unit.
-sudo install -m 755 "$HERE/bridge-eval.sh"                /usr/local/sbin/nice-dns-bridge-eval.sh
+# -- The root part (mac/root-ops persist): the sudoers rule allowing the
+# LaunchAgent to run only the pre/post helper, checked with visudo before it
+# goes live, and the helpers under /usr/local/sbin: start-container.sh,
+# start-container-root.sh, fetch-bridges.sh (invoked from start-container.sh
+# at every LaunchAgent fire so the stack always uses the fastest bridges from
+# the current network) and bridge-eval.sh (host-side bridge selection: a TCP
+# probe cannot tell a working bridge from one that is TCP-open but PT-dead).
+ND_INST_TREE="$(cd "$HERE/.." && pwd)"
+# shellcheck source=lib/root.sh
+. "$HERE/../lib/root.sh"
+nd_root_mac persist "$VARIANT"
 
 # -- The controller (health/nice-dns-health; Sub-plan 3 Task 2.1): a versioned
 # bundle and the org.nice-dns.health agent running `nice-dns-health tick`

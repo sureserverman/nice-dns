@@ -146,9 +146,13 @@ ii_declared() {
 # Every network use of an install is a declared exception in its phase; after
 # the interruption only calls that need no host resolver run.
 t_bootstrap_use_is_declared() {
-  local ep hits
+  local ep hits f
+  for f in lib/install.sh deb/persistent-podman.sh mac/persist.sh deb/root-ops mac/root-ops lib/root.sh; do
+    assert_file "$NICE_DNS_ROOT/$f" "the network-tool scan reads $f"
+  done
   hits="$(grep -nE '(^|[[:space:];|&(])(wget|ncat|nc|rsync|scp|ssh) ' "$NICE_DNS_ROOT"/lib/install.sh "$NICE_DNS_ROOT"/install-*.sh \
-    "$NICE_DNS_ROOT"/deb/persistent-podman.sh "$NICE_DNS_ROOT"/mac/persist.sh | grep -vE ':[0-9]+:[[:space:]]*#' || true)"
+    "$NICE_DNS_ROOT"/deb/persistent-podman.sh "$NICE_DNS_ROOT"/mac/persist.sh "$NICE_DNS_ROOT"/deb/root-ops "$NICE_DNS_ROOT"/mac/root-ops \
+    "$NICE_DNS_ROOT"/lib/root.sh | grep -vE ':[0-9]+:[[:space:]]*#' || true)"
   assert_eq "" "$hits" "the installers use no network tool the inventory does not classify"
   assert_eq "$(printf 'schema\tnice-dns-bootstrap/1')" "$(head -n 1 "$II_BOOT")" "the inventory's schema"
   for ep in install-deb install-deb-hardened install-mac install-mac-hardened; do
@@ -208,12 +212,17 @@ t_root_ops_refuses_before_running_anything() {
       assert_eq 2 "$rc" "$os: '$bad' exits 2: $out"
       assert_match "root-ops: " "$out" "$os: '$bad' is named"
     done
+    rc=0; out="$(ND_ROOT_TEST_SUDO="$w/bin/sudo" ND_INST_ROOT='' bash "$NICE_DNS_ROOT/$os/root-ops" "$(ro_helper_verb "$os")" "check status" 2>&1)" || rc=$?
+    assert_eq 2 "$rc" "$os: a run of helper verbs in one argument exits 2: $out"
     assert_eq "" "$(cat "$w/log")" "$os: nothing ran"
   done
 }
 
-# ro_oses: the trees with a root-ops (mac from Task 1.2).
-ro_oses() { echo deb; }
+# ro_oses: the trees with a root-ops.
+ro_oses() { echo deb mac; }
+
+# ro_helper_verb <os>: the verb that runs the DNS helper.
+ro_helper_verb() { if [ "$1" = deb ]; then echo dns; else echo agent; fi; }
 
 # ro_owned <os>: one root file the installer keeps for a rollback.
 ro_owned() { if [ "$1" = deb ]; then echo /usr/bin/custom-dns-deb; else echo /etc/sudoers.d/start-container; fi; }
@@ -250,12 +259,37 @@ t_root_steps_are_the_recorded_ones() {
     got="$(cat "$CASE_DIR/root-steps-$plat")"
     assert_eq "$(cat "$NICE_DNS_ROOT/tests/fixtures/root-steps-$plat.txt")" "$got" "$plat: the root steps and their order"
     # Every root step ran inside root-ops: the sudo lines but root-ops' own
-    # are, as a multiset, the ones root-ops took (Linux; macOS from Task 1.2).
+    # are, as a multiset, the ones root-ops took.
+    assert_eq "$(sort "$FAKE/root-inner.log" 2>/dev/null)" \
+      "$(grep -E '^sudo ' "$FAKE/all-calls.log" | grep -Ev '^sudo bash [^ ]*/(deb|mac)/root-ops( |$)' | sort)" \
+      "$plat: no root step ran outside root-ops"
     if [ "$plat" = linux ]; then
-      assert_eq "$(sort "$FAKE/root-inner.log" 2>/dev/null)" \
-        "$(grep -E '^sudo ' "$FAKE/all-calls.log" | grep -Ev '^sudo bash [^ ]*/(deb|mac)/root-ops( |$)' | sort)" \
-        "$plat: no root step ran outside root-ops"
       assert_ne "" "$(grep -E '^sudo bash [^ ]*/deb/root-ops pin$' "$FAKE/all-calls.log")" "$plat: the pin is a root-ops verb"
+    else
+      assert_ne "" "$(grep -E '^sudo bash [^ ]*/mac/root-ops teardown reinstall$' "$FAKE/all-calls.log")" "$plat: the teardown is a root-ops verb"
     fi
   done
+}
+
+# mac/root-ops runs on macOS's Bash 3.2: the docker.io/library/bash:3.2
+# image (as tests/unit/state-policy.sh uses it; --rm, no network) parses it,
+# and its refusals run there too, as root.
+t_bash32_parses_mac_root_ops() {
+  local img=docker.io/library/bash:3.2 out
+  if ! podman image exists "$img" 2>/dev/null; then
+    fail "image $img is not available locally; the Bash 3.2 proof cannot run (pull it: podman pull $img)"
+  fi
+  out="$(podman run --rm --network none --pull=never -v "$NICE_DNS_ROOT:/src:ro" "$img" bash -c '
+    case "$BASH_VERSION" in 3.2.*) ;; *) echo "not bash 3.2: $BASH_VERSION"; exit 90 ;; esac
+    bash -n /src/mac/root-ops || exit 91
+    bash /src/mac/root-ops frob 2>&1; echo "unknown=$?"
+    bash /src/mac/root-ops agent pre 2>&1; echo "agent-pre=$?"
+    bash /src/deb/root-ops frob 2>&1; echo "deb-unknown=$?"' 2>&1)"
+  assert_rc 0 $? "bash 3.2 run: $out"
+  assert_match '^unknown=2$' "$out" "an unknown verb exits 2 under bash 3.2: $out"
+  assert_match '^agent-pre=2$' "$out" "a helper verb the installer does not call exits 2: $out"
+  # The container runs as root: the refusals hold after the environment scrub
+  # (which once removed root-ops' own functions), for deb/root-ops too.
+  assert_match '^deb-unknown=2$' "$out" "deb/root-ops as root: an unknown verb exits 2: $out"
+  assert_not_match 'command not found' "$out" "no function of root-ops is lost as root: $out"
 }

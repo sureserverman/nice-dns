@@ -711,7 +711,7 @@ ND_INST_PROBE_NAME=cloudflare.com
 _nd_inst_dns_helper() {
   case "$ND_INST_PLATFORM" in
     linux) nd_root_deb dns "$1" ;;
-    macos) sudo bash "$ND_INST_TREE/mac/start-container-root.sh" "$1" ;;
+    macos) nd_root_mac agent "$1" ;;
   esac
 }
 
@@ -875,8 +875,7 @@ EOF
       if [ "$ND_INST_PLATFORM" = linux ]; then
         ( umask 077 && nd_root_deb save-previous "$p" >"$ND_INST_RB/s$n" ) || rc=$?
       else
-        # shellcheck disable=SC2024
-        { sudo test -f "$p" || rc=4; [ "$rc" = 4 ] || ( umask 077 && sudo cat "$p" >"$ND_INST_RB/s$n" ) || rc=1; }
+        ( umask 077 && nd_root_mac save-previous "$p" >"$ND_INST_RB/s$n" ) || rc=$?
       fi
       if [ "$rc" = 0 ]; then
         printf 'f\t%s\ts%s\t%s\t%s\n' "$p" "$n" "$mode" "$who" >>"$ND_INST_RB/files.tsv"
@@ -900,7 +899,7 @@ EOF
 # _nd_inst_restore_files: puts every saved owned file back, and removes the
 # ones that did not exist before.
 _nd_inst_restore_files() {
-  local kind p s mode who
+  local kind p s mode who rc
   [ -f "${ND_INST_RB:-}/files.tsv" ] || return 0
   while IFS="$ND_INST_TAB" read -r kind p s mode who; do
     [ -n "$kind" ] || continue
@@ -915,14 +914,17 @@ _nd_inst_restore_files() {
         nd_root_deb restore "$p" - <"$ND_INST_RB/$s"
       fi
     elif [ "$who" = root ]; then
+      # A sudoers rule that does not pass visudo is not restored (exit 5).
       if [ "$s" = absent ]; then
-        sudo rm -f "$p"
+        nd_root_mac restore "$p" absent
       else
-        if [ "$p" = "$ND_INST_ROOT/etc/sudoers.d/start-container" ] && ! sudo visudo -cf "$ND_INST_RB/$s" >/dev/null; then
+        rc=0; nd_root_mac restore "$p" - <"$ND_INST_RB/$s" || rc=$?
+        if [ "$rc" = 5 ]; then
           echo "! The saved $p does not pass visudo; not restoring it. The start-container agent cannot run its root helper until the next install." >&2
-          continue
+        elif [ "$rc" != 0 ]; then
+          # Any other failure is the failed command's, as the sudo line was.
+          (exit "$rc")
         fi
-        sudo mkdir -p "$(dirname "$p")" && sudo install -m "$mode" "$ND_INST_RB/$s" "$p"
       fi
     elif [ "$s" = absent ]; then
       rm -f "$p"
@@ -1965,9 +1967,7 @@ nd_install_macos_host_prereqs() {
   # Rosetta so amd64 binaries can run during multi-arch builds (the builder
   # config sets rosetta:true unconditionally, with no flag to disable it).
   # Install Rosetta so the mount has something to point at; no-op when present.
-  if ! /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
-    sudo softwareupdate --install-rosetta --agree-to-license
-  fi
+  nd_root_mac host-prereqs
 
   # -- Bring up the runtime + default kernel --
   CONTAINER_BIN="${CONTAINER_BIN:-/opt/homebrew/bin/container}"
@@ -2161,7 +2161,7 @@ nd_install_macos_bridges() {
 # image (the previous generation is the rollback target, ARCH-08); uninstall
 # removes them as before, generation tags included.
 nd_install_macos_teardown() {
-  local mode="${1:-reinstall}" _a _p _d _legacy_agent c i
+  local mode="${1:-reinstall}" _a _p _legacy_agent c i
   for _a in org.nice-dns.start-container org.nice-dns.bridge-eval; do
     _p="$HOME/Library/LaunchAgents/${_a}.plist"
     launchctl unload "$_p" 2>/dev/null || true
@@ -2174,50 +2174,27 @@ nd_install_macos_teardown() {
     _p="$HOME/Library/LaunchAgents/org.nice-dns.debug-monitor.plist"
     launchctl unload "$_p" 2>/dev/null || true
     rm -f "$_p"
-    sudo rm -f "$ND_INST_ROOT/usr/local/sbin/nice-dns-debug-monitor.sh"
   fi
-  sudo rm -f "$ND_INST_ROOT/etc/sudoers.d/start-container" \
-             "$ND_INST_ROOT/usr/local/sbin/start-container.sh" \
-             "$ND_INST_ROOT/usr/local/sbin/start-container-root.sh" \
-             "$ND_INST_ROOT/usr/local/sbin/nice-dns-bridge-eval.sh" \
-             "$ND_INST_ROOT/usr/local/sbin/nice-dns-fetch-bridges.sh"
+  # The Podman-era user agent (installs predating commit 7538f02): it starts
+  # a Podman VM that no longer exists.
+  _legacy_agent="$HOME/Library/LaunchAgents/org.startpodman.plist"
+  launchctl unload "$_legacy_agent" 2>/dev/null || true
+  rm -f "$_legacy_agent"
 
-  # -- Podman-era purge (installs predating commit 7538f02) --------------
-  # mac/mac-rules-persist.sh installed four root/user jobs that this script
-  # never knew about, so they survived every later reinstall. They are not
-  # merely stale:
+  # The root helpers and sudoers rule (and, on uninstall, the debug monitor's
+  # helper; its logs stay: they are the evidence it was run for), and the
+  # Podman-era root jobs, which no version of this script had ever removed:
   #   org.nice-dns.free-port53   boots out com.apple.mDNSResponder at every
   #                              boot, leaving the host with no system
   #                              resolver at all;
   #   com.local.mullvad-pfctl-disable-on-connect
   #                              runs `pfctl -d` once a second, forever
   #                              (KeepAlive + StartInterval 1);
-  #   com.local.loopbackalias    aliases 127.0.0.53 onto lo0;
-  #   org.startpodman            starts a Podman VM that no longer exists.
+  #   com.local.loopbackalias    aliases 127.0.0.53 onto lo0.
   # Observed in the wild on a host installed pre-7538f02: mDNSResponder had
   # been dead across reboots and a gvproxy from the old VM still held :53.
-  for _d in org.nice-dns.free-port53 \
-            com.local.loopbackalias \
-            com.local.mullvad-pfctl-disable-on-connect; do
-    sudo launchctl bootout "system/${_d}" 2>/dev/null || true
-    sudo rm -f "/Library/LaunchDaemons/${_d}.plist"
-  done
-  _legacy_agent="$HOME/Library/LaunchAgents/org.startpodman.plist"
-  launchctl unload "$_legacy_agent" 2>/dev/null || true
-  rm -f "$_legacy_agent"
-  sudo rm -f /etc/sudoers.d/start-podman \
-             /usr/local/sbin/start-podman.sh \
-             /usr/local/sbin/start-podman-root.sh \
-             /usr/local/sbin/mullvad-pfctl-disable-on-connect
-  sudo ifconfig lo0 -alias 127.0.0.53 2>/dev/null || true
-
-  # Undo free-port53's damage. bootout only removes the service from the
-  # running domain — the SIP-protected plist is intact, so re-bootstrapping
-  # restores the resolver without a reboot. No-op when it is already loaded.
-  if ! sudo launchctl print system/com.apple.mDNSResponder >/dev/null 2>&1; then
-    sudo launchctl bootstrap system \
-      /System/Library/LaunchDaemons/com.apple.mDNSResponder.plist 2>/dev/null || true
-  fi
+  # Then mDNSResponder is bootstrapped again if free-port53 left it out.
+  nd_root_mac teardown "$mode"
 
   # Stop the old Podman stack if it is still up; gvproxy squats :53 and will
   # fight the new pi-hole for it.

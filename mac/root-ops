@@ -1,0 +1,248 @@
+#!/bin/bash
+# root-ops: the one root entry point of the macOS installer (Sub-plan 5,
+# Task 1.2). Bash 3.2. lib/install.sh (nd_root_mac), mac/persist.sh and,
+# without a terminal, the nice-dns-helper binary reach every root-run step
+# of an install, uninstall or rollback through it:
+#
+#   sudo bash <tree>/mac/root-ops <verb> [args]
+#
+# Each verb is a closed allow-list entry; its body is the installer code it
+# replaced, with `sudo ` turned into `_r `. Nothing is taken from the
+# environment as root but the three caller variables below, and paths come
+# from fixed lists, never from the caller.
+#
+#   ND_ROOT_USER  the user the install is for: an existing, non-root user.
+#                 Default: SUDO_USER.
+#   ND_ROOT_HOME  that user's home, as the directory service names it.
+#   ND_ROOT_TREE  the nice-dns tree the install runs from: absolute, no
+#                 symlink component, owned by that user, holding
+#                 lib/install.sh. Default: this script's own tree.
+#
+# Exit status: the verb's own; 1 when not run as root, or a caller variable
+# is refused; 2 for an unknown verb or a malformed argument, before anything
+# runs.
+#
+# Fixture tests: run as a non-root user with ND_ROOT_TEST_SUDO naming the
+# tests' fake sudo (an executable that is not setuid), every `_r` call goes
+# through that fake, which logs it; ND_INST_ROOT then prefixes the root
+# paths. None of this is honoured as root.
+# TRUST: the tree is the caller's own, so the scripts and files root
+# installs or runs from it are the caller's too: under sudo that grants the
+# user nothing a terminal sudo does not; the setuid helper (Stage 2) must
+# run a root-owned copy of root-ops and of the files it runs.
+set -euo pipefail
+
+# As root, nothing of the caller's environment is trusted but the caller
+# variables. Before anything is defined: the functions it exported and every
+# other variable go (APT_CONFIG reaches apt-get, TMPDIR mktemp, BASH_FUNC_*
+# the commands themselves). BASH_ENV runs before any script line can act, so
+# a caller that is not sudo (which resets the environment) must clear it
+# itself: the helper does (gui/helper, Stage 2).
+if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+  for f in $(compgen -A function); do unset -f "$f"; done
+  for v in $(compgen -e); do
+    case "$v" in ND_ROOT_USER|ND_ROOT_HOME|ND_ROOT_TREE|SUDO_USER) ;; *) unset "$v" 2>/dev/null || true ;; esac
+  done
+  unset f v
+fi
+
+ME="root-ops"
+_die() { echo "$ME: $2" >&2; exit "$1"; }
+
+ND_ROOT_TEST=0
+if [ "${EUID:-$(id -u)}" -ne 0 ]; then
+  t="${ND_ROOT_TEST_SUDO:-}"
+  if [ -n "$t" ] && [ -f "$t" ] && [ -x "$t" ] && [ ! -u "$t" ] && [ ! -g "$t" ]; then
+    ND_ROOT_TEST=1
+  else
+    _die 1 "must run as root"
+  fi
+fi
+
+if [ "$ND_ROOT_TEST" = 1 ]; then
+  _r() { "$ND_ROOT_TEST_SUDO" "$@"; }
+  R="${ND_INST_ROOT:-}"
+else
+  _r() { "$@"; }
+  R=""
+  PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C LC_ALL=C
+  export PATH LANG LC_ALL
+fi
+
+VERB="${1:-}"
+[ "$#" -gt 0 ] && shift
+NARGS=$#
+
+# _args <n>: the verb takes exactly n arguments.
+_args() { [ "$NARGS" -eq "$1" ] || _die 2 "verb '$VERB' takes $1 argument(s), got $NARGS"; }
+
+# The DNS helper's verbs the installer calls (mac/start-container-root.sh).
+_agent_verb() { case "$1" in check|status|snapshot|restore|discard|post) ;; *) return 1 ;; esac; }
+
+# _owned_root <path>: the mode of a root-owned file the installer keeps for a
+# rollback (lib/install.sh _nd_inst_owned_paths, root rows); fails otherwise.
+_owned_root() {
+  case "$1" in
+    "$R/usr/local/sbin/start-container.sh" | "$R/usr/local/sbin/start-container-root.sh" | \
+    "$R/usr/local/sbin/nice-dns-fetch-bridges.sh" | "$R/usr/local/sbin/nice-dns-bridge-eval.sh") echo 755 ;;
+    "$R/etc/sudoers.d/start-container") echo 440 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Validate the verb and its arguments before anything runs.
+_check() {
+  case "$VERB" in
+    host-prereqs) _args 0 ;;
+    persist) _args 1; case "$1" in haproxy|socat) ;; *) _die 2 "verb 'persist': variant must be 'haproxy' or 'socat', not '$1'" ;; esac ;;
+    teardown) _args 1; case "$1" in reinstall|uninstall) ;; *) _die 2 "verb 'teardown': mode must be 'reinstall' or 'uninstall', not '$1'" ;; esac ;;
+    agent) _args 1; _agent_verb "$1" || _die 2 "verb 'agent': unknown helper verb '$1'" ;;
+    save-previous) _args 1; _owned_root "$1" >/dev/null || _die 2 "verb 'save-previous': '$1' is not a file nice-dns owns" ;;
+    restore) _args 2; _owned_root "$1" >/dev/null || _die 2 "verb 'restore': '$1' is not a file nice-dns owns"
+      case "$2" in absent|-) ;; *) _die 2 "verb 'restore': the second argument is 'absent' or '-', not '$2'" ;; esac ;;
+    "") _die 2 "no verb given" ;;
+    *) _die 2 "unknown verb '$VERB'" ;;
+  esac
+}
+_check "$@"
+
+# _uid_of <path>: the owner's uid (GNU stat in the tests; BSD stat, which has no -c, on macOS).
+_uid_of() { stat -c %u "$1" 2>/dev/null || stat -f %u "$1"; }
+
+# The caller: user, home and tree. A test run acts for the user it runs as.
+if [ "$ND_ROOT_TEST" = 1 ]; then
+  U="${ND_ROOT_USER:-${USER:-$(id -un)}}" H="${ND_ROOT_HOME:-$HOME}" UID_OF="$(id -u)"
+else
+  U="${ND_ROOT_USER:-${SUDO_USER:-}}"
+  case "$U" in ''|root|-*|*[!A-Za-z0-9._-]*) _die 1 "ND_ROOT_USER: '$U' is not a non-root user name" ;; esac
+  UID_OF="$(id -u "$U" 2>/dev/null)" || _die 1 "ND_ROOT_USER: no user '$U'"
+  [ "$UID_OF" -ne 0 ] || _die 1 "ND_ROOT_USER: '$U' is root"
+  # A value with a space comes on the line after the label.
+  DB_HOME="$(dscl . -read "/Users/$U" NFSHomeDirectory 2>/dev/null |
+    awk 'n { sub(/^ /, ""); print; exit } /^NFSHomeDirectory:/ { v = $0; sub(/^NFSHomeDirectory:[ ]*/, "", v); if (v != "") { print v; exit } n = 1 }')" || DB_HOME=""
+  H="${ND_ROOT_HOME:-$DB_HOME}"
+  [ -n "$H" ] && [ "$H" = "$DB_HOME" ] || _die 1 "ND_ROOT_HOME: '$H' is not $U's home"
+fi
+case "$U" in ''|root|-*|*[!A-Za-z0-9._-]*) _die 1 "ND_ROOT_USER: '$U' is not a non-root user name" ;; esac
+case "$H" in /*) ;; *) _die 1 "ND_ROOT_HOME: '$H' is not an absolute path" ;; esac
+T="${ND_ROOT_TREE:-$(cd "$(dirname "$0")/.." && pwd -P)}"
+case "$T" in /*) ;; *) _die 1 "ND_ROOT_TREE: '$T' is not an absolute path" ;; esac
+[ -d "$T" ] && [ "$(cd "$T" && pwd -P)" = "$T" ] || _die 1 "ND_ROOT_TREE: '$T' is not a directory without a symlink component"
+[ "$(_uid_of "$T")" = "$UID_OF" ] || _die 1 "ND_ROOT_TREE: '$T' is not owned by $U"
+[ -f "$T/lib/install.sh" ] && [ ! -L "$T/lib/install.sh" ] || _die 1 "ND_ROOT_TREE: '$T' holds no lib/install.sh"
+
+# ─────────────────────────── the verbs ───────────────────────────────────────
+
+# host-prereqs: Rosetta, which the container builder's VM mounts
+# (lib/install.sh nd_install_macos_host_prereqs).
+v_host_prereqs() {
+  if ! /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
+    _r softwareupdate --install-rosetta --agree-to-license
+  fi
+}
+
+# persist <variant>: the LaunchAgent's sudoers rule (checked with visudo
+# before it goes live) and the root helpers it runs (mac/persist.sh, which
+# checked the directories first).
+v_persist() {
+  local tmp_sudoers
+  tmp_sudoers="$(mktemp)"
+  # shellcheck disable=SC2064  # the path is fixed now
+  trap "rm -f '$tmp_sudoers'" EXIT
+  sed "s/__USERNAME__/$U/" "$T/mac/start-container.sudoers" > "$tmp_sudoers"
+  # Checked before it goes live: a rule sudo cannot parse breaks sudo for
+  # everyone.
+  _r visudo -cf "$tmp_sudoers"
+  _r install -m 440 "$tmp_sudoers" /etc/sudoers.d/start-container
+  _r visudo -cf /etc/sudoers.d/start-container
+
+  # -- install scripts (ensure /usr/local/sbin exists on fresh macOS) --
+  _r install -d -m 755 /usr/local/sbin
+  _r install -m 755 "$T/mac/start-container.sh"            /usr/local/sbin/start-container.sh
+  _r install -m 755 "$T/mac/start-container-root.sh"       /usr/local/sbin/start-container-root.sh
+  # fetch-bridges.sh is invoked from start-container.sh at every LaunchAgent
+  # fire so the stack always uses the fastest bridges from the current network.
+  _r install -m 755 "$T/scripts/fetch-bridges.sh"         /usr/local/sbin/nice-dns-fetch-bridges.sh
+  # Host-side bridge selection (mac/persist.sh says why).
+  _r install -m 755 "$T/mac/bridge-eval.sh"                /usr/local/sbin/nice-dns-bridge-eval.sh
+}
+
+# teardown <reinstall|uninstall>: the root helpers and sudoers rule, and the
+# Podman-era root jobs and their damage (lib/install.sh
+# nd_install_macos_teardown, which unloads the user's agents first).
+v_teardown() {
+  local mode="$1" _d
+  if [ "$mode" = uninstall ]; then
+    _r rm -f "$R/usr/local/sbin/nice-dns-debug-monitor.sh"
+  fi
+  _r rm -f "$R/etc/sudoers.d/start-container" \
+           "$R/usr/local/sbin/start-container.sh" \
+           "$R/usr/local/sbin/start-container-root.sh" \
+           "$R/usr/local/sbin/nice-dns-bridge-eval.sh" \
+           "$R/usr/local/sbin/nice-dns-fetch-bridges.sh"
+
+  # -- Podman-era purge (installs predating commit 7538f02; lib/install.sh
+  # says what each job did) --
+  for _d in org.nice-dns.free-port53 \
+            com.local.loopbackalias \
+            com.local.mullvad-pfctl-disable-on-connect; do
+    _r launchctl bootout "system/${_d}" 2>/dev/null || true
+    _r rm -f "/Library/LaunchDaemons/${_d}.plist"
+  done
+  _r rm -f /etc/sudoers.d/start-podman \
+           /usr/local/sbin/start-podman.sh \
+           /usr/local/sbin/start-podman-root.sh \
+           /usr/local/sbin/mullvad-pfctl-disable-on-connect
+  _r ifconfig lo0 -alias 127.0.0.53 2>/dev/null || true
+
+  # Undo free-port53's damage: re-bootstrapping restores the resolver
+  # without a reboot. No-op when it is already loaded.
+  if ! _r launchctl print system/com.apple.mDNSResponder >/dev/null 2>&1; then
+    _r launchctl bootstrap system \
+      /System/Library/LaunchDaemons/com.apple.mDNSResponder.plist 2>/dev/null || true
+  fi
+}
+
+# agent <verb>: the tree's DNS helper (lib/install.sh _nd_inst_dns_helper).
+v_agent() { _r bash "$T/mac/start-container-root.sh" "$1"; }
+
+# save-previous <path>: an owned root file's bytes on stdout; exit 4 when
+# the file is absent (lib/install.sh nd_install_save_previous).
+v_save_previous() {
+  if _r test -f "$1" </dev/null; then
+    _r cat "$1" </dev/null
+  else
+    exit 4
+  fi
+}
+
+# restore <path> absent|-: an owned root file back from the bytes on stdin
+# ('-'), with the list's mode, or removed ('absent'). A sudoers rule that
+# does not pass visudo is not restored: exit 5 (lib/install.sh
+# _nd_inst_restore_files says what that leaves).
+v_restore() {
+  local p="$1" mode tmp
+  mode="$(_owned_root "$p")"
+  if [ "$2" = absent ]; then
+    _r rm -f "$p"
+    return 0
+  fi
+  tmp="$(mktemp)"
+  # shellcheck disable=SC2064  # the path is fixed now
+  trap "rm -f '$tmp'" EXIT
+  cat >"$tmp"
+  if [ "$p" = "$R/etc/sudoers.d/start-container" ] && ! _r visudo -cf "$tmp" >/dev/null; then
+    exit 5
+  fi
+  _r mkdir -p "$(dirname "$p")" && _r install -m "$mode" "$tmp" "$p"
+}
+
+# One label per line at this indent: the allow-list the stage gates read.
+case "$VERB" in
+  host-prereqs) v_host_prereqs ;;
+  persist) v_persist ;;
+  teardown) v_teardown "$1" ;;
+  agent) v_agent "$1" ;;
+  save-previous) v_save_previous "$1" ;;
+  restore) v_restore "$1" "$2" ;;
+esac

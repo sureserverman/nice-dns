@@ -37,6 +37,20 @@
 # root-ops and of the files it runs, never the user's tree.
 set -euo pipefail
 
+# As root, nothing of the caller's environment is trusted but the caller
+# variables. Before anything is defined: the functions it exported and every
+# other variable go (APT_CONFIG reaches apt-get, TMPDIR mktemp, BASH_FUNC_*
+# the commands themselves). BASH_ENV runs before any script line can act, so
+# a caller that is not sudo (which resets the environment) must clear it
+# itself: the helper does (gui/helper, Stage 2).
+if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+  for f in $(compgen -A function); do unset -f "$f"; done
+  for v in $(compgen -e); do
+    case "$v" in ND_ROOT_USER|ND_ROOT_HOME|ND_ROOT_TREE|SUDO_USER) ;; *) unset "$v" 2>/dev/null || true ;; esac
+  done
+  unset f v
+fi
+
 ME="root-ops"
 _die() { echo "$ME: $2" >&2; exit "$1"; }
 
@@ -55,16 +69,6 @@ if [ "$ND_ROOT_TEST" = 1 ]; then
   R="${ND_INST_ROOT:-}"
   ETC="${ND_INST_ETC:-/etc}"
 else
-  # As root, nothing of the caller's environment is trusted but the caller
-  # variables: functions it exported and every other variable go before any
-  # command runs (APT_CONFIG reaches apt-get, TMPDIR mktemp, BASH_FUNC_* the
-  # commands themselves). BASH_ENV runs before any script line can act, so a
-  # caller that is not sudo (which resets the environment) must clear it
-  # itself: the helper does (gui/helper, Stage 2).
-  for f in $(compgen -A function); do unset -f "$f"; done
-  for v in $(compgen -e); do
-    case "$v" in ND_ROOT_USER|ND_ROOT_HOME|ND_ROOT_TREE|SUDO_USER) ;; *) unset "$v" 2>/dev/null || true ;; esac
-  done
   _r() { "$@"; }
   R=""
   ETC=/etc
@@ -80,7 +84,7 @@ _args() { [ "$NARGS" -eq "$1" ] || _die 2 "verb '$VERB' takes $1 argument(s), go
 NARGS=$#
 
 # The DNS helper's verbs the installer calls (deb/custom-dns-deb).
-DNS_VERBS=" check status snapshot restore discard "
+_dns_verb() { case "$1" in check|status|snapshot|restore|discard) ;; *) return 1 ;; esac; }
 
 # _owned_root <path>: the mode of a root-owned file the installer keeps for a
 # rollback (lib/install.sh _nd_inst_owned_paths, root rows); fails otherwise.
@@ -99,7 +103,7 @@ _owned_root() {
 _check() {
   case "$VERB" in
     host-prereqs|interrupt-prereqs|pin|profiles-done|profiles-undo|nm-reload|uninstall|fix-bin-owner|nm-wait-dropin) _args 0 ;;
-    dns) _args 1; case "$DNS_VERBS" in *" $1 "*) ;; *) _die 2 "verb 'dns': unknown helper verb '$1'" ;; esac ;;
+    dns) _args 1; _dns_verb "$1" || _die 2 "verb 'dns': unknown helper verb '$1'" ;;
     save-previous) _args 1; _owned_root "$1" >/dev/null || _die 2 "verb 'save-previous': '$1' is not a file nice-dns owns" ;;
     restore) _args 2; _owned_root "$1" >/dev/null || _die 2 "verb 'restore': '$1' is not a file nice-dns owns"
       case "$2" in absent|-) ;; *) _die 2 "verb 'restore': the second argument is 'absent' or '-', not '$2'" ;; esac ;;
