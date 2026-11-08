@@ -163,7 +163,12 @@ v_persist() {
   # fetch-bridges.sh is invoked from start-container.sh at every LaunchAgent
   # fire so the stack always uses the fastest bridges from the current network.
   _r install -m 755 "$T/scripts/fetch-bridges.sh"         /usr/local/sbin/nice-dns-fetch-bridges.sh
-  # Host-side bridge selection (mac/persist.sh says why).
+  # Host-side bridge selection. fetch-bridges.sh deliberately does not rank the
+  # pool it writes — a TCP probe cannot tell a working bridge from one that is
+  # TCP-open but PT-dead — and the proxy consumes bridges.env as-is, so without
+  # this every fetched bridge became a Bridge line, dead ones included. Linux has
+  # had the equivalent since deb/persistent-podman.sh grew its
+  # nice-dns-fetch-bridges.service unit.
   _r install -m 755 "$T/mac/bridge-eval.sh"                /usr/local/sbin/nice-dns-bridge-eval.sh
 }
 
