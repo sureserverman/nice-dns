@@ -242,7 +242,7 @@ hi_receipt() {
           sort | paste -sd, -)"
     done
     printf 'product\tnice-dns\t%s\n' "$(git -C "$NICE_DNS_ROOT" rev-parse HEAD)"
-    printf 'limit\tno-person-prompted\t-\tscope=Sub-plan 5\tthe terminal path ran with passwordless sudo and no tty; on Linux a temporary polkit rule stood in for the administrator, so the prompt and the one-runner rule (OD-11) rest on the fixture tests\n'
+    printf 'limit\tno-person-prompted\t-\tscope=sub-plan-5\tthe terminal path ran with passwordless sudo and no tty; on Linux a temporary polkit rule stood in for the administrator, so the prompt and the one-runner rule (OD-11) rest on the fixture tests\n'
     printf 'limit\tmac-gui-context\t-\tscope=BL-052\tmacOS commands ran in the GUI context (launchctl asuser), not from plain ssh or Terminal\n'
   } >"$r"
   for d in "$ARTIFACT_DIR"/helper-install/*/; do
