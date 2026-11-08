@@ -2495,7 +2495,7 @@ nd_install_macos_uninstall() {
   _nd_inst_uninstall_state "$dns_ok"
   _nd_inst_uninstall_verdict "$dns_ok" || return 1
   if [ "$helper_ok" = 0 ]; then
-    _nd_inst_err "nice-dns-helper, a setuid root program, was NOT removed. Remove it: sudo rm -rf /usr/local/libexec/nice-dns-helper /usr/local/libexec/nice-dns"
+    _nd_inst_err "nice-dns-helper, a setuid root program, was NOT removed. Remove it as root: rm -rf /usr/local/libexec/nice-dns-helper /usr/local/libexec/nice-dns"
     return 1
   fi
 }
