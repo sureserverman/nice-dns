@@ -145,6 +145,10 @@ echo
 # Wants=/After= so the refresh always lands before EnvironmentFile= is read.
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BRIDGES_BIN_DIR="$HOME/.local/bin"
+# Root steps go through deb/root-ops (lib/root.sh nd_root_deb).
+ND_INST_TREE="${ND_INST_TREE:-$PROJECT_ROOT}"
+# shellcheck source=lib/root.sh
+. "$PROJECT_ROOT/lib/root.sh"
 BRIDGES_BIN="$BRIDGES_BIN_DIR/nice-dns-fetch-bridges"
 BRIDGES_UNIT="$USER_SYSTEMD_DIR/nice-dns-fetch-bridges.service"
 
@@ -156,17 +160,17 @@ mkdir -p "$BRIDGES_BIN_DIR" "$USER_SYSTEMD_DIR" 2>/dev/null || true
 # this directory before chowning anything inside it — leaves ~/.local/bin
 # owned root:root with mode 755, which silently breaks every unprivileged
 # install into that directory (pip --user, pipx, our own fetch-bridges).
-# Self-heal with sudo (the same sudo session §3c needs anyway); if the
-# user has no sudo, fail loud with the exact remediation command.
+# Self-heal as root (root-ops fix-bin-owner, the same session §3c needs
+# anyway); if that fails, fail loud with the exact remediation command.
 if [ ! -w "$BRIDGES_BIN_DIR" ]; then
   echo "   ! $BRIDGES_BIN_DIR is not writable by $(whoami):"
   ls -ld "$BRIDGES_BIN_DIR" >&2
-  echo "   • attempting 'sudo chown -R $(id -u):$(id -g)' to fix..."
-  if sudo chown -R "$(id -u):$(id -g)" "$BRIDGES_BIN_DIR"; then
+  echo "   • giving it back to $(id -u):$(id -g) as root..."
+  if nd_root_deb fix-bin-owner; then
     echo "   ✓ ownership repaired."
   else
     echo "   ✗ chown failed. Re-run after:"  >&2
-    echo "       sudo chown -R $(id -u):$(id -g) $BRIDGES_BIN_DIR" >&2
+    echo "       chown -R $(id -u):$(id -g) $BRIDGES_BIN_DIR   (as root)" >&2
     exit 1
   fi
 fi
@@ -267,23 +271,9 @@ else
   if [ -f "$NM_WAIT_DROPIN" ] && grep -q '^ExecStart=/usr/bin/nm-online -q$' "$NM_WAIT_DROPIN"; then
     echo "   • Drop-in already in place; skipping."
   else
-    echo "   • Writing $NM_WAIT_DROPIN (requires sudo)..."
-    sudo install -d -m 755 "$NM_WAIT_DROPIN_DIR"
-    sudo tee "$NM_WAIT_DROPIN" >/dev/null <<'NMOEOF'
-# Installed by nice-dns/deb/persistent-podman.sh.
-# Drop the -s flag from nm-online so network-online.target waits for ACTUAL
-# IPv4/IPv6 connectivity (an interface with an IP and reachable gateway),
-# not just for NM's startup phase to finish enumerating devices. Without
-# this, rootless podman's pasta races wifi DHCP at boot and ends up with
-# no default route in the container netns. See deb/persistent-podman.sh
-# section 3c for the full diagnosis.
-#
-# Reverse with: sudo systemctl revert NetworkManager-wait-online.service
-[Service]
-ExecStart=
-ExecStart=/usr/bin/nm-online -q
-NMOEOF
-    sudo systemctl daemon-reload
+    echo "   • Writing $NM_WAIT_DROPIN (as root)..."
+    # The drop-in's text and why: deb/root-ops nm-wait-dropin.
+    nd_root_deb nm-wait-dropin
     echo "   ✓ Installed $NM_WAIT_DROPIN"
   fi
 fi

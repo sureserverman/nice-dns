@@ -1,0 +1,464 @@
+#!/usr/bin/env bash
+# root-ops: the one root entry point of the Linux installer (Sub-plan 5,
+# Task 1.1). lib/install.sh (nd_root_deb), deb/persistent-podman.sh and,
+# without a terminal, the nice-dns-helper binary reach every root-run step
+# of an install, uninstall or rollback through it:
+#
+#   sudo bash <tree>/deb/root-ops <verb> [args]
+#
+# Each verb is a closed allow-list entry; its body is the installer code it
+# replaced, with `sudo ` turned into `_r `. Nothing is taken from the
+# environment as root but the three caller variables below, and paths come
+# from fixed lists, never from the caller.
+#
+#   ND_ROOT_USER  the user the install is for: an existing, non-root user.
+#                 Default: SUDO_USER (sudo resets the environment, so a
+#                 caller's exported value does not cross it).
+#   ND_ROOT_HOME  that user's home, as the password database names it.
+#                 Default: the database's value.
+#   ND_ROOT_TREE  the nice-dns tree the install runs from: absolute, no
+#                 symlink component, owned by that user, holding
+#                 lib/install.sh. Default: this script's own tree.
+#
+# Exit status: the verb's own; 1 when not run as root, or a caller variable
+# is refused; 2 for an unknown verb or a malformed argument, before anything
+# runs.
+#
+# Fixture tests: run as a non-root user with ND_ROOT_TEST_SUDO naming the
+# tests' fake sudo (an executable that is not setuid), every `_r` call goes
+# through that fake, which logs it; ND_INST_ROOT then prefixes the root
+# paths and ND_INST_ETC the subordinate id files. None of this is honoured
+# as root, so a root run always acts on the real host.
+# TRUST: the tree is the caller's own (ND_ROOT_TREE is owned by that user),
+# so the scripts root runs from it (custom-dns-deb, 91-nice-dns-ipv6) and the
+# bytes a rollback restores are the caller's too. Under sudo that grants the
+# user nothing a terminal sudo does not. A caller without a terminal (the
+# nice-dns-helper binary, Stage 2) must therefore run a root-owned copy of
+# root-ops and of the files it runs, never the user's tree.
+set -euo pipefail
+
+ME="root-ops"
+_die() { echo "$ME: $2" >&2; exit "$1"; }
+
+ND_ROOT_TEST=0
+if [ "${EUID:-$(id -u)}" -ne 0 ]; then
+  t="${ND_ROOT_TEST_SUDO:-}"
+  if [ -n "$t" ] && [ -f "$t" ] && [ -x "$t" ] && [ ! -u "$t" ] && [ ! -g "$t" ]; then
+    ND_ROOT_TEST=1
+  else
+    _die 1 "must run as root"
+  fi
+fi
+
+if [ "$ND_ROOT_TEST" = 1 ]; then
+  _r() { "$ND_ROOT_TEST_SUDO" "$@"; }
+  R="${ND_INST_ROOT:-}"
+  ETC="${ND_INST_ETC:-/etc}"
+else
+  # As root, nothing of the caller's environment is trusted but the caller
+  # variables: functions it exported and every other variable go before any
+  # command runs (APT_CONFIG reaches apt-get, TMPDIR mktemp, BASH_FUNC_* the
+  # commands themselves). BASH_ENV runs before any script line can act, so a
+  # caller that is not sudo (which resets the environment) must clear it
+  # itself: the helper does (gui/helper, Stage 2).
+  for f in $(compgen -A function); do unset -f "$f"; done
+  for v in $(compgen -e); do
+    case "$v" in ND_ROOT_USER|ND_ROOT_HOME|ND_ROOT_TREE|SUDO_USER) ;; *) unset "$v" 2>/dev/null || true ;; esac
+  done
+  _r() { "$@"; }
+  R=""
+  ETC=/etc
+  PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C LC_ALL=C
+  export PATH LANG LC_ALL
+fi
+
+VERB="${1:-}"
+[ "$#" -gt 0 ] && shift
+
+# _args <n>: the verb takes exactly n arguments.
+_args() { [ "$NARGS" -eq "$1" ] || _die 2 "verb '$VERB' takes $1 argument(s), got $NARGS"; }
+NARGS=$#
+
+# The DNS helper's verbs the installer calls (deb/custom-dns-deb).
+DNS_VERBS=" check status snapshot restore discard "
+
+# _owned_root <path>: the mode of a root-owned file the installer keeps for a
+# rollback (lib/install.sh _nd_inst_owned_paths, root rows); fails otherwise.
+_owned_root() {
+  case "$1" in
+    "$R/usr/bin/custom-dns-deb" | "$R/etc/NetworkManager/dispatcher.d/90-nice-dns-pin" | \
+    "$R/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6" | "$R/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6") echo 755 ;;
+    "$R/etc/systemd/system/custom-dns-deb.service" | "$R/etc/NetworkManager/conf.d/90-nice-dns.conf" | \
+    "$R/etc/sysctl.d/99-nice-dns-disable-ipv6.conf" | "$R/etc/sysctl.d/99-podman-privileged-ports.conf" | \
+    "$R/etc/systemd/system/NetworkManager-wait-online.service.d/10-wait-for-connectivity.conf") echo 644 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Validate the verb and its arguments before anything runs.
+_check() {
+  case "$VERB" in
+    host-prereqs|interrupt-prereqs|pin|profiles-done|profiles-undo|nm-reload|uninstall|fix-bin-owner|nm-wait-dropin) _args 0 ;;
+    dns) _args 1; case "$DNS_VERBS" in *" $1 "*) ;; *) _die 2 "verb 'dns': unknown helper verb '$1'" ;; esac ;;
+    save-previous) _args 1; _owned_root "$1" >/dev/null || _die 2 "verb 'save-previous': '$1' is not a file nice-dns owns" ;;
+    restore) _args 2; _owned_root "$1" >/dev/null || _die 2 "verb 'restore': '$1' is not a file nice-dns owns"
+      case "$2" in absent|-) ;; *) _die 2 "verb 'restore': the second argument is 'absent' or '-', not '$2'" ;; esac ;;
+    "") _die 2 "no verb given" ;;
+    *) _die 2 "unknown verb '$VERB'" ;;
+  esac
+}
+_check "$@"
+
+# The caller: user, home and tree. A test run acts for the user it runs as
+# (its USER and HOME are the fixture's).
+if [ "$ND_ROOT_TEST" = 1 ]; then
+  U="${ND_ROOT_USER:-${USER:-$(id -un)}}" H="${ND_ROOT_HOME:-$HOME}" UID_OF="$(id -u)"
+else
+  U="${ND_ROOT_USER:-${SUDO_USER:-}}"
+  case "$U" in ''|root|-*|*[!A-Za-z0-9._-]*) _die 1 "ND_ROOT_USER: '$U' is not a non-root user name" ;; esac
+  UID_OF="$(id -u "$U" 2>/dev/null)" || _die 1 "ND_ROOT_USER: no user '$U'"
+  [ "$UID_OF" -ne 0 ] || _die 1 "ND_ROOT_USER: '$U' is root"
+  DB_HOME="$(getent passwd "$U" | cut -d: -f6)" || DB_HOME=""
+  H="${ND_ROOT_HOME:-$DB_HOME}"
+  [ -n "$H" ] && [ "$H" = "$DB_HOME" ] || _die 1 "ND_ROOT_HOME: '$H' is not $U's home"
+fi
+case "$U" in ''|root|-*|*[!A-Za-z0-9._-]*) _die 1 "ND_ROOT_USER: '$U' is not a non-root user name" ;; esac
+case "$H" in /*) ;; *) _die 1 "ND_ROOT_HOME: '$H' is not an absolute path" ;; esac
+T="${ND_ROOT_TREE:-$(cd "$(dirname "$0")/.." && pwd -P)}"
+case "$T" in /*) ;; *) _die 1 "ND_ROOT_TREE: '$T' is not an absolute path" ;; esac
+[ -d "$T" ] && [ "$(cd "$T" && pwd -P)" = "$T" ] || _die 1 "ND_ROOT_TREE: '$T' is not a directory without a symlink component"
+[ "$(stat -c %u "$T")" = "$UID_OF" ] || _die 1 "ND_ROOT_TREE: '$T' is not owned by $U"
+[ -f "$T/lib/install.sh" ] && [ ! -L "$T/lib/install.sh" ] || _die 1 "ND_ROOT_TREE: '$T' holds no lib/install.sh"
+
+# ─────────────────────────── the verbs ───────────────────────────────────────
+
+# host-prereqs: packages, the podman PPA, the passt profile, the low-port
+# sysctl, subordinate ids, cgroup delegation and lingering
+# (lib/install.sh nd_install_linux_host_prereqs).
+v_host_prereqs() {
+  # Pin all sejug/podman PPA packages (podman, crun, containers-common, ...) at
+  # priority 600 so apt installs the PPA's coherent stack rather than mixing with
+  # Ubuntu archive versions. Inert if the PPA isn't added yet.
+  printf 'Package: *\nPin: release o=LP-PPA-sejug-podman\nPin-Priority: 600\n' \
+    | _r tee /etc/apt/preferences.d/podman-ppa >/dev/null
+
+  # Repair package state if a previous install left the PPA half-configured
+  if grep -rqs 'sejug/podman' /etc/apt/sources.list.d/ 2>/dev/null; then
+    _r apt-get update -q
+    _r apt-get install -yq --fix-broken
+  fi
+
+  # Base packages (lib/install.sh says why each one).
+  _r apt-get install -yq --no-install-recommends git podman netavark aardvark-dns catatonit bind9-dnsutils
+
+  # Ensure Podman >= 5.3.0 (the .pod quadlet type exists only in Podman 5.0+).
+  local MIN_PODMAN="5.3.0" CUR_PODMAN MIN_CRUN="1.14.3" CUR_CRUN pkg
+  CUR_PODMAN=$(podman --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' || echo "0.0.0")
+  if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
+    echo "Podman $CUR_PODMAN < $MIN_PODMAN — upgrading via ppa:sejug/podman..."
+    _r add-apt-repository -y ppa:sejug/podman
+    _r apt-get update -q
+    _r apt-get install -yq --fix-broken
+    # PPA's containers-common replaces golang-github-containers-{common,image}
+    # from Ubuntu repos; remove them first to avoid dpkg file conflicts
+    for pkg in golang-github-containers-common golang-github-containers-image; do
+      if dpkg -l "$pkg" 2>/dev/null | grep -q '^ii'; then
+        _r dpkg --remove --force-depends "$pkg"
+      fi
+    done
+    # Ubuntu's podman-compose and PPA's podman both ship
+    # /usr/share/man/man1/podman-compose.1.gz; divert *before* installing the
+    # PPA podman so dpkg doesn't fail with a file conflict.
+    _r dpkg-divert --add --rename --package podman \
+      --divert /usr/share/man/man1/podman-compose.1.gz.dpkg-divert \
+      /usr/share/man/man1/podman-compose.1.gz 2>/dev/null || true
+    _r apt-get install -yq --no-install-recommends podman crun
+    # Re-check that the upgrade actually moved us to >= 5.3.0.
+    CUR_PODMAN=$(podman --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' || echo "0.0.0")
+    if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
+      echo "ERROR: Podman is still at $CUR_PODMAN after the upgrade attempt." >&2
+      echo "       nice-dns requires Podman >= $MIN_PODMAN (the .pod quadlet" >&2
+      echo "       type was added in Podman 5.0). Check whether ppa:sejug/podman" >&2
+      echo "       has a build for $(lsb_release -cs 2>/dev/null || uname -m):" >&2
+      echo "         apt-cache policy podman" >&2
+      echo "       If no PPA candidate is available for your Ubuntu release/arch," >&2
+      echo "       upgrade to a release that ships Podman 5.x natively (Ubuntu 25.04+)." >&2
+      exit 1
+    fi
+  fi
+
+  # Ensure crun >= 1.14.3 (older versions reject OCI runtime-spec 1.2.x from Podman 5)
+  CUR_CRUN=$(crun --version 2>/dev/null | grep -oP 'crun version \K\d+\.\d+(\.\d+)?' || echo "0.0.0")
+  if ! printf '%s\n%s\n' "$MIN_CRUN" "$CUR_CRUN" | sort -V -C; then
+    echo "crun $CUR_CRUN < $MIN_CRUN — upgrading via ppa:sejug/podman..."
+    if ! grep -rqs 'sejug/podman' /etc/apt/sources.list.d/ 2>/dev/null; then
+      _r add-apt-repository -y ppa:sejug/podman
+      _r apt-get update -q
+    fi
+    _r apt-get install -yq --no-install-recommends crun
+  fi
+
+  # pasta is a symlink to passt, so AppArmor applies the passt profile; the
+  # stock Noble profile predates Podman 5.x rootless-netns (lib/install.sh).
+  if [ -f /etc/apparmor.d/usr.bin.passt ]; then
+    _r tee /etc/apparmor.d/usr.bin.passt > /dev/null <<'APPARMOR'
+abi <abi/3.0>,
+
+include <tunables/global>
+
+profile passt /usr/bin/passt{,.avx2} flags=(attach_disconnected) {
+  include <abstractions/pasta>
+
+  # Podman 5.x rootless-netns with pasta
+  allow userns,
+  ptrace (read) peer=crun,
+  signal (receive) peer=podman,
+  @{PROC}/[0-9]*/ns/ r,
+  @{PROC}/sys/net/** r,
+  @{run}/user/@{uid}/containers/** rwlk,
+  # Standalone (non-pod) containers such as the bridge-eval job place their netns
+  # under run/user/<uid>/netns/ rather than the containers/ subtree; pasta must
+  # read that dir to enter the namespace. Without this, the host-side bridge-eval
+  # "manage" job (nice-dns-fetch-bridges.service) dies with pasta "netns dir
+  # open: Permission denied" (exit 126), so bridges.env never refreshes.
+  @{run}/user/@{uid}/netns/ r,
+  @{run}/user/@{uid}/netns/** rwlk,
+
+  owner /tmp/**				w,
+  owner @{HOME}/**			w,
+
+  include if exists <local/usr.bin.passt>
+}
+APPARMOR
+    _r apparmor_parser -r --skip-cache /etc/apparmor.d/usr.bin.passt
+  fi
+
+  echo 'net.ipv4.ip_unprivileged_port_start = 53' | \
+    _r tee "$R/etc/sysctl.d/99-podman-privileged-ports.conf" >/dev/null
+  _r sysctl --system
+
+  # UID/GID mappings for the user if missing; any existing range is kept.
+  if ! grep -q "^$U:" "$ETC/subuid" 2>/dev/null; then
+    _r usermod --add-subuids 100000-165535 "$U"
+  fi
+  if ! grep -q "^$U:" "$ETC/subgid" 2>/dev/null; then
+    _r usermod --add-subgids 100000-165535 "$U"
+  fi
+
+  # Enable cgroups v2 delegation for systemd services
+  _r mkdir -p /etc/systemd/system/user@.service.d
+  _r tee /etc/systemd/system/user@.service.d/delegate.conf >/dev/null << EOF
+[Service]
+Delegate=cpu cpuset io memory pids
+EOF
+  _r systemctl daemon-reload
+
+  # Enable user lingering for service persistence
+  _r loginctl enable-linger "$U"
+}
+
+# interrupt-prereqs: NetworkManager's dns=dnsmasq runs a dnsmasq on port 53,
+# which conflicts with pi-hole; the owned 90-nice-dns.conf drop-in (dns=none)
+# overrides it (lib/install.sh nd_install_linux_interrupt_prereqs).
+v_interrupt_prereqs() {
+  local NM_CONFIG="$R/etc/NetworkManager/NetworkManager.conf"
+  if [ -f "$NM_CONFIG" ] && grep -Eq '^[[:space:]]*dns[[:space:]]*=[[:space:]]*dnsmasq' "$NM_CONFIG"; then
+    _r mkdir -p "$R/etc/NetworkManager/conf.d"
+    printf '[main]\ndns=none\n' | _r tee "$R/etc/NetworkManager/conf.d/90-nice-dns.conf" >/dev/null
+    _r systemctl restart NetworkManager
+  fi
+}
+
+# _nm_lockdown: dns=none and the pin's dispatcher hook, then the per-device
+# IPv6 hook (lib/install.sh says why each piece is there and what was removed).
+_nm_lockdown() {
+  if ! command -v nmcli >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! systemctl is-active --quiet NetworkManager 2>/dev/null; then
+    return 0
+  fi
+  _r mkdir -p "$R/etc/NetworkManager/conf.d" "$R/etc/NetworkManager/dispatcher.d"
+  _r tee "$R/etc/NetworkManager/conf.d/90-nice-dns.conf" >/dev/null <<'EOF'
+[main]
+dns=none
+EOF
+  _r tee "$R/etc/NetworkManager/dispatcher.d/90-nice-dns-pin" >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ -x /usr/bin/custom-dns-deb ]; then
+  /usr/bin/custom-dns-deb
+fi
+EOF
+  _r chmod 755 "$R/etc/NetworkManager/dispatcher.d/90-nice-dns-pin"
+  # Each device's value from before nice-dns, recorded for the uninstall,
+  # only while no nice-dns switch is in force; then the hook is installed.
+  local d
+  if ! _r test -e "$R/etc/sysctl.d/99-nice-dns-disable-ipv6.conf"; then
+    for d in "$R"/proc/sys/net/ipv6/conf/*/; do
+      d="${d%/}"; d="${d##*/}"
+      case "$d" in all|default|'*') continue ;; esac
+      _r bash "$T/deb/91-nice-dns-ipv6" "$d" record || true
+    done
+  fi
+  _r mkdir -p "$R/etc/NetworkManager/dispatcher.d/pre-up.d"
+  _r install -m 755 "$T/deb/91-nice-dns-ipv6" "$R/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6"
+  _r install -m 755 "$T/deb/91-nice-dns-ipv6" "$R/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6"
+
+  _r systemctl reload NetworkManager 2>/dev/null || _r systemctl restart NetworkManager
+}
+
+# _ipv6_disable: the sysctl switch, the hook on the devices that exist now,
+# and ipv6.method disabled in each Ethernet and Wi-Fi profile (DEC-020).
+_ipv6_disable() {
+  _r mkdir -p "$R/etc/sysctl.d"
+  _r tee "$R/etc/sysctl.d/99-nice-dns-disable-ipv6.conf" >/dev/null <<'EOF'
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+EOF
+  _r sysctl --system >/dev/null
+  local hook="$R/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6" d
+  if _r test -x "$hook"; then
+    for d in "$R"/proc/sys/net/ipv6/conf/*/; do
+      d="${d%/}"; d="${d##*/}"
+      case "$d" in all|default|'*') continue ;; esac
+      _r "$hook" "$d" up || true
+    done
+  fi
+  _r "$R/usr/bin/custom-dns-deb" ipv6-profiles || true
+
+  # sysctl-only on purpose (never the kernel flag ipv6.disable=1, which
+  # bricked Mullvad); the legacy grub.d drop-in goes.
+  if _r test -f "$R/etc/default/grub.d/99-nice-dns-ipv6.cfg"; then
+    _r rm "$R/etc/default/grub.d/99-nice-dns-ipv6.cfg"
+    if command -v update-grub >/dev/null 2>&1; then
+      _r update-grub
+    fi
+  fi
+}
+
+# pin: the boot-time pin service and its helper, the NetworkManager pieces,
+# IPv6 off, then the pin itself (lib/install.sh nd_install_linux_pin).
+v_pin() {
+  _r mkdir -p "$R/etc/systemd/system" "$R/usr/bin"
+  _r install -m 644 "$T/deb/custom-dns-deb.service" "$R/etc/systemd/system/custom-dns-deb.service"
+  _r install -m 755 "$T/deb/custom-dns-deb" "$R/usr/bin/custom-dns-deb"
+  _r systemctl daemon-reload
+  # Enabled for every boot; this run pins explicitly below and checks it.
+  _r systemctl enable custom-dns-deb.service
+  _nm_lockdown
+  _ipv6_disable
+  _r "$R/usr/bin/custom-dns-deb" pin
+}
+
+# profiles-done: the profile step's undo list is for a rollback of this install only.
+v_profiles_done() { _r "$R/usr/bin/custom-dns-deb" ipv6-profiles-done || true; }
+
+# profiles-undo: a rollback gives back the profiles' IPv6 methods.
+v_profiles_undo() { _r "$R/usr/bin/custom-dns-deb" ipv6-profiles-undo; }
+
+# nm-reload: a rollback's NetworkManager reload.
+v_nm_reload() { _r systemctl reload NetworkManager 2>/dev/null || true; }
+
+# uninstall: the pin helper and the legacy grub drop-in go
+# (lib/install.sh nd_install_linux_uninstall).
+v_uninstall() {
+  _r rm -f "$R/usr/bin/custom-dns-deb"
+  if _r test -f "$R/etc/default/grub.d/99-nice-dns-ipv6.cfg"; then
+    _r rm -f "$R/etc/default/grub.d/99-nice-dns-ipv6.cfg"
+    if command -v update-grub >/dev/null 2>&1; then
+      _r update-grub >/dev/null 2>&1 || true
+    fi
+  fi
+  _r systemctl daemon-reload
+}
+
+# dns <verb>: the tree's DNS helper (lib/install.sh _nd_inst_dns_helper).
+v_dns() { _r bash "$T/deb/custom-dns-deb" "$1"; }
+
+# save-previous <path>: an owned root file's bytes on stdout for the
+# rollback copy, which the caller writes into its own state; exit 4 when the
+# file is absent (lib/install.sh nd_install_save_previous).
+v_save_previous() {
+  if _r test -f "$1" </dev/null; then
+    _r cat "$1" </dev/null
+  else
+    exit 4
+  fi
+}
+
+# restore <path> absent|-: an owned root file back from the bytes on stdin
+# ('-'), with the mode the list gives it, or removed ('absent'). The path and
+# mode come from the fixed list and the bytes from the caller: no caller path
+# is opened as root (lib/install.sh _nd_inst_restore_files).
+v_restore() {
+  local p="$1" mode tmp
+  mode="$(_owned_root "$p")"
+  if [ "$2" = absent ]; then
+    _r rm -f "$p"
+    return 0
+  fi
+  tmp="$(mktemp)"
+  # shellcheck disable=SC2064  # the path is fixed now
+  trap "rm -f '$tmp'" EXIT
+  cat >"$tmp"
+  _r mkdir -p "$(dirname "$p")" && _r install -m "$mode" "$tmp" "$p"
+}
+
+# fix-bin-owner: ~/.local/bin back to the user when a package's postinst
+# left it root-owned (deb/persistent-podman.sh). The directory is entered
+# first and checked as the one this process now holds, so a component the
+# user swaps for a symlink afterwards changes nothing; chown -R then works
+# from it without following symlinks (-P).
+v_fix_bin_owner() {
+  local d="$H/.local/bin" g home
+  home="$(cd -P -- "$H" 2>/dev/null && pwd -P)" || _die 1 "fix-bin-owner: $H is not a directory"
+  [ "$home" = "$H" ] || _die 1 "fix-bin-owner: $H has a symlink component"
+  if [ -L "$H/.local" ] || [ -L "$d" ] || [ ! -d "$d" ]; then
+    _die 1 "fix-bin-owner: $d is not a directory (or is a symlink)"
+  fi
+  cd -P -- "$d" || _die 1 "fix-bin-owner: cannot enter $d"
+  [ "$(pwd -P)" = "$d" ] || _die 1 "fix-bin-owner: $d moved while it was checked"
+  if [ "$ND_ROOT_TEST" = 1 ]; then g="$(id -g)"; else g="$(id -g "$U")"; fi
+  _r chown -R -P "$UID_OF:$g" .
+}
+
+# nm-wait-dropin: network-online.target waits for real connectivity
+# (deb/persistent-podman.sh section 3c says why).
+v_nm_wait_dropin() {
+  local dir="$R/etc/systemd/system/NetworkManager-wait-online.service.d"
+  _r install -d -m 755 "$dir"
+  _r tee "$dir/10-wait-for-connectivity.conf" >/dev/null <<'NMOEOF'
+# Installed by nice-dns/deb/persistent-podman.sh.
+# Drop the -s flag from nm-online so network-online.target waits for ACTUAL
+# IPv4/IPv6 connectivity (an interface with an IP and reachable gateway),
+# not just for NM's startup phase to finish enumerating devices. Without
+# this, rootless podman's pasta races wifi DHCP at boot and ends up with
+# no default route in the container netns. See deb/persistent-podman.sh
+# section 3c for the full diagnosis.
+#
+# Reverse with: sudo systemctl revert NetworkManager-wait-online.service
+[Service]
+ExecStart=
+ExecStart=/usr/bin/nm-online -q
+NMOEOF
+  _r systemctl daemon-reload
+}
+
+# One label per line at this indent: the allow-list the stage gates read.
+case "$VERB" in
+  host-prereqs) v_host_prereqs ;;
+  interrupt-prereqs) v_interrupt_prereqs ;;
+  pin) v_pin ;;
+  profiles-done) v_profiles_done ;;
+  profiles-undo) v_profiles_undo ;;
+  nm-reload) v_nm_reload ;;
+  uninstall) v_uninstall ;;
+  dns) v_dns "$1" ;;
+  save-previous) v_save_previous "$1" ;;
+  restore) v_restore "$1" "$2" ;;
+  fix-bin-owner) v_fix_bin_owner ;;
+  nm-wait-dropin) v_nm_wait_dropin ;;
+esac

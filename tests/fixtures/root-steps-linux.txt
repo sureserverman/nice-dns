@@ -1,0 +1,168 @@
+## first install
+rc 0
+sudo bash <W>/src/nice-dns/deb/custom-dns-deb check
+sudo tee /etc/apt/preferences.d/podman-ppa
+sudo apt-get update -q
+sudo apt-get install -yq --fix-broken
+sudo apt-get install -yq --no-install-recommends git podman netavark aardvark-dns catatonit bind9-dnsutils
+sudo tee /etc/apparmor.d/usr.bin.passt
+sudo apparmor_parser -r --skip-cache /etc/apparmor.d/usr.bin.passt
+sudo tee <W>/root/etc/sysctl.d/99-podman-privileged-ports.conf
+sudo sysctl --system
+sudo mkdir -p /etc/systemd/system/user@.service.d
+sudo tee /etc/systemd/system/user@.service.d/delegate.conf
+sudo systemctl daemon-reload
+sudo loginctl enable-linger tester
+sudo test -f <W>/root/usr/bin/custom-dns-deb
+sudo test -f <W>/root/etc/NetworkManager/dispatcher.d/90-nice-dns-pin
+sudo test -f <W>/root/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6
+sudo test -f <W>/root/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6
+sudo test -f <W>/root/etc/systemd/system/custom-dns-deb.service
+sudo test -f <W>/root/etc/NetworkManager/conf.d/90-nice-dns.conf
+sudo test -f <W>/root/etc/sysctl.d/99-nice-dns-disable-ipv6.conf
+sudo test -f <W>/root/etc/sysctl.d/99-podman-privileged-ports.conf
+sudo cat <W>/root/etc/sysctl.d/99-podman-privileged-ports.conf
+sudo test -f <W>/root/etc/systemd/system/NetworkManager-wait-online.service.d/10-wait-for-connectivity.conf
+sudo bash <W>/src/nice-dns/deb/custom-dns-deb snapshot
+sudo mkdir -p <W>/root/etc/systemd/system <W>/root/usr/bin
+sudo install -m 644 <W>/src/nice-dns/deb/custom-dns-deb.service <W>/root/etc/systemd/system/custom-dns-deb.service
+sudo install -m 755 <W>/src/nice-dns/deb/custom-dns-deb <W>/root/usr/bin/custom-dns-deb
+sudo systemctl daemon-reload
+sudo systemctl enable custom-dns-deb.service
+sudo mkdir -p <W>/root/etc/NetworkManager/conf.d <W>/root/etc/NetworkManager/dispatcher.d
+sudo tee <W>/root/etc/NetworkManager/conf.d/90-nice-dns.conf
+sudo tee <W>/root/etc/NetworkManager/dispatcher.d/90-nice-dns-pin
+sudo chmod 755 <W>/root/etc/NetworkManager/dispatcher.d/90-nice-dns-pin
+sudo test -e <W>/root/etc/sysctl.d/99-nice-dns-disable-ipv6.conf
+sudo bash <W>/src/nice-dns/deb/91-nice-dns-ipv6 enp1s0 record
+sudo bash <W>/src/nice-dns/deb/91-nice-dns-ipv6 wg0-mullvad record
+sudo mkdir -p <W>/root/etc/NetworkManager/dispatcher.d/pre-up.d
+sudo install -m 755 <W>/src/nice-dns/deb/91-nice-dns-ipv6 <W>/root/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6
+sudo install -m 755 <W>/src/nice-dns/deb/91-nice-dns-ipv6 <W>/root/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6
+sudo systemctl reload NetworkManager
+sudo mkdir -p <W>/root/etc/sysctl.d
+sudo tee <W>/root/etc/sysctl.d/99-nice-dns-disable-ipv6.conf
+sudo sysctl --system
+sudo test -x <W>/root/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6
+sudo <W>/root/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6 enp1s0 up
+sudo <W>/root/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6 wg0-mullvad up
+sudo <W>/root/usr/bin/custom-dns-deb ipv6-profiles
+sudo test -f <W>/root/etc/default/grub.d/99-nice-dns-ipv6.cfg
+sudo <W>/root/usr/bin/custom-dns-deb pin
+sudo bash <W>/src/nice-dns/deb/custom-dns-deb status
+sudo <W>/root/usr/bin/custom-dns-deb ipv6-profiles-done
+## flavour and proxy switch
+rc 0
+sudo bash <W>/src/nice-dns/deb/custom-dns-deb check
+sudo tee /etc/apt/preferences.d/podman-ppa
+sudo apt-get update -q
+sudo apt-get install -yq --fix-broken
+sudo apt-get install -yq --no-install-recommends git podman netavark aardvark-dns catatonit bind9-dnsutils
+sudo tee /etc/apparmor.d/usr.bin.passt
+sudo apparmor_parser -r --skip-cache /etc/apparmor.d/usr.bin.passt
+sudo tee <W>/root/etc/sysctl.d/99-podman-privileged-ports.conf
+sudo sysctl --system
+sudo mkdir -p /etc/systemd/system/user@.service.d
+sudo tee /etc/systemd/system/user@.service.d/delegate.conf
+sudo systemctl daemon-reload
+sudo loginctl enable-linger tester
+sudo test -f <W>/root/usr/bin/custom-dns-deb
+sudo cat <W>/root/usr/bin/custom-dns-deb
+sudo test -f <W>/root/etc/NetworkManager/dispatcher.d/90-nice-dns-pin
+sudo cat <W>/root/etc/NetworkManager/dispatcher.d/90-nice-dns-pin
+sudo test -f <W>/root/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6
+sudo cat <W>/root/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6
+sudo test -f <W>/root/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6
+sudo cat <W>/root/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6
+sudo test -f <W>/root/etc/systemd/system/custom-dns-deb.service
+sudo cat <W>/root/etc/systemd/system/custom-dns-deb.service
+sudo test -f <W>/root/etc/NetworkManager/conf.d/90-nice-dns.conf
+sudo cat <W>/root/etc/NetworkManager/conf.d/90-nice-dns.conf
+sudo test -f <W>/root/etc/sysctl.d/99-nice-dns-disable-ipv6.conf
+sudo cat <W>/root/etc/sysctl.d/99-nice-dns-disable-ipv6.conf
+sudo test -f <W>/root/etc/sysctl.d/99-podman-privileged-ports.conf
+sudo cat <W>/root/etc/sysctl.d/99-podman-privileged-ports.conf
+sudo test -f <W>/root/etc/systemd/system/NetworkManager-wait-online.service.d/10-wait-for-connectivity.conf
+sudo bash <W>/src/nice-dns/deb/custom-dns-deb snapshot
+sudo mkdir -p <W>/root/etc/systemd/system <W>/root/usr/bin
+sudo install -m 644 <W>/src/nice-dns/deb/custom-dns-deb.service <W>/root/etc/systemd/system/custom-dns-deb.service
+sudo install -m 755 <W>/src/nice-dns/deb/custom-dns-deb <W>/root/usr/bin/custom-dns-deb
+sudo systemctl daemon-reload
+sudo systemctl enable custom-dns-deb.service
+sudo mkdir -p <W>/root/etc/NetworkManager/conf.d <W>/root/etc/NetworkManager/dispatcher.d
+sudo tee <W>/root/etc/NetworkManager/conf.d/90-nice-dns.conf
+sudo tee <W>/root/etc/NetworkManager/dispatcher.d/90-nice-dns-pin
+sudo chmod 755 <W>/root/etc/NetworkManager/dispatcher.d/90-nice-dns-pin
+sudo test -e <W>/root/etc/sysctl.d/99-nice-dns-disable-ipv6.conf
+sudo mkdir -p <W>/root/etc/NetworkManager/dispatcher.d/pre-up.d
+sudo install -m 755 <W>/src/nice-dns/deb/91-nice-dns-ipv6 <W>/root/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6
+sudo install -m 755 <W>/src/nice-dns/deb/91-nice-dns-ipv6 <W>/root/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6
+sudo systemctl reload NetworkManager
+sudo mkdir -p <W>/root/etc/sysctl.d
+sudo tee <W>/root/etc/sysctl.d/99-nice-dns-disable-ipv6.conf
+sudo sysctl --system
+sudo test -x <W>/root/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6
+sudo <W>/root/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6 enp1s0 up
+sudo <W>/root/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6 wg0-mullvad up
+sudo <W>/root/usr/bin/custom-dns-deb ipv6-profiles
+sudo test -f <W>/root/etc/default/grub.d/99-nice-dns-ipv6.cfg
+sudo <W>/root/usr/bin/custom-dns-deb pin
+sudo bash <W>/src/nice-dns/deb/custom-dns-deb status
+sudo <W>/root/usr/bin/custom-dns-deb ipv6-profiles-done
+## failed reinstall
+rc 1
+sudo bash <W>/src/nice-dns/deb/custom-dns-deb check
+sudo tee /etc/apt/preferences.d/podman-ppa
+sudo apt-get update -q
+sudo apt-get install -yq --fix-broken
+sudo apt-get install -yq --no-install-recommends git podman netavark aardvark-dns catatonit bind9-dnsutils
+sudo tee /etc/apparmor.d/usr.bin.passt
+sudo apparmor_parser -r --skip-cache /etc/apparmor.d/usr.bin.passt
+sudo tee <W>/root/etc/sysctl.d/99-podman-privileged-ports.conf
+sudo sysctl --system
+sudo mkdir -p /etc/systemd/system/user@.service.d
+sudo tee /etc/systemd/system/user@.service.d/delegate.conf
+sudo systemctl daemon-reload
+sudo loginctl enable-linger tester
+sudo test -f <W>/root/usr/bin/custom-dns-deb
+sudo cat <W>/root/usr/bin/custom-dns-deb
+sudo test -f <W>/root/etc/NetworkManager/dispatcher.d/90-nice-dns-pin
+sudo cat <W>/root/etc/NetworkManager/dispatcher.d/90-nice-dns-pin
+sudo test -f <W>/root/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6
+sudo cat <W>/root/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6
+sudo test -f <W>/root/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6
+sudo cat <W>/root/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6
+sudo test -f <W>/root/etc/systemd/system/custom-dns-deb.service
+sudo cat <W>/root/etc/systemd/system/custom-dns-deb.service
+sudo test -f <W>/root/etc/NetworkManager/conf.d/90-nice-dns.conf
+sudo cat <W>/root/etc/NetworkManager/conf.d/90-nice-dns.conf
+sudo test -f <W>/root/etc/sysctl.d/99-nice-dns-disable-ipv6.conf
+sudo cat <W>/root/etc/sysctl.d/99-nice-dns-disable-ipv6.conf
+sudo test -f <W>/root/etc/sysctl.d/99-podman-privileged-ports.conf
+sudo cat <W>/root/etc/sysctl.d/99-podman-privileged-ports.conf
+sudo test -f <W>/root/etc/systemd/system/NetworkManager-wait-online.service.d/10-wait-for-connectivity.conf
+sudo bash <W>/src/nice-dns/deb/custom-dns-deb snapshot
+sudo mkdir -p <W>/root/usr/bin
+sudo install -m 755 <SAVED> <W>/root/usr/bin/custom-dns-deb
+sudo mkdir -p <W>/root/etc/NetworkManager/dispatcher.d
+sudo install -m 755 <SAVED> <W>/root/etc/NetworkManager/dispatcher.d/90-nice-dns-pin
+sudo mkdir -p <W>/root/etc/NetworkManager/dispatcher.d
+sudo install -m 755 <SAVED> <W>/root/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6
+sudo mkdir -p <W>/root/etc/NetworkManager/dispatcher.d/pre-up.d
+sudo install -m 755 <SAVED> <W>/root/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6
+sudo mkdir -p <W>/root/etc/systemd/system
+sudo install -m 644 <SAVED> <W>/root/etc/systemd/system/custom-dns-deb.service
+sudo mkdir -p <W>/root/etc/NetworkManager/conf.d
+sudo install -m 644 <SAVED> <W>/root/etc/NetworkManager/conf.d/90-nice-dns.conf
+sudo mkdir -p <W>/root/etc/sysctl.d
+sudo install -m 644 <SAVED> <W>/root/etc/sysctl.d/99-nice-dns-disable-ipv6.conf
+sudo mkdir -p <W>/root/etc/sysctl.d
+sudo install -m 644 <SAVED> <W>/root/etc/sysctl.d/99-podman-privileged-ports.conf
+sudo rm -f <W>/root/etc/systemd/system/NetworkManager-wait-online.service.d/10-wait-for-connectivity.conf
+sudo systemctl reload NetworkManager
+## uninstall
+rc 0
+sudo bash <W>/src/nice-dns/deb/custom-dns-deb restore
+sudo rm -f <W>/root/usr/bin/custom-dns-deb
+sudo test -f <W>/root/etc/default/grub.d/99-nice-dns-ipv6.cfg
+sudo systemctl daemon-reload

@@ -19,6 +19,7 @@ IP_ALL="install-deb install-deb-hardened install-mac install-mac-hardened"
 # The interruption predicate (requirement 4): a call that interrupts the
 # running stack or touches host DNS. Preparation makes none of these.
 IP_DISRUPTIVE='^sudo tee /etc/resolv\.conf( |$)
+^sudo bash [^ ]*/deb/root-ops (pin|interrupt-prereqs|uninstall|nm-reload|profiles-undo|restore|dns (pin|restore))( |$)
 ^sudo ([^ ]*/)?usr/bin/custom-dns-deb( |$)
 ^sudo bash [^ ]*/custom-dns-deb (pin|restore)$
 ^(sudo )?networksetup -setdnsservers( |$)
@@ -114,6 +115,20 @@ do_build() {
 }
 case "$me" in
   sudo)
+    # root-ops runs as this user in its test mode (Sub-plan 5): each root
+    # step it takes comes back to this stub through ND_ROOT_TEST_SUDO and is
+    # logged, and in a world run, as the direct sudo line it replaced.
+    if [ "$1" = bash ]; then
+      case "$2" in */deb/root-ops|*/mac/root-ops)
+        # As root, root-ops ignores its test mode and acts on the host.
+        if [ "$(id -u)" = 0 ]; then echo "fake sudo: refusing to run root-ops as root in a test" >&2; exit 1; fi
+        ND_ROOT_TEST_SUDO="$0" ND_ROOT_TEST_IN=1; export ND_ROOT_TEST_SUDO ND_ROOT_TEST_IN
+        if [ -n "${FAKE_ROOT:-}" ]; then ND_DNS_TEST_ROOT="$FAKE_ROOT"; export ND_DNS_TEST_ROOT; fi
+        exec "$@" ;;
+      esac
+    fi
+    # The root steps root-ops took, for the tests' accounting.
+    [ -n "${ND_ROOT_TEST_IN:-}" ] && printf '%s\n' "$l" >>"$FAKE/root-inner.log"
     # In a world ($FAKE_ROOT), the DNS helpers and commands on paths under
     # the fake root run, as this user; nothing else ever does.
     if [ -n "${FAKE_ROOT:-}" ]; then

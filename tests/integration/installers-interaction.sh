@@ -180,3 +180,82 @@ EOF
     ) || exit 1
   done
 }
+
+# root-ops (Sub-plan 5 Task 1.1): run as a user it refuses (exit 1) before
+# anything; an unknown verb or a malformed argument exits 2, naming it, with
+# nothing run. A fake sudo that logs every call stands for its test mode; one
+# that is setuid is not a test sudo, so the user is refused as well.
+t_root_ops_refuses_before_running_anything() {
+  local w="$CASE_DIR/ro" os out rc
+  mkdir -p "$w/bin"
+  printf '#!/bin/sh\nprintf "sudo %%s\\n" "$*" >>"%s/log"\n' "$w" >"$w/bin/sudo"; chmod 755 "$w/bin/sudo"
+  for os in $(ro_oses); do
+    : >"$w/log"
+    rc=0; out="$(env -u ND_ROOT_TEST_SUDO bash "$NICE_DNS_ROOT/$os/root-ops" pin 2>&1)" || rc=$?
+    assert_eq 1 "$rc" "$os: a user run exits 1"
+    assert_match 'must run as root' "$out" "$os: and says why"
+    # The host's setuid sudo; a malformed call, so that a wrongly accepted
+    # test sudo exits 2 before anything runs instead of 1.
+    if [ -u /usr/bin/sudo ]; then
+      rc=0; out="$(ND_ROOT_TEST_SUDO=/usr/bin/sudo bash "$NICE_DNS_ROOT/$os/root-ops" pin extra 2>&1)" || rc=$?
+      assert_eq 1 "$rc" "$os: a setuid program is no test sudo: $out"
+    fi
+    for bad in "frob" "pin extra" "dns frob" "dns" "save-previous /etc/shadow" "restore /etc/passwd -" \
+               "restore $(ND_INST_ROOT='' ro_owned "$os") /etc/shadow" ""; do
+      rc=0
+      # shellcheck disable=SC2086  # the words are the call
+      out="$(ND_ROOT_TEST_SUDO="$w/bin/sudo" ND_INST_ROOT='' bash "$NICE_DNS_ROOT/$os/root-ops" $bad 2>&1)" || rc=$?
+      assert_eq 2 "$rc" "$os: '$bad' exits 2: $out"
+      assert_match "root-ops: " "$out" "$os: '$bad' is named"
+    done
+    assert_eq "" "$(cat "$w/log")" "$os: nothing ran"
+  done
+}
+
+# ro_oses: the trees with a root-ops (mac from Task 1.2).
+ro_oses() { echo deb; }
+
+# ro_owned <os>: one root file the installer keeps for a rollback.
+ro_owned() { if [ "$1" = deb ]; then echo /usr/bin/custom-dns-deb; else echo /etc/sudoers.d/start-container; fi; }
+
+# The root rows of the rollback list (lib/install.sh _nd_inst_owned_paths)
+# are exactly what root-ops lets a rollback read and write back, each with
+# the mode the list records.
+t_root_ops_owns_the_rollback_list() {
+  local w="$CASE_DIR/rl" os plat p mode who n=0
+  mkdir -p "$w/bin"
+  printf '#!/bin/sh\nprintf "sudo %%s\\n" "$*" >>"%s/log"\n' "$w" >"$w/bin/sudo"; chmod 755 "$w/bin/sudo"
+  for os in $(ro_oses); do
+    if [ "$os" = deb ]; then plat=linux; else plat=macos; fi
+    while IFS="$(printf '\t')" read -r _ p mode who; do
+      [ "$who" = root ] || continue
+      n=$((n + 1)); : >"$w/log"
+      printf 'x\n' | ND_ROOT_TEST_SUDO="$w/bin/sudo" ND_INST_ROOT='' TMPDIR="$w" bash "$NICE_DNS_ROOT/$os/root-ops" restore "$p" - >/dev/null 2>&1
+      assert_match "^sudo install -m $mode [^ ]* $p\$" "$(cat "$w/log")" "$os: root-ops restores $p with mode $mode"
+    done <<ROWS
+$(HOME=/nonexistent ND_INST_ROOT='' ND_INST_PLATFORM="$plat" ND_INST_SRC="$NICE_DNS_ROOT" bash -c '. "$1/lib/install.sh"; _nd_inst_owned_paths' _ "$NICE_DNS_ROOT")
+ROWS
+    assert_eq 1 "$(( n >= 5 ))" "$os: the list has its root rows ($n)"
+  done
+}
+
+# Moving the root steps into root-ops changes none of them: an install
+# lifecycle's root steps, normalised, are exactly the ones recorded from the
+# installers before root-ops (tests/fixtures/root-steps.sh).
+t_root_steps_are_the_recorded_ones() {
+  . "$NICE_DNS_ROOT/tests/fixtures/root-steps.sh"
+  local plat got
+  for plat in $(ii_platforms); do
+    rs_lifecycle "$plat" >"$CASE_DIR/root-steps-$plat" 2>&1
+    got="$(cat "$CASE_DIR/root-steps-$plat")"
+    assert_eq "$(cat "$NICE_DNS_ROOT/tests/fixtures/root-steps-$plat.txt")" "$got" "$plat: the root steps and their order"
+    # Every root step ran inside root-ops: the sudo lines but root-ops' own
+    # are, as a multiset, the ones root-ops took (Linux; macOS from Task 1.2).
+    if [ "$plat" = linux ]; then
+      assert_eq "$(sort "$FAKE/root-inner.log" 2>/dev/null)" \
+        "$(grep -E '^sudo ' "$FAKE/all-calls.log" | grep -Ev '^sudo bash [^ ]*/(deb|mac)/root-ops( |$)' | sort)" \
+        "$plat: no root step ran outside root-ops"
+      assert_ne "" "$(grep -E '^sudo bash [^ ]*/deb/root-ops pin$' "$FAKE/all-calls.log")" "$plat: the pin is a root-ops verb"
+    fi
+  done
+}

@@ -1,0 +1,37 @@
+{
+ "baseline": {
+  "elapsed_s": 141.2,
+  "exit": 0,
+  "tail": "run_id=20261108T100611Z-115e504e artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T100611Z-115e504e\nPASS  t_argument_surface_is_unchanged\nPASS  t_bash32_pure_functions\nPASS  t_bash32_runs_the_mac_entrypoints\nPASS  t_builds_and_pulls_precede_the_interruption\nPASS  t_checkout_is_used_without_a_clone\nPASS  t_entrypoints_option_is_validated\nPASS  t_failed_preparation_touches_nothing\nPASS  t_mac_rewrites_are_portable_and_exact\nPASS  t_new_subids_are_migrated_before_the_builds\nPASS  t_prepare_manifest_is_owned_and_complete\nPASS  t_reinstall_keeps_the_previous_generation\nPASS  t_standard_and_hardened_share_build_flags\nPASS  t_uninstall_still_removes_the_stack\ngroup integration/install-prepare: collected=13 passed=13 failed=0\ncollected=13 passed=13 failed=0\nresult=pass run_id=20261108T100611Z-115e504e artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T100611Z-115e504e\nrun_id=20261108T100727Z-c38177f0 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T100727Z-c38177f0\nPASS  t_bootstrap_use_is_declared\nPASS  t_lifecycle_restores_exactly_what_it_owns\nPASS  t_no_step_points_the_host_at_public_dns\nPASS  t_root_ops_owns_the_rollback_list\nPASS  t_root_ops_refuses_before_running_anything\nPASS  t_root_steps_are_the_recorded_ones\ngroup integration/installers-interaction: collected=6 passed=6 failed=0\ncollected=6 passed=6 failed=0\nresult=pass run_id=20261108T100727Z-c38177f0 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T100727Z-c38177f0"
+ },
+ "break_patch": "--- a/deb/root-ops\t2026-11-08 09:59:08.317184329 +0000\n+++ b/deb/root-ops\t2026-11-08 09:59:08.320857932 +0000\n@@ -88,7 +88,7 @@\n     restore) _args 2; _owned_root \"$1\" >/dev/null || _die 2 \"verb 'restore': '$1' is not a file nice-dns owns\"\n       case \"$2\" in absent|-) ;; *) _die 2 \"verb 'restore': the second argument is 'absent' or '-', not '$2'\" ;; esac ;;\n     \"\") _die 2 \"no verb given\" ;;\n-    *) _die 2 \"unknown verb '$VERB'\" ;;\n+    *) _r true; _die 2 \"unknown verb '$VERB'\" ;;\n   esac\n }\n _check \"$@\"\n",
+ "build": null,
+ "created": "2026-11-08T10:10:54+00:00",
+ "fingerprint": "82900b18ed1900828cf0f28e739bba1eb55d191129f07d5b7b98c26b339fc7d4",
+ "index": 3,
+ "kind": "claim",
+ "named_break": "root-ops runs anything first",
+ "no_build_reason": "shell: the fixture tests run the tree as checked out",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-05-privileged-helper-plan.md",
+ "red": {
+  "elapsed_s": 143.6,
+  "exit": 1,
+  "tail": "run_id=20261108T100832Z-6095b775 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T100832Z-6095b775\nPASS  t_argument_surface_is_unchanged\nPASS  t_bash32_pure_functions\nPASS  t_bash32_runs_the_mac_entrypoints\nPASS  t_builds_and_pulls_precede_the_interruption\nPASS  t_checkout_is_used_without_a_clone\nPASS  t_entrypoints_option_is_validated\nPASS  t_failed_preparation_touches_nothing\nPASS  t_mac_rewrites_are_portable_and_exact\nPASS  t_new_subids_are_migrated_before_the_builds\nPASS  t_prepare_manifest_is_owned_and_complete\nPASS  t_reinstall_keeps_the_previous_generation\nPASS  t_standard_and_hardened_share_build_flags\nPASS  t_uninstall_still_removes_the_stack\ngroup integration/install-prepare: collected=13 passed=13 failed=0\ncollected=13 passed=13 failed=0\nresult=pass run_id=20261108T100832Z-6095b775 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T100832Z-6095b775\nrun_id=20261108T100949Z-fa0ee987 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T100949Z-fa0ee987\nPASS  t_bootstrap_use_is_declared\nPASS  t_lifecycle_restores_exactly_what_it_owns\nPASS  t_no_step_points_the_host_at_public_dns\nPASS  t_root_ops_owns_the_rollback_list\nFAIL  t_root_ops_refuses_before_running_anything (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261108T100949Z-fa0ee987/cases/integration-installers-interaction/t_root_ops_refuses_before_running_anything/case.log)\n      ASSERT FAIL: deb: nothing ran: expected [] got [sudo true]\nPASS  t_root_steps_are_the_recorded_ones\ngroup integration/installers-interaction: collected=6 passed=5 failed=1\ncollected=6 passed=5 failed=1\nresult=fail run_id=20261108T100949Z-fa0ee987 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T100949Z-fa0ee987"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "1.1",
+ "test": "shellcheck deb/root-ops lib/install.sh && bash tests/run.sh integration install-prepare && bash tests/run.sh integration installers-interaction",
+ "text": "an unknown verb exits 2 (red if root-ops runs anything first)",
+ "touched": [
+  "deb/root-ops"
+ ],
+ "touched_blobs": {
+  "deb/root-ops": "9909a0cd11b483a9c4d28a59fac56b530a9c974a"
+ },
+ "witness_blobs": {
+  "deb/root-ops": "9909a0cd11b483a9c4d28a59fac56b530a9c974a",
+  "lib/install.sh": "0c0ef272e818bb6fd175f950f2ba6b69888bd20f",
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}

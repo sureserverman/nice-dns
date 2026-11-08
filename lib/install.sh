@@ -702,13 +702,15 @@ _nd_inst_generation_refs() {
 # host. ND_INST_READY_TRIES bounds the readiness wait (5 s apart): Tor's first
 # bootstrap through obfs4 bridges takes 1-4 minutes, and more on a poor link.
 ND_INST_ROOT="${ND_INST_ROOT:-}"
+# shellcheck source=lib/root.sh
+. "$(dirname "${BASH_SOURCE[0]}")/root.sh"
 ND_INST_READY_TRIES="${ND_INST_READY_TRIES:-120}"
 ND_INST_PROBE_NAME=cloudflare.com
 
-# _nd_inst_dns_helper <verb>: the staged tree's DNS helper, under sudo.
+# _nd_inst_dns_helper <verb>: the staged tree's DNS helper, as root.
 _nd_inst_dns_helper() {
   case "$ND_INST_PLATFORM" in
-    linux) sudo bash "$ND_INST_TREE/deb/custom-dns-deb" "$1" ;;
+    linux) nd_root_deb dns "$1" ;;
     macos) sudo bash "$ND_INST_TREE/mac/start-container-root.sh" "$1" ;;
   esac
 }
@@ -825,7 +827,7 @@ _nd_inst_owned_paths() {
 # nd_install_save_previous: keeps the deployment this install replaces, before
 # any pull can move a :latest tag. Sets ND_INST_HAD_DEPLOY and ND_INST_RB.
 nd_install_save_previous() {
-  local ref saved kind p mode who n=0 rows
+  local ref saved kind p mode who n=0 rows rc
   ND_INST_RB="$ND_INST_STATE/generations/$ND_INST_GEN/rollback"
   _nd_inst_owned_dir "$ND_INST_RB" || return 1
   if [ "$ND_INST_PLATFORM" = linux ]; then
@@ -868,13 +870,21 @@ EOF
         printf 'd\t%s\tabsent\t%s\t%s\n' "$p" "$mode" "$who" >>"$ND_INST_RB/files.tsv"
       fi
     elif [ "$who" = root ]; then
-      if sudo test -f "$p"; then
-        # The redirect is ours on purpose: the copy lands in our 0700 state dir.
-        # shellcheck disable=SC2024
-        ( umask 077 && sudo cat "$p" >"$ND_INST_RB/s$n" ) || return 1
-        printf 'f\t%s\ts%s\t%s\t%s\n' "$p" "$n" "$mode" "$who" >>"$ND_INST_RB/files.tsv"
+      # root-ops prints the file (exit 4: absent); the copy lands in our 0700 state dir.
+      rc=0
+      if [ "$ND_INST_PLATFORM" = linux ]; then
+        ( umask 077 && nd_root_deb save-previous "$p" >"$ND_INST_RB/s$n" ) || rc=$?
       else
+        # shellcheck disable=SC2024
+        { sudo test -f "$p" || rc=4; [ "$rc" = 4 ] || ( umask 077 && sudo cat "$p" >"$ND_INST_RB/s$n" ) || rc=1; }
+      fi
+      if [ "$rc" = 0 ]; then
+        printf 'f\t%s\ts%s\t%s\t%s\n' "$p" "$n" "$mode" "$who" >>"$ND_INST_RB/files.tsv"
+      elif [ "$rc" = 4 ]; then
+        rm -f "$ND_INST_RB/s$n"
         printf 'f\t%s\tabsent\t%s\t%s\n' "$p" "$mode" "$who" >>"$ND_INST_RB/files.tsv"
+      else
+        return 1
       fi
     elif [ -f "$p" ] && [ ! -L "$p" ]; then
       cp -p "$p" "$ND_INST_RB/s$n" || return 1
@@ -897,6 +907,13 @@ _nd_inst_restore_files() {
     if [ "$kind" = d ]; then
       rm -rf "${p:?}"
       [ "$s" = absent ] || cp -Rp "$ND_INST_RB/$s" "$p"
+    elif [ "$who" = root ] && [ "$ND_INST_PLATFORM" = linux ]; then
+      # root-ops takes the bytes on stdin; the path and mode are its own list's.
+      if [ "$s" = absent ]; then
+        nd_root_deb restore "$p" absent
+      else
+        nd_root_deb restore "$p" - <"$ND_INST_RB/$s"
+      fi
     elif [ "$who" = root ]; then
       if [ "$s" = absent ]; then
         sudo rm -f "$p"
@@ -1097,8 +1114,8 @@ _nd_inst_rollback() {
   # A reinstall that reached the profile step gives back what that step
   # changed (a first install's restore above already did; DEC-020).
   if [ "$ND_INST_HAD_DEPLOY" = 1 ] && [ "${ND_INST_V6_PROFILES:-0}" = 1 ]; then
-    sudo "$ND_INST_ROOT/usr/bin/custom-dns-deb" ipv6-profiles-undo ||
-      echo "! A NetworkManager profile's IPv6 method was not given back (see above); run 'sudo custom-dns-deb ipv6-profiles-undo' once NetworkManager answers." >&2
+    nd_root_deb profiles-undo ||
+      echo "! A NetworkManager profile's IPv6 method was not given back (see above); run 'custom-dns-deb ipv6-profiles-undo' as root once NetworkManager answers." >&2
   fi
   # Mullvad's DNS setting as this install found it (Linux, BL-048).
   if [ "${ND_INST_MULLVAD_CHANGED:-0}" = 1 ]; then
@@ -1107,7 +1124,7 @@ _nd_inst_rollback() {
   _nd_inst_restore_files
   _nd_inst_restore_tags
   if [ "$ND_INST_PLATFORM" = linux ] && systemctl is-active --quiet NetworkManager 2>/dev/null; then
-    sudo systemctl reload NetworkManager 2>/dev/null || true
+    nd_root_deb nm-reload
   fi
   if [ "$ND_INST_HAD_DEPLOY" = 1 ]; then
     if [ "$ND_INST_PLATFORM" = linux ]; then
@@ -1314,28 +1331,15 @@ _nd_inst_hardened_sibling() {
 # AppArmor, sysctl, subuid/subgid, cgroup delegation and linger. None of it
 # interrupts the running stack or host DNS.
 nd_install_linux_host_prereqs() {
-  # Pin all sejug/podman PPA packages (podman, crun, containers-common, ...) at
-  # priority 600 so apt installs the PPA's coherent stack rather than mixing with
-  # Ubuntu archive versions. Inert if the PPA isn't added yet.
-  printf 'Package: *\nPin: release o=LP-PPA-sejug-podman\nPin-Priority: 600\n' \
-    | sudo tee /etc/apt/preferences.d/podman-ppa >/dev/null
-
-  # Repair package state if a previous install left the PPA half-configured
-  if grep -rqs 'sejug/podman' /etc/apt/sources.list.d/ 2>/dev/null; then
-    sudo apt-get update -q
-    sudo apt-get install -yq --fix-broken
-  fi
-
-  # Base packages. catatonit is the pause binary Podman uses when building the
-  # pod's infra container (`podman pod create` errors out with "finding pause
-  # binary: exec: catatonit: executable file not found in $PATH" without it).
-  # netavark is Podman 5.x's network backend and aardvark-dns is the in-network
-  # resolver; both are pulled via Recommends on stock Ubuntu, but we use
-  # --no-install-recommends, so name them explicitly. Without netavark, `podman
-  # network create dnsnet` fails with "netavark: not found". bind9-dnsutils
-  # is the host's dig: the install's readiness wait and the controller's
-  # observations query the stack with it.
-  sudo apt-get install -yq --no-install-recommends git podman netavark aardvark-dns catatonit bind9-dnsutils
+  # Packages, the podman PPA (and its priority pin), the passt AppArmor
+  # profile, the low-port sysctl, subordinate ids, cgroup delegation and
+  # lingering: deb/root-ops host-prereqs, which says why each one is there.
+  # Whether the user had subordinate ids before (ND_INST_ETC is where the id
+  # files are read in the fixture tests) decides the migrate below.
+  local subids_added=0
+  grep -q "^$USER:" "${ND_INST_ETC:-/etc}/subuid" 2>/dev/null || subids_added=1
+  grep -q "^$USER:" "${ND_INST_ETC:-/etc}/subgid" 2>/dev/null || subids_added=1
+  nd_root_deb host-prereqs
 
   # Ensure user-level registries.conf knows about docker.io
   local CONFIG
@@ -1368,116 +1372,6 @@ location = "registry-1.docker.io"
 EOF
   fi
 
-  # Ensure Podman >= 5.3.0. The .pod quadlet type itself only exists in Podman
-  # 5.0+, so a stale 4.x binary will silently ignore deb/quadlet/nice-dns.pod
-  # and `systemctl --user restart nice-dns-pod.service` fails with
-  # "Unit nice-dns-pod.service not found." Re-check after the upgrade so we
-  # fail fast with a clear message instead of bombing out later in
-  # persistent-podman.sh.
-  local MIN_PODMAN="5.3.0" CUR_PODMAN MIN_CRUN="1.14.3" CUR_CRUN pkg
-  CUR_PODMAN=$(podman --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' || echo "0.0.0")
-  if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
-    echo "Podman $CUR_PODMAN < $MIN_PODMAN — upgrading via ppa:sejug/podman..."
-    sudo add-apt-repository -y ppa:sejug/podman
-    sudo apt-get update -q
-    sudo apt-get install -yq --fix-broken
-    # PPA's containers-common replaces golang-github-containers-{common,image}
-    # from Ubuntu repos; remove them first to avoid dpkg file conflicts
-    for pkg in golang-github-containers-common golang-github-containers-image; do
-      if dpkg -l "$pkg" 2>/dev/null | grep -q '^ii'; then
-        sudo dpkg --remove --force-depends "$pkg"
-      fi
-    done
-    # Ubuntu's podman-compose and PPA's podman both ship
-    # /usr/share/man/man1/podman-compose.1.gz; divert *before* installing the
-    # PPA podman so dpkg doesn't fail with a file conflict. Must happen before
-    # the `apt-get install podman crun` below.
-    sudo dpkg-divert --add --rename --package podman \
-      --divert /usr/share/man/man1/podman-compose.1.gz.dpkg-divert \
-      /usr/share/man/man1/podman-compose.1.gz 2>/dev/null || true
-    sudo apt-get install -yq --no-install-recommends podman crun
-    # Re-check that the upgrade actually moved us to >= 5.3.0. The PPA does not
-    # ship every Ubuntu release / arch combo, and apt-get can return success
-    # without changing the binary version (no candidate, version held, etc.).
-    CUR_PODMAN=$(podman --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' || echo "0.0.0")
-    if ! printf '%s\n%s\n' "$MIN_PODMAN" "$CUR_PODMAN" | sort -V -C; then
-      echo "ERROR: Podman is still at $CUR_PODMAN after the upgrade attempt." >&2
-      echo "       nice-dns requires Podman >= $MIN_PODMAN (the .pod quadlet" >&2
-      echo "       type was added in Podman 5.0). Check whether ppa:sejug/podman" >&2
-      echo "       has a build for $(lsb_release -cs 2>/dev/null || uname -m):" >&2
-      echo "         apt-cache policy podman" >&2
-      echo "       If no PPA candidate is available for your Ubuntu release/arch," >&2
-      echo "       upgrade to a release that ships Podman 5.x natively (Ubuntu 25.04+)." >&2
-      exit 1
-    fi
-  fi
-
-  # Ensure crun >= 1.14.3 (older versions reject OCI runtime-spec 1.2.x from Podman 5)
-  CUR_CRUN=$(crun --version 2>/dev/null | grep -oP 'crun version \K\d+\.\d+(\.\d+)?' || echo "0.0.0")
-  if ! printf '%s\n%s\n' "$MIN_CRUN" "$CUR_CRUN" | sort -V -C; then
-    echo "crun $CUR_CRUN < $MIN_CRUN — upgrading via ppa:sejug/podman..."
-    if ! grep -rqs 'sejug/podman' /etc/apt/sources.list.d/ 2>/dev/null; then
-      sudo add-apt-repository -y ppa:sejug/podman
-      sudo apt-get update -q
-    fi
-    sudo apt-get install -yq --no-install-recommends crun
-  fi
-
-  # pasta is a symlink to passt, so AppArmor applies the passt profile.
-  # Ubuntu Noble's stock passt (0.0~git20240220) ships a profile written before
-  # Podman 5.x rootless-netns. The PPA upgrades the binary but marks the
-  # conffiles obsolete, so they'll never be overwritten by package upgrades.
-  # Replace the entire profile with one that covers rootless-netns.
-  if [ -f /etc/apparmor.d/usr.bin.passt ]; then
-    sudo tee /etc/apparmor.d/usr.bin.passt > /dev/null <<'APPARMOR'
-abi <abi/3.0>,
-
-include <tunables/global>
-
-profile passt /usr/bin/passt{,.avx2} flags=(attach_disconnected) {
-  include <abstractions/pasta>
-
-  # Podman 5.x rootless-netns with pasta
-  allow userns,
-  ptrace (read) peer=crun,
-  signal (receive) peer=podman,
-  @{PROC}/[0-9]*/ns/ r,
-  @{PROC}/sys/net/** r,
-  @{run}/user/@{uid}/containers/** rwlk,
-  # Standalone (non-pod) containers such as the bridge-eval job place their netns
-  # under run/user/<uid>/netns/ rather than the containers/ subtree; pasta must
-  # read that dir to enter the namespace. Without this, the host-side bridge-eval
-  # "manage" job (nice-dns-fetch-bridges.service) dies with pasta "netns dir
-  # open: Permission denied" (exit 126), so bridges.env never refreshes.
-  @{run}/user/@{uid}/netns/ r,
-  @{run}/user/@{uid}/netns/** rwlk,
-
-  owner /tmp/**				w,
-  owner @{HOME}/**			w,
-
-  include if exists <local/usr.bin.passt>
-}
-APPARMOR
-    sudo apparmor_parser -r --skip-cache /etc/apparmor.d/usr.bin.passt
-  fi
-
-  echo 'net.ipv4.ip_unprivileged_port_start = 53' | \
-    sudo tee "$ND_INST_ROOT/etc/sysctl.d/99-podman-privileged-ports.conf" >/dev/null
-  sudo sysctl --system
-
-  # Add UID/GID mappings for current user if missing. Accept any pre-existing
-  # range — usermod --add-sub{u,g}ids fails if the user already has an entry
-  # and we have no reason to force our specific range over whatever is there.
-  # ND_INST_ETC is where the id files are read (the fixture tests).
-  local subids_added=0
-  if ! grep -q "^$USER:" "${ND_INST_ETC:-/etc}/subuid" 2>/dev/null; then
-    sudo usermod --add-subuids 100000-165535 "$USER"
-    subids_added=1
-  fi
-  if ! grep -q "^$USER:" "${ND_INST_ETC:-/etc}/subgid" 2>/dev/null; then
-    sudo usermod --add-subgids 100000-165535 "$USER"
-    subids_added=1
-  fi
   # Ranges added just now reach podman only through `podman system migrate`,
   # and the image builds below need them. It stops the user's running
   # containers (podman-system-migrate(1)), but a user who had no ranges runs
@@ -1492,17 +1386,6 @@ APPARMOR
     fi
     podman system migrate
   fi
-
-  # Enable cgroups v2 delegation for systemd services
-  sudo mkdir -p /etc/systemd/system/user@.service.d
-  sudo tee /etc/systemd/system/user@.service.d/delegate.conf >/dev/null << EOF
-[Service]
-Delegate=cpu cpuset io memory pids
-EOF
-  sudo systemctl daemon-reload
-
-  # Enable user lingering for service persistence
-  sudo loginctl enable-linger "$USER"
 
   # Re-exec the user's systemd manager so it picks up the new cgroup
   # delegation config. daemon-reload only affects PID 1 (system level);
@@ -1646,121 +1529,9 @@ _nd_inst_linux_stop_new() {
   done
 }
 
-_nd_inst_linux_nm_lockdown() {
-  local R="$ND_INST_ROOT"
-  if ! command -v nmcli >/dev/null 2>&1; then
-    return 0
-  fi
-  if ! systemctl is-active --quiet NetworkManager 2>/dev/null; then
-    return 0
-  fi
-
-  # Two pieces are sufficient to keep /etc/resolv.conf pinned at 127.0.0.1
-  # under NetworkManager:
-  #
-  #   1. dns=none — tell NM to stop managing /etc/resolv.conf entirely.
-  #      With this set, per-connection ipv4.dns / ipv4.ignore-auto-dns
-  #      have no observable effect; NM never writes resolv.conf, so
-  #      whatever custom-dns-deb wrote stays.
-  #
-  #   2. dispatcher hook — re-run custom-dns-deb on every NM state change,
-  #      so if anything *else* on the system (cloud-init, dhclient, a
-  #      package upgrade) ever rewrites resolv.conf, the next NM event
-  #      pins it back. Cheap defense-in-depth.
-  #
-  # An earlier version of this function also iterated every active
-  # connection to set ipv4.dns 127.0.0.1 and then re-upped them all. With
-  # dns=none in effect those modifications had no observable behaviour —
-  # and the re-up loop kicked libvirt bridges (virbr0 etc.) into a
-  # deactivate→detach-ports→reactivate cycle that orphaned VM tap
-  # interfaces (vnet0…). Removed. (The hardened installer kept that loop
-  # until Sub-plan 4 Task 1.2; it also changed connection profiles nice-dns
-  # does not own and never restored them.)
-  sudo mkdir -p "$R/etc/NetworkManager/conf.d" "$R/etc/NetworkManager/dispatcher.d"
-  sudo tee "$R/etc/NetworkManager/conf.d/90-nice-dns.conf" >/dev/null <<'EOF'
-[main]
-dns=none
-EOF
-  sudo tee "$R/etc/NetworkManager/dispatcher.d/90-nice-dns-pin" >/dev/null <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-if [ -x /usr/bin/custom-dns-deb ]; then
-  /usr/bin/custom-dns-deb
-fi
-EOF
-  sudo chmod 755 "$R/etc/NetworkManager/dispatcher.d/90-nice-dns-pin"
-  # Separately, per-device IPv6: NetworkManager's activation turns a device's
-  # disable_ipv6 back to 0 (ipv6.method auto), so the owned hook sets it
-  # to 1 again on pre-up and up (deb/91-nice-dns-ipv6; BL-050). pre-up
-  # events reach only scripts in pre-up.d, hence the copy there.
-  # Each device's value from before nice-dns, recorded for the uninstall,
-  # only while no nice-dns switch is in force (the sysctl.d drop-in is not
-  # there yet): writing net.ipv6.conf.all in _nd_inst_linux_ipv6_disable
-  # sets every existing device too, so a value read after it, as on a host
-  # an older install set up, is nice-dns's own. Before NetworkManager
-  # reloads.
-  # The source copy records (it is not installed yet, so no NetworkManager
-  # event can write a switch first); then the hook is installed.
-  local d
-  if ! sudo test -e "$R/etc/sysctl.d/99-nice-dns-disable-ipv6.conf"; then
-    for d in "$R"/proc/sys/net/ipv6/conf/*/; do
-      d="${d%/}"; d="${d##*/}"
-      case "$d" in all|default|'*') continue ;; esac
-      sudo bash "$ND_INST_TREE/deb/91-nice-dns-ipv6" "$d" record || true
-    done
-  fi
-  sudo mkdir -p "$R/etc/NetworkManager/dispatcher.d/pre-up.d"
-  sudo install -m 755 "$ND_INST_TREE/deb/91-nice-dns-ipv6" "$R/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6"
-  sudo install -m 755 "$ND_INST_TREE/deb/91-nice-dns-ipv6" "$R/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6"
-
-  sudo systemctl reload NetworkManager 2>/dev/null || sudo systemctl restart NetworkManager
-}
-
-_nd_inst_linux_ipv6_disable() {
-  local R="$ND_INST_ROOT"
-  sudo mkdir -p "$R/etc/sysctl.d"
-  sudo tee "$R/etc/sysctl.d/99-nice-dns-disable-ipv6.conf" >/dev/null <<'EOF'
-net.ipv6.conf.all.disable_ipv6 = 1
-net.ipv6.conf.default.disable_ipv6 = 1
-net.ipv6.conf.lo.disable_ipv6 = 1
-EOF
-  sudo sysctl --system >/dev/null
-  # Devices that exist now: the hook as NetworkManager would run it, so a
-  # device NetworkManager turned back on is off before its next activation
-  # too (on a first install their values were recorded first, in
-  # _nd_inst_linux_nm_lockdown).
-  local hook="$R/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6" d
-  if sudo test -x "$hook"; then
-    for d in "$R"/proc/sys/net/ipv6/conf/*/; do
-      d="${d%/}"; d="${d##*/}"
-      case "$d" in all|default|'*') continue ;; esac
-      sudo "$hook" "$d" up || true
-    done
-  fi
-  # The hook alone leaves a window: NetworkManager sends pre-up only after it
-  # set up IP, so each activation sent MLD and a duplicate-address check from
-  # :: (Stage 3 gate capture, 2026-10-12). Each Ethernet and Wi-Fi profile on
-  # disk therefore gets ipv6.method disabled, its method recorded by the
-  # helper for the uninstall (deb/custom-dns-deb ipv6-profiles; DEC-020). The
-  # hook stays for profiles made later and other types.
-  ND_INST_V6_PROFILES=1
-  sudo "$R/usr/bin/custom-dns-deb" ipv6-profiles || true
-
-  # sysctl-only on purpose. The kernel cmdline flag ipv6.disable=1 (shipped by
-  # earlier versions as a grub.d drop-in) removes AF_INET6 entirely, so any
-  # software that creates an IPv6 socket fails with EAFNOSUPPORT (os error 97)
-  # — observed bricking Mullvad's userspace WireGuard (gotatun binds ::), which
-  # then fail-closes the whole machine at boot. The sysctl above gives the same
-  # posture (no v6 addresses, no v6 traffic) while keeping sockets creatable.
-  # Remove the legacy drop-in left by previous installs.
-  if sudo test -f "$R/etc/default/grub.d/99-nice-dns-ipv6.cfg"; then
-    sudo rm "$R/etc/default/grub.d/99-nice-dns-ipv6.cfg"
-    if command -v update-grub >/dev/null 2>&1; then
-      sudo update-grub
-    fi
-  fi
-}
+# The NetworkManager lockdown (dns=none, the pin's dispatcher hook, the
+# per-device IPv6 hook) and the IPv6 switch are deb/root-ops pin's
+# _nm_lockdown and _ipv6_disable.
 
 # ─────────────────────────── Mullvad's DNS setting (BL-048) ──────────────────
 #
@@ -1979,17 +1750,12 @@ _nd_inst_linux_mullvad_resolves() {
 # nd_install_linux_pin: the resolver cutover, only after the new stack answers
 # and the controller passed its self-check. The pin itself is the helper's.
 nd_install_linux_pin() {
-  local R="$ND_INST_ROOT"
   ND_INST_PINNED=1
-  sudo mkdir -p "$R/etc/systemd/system" "$R/usr/bin"
-  sudo install -m 644 "$ND_INST_TREE/deb/custom-dns-deb.service" "$R/etc/systemd/system/custom-dns-deb.service"
-  sudo install -m 755 "$ND_INST_TREE/deb/custom-dns-deb" "$R/usr/bin/custom-dns-deb"
-  sudo systemctl daemon-reload
-  # Enabled for every boot; this run pins explicitly below and checks it.
-  sudo systemctl enable custom-dns-deb.service
-  _nd_inst_linux_nm_lockdown
-  _nd_inst_linux_ipv6_disable
-  sudo "$R/usr/bin/custom-dns-deb" pin
+  # The pin disables IPv6 in each Ethernet and Wi-Fi profile; a rollback of
+  # this install gives those back (with no run list the undo does nothing).
+  ND_INST_V6_PROFILES=1
+  # The boot-time pin service, the NetworkManager lockdown, IPv6 off, the pin.
+  nd_root_deb pin
   _nd_inst_linux_mullvad_loopback
 }
 
@@ -2012,7 +1778,7 @@ nd_install_linux_activate() {
   nd_install_verify_pin
   # The profile step's undo list is for a rollback of this install only.
   if [ "${ND_INST_V6_PROFILES:-0}" = 1 ]; then
-    sudo "$ND_INST_ROOT/usr/bin/custom-dns-deb" ipv6-profiles-done || true
+    nd_root_deb profiles-done || true
   fi
   _nd_inst_end_interruption
 }
@@ -2023,7 +1789,7 @@ nd_install_linux_activate() {
 # are left in place — they're harmless and may be shared with other Podman
 # workloads.
 nd_install_linux_uninstall() {
-  local R="$ND_INST_ROOT" ref ep sd dns_ok=1
+  local ref ep sd dns_ok=1
   ND_INST_TREE="$ND_INST_SRC"
   nd_install_linux_stop_stack
   systemctl --user disable --now nice-dns-fetch-bridges.service 2>/dev/null || true
@@ -2055,14 +1821,8 @@ nd_install_linux_uninstall() {
   # Mullvad's DNS setting from before nice-dns (BL-048).
   _nd_inst_linux_mullvad_uninstall || dns_ok=0
   _nd_inst_linux_mullvad_resolves
-  sudo rm -f "$R/usr/bin/custom-dns-deb"
-  if sudo test -f "$R/etc/default/grub.d/99-nice-dns-ipv6.cfg"; then
-    sudo rm -f "$R/etc/default/grub.d/99-nice-dns-ipv6.cfg"
-    if command -v update-grub >/dev/null 2>&1; then
-      sudo update-grub >/dev/null 2>&1 || true
-    fi
-  fi
-  sudo systemctl daemon-reload
+  # The pin helper and the legacy grub drop-in go.
+  nd_root_deb uninstall
   _nd_inst_uninstall_state "$dns_ok"
   _nd_inst_uninstall_verdict "$dns_ok"
 }
@@ -2100,12 +1860,7 @@ nd_install_linux_interrupt_prereqs() {
   # only owned state changes): the owned 90-nice-dns.conf drop-in (dns=none,
   # which the pin installs anyway) overrides it, and a rollback or uninstall
   # removes it again.
-  local R="$ND_INST_ROOT" NM_CONFIG="$ND_INST_ROOT/etc/NetworkManager/NetworkManager.conf"
-  if [ -f "$NM_CONFIG" ] && grep -Eq '^[[:space:]]*dns[[:space:]]*=[[:space:]]*dnsmasq' "$NM_CONFIG"; then
-    sudo mkdir -p "$R/etc/NetworkManager/conf.d"
-    printf '[main]\ndns=none\n' | sudo tee "$R/etc/NetworkManager/conf.d/90-nice-dns.conf" >/dev/null
-    sudo systemctl restart NetworkManager
-  fi
+  nd_root_deb interrupt-prereqs
 
   # Pick up subuid/subgid and cgroup delegation changes. It stops every
   # running container of this user (podman-system-migrate(1)), so it is not

@@ -1,0 +1,96 @@
+## first install
+rc 0
+sudo bash <W>/src/nice-dns/mac/start-container-root.sh check
+sudo softwareupdate --install-rosetta --agree-to-license
+sudo test -f <W>/root/usr/local/sbin/start-container.sh
+sudo test -f <W>/root/usr/local/sbin/start-container-root.sh
+sudo test -f <W>/root/usr/local/sbin/nice-dns-fetch-bridges.sh
+sudo test -f <W>/root/usr/local/sbin/nice-dns-bridge-eval.sh
+sudo test -f <W>/root/etc/sudoers.d/start-container
+sudo bash <W>/home/.nice-dns-install.<X>/nice-dns/mac/start-container-root.sh snapshot
+sudo rm -f <W>/root/etc/sudoers.d/start-container <W>/root/usr/local/sbin/start-container.sh <W>/root/usr/local/sbin/start-container-root.sh <W>/root/usr/local/sbin/nice-dns-bridge-eval.sh <W>/root/usr/local/sbin/nice-dns-fetch-bridges.sh
+sudo launchctl bootout system/org.nice-dns.free-port53
+sudo rm -f /Library/LaunchDaemons/org.nice-dns.free-port53.plist
+sudo launchctl bootout system/com.local.loopbackalias
+sudo rm -f /Library/LaunchDaemons/com.local.loopbackalias.plist
+sudo launchctl bootout system/com.local.mullvad-pfctl-disable-on-connect
+sudo rm -f /Library/LaunchDaemons/com.local.mullvad-pfctl-disable-on-connect.plist
+sudo rm -f /etc/sudoers.d/start-podman /usr/local/sbin/start-podman.sh /usr/local/sbin/start-podman-root.sh /usr/local/sbin/mullvad-pfctl-disable-on-connect
+sudo ifconfig lo0 -alias 127.0.0.53
+sudo launchctl print system/com.apple.mDNSResponder
+sudo bash <W>/home/.nice-dns-install.<X>/nice-dns/mac/start-container-root.sh post
+sudo bash <W>/home/.nice-dns-install.<X>/nice-dns/mac/start-container-root.sh status
+## flavour and proxy switch
+rc 0
+sudo bash <W>/src/nice-dns/mac/start-container-root.sh check
+sudo softwareupdate --install-rosetta --agree-to-license
+sudo test -f <W>/root/usr/local/sbin/start-container.sh
+sudo cat <W>/root/usr/local/sbin/start-container.sh
+sudo test -f <W>/root/usr/local/sbin/start-container-root.sh
+sudo cat <W>/root/usr/local/sbin/start-container-root.sh
+sudo test -f <W>/root/usr/local/sbin/nice-dns-fetch-bridges.sh
+sudo cat <W>/root/usr/local/sbin/nice-dns-fetch-bridges.sh
+sudo test -f <W>/root/usr/local/sbin/nice-dns-bridge-eval.sh
+sudo test -f <W>/root/etc/sudoers.d/start-container
+sudo cat <W>/root/etc/sudoers.d/start-container
+sudo bash <W>/home/.nice-dns-install.<X>/nice-dns/mac/start-container-root.sh snapshot
+sudo rm -f <W>/root/etc/sudoers.d/start-container <W>/root/usr/local/sbin/start-container.sh <W>/root/usr/local/sbin/start-container-root.sh <W>/root/usr/local/sbin/nice-dns-bridge-eval.sh <W>/root/usr/local/sbin/nice-dns-fetch-bridges.sh
+sudo launchctl bootout system/org.nice-dns.free-port53
+sudo rm -f /Library/LaunchDaemons/org.nice-dns.free-port53.plist
+sudo launchctl bootout system/com.local.loopbackalias
+sudo rm -f /Library/LaunchDaemons/com.local.loopbackalias.plist
+sudo launchctl bootout system/com.local.mullvad-pfctl-disable-on-connect
+sudo rm -f /Library/LaunchDaemons/com.local.mullvad-pfctl-disable-on-connect.plist
+sudo rm -f /etc/sudoers.d/start-podman /usr/local/sbin/start-podman.sh /usr/local/sbin/start-podman-root.sh /usr/local/sbin/mullvad-pfctl-disable-on-connect
+sudo ifconfig lo0 -alias 127.0.0.53
+sudo launchctl print system/com.apple.mDNSResponder
+sudo bash <W>/home/.nice-dns-install.<X>/nice-dns/mac/start-container-root.sh post
+sudo bash <W>/home/.nice-dns-install.<X>/nice-dns/mac/start-container-root.sh status
+## failed reinstall
+rc 1
+sudo bash <W>/src/nice-dns/mac/start-container-root.sh check
+sudo softwareupdate --install-rosetta --agree-to-license
+sudo test -f <W>/root/usr/local/sbin/start-container.sh
+sudo cat <W>/root/usr/local/sbin/start-container.sh
+sudo test -f <W>/root/usr/local/sbin/start-container-root.sh
+sudo cat <W>/root/usr/local/sbin/start-container-root.sh
+sudo test -f <W>/root/usr/local/sbin/nice-dns-fetch-bridges.sh
+sudo cat <W>/root/usr/local/sbin/nice-dns-fetch-bridges.sh
+sudo test -f <W>/root/usr/local/sbin/nice-dns-bridge-eval.sh
+sudo test -f <W>/root/etc/sudoers.d/start-container
+sudo cat <W>/root/etc/sudoers.d/start-container
+sudo bash <W>/home/.nice-dns-install.<X>/nice-dns/mac/start-container-root.sh snapshot
+sudo rm -f <W>/root/etc/sudoers.d/start-container <W>/root/usr/local/sbin/start-container.sh <W>/root/usr/local/sbin/start-container-root.sh <W>/root/usr/local/sbin/nice-dns-bridge-eval.sh <W>/root/usr/local/sbin/nice-dns-fetch-bridges.sh
+sudo launchctl bootout system/org.nice-dns.free-port53
+sudo rm -f /Library/LaunchDaemons/org.nice-dns.free-port53.plist
+sudo launchctl bootout system/com.local.loopbackalias
+sudo rm -f /Library/LaunchDaemons/com.local.loopbackalias.plist
+sudo launchctl bootout system/com.local.mullvad-pfctl-disable-on-connect
+sudo rm -f /Library/LaunchDaemons/com.local.mullvad-pfctl-disable-on-connect.plist
+sudo rm -f /etc/sudoers.d/start-podman /usr/local/sbin/start-podman.sh /usr/local/sbin/start-podman-root.sh /usr/local/sbin/mullvad-pfctl-disable-on-connect
+sudo ifconfig lo0 -alias 127.0.0.53
+sudo launchctl print system/com.apple.mDNSResponder
+sudo mkdir -p <W>/root/usr/local/sbin
+sudo install -m 755 <SAVED> <W>/root/usr/local/sbin/start-container.sh
+sudo mkdir -p <W>/root/usr/local/sbin
+sudo install -m 755 <SAVED> <W>/root/usr/local/sbin/start-container-root.sh
+sudo mkdir -p <W>/root/usr/local/sbin
+sudo install -m 755 <SAVED> <W>/root/usr/local/sbin/nice-dns-fetch-bridges.sh
+sudo rm -f <W>/root/usr/local/sbin/nice-dns-bridge-eval.sh
+sudo visudo -cf <SAVED>
+sudo mkdir -p <W>/root/etc/sudoers.d
+sudo install -m 440 <SAVED> <W>/root/etc/sudoers.d/start-container
+## uninstall
+rc 0
+sudo rm -f <W>/root/usr/local/sbin/nice-dns-debug-monitor.sh
+sudo rm -f <W>/root/etc/sudoers.d/start-container <W>/root/usr/local/sbin/start-container.sh <W>/root/usr/local/sbin/start-container-root.sh <W>/root/usr/local/sbin/nice-dns-bridge-eval.sh <W>/root/usr/local/sbin/nice-dns-fetch-bridges.sh
+sudo launchctl bootout system/org.nice-dns.free-port53
+sudo rm -f /Library/LaunchDaemons/org.nice-dns.free-port53.plist
+sudo launchctl bootout system/com.local.loopbackalias
+sudo rm -f /Library/LaunchDaemons/com.local.loopbackalias.plist
+sudo launchctl bootout system/com.local.mullvad-pfctl-disable-on-connect
+sudo rm -f /Library/LaunchDaemons/com.local.mullvad-pfctl-disable-on-connect.plist
+sudo rm -f /etc/sudoers.d/start-podman /usr/local/sbin/start-podman.sh /usr/local/sbin/start-podman-root.sh /usr/local/sbin/mullvad-pfctl-disable-on-connect
+sudo ifconfig lo0 -alias 127.0.0.53
+sudo launchctl print system/com.apple.mDNSResponder
+sudo bash <W>/src/nice-dns/mac/start-container-root.sh restore
