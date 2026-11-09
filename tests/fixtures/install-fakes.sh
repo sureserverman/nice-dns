@@ -13,7 +13,7 @@
 # a path under $FAKE_ROOT; systemctl, sysctl and networksetup then keep their
 # state under $FAKE_ROOT. Everything else stays a logged no-op.
 
-IP_TOOLS="awk basename bash cat chmod cmp cp cut date dirname env find grep head id install ln ls mkdir mkfifo mktemp mv od readlink rm rmdir sed seq sh sha256sum sort stat tail tee test touch tr uniq wc xargs yes"
+IP_TOOLS="awk basename bash cat chmod cmp cp cut date dirname env find grep gzip head id install ln ls mkdir mkfifo mktemp mv od readlink rm rmdir sed seq sh sha256sum sort stat tail tar tee test touch tr uniq wc xargs yes"
 IP_ALL="install-deb install-deb-hardened install-mac install-mac-hardened"
 
 # The interruption predicate (requirement 4): a call that interrupts the
@@ -250,12 +250,15 @@ case "$me" in
       */mac/check-runtime.sh) cp "$FAKE/upstream/mac/check-runtime.sh" "$o" ;;
       # A release asset (Sub-plan 5 Task 2.4): each attempt takes the next
       # exit status from $FAKE/asset_rcs (0, or 6 for a failed lookup), then
-      # gets $FAKE/asset's bytes; with no $FAKE/asset it is not found (22).
+      # gets $FAKE/assets/<file>'s bytes when there is one (Sub-plan 6 Task
+      # 2.1: the GUI's tarball), else $FAKE/asset's; with neither it is not
+      # found (22).
       https://github.com/sureserverman/nice-dns/releases/download/*)
         if [ -s "$FAKE/asset_rcs" ]; then
           r="$(head -n 1 "$FAKE/asset_rcs")"; sed -i 1d "$FAKE/asset_rcs"
           [ "$r" = 0 ] || exit "$r"
         fi
+        if [ -f "$FAKE/assets/${u##*/}" ]; then cp "$FAKE/assets/${u##*/}" "$o"; exit 0; fi
         [ -f "$FAKE/asset" ] || exit 22
         cp "$FAKE/asset" "$o" ;;
       *) exit 22 ;;

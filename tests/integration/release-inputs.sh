@@ -345,11 +345,13 @@ STUB
 # The release assets lock (Sub-plan 5 Task 2.4): its grammar, under gawk and
 # under mawk 1.3.4 (the awk of mint and Ubuntu 24.04), when that is here.
 t_assets_lock_grammar_is_enforced() {
-  local a ok_lock="$CASE_DIR/ok.lock" bad n sha url out awks=awk
+  local a ok_lock="$CASE_DIR/ok.lock" bad n sha url gurl out awks=awk
   command -v mawk >/dev/null 2>&1 && awks="awk mawk"
   sha="$(printf 'nice-dns-helper' | sha256sum | cut -d' ' -f1)"
   url=https://github.com/sureserverman/nice-dns/releases/download/v1.0.0/nice-dns-helper-linux-amd64
-  printf 'schema\tnice-dns-assets-lock/1\n# a comment\nrelease\tv1.0.0\nasset\thelper\tlinux\tamd64\t%s\t%s\n' "$url" "$sha" >"$ok_lock"
+  gurl=https://github.com/sureserverman/nice-dns/releases/download/v1.0.0/nice-dns-gui-linux-amd64.tar.gz
+  # A helper and a GUI (Sub-plan 6 Task 2.1) for the same host are two assets.
+  printf 'schema\tnice-dns-assets-lock/1\n# a comment\nrelease\tv1.0.0\nasset\thelper\tlinux\tamd64\t%s\t%s\nasset\tgui\tlinux\tamd64\t%s\t%s\n' "$url" "$sha" "$gurl" "$sha" >"$ok_lock"
   for a in $awks; do
     mkdir -p "$CASE_DIR/bin-$a"; ln -sf "$(command -v "$a")" "$CASE_DIR/bin-$a/awk"
     for f in "$NICE_DNS_ROOT/release/assets.lock" "$ok_lock"; do
@@ -376,8 +378,9 @@ schema\tnice-dns-assets-lock/1\nrelease\tv1.0.0\nasset\thelper\twindows\tamd64\t
 schema\tnice-dns-assets-lock/1\nrelease\tv1.0.0\nasset\tother\tlinux\tamd64\t$url\t$sha\n
 schema\tnice-dns-assets-lock/1\nrelease\tv1.0.0\nasset\thelper\tlinux\tamd64\t$url\t$sha\nasset\thelper\tlinux\tamd64\t$url\t$sha\n
 schema\tnice-dns-assets-lock/1\nrelease\tv1.0.0\nimage\tx\n
+schema\tnice-dns-assets-lock/1\nrelease\tv1.0.0\nasset\tgui\tlinux\tamd64\t$gurl\t$sha\nasset\tgui\tlinux\tamd64\t$gurl\t$sha\n
 LOCKS
-    assert_eq 12 "$n" "$a: every malformed lock was tried"
+    assert_eq 13 "$n" "$a: every malformed lock was tried"
   done
   # An install from a tree with a malformed assets lock is refused before it
   # changes anything.
@@ -393,6 +396,11 @@ t_assets_refresh_script_checks_and_writes() {
   for n in linux-amd64 linux-arm64 macos-arm64; do
     printf 'helper %s\n' "$n" >"$w/rel/v1.0.0/nice-dns-helper-$n"
     (cd "$w/rel/v1.0.0" && sha256sum "nice-dns-helper-$n" >"nice-dns-helper-$n.sha256")
+  done
+  # The Linux GUI's tarballs (Sub-plan 6 Task 2.1).
+  for n in linux-amd64 linux-arm64; do
+    printf 'gui %s\n' "$n" >"$w/rel/v1.0.0/nice-dns-gui-$n.tar.gz"
+    (cd "$w/rel/v1.0.0" && sha256sum "nice-dns-gui-$n.tar.gz" >"nice-dns-gui-$n.tar.gz.sha256")
   done
   # The release as GitHub serves it: the latest tag, and each download.
   cat >"$b/curl" <<STUB
@@ -412,7 +420,8 @@ STUB
   assert_eq "$(cat "$NICE_DNS_ROOT/release/assets.lock")" "$(cat "$w/assets.lock")" "without --write the lock is untouched"
   out="$(PATH="$b:$PATH" bash "$NICE_DNS_ROOT/scripts/update-assets-lock.sh" --lock "$w/assets.lock" --write 2>&1)"; rc=$?
   assert_rc 0 "$rc" "--write: $out"
-  assert_eq 3 "$(grep -c '^asset' "$w/assets.lock")" "--write records the three assets"
+  assert_eq 5 "$(grep -c '^asset' "$w/assets.lock")" "--write records the five assets"
+  assert_match "$(printf 'asset\tgui\tlinux\tamd64\thttps://github.com/sureserverman/nice-dns/releases/download/v1.0.0/nice-dns-gui-linux-amd64.tar.gz\t')$(cut -d' ' -f1 "$w/rel/v1.0.0/nice-dns-gui-linux-amd64.tar.gz.sha256")$" "$(cat "$w/assets.lock")" "and the GUI's rows"
   assert_match "$(printf '^release\tv1\\.0\\.0$')" "$(cat "$w/assets.lock")" "and the release"
   assert_match "$(printf 'asset\thelper\tmacos\tarm64\thttps://github.com/sureserverman/nice-dns/releases/download/v1.0.0/nice-dns-helper-macos-arm64\t')$(cut -d' ' -f1 "$w/rel/v1.0.0/nice-dns-helper-macos-arm64.sha256")$" "$(cat "$w/assets.lock")" "each row is the asset's url and sha256"
   assert_eq "$(grep '^#' "$NICE_DNS_ROOT/release/assets.lock")" "$(grep '^#' "$w/assets.lock")" "the comments are kept"

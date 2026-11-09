@@ -35,6 +35,7 @@ exception	packages	linux	^sudo (apt-get (update|install)|add-apt-repository) 	pr
 exception	source	all	^git clone 	preparation	host	the requested branch, when the installer runs without a checkout
 exception	gate	macos	^curl -fsSL https://raw\.githubusercontent\.com/sureserverman/nice-dns/[^ ]+/mac/check-runtime\.sh 	preparation	host	the SHA-256-pinned compatibility gate, without a checkout
 exception	assets	all	^curl -fsSL https://github\.com/sureserverman/nice-dns/releases/download/v[0-9]+\.[0-9]+\.[0-9]+/nice-dns-helper-(linux|macos)-(amd64|arm64) -o 	preparation	host	the nice-dns-helper release asset, SHA-256-pinned (release/assets.lock); a failed lookup is tried three times, 20 s apart
+exception	gui-asset	linux	^curl -fsSL https://github\.com/sureserverman/nice-dns/releases/download/v[0-9]+\.[0-9]+\.[0-9]+/nice-dns-gui-linux-(amd64|arm64)\.tar\.gz -o 	preparation	host	the nice-dns-gui release asset (Sub-plan 6), SHA-256-pinned (release/assets.lock); a failed lookup is tried three times, 20 s apart
 exception	images	linux	^podman pull [^ ]+@sha256:[0-9a-f]{64}$	preparation	host	the locked images, by digest (release/images.lock)
 exception	images	macos	^container image pull [^ ]+@sha256:[0-9a-f]{64}$	preparation	host	the locked images, by digest (release/images.lock)
 exception	sibling-base	macos	^container image pull alpine:3\.21\.3$	preparation	host	the hardened sibling's own FROM, pinned by its Dockerfile

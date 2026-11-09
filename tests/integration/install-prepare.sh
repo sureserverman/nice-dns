@@ -638,3 +638,126 @@ t_helper_asset_lookup_failures_are_retried_three_times() {
   assert_rc 0 "$IP_RC" "not found: the install goes on: $IP_OUT"
   assert_eq 1 "$(grep -c '^curl -fsSL https://github\.com/' "$FAKE_LOG")" "not found: one attempt"
 }
+
+# ─────────── the GUI's release asset (Sub-plan 6 Task 2.1) ───────────
+
+IP_GUI_URL=https://github.com/sureserverman/nice-dns/releases/download/v1.1.0/nice-dns-gui-linux-amd64.tar.gz
+
+# ip_gui_world [sha] [good|dead|extra|link]: an install-deb world whose lock
+# pins a GUI asset for linux/amd64 (and no helper);
+# $FAKE/assets/nice-dns-gui-linux-amd64.tar.gz is a stand-in tarball: good
+# (a program that answers --version), dead (one whose libraries are missing),
+# extra (a fourth file) or link (the icon is a symlink). IP_GUI_SHA is its
+# sha256; a first argument pins another.
+ip_gui_world() {
+  local t
+  dt_world install-deb "$(dt_fresh_state install-deb)"
+  t="$FAKE/gui-src"
+  rm -rf "$t"; mkdir -p "$t" "$FAKE/assets"
+  if [ "${2:-good}" = dead ]; then
+    printf '#!/bin/sh\necho "nice-dns-gui: error while loading shared libraries: libadwaita-1.so.0" >&2\nexit 127\n' >"$t/nice-dns-gui"
+  else
+    # shellcheck disable=SC2016  # expanded by the stand-in
+    printf '#!/bin/sh\n[ "$1" = --version ] && { echo "nice-dns-gui 0.1.0"; exit 0; }\nexit 0\n' >"$t/nice-dns-gui"
+  fi
+  chmod 755 "$t/nice-dns-gui"
+  cp "$NICE_DNS_ROOT/gui/share/nice-dns.desktop" "$NICE_DNS_ROOT/gui/share/icons/nice-dns-256.png" "$t/"
+  case "${2:-good}" in
+    extra) echo x >"$t/extra" ;;
+    link) rm "$t/nice-dns-256.png"; ln -s /etc/passwd "$t/nice-dns-256.png" ;;
+  esac
+  (cd "$t" && tar -czf "$FAKE/assets/nice-dns-gui-linux-amd64.tar.gz" -- *)
+  IP_GUI_SHA="$(sha256sum "$FAKE/assets/nice-dns-gui-linux-amd64.tar.gz" | cut -d' ' -f1)"
+  printf 'schema\tnice-dns-assets-lock/1\nrelease\tv1.1.0\nasset\tgui\tlinux\tamd64\t%s\t%s\n' "$IP_GUI_URL" "${1:-$IP_GUI_SHA}" >"$IP_TREE/release/assets.lock"
+}
+
+ip_gui_paths() {
+  IP_GUI_BIN="$IP_HOME/.local/bin/nice-dns-gui"
+  IP_GUI_DESK="$IP_HOME/.local/share/applications/nice-dns.desktop"
+  IP_GUI_ICON="$IP_HOME/.local/share/icons/hicolor/256x256/apps/nice-dns.png"
+  IP_GUI_DIR="$IP_HOME/.local/share/nice-dns/gui"
+}
+
+ip_gui_absent() {
+  ip_gui_paths
+  assert_no_path "$IP_GUI_BIN" "$1: no program"
+  assert_no_path "$IP_GUI_DESK" "$1: no launcher"
+  assert_no_path "$IP_GUI_ICON" "$1: no icon"
+  assert_no_path "$IP_GUI_DIR" "$1: no GUI files"
+}
+
+t_gui_asset_good_sha_is_published_and_uninstall_removes_it() {
+  ip_gui_world
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "the install: $IP_OUT"
+  assert_match "^curl -fsSL ${IP_GUI_URL//./\\.} -o .+\\.part --proto =https --proto-redir =https --connect-timeout 30 --max-time 600$" "$(cat "$FAKE_LOG")" "the asset is fetched, https only, bounded"
+  ip_gui_paths
+  [ -x "$IP_GUI_BIN" ] || fail "the program is published: $IP_OUT"
+  cmp -s "$FAKE/gui-src/nice-dns-gui" "$IP_GUI_BIN" || fail "the program is the asset's"
+  assert_eq "Exec=$IP_GUI_BIN" "$(grep '^Exec=' "$IP_GUI_DESK")" "the launcher runs the published program"
+  assert_eq "Icon=nice-dns" "$(grep '^Icon=' "$IP_GUI_DESK")" "and names the icon"
+  cmp -s "$NICE_DNS_ROOT/gui/share/icons/nice-dns-256.png" "$IP_GUI_ICON" || fail "the icon is in the user's hicolor theme"
+  assert_eq "nice-dns-256.png nice-dns-gui nice-dns.desktop " "$(cd "$IP_GUI_DIR" && printf '%s\n' * | LC_ALL=C sort | tr '\n' ' ')" "the shipped files are kept"
+  assert_eq "" "$(find "$IP_HOME/.local/share/nice-dns" -maxdepth 1 -name '.gui.*')" "no staging directory is left"
+  assert_match "The nice-dns window: open nice-dns from the applications menu, or run $IP_GUI_BIN" "$IP_OUT" "the summary names the GUI"
+  assert_not_match 'GUI not installed' "$IP_OUT" "and reports nothing missing"
+  if command -v desktop-file-validate >/dev/null 2>&1; then
+    desktop-file-validate "$IP_GUI_DESK" || fail "the installed launcher validates"
+  fi
+  ip_install install-deb uninstall
+  assert_rc 0 "$IP_RC" "the uninstall: $IP_OUT"
+  ip_gui_absent "after the uninstall"
+}
+
+t_gui_asset_wrong_sha_publishes_nothing_and_the_install_goes_on() {
+  ip_gui_world "$(printf '%064d' 0)"
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "the install goes on: $IP_OUT"
+  ip_gui_absent "a mismatched asset"
+  assert_eq "" "$(find "$IP_STATE/generations" -name 'nice-dns-gui.tar.gz*' 2>/dev/null)" "nor is it kept"
+  assert_match "sha256 is not the one release/assets.lock pins; it was not installed: GUI not installed; reinstall with network to add it" "$(printf '%s\n' "$IP_OUT" | tail -n 3)" "the last lines say why"
+}
+
+t_gui_asset_download_failure_and_no_asset_say_so() {
+  ip_gui_world
+  printf '22\n' >"$FAKE/asset_rcs"
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "a failed download: the install goes on: $IP_OUT"
+  ip_gui_absent "a failed download"
+  assert_match 'nice-dns-gui download failed \(curl exit 22\): GUI not installed; reinstall with network to add it' "$IP_OUT" "a failed download says so"
+  ip_gui_world
+  printf 'schema\tnice-dns-assets-lock/1\nrelease\tnone\n' >"$IP_TREE/release/assets.lock"
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "no asset: the install goes on: $IP_OUT"
+  ip_gui_absent "no asset"
+  assert_match 'No nice-dns-gui release asset for linux/amd64 in release/assets.lock: GUI not installed' "$IP_OUT" "no asset says so"
+}
+
+t_gui_asset_that_does_not_start_or_holds_more_is_not_published() {
+  local kind
+  for kind in dead extra link; do
+    ip_gui_world "" "$kind"
+    ip_install install-deb haproxy
+    assert_rc 0 "$IP_RC" "$kind: the install goes on: $IP_OUT"
+    ip_gui_absent "$kind"
+    assert_match 'GUI not installed; reinstall with network to add it' "$IP_OUT" "$kind: says so"
+    assert_eq "" "$(find "$IP_HOME/.local/share/nice-dns" -maxdepth 1 -name '.gui.*' 2>/dev/null)" "$kind: no staging directory is left"
+    case "$kind" in
+      dead) assert_match 'does not start on this host \(nice-dns-gui: error while loading shared libraries' "$IP_OUT" "dead: the reason is the loader's" ;;
+      *) assert_match 'asset does not hold just its three files' "$IP_OUT" "$kind: the reason" ;;
+    esac
+  done
+}
+
+t_gui_reinstall_replaces_the_earlier_copy() {
+  ip_gui_world
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "the install: $IP_OUT"
+  ip_gui_paths
+  echo '# earlier' >>"$IP_GUI_BIN"
+  printf '%040d\n' 5 >"$FAKE/git_head"
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "the reinstall: $IP_OUT"
+  cmp -s "$FAKE/gui-src/nice-dns-gui" "$IP_GUI_BIN" || fail "the reinstall publishes the asset's program again"
+  assert_eq "" "$(find "$IP_HOME/.local/share/nice-dns" -maxdepth 1 -name '.gui.*')" "no leftovers"
+}
