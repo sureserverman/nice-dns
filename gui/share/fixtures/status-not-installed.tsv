@@ -1,0 +1,3 @@
+schema	nice-dns-status/1
+install	installed	no
+install	hint	curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb.sh -o install-deb.sh && bash install-deb.sh
