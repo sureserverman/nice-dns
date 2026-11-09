@@ -13,12 +13,13 @@
 # a path under $FAKE_ROOT; systemctl, sysctl and networksetup then keep their
 # state under $FAKE_ROOT. Everything else stays a logged no-op.
 
-IP_TOOLS="awk basename bash cat chmod cmp cp cut date dirname env find grep head id install ln ls mkdir mktemp mv od readlink rm rmdir sed seq sh sha256sum sort stat tail tee test touch tr uniq wc xargs yes"
+IP_TOOLS="awk basename bash cat chmod cmp cp cut date dirname env find grep head id install ln ls mkdir mkfifo mktemp mv od readlink rm rmdir sed seq sh sha256sum sort stat tail tee test touch tr uniq wc xargs yes"
 IP_ALL="install-deb install-deb-hardened install-mac install-mac-hardened"
 
 # The interruption predicate (requirement 4): a call that interrupts the
 # running stack or touches host DNS. Preparation makes none of these.
 IP_DISRUPTIVE='^sudo tee /etc/resolv\.conf( |$)
+^sudo bash [^ ]*/deb/root-ops (pin|interrupt-prereqs|uninstall|nm-reload|profiles-undo|restore|dns (pin|restore))( |$)
 ^sudo ([^ ]*/)?usr/bin/custom-dns-deb( |$)
 ^sudo bash [^ ]*/custom-dns-deb (pin|restore)$
 ^(sudo )?networksetup -setdnsservers( |$)
@@ -113,7 +114,39 @@ do_build() {
   return 0
 }
 case "$me" in
+  pkexec)
+    # The helper path (Sub-plan 5 Task 2.2): polkit refuses with the status in
+    # $FAKE/pkexec_rc (126 dismissed, 127 not authorised), for every call or,
+    # with $FAKE/pkexec_on (an ERE), the calls it matches, and with
+    # $FAKE/pkexec_after every call after the first it matches; otherwise the
+    # program runs, as this user (ip_fake_helper writes the helper). Each call
+    # logs its parent's pid, polkit's subject, to $FAKE/pkexec-ppids.
+    printf '%s\n' "$PPID" >>"$FAKE/pkexec-ppids"
+    if [ -s "$FAKE/pkexec_rc" ]; then
+      if [ ! -s "$FAKE/pkexec_on" ] || [ -f "$FAKE/pkexec_refusing" ] || printf '%s\n' "$l" | grep -Eq -f "$FAKE/pkexec_on"; then
+        [ ! -f "$FAKE/pkexec_after" ] || : >"$FAKE/pkexec_refusing"
+        exit "$(cat "$FAKE/pkexec_rc")"
+      fi
+    fi
+    exec "$@" ;;
   sudo)
+    # $FAKE/sudo_needs_password: `sudo -n` fails, as on a host with no
+    # NOPASSWD rule and no live ticket (lib/root.sh's fallback then refuses).
+    if [ "${1:-}" = -n ] && [ -f "$FAKE/sudo_needs_password" ]; then echo "sudo: a password is required" >&2; exit 1; fi
+    # root-ops runs as this user in its test mode (Sub-plan 5): each root
+    # step it takes comes back to this stub through ND_ROOT_TEST_SUDO and is
+    # logged, and in a world run, as the direct sudo line it replaced.
+    if [ "$1" = bash ]; then
+      case "$2" in */deb/root-ops|*/mac/root-ops)
+        # As root, root-ops ignores its test mode and acts on the host.
+        if [ "$(id -u)" = 0 ]; then echo "fake sudo: refusing to run root-ops as root in a test" >&2; exit 1; fi
+        ND_ROOT_TEST_SUDO="$0" ND_ROOT_TEST_IN=1; export ND_ROOT_TEST_SUDO ND_ROOT_TEST_IN
+        if [ -n "${FAKE_ROOT:-}" ]; then ND_DNS_TEST_ROOT="$FAKE_ROOT"; export ND_DNS_TEST_ROOT; fi
+        exec "$@" ;;
+      esac
+    fi
+    # The root steps root-ops took, for the tests' accounting.
+    [ -n "${ND_ROOT_TEST_IN:-}" ] && printf '%s\n' "$l" >>"$FAKE/root-inner.log"
     # In a world ($FAKE_ROOT), the DNS helpers and commands on paths under
     # the fake root run, as this user; nothing else ever does.
     if [ -n "${FAKE_ROOT:-}" ]; then
@@ -215,6 +248,16 @@ case "$me" in
     while [ $# -gt 0 ]; do case "$1" in -o) o="$2"; shift ;; https://*) u="$1" ;; esac; shift; done
     case "$u" in
       */mac/check-runtime.sh) cp "$FAKE/upstream/mac/check-runtime.sh" "$o" ;;
+      # A release asset (Sub-plan 5 Task 2.4): each attempt takes the next
+      # exit status from $FAKE/asset_rcs (0, or 6 for a failed lookup), then
+      # gets $FAKE/asset's bytes; with no $FAKE/asset it is not found (22).
+      https://github.com/sureserverman/nice-dns/releases/download/*)
+        if [ -s "$FAKE/asset_rcs" ]; then
+          r="$(head -n 1 "$FAKE/asset_rcs")"; sed -i 1d "$FAKE/asset_rcs"
+          [ "$r" = 0 ] || exit "$r"
+        fi
+        [ -f "$FAKE/asset" ] || exit 22
+        cp "$FAKE/asset" "$o" ;;
       *) exit 22 ;;
     esac
     exit 0 ;;
@@ -420,7 +463,7 @@ STUB
     ln -s fakecmd "$b/$s"
   done
   if [ "$plat" = linux ]; then
-    for s in podman crun; do ln -s fakecmd "$b/$s"; done
+    for s in podman crun pkexec; do ln -s fakecmd "$b/$s"; done
   else
     for s in container brew softwareupdate sw_vers networksetup launchctl ifconfig dscacheutil killall pfctl route; do ln -s fakecmd "$b/$s"; done
   fi
@@ -535,10 +578,26 @@ ip_run() {
   IP_OUT="$(cd "$cwd" && env -i HOME="$IP_HOME" USER=tester LOGNAME=tester PATH="${IP_PATH_EXTRA:+$IP_PATH_EXTRA:}$IP_BIN" \
     TMPDIR="$IP_W/tmp" XDG_STATE_HOME="$IP_HOME/.local/state" XDG_CONFIG_HOME="$IP_HOME/.config" \
     XDG_RUNTIME_DIR="$IP_W/run" FAKE="$FAKE" FAKE_LOG="$FAKE_LOG" FAKE_UNAME="$IP_UNAME" FAKE_ARCH="$IP_ARCH" \
-    ND_INST_ETC="$IP_W/etc" ND_INST_SUDO_KEEPALIVE=0 ND_INST_REQUIRE_SIGNATURES="${ND_INST_REQUIRE_SIGNATURES:-}" FAKE_ROOT="${FAKE_ROOT:-}" ND_INST_ROOT="${FAKE_ROOT:-}" ND_PERSIST_ROOT="${ND_PERSIST_ROOT:-}" bash "$@" 2>&1 </dev/null)"
+    ND_INST_ETC="$IP_W/etc" ND_INST_SUDO_KEEPALIVE=0 ND_INST_REQUIRE_SIGNATURES="${ND_INST_REQUIRE_SIGNATURES:-}" FAKE_ROOT="${FAKE_ROOT:-}" ND_INST_ROOT="${FAKE_ROOT:-}" ND_PERSIST_ROOT="${ND_PERSIST_ROOT:-}" ND_INST_HELPER_STAGED="${ND_INST_HELPER_STAGED:-}" ND_INST_ROOT_OWNER="${ND_INST_ROOT_OWNER:-}" bash "$@" 2>&1 </dev/null)"
   IP_RC=$?
 }
 ip_install() { ip_run "$IP_TREE/$1.sh" "${@:2}"; }
+
+# ip_fake_helper <file> [version] [deb|mac]: a stand-in for gui/helper's
+# nice-dns-helper (default version: the one that platform's root-ops expects,
+# deb by default). --version prints it; any
+# other call is `--tree <dir> <verb> [args]`, logged as `nice-dns-helper
+# <args>` and run as the real one does, through the root-held root-ops copy
+# beside it (<dir of the helper>/nice-dns/root-ops, as /usr/libexec and
+# /usr/local/libexec hold them), in root-ops' test mode (the fake sudo logs
+# each root step root-ops takes).
+ip_fake_helper() {
+  local v="${2:-$(sed -n 's/^ND_HELPER_VERSION=//p' "$NICE_DNS_ROOT/${3:-deb}/root-ops")}"
+  mkdir -p "$(dirname "$1")"
+  # shellcheck disable=SC2016  # expanded by the helper
+  printf '#!/bin/sh\n[ "$1" = --version ] && { echo %s; exit 0; }\n[ "$1" = --tree ] || exit 2\nl="nice-dns-helper"; for a in "$@"; do l="$l $a"; done; printf "%%s\\n" "$l" >>"$FAKE_LOG"\nND_ROOT_TREE="$2"; shift 2\nND_ROOT_TEST_SUDO="$(command -v sudo)" ND_ROOT_TEST_IN=1 ND_DNS_TEST_ROOT="$FAKE_ROOT"\nexport ND_ROOT_TREE ND_ROOT_TEST_SUDO ND_ROOT_TEST_IN ND_DNS_TEST_ROOT\nexec bash "$(dirname "$0")/nice-dns/root-ops" "$@"\n' "$v" >"$1"
+  chmod 755 "$1"
+}
 
 ip_lines() { grep -nE -f <(printf '%s\n' "$2") "$1" 2>/dev/null || true; }
 ip_first() { ip_lines "$1" "$2" | head -n 1 | cut -d: -f1; }

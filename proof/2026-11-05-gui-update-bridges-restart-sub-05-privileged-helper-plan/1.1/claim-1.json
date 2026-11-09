@@ -1,0 +1,37 @@
+{
+ "baseline": {
+  "elapsed_s": 157.5,
+  "exit": 0,
+  "tail": "run_id=20261108T132912Z-32883c5d artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T132912Z-32883c5d\nPASS  t_argument_surface_is_unchanged\nPASS  t_bash32_pure_functions\nPASS  t_bash32_runs_the_mac_entrypoints\nPASS  t_builds_and_pulls_precede_the_interruption\nPASS  t_checkout_is_used_without_a_clone\nPASS  t_entrypoints_option_is_validated\nPASS  t_failed_preparation_touches_nothing\nPASS  t_mac_rewrites_are_portable_and_exact\nPASS  t_new_subids_are_migrated_before_the_builds\nPASS  t_prepare_manifest_is_owned_and_complete\nPASS  t_reinstall_keeps_the_previous_generation\nPASS  t_standard_and_hardened_share_build_flags\nPASS  t_uninstall_still_removes_the_stack\ngroup integration/install-prepare: collected=13 passed=13 failed=0\ncollected=13 passed=13 failed=0\nresult=pass run_id=20261108T132912Z-32883c5d artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T132912Z-32883c5d\nrun_id=20261108T133034Z-6e6556a7 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T133034Z-6e6556a7\nPASS  t_bash32_parses_mac_root_ops\nPASS  t_bootstrap_use_is_declared\nPASS  t_lifecycle_restores_exactly_what_it_owns\nPASS  t_no_step_points_the_host_at_public_dns\nPASS  t_root_ops_fix_bin_owner\nPASS  t_root_ops_owns_the_rollback_list\nPASS  t_root_ops_refusal_aborts_or_rolls_back\nPASS  t_root_ops_refuses_before_running_anything\nPASS  t_root_ops_refuses_symlinks_and_open_dirs\nPASS  t_root_steps_are_the_recorded_ones\nPASS  t_versions_are_read_as_the_user\ngroup integration/installers-interaction: collected=11 passed=11 failed=0\ncollected=11 passed=11 failed=0\nresult=pass run_id=20261108T133034Z-6e6556a7 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T133034Z-6e6556a7"
+ },
+ "break_patch": "--- a/lib/install.sh\t2026-11-08 13:28:53.223640807 +0000\n+++ b/lib/install.sh\t2026-11-08 13:28:53.223871371 +0000\n@@ -1807,7 +1807,7 @@\n   # rollback of this install gives back (DEC-020), and the pin itself\n   # (deb/root-ops pin).\n   ND_INST_V6_PROFILES=1\n-  nd_root_deb pin\n+  sudo \"$ND_INST_ROOT/usr/bin/custom-dns-deb\" pin\n   _nd_inst_linux_mullvad_loopback\n }\n \n",
+ "build": null,
+ "created": "2026-11-08T13:34:16+00:00",
+ "fingerprint": "64346adb51dd08ed86f9e212526b989ab11ec217947021283c4b1903d4ec703b",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "shell: the tests run the tree as checked out",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-05-privileged-helper-plan.md",
+ "red": {
+  "elapsed_s": 148.0,
+  "exit": 1,
+  "tail": "PASS  t_root_ops_owns_the_rollback_list\nFAIL  t_root_ops_refusal_aborts_or_rolls_back (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261108T133311Z-8dd4b17c/cases/integration-installers-interaction/t_root_ops_refusal_aborts_or_rolls_back/case.log)\n      ASSERT FAIL: linux: the reinstall fails at the refused step: \u25b8 Preparing generation 20261108T133410Z-bbbbbbbbbbbb (source checkout, commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; previous 20261108T133409Z-0123456789ab, rollback available)\n        ! Image signatures were not verified (cosign is not installed); the images are pinned by digest from the reviewed release/images.lock.\n        \u2022 Pi-hole admin password: kept from the previous install (/home/user/.local/state/nice-dns-tests/runs/20261108T133311Z-8dd4b17c/cases/integration-installers-interaction/t_root_ops_refusal_aborts_or_rolls_back/w-install-deb/home/.local/state/nice-dns/secrets/pihole/pihole_webpassword)\n      custom-dns-deb: keeping the existing record (2026-11-08T13:34:09Z)\n        \u2022 Unbound keeps its route (/home/user/.local/state/nice-dns-tests/runs/20261108T133311Z-8dd4b17c/cases/integration-installers-interaction/t_root_ops_refusal_aborts_or_rolls_back/w-install-deb/home/.local/state/nice-dns/unbound-route).\n      Waiting for the DNS chain to come up at 127.0.0.1 (Tor bootstrap takes 1-4 min)...\n      Chain is resolving, and Unbound resolves over its authenticated route.\n        \u2022 The controller is installed and passes its self-check.\n      System-wide DNS now points to 127.0.0.1:53\n      \u25b8 Generation 20261108T133410Z-bbbbbbbbbbbb is active (previous: 20261108T133409Z-0123456789ab).\n      Manage the stack with /home/user/.local/state/nice-dns-tests/runs/20261108T133311Z-8dd4b17c/cases/integration-installers-interaction/t_root_ops_refusal_aborts_or_rolls_back/w-install-deb/home/.local/bin/nice-dns; to run it as nice-dns, add this line to your shell profile: export PATH=\"/home/user/.local/state/nice-dns-tests/runs/20261108T133311Z-8dd4b17c/cases/integration-installers-interaction/t_root_ops_refusal_aborts_or_rolls_back/w-install-deb/home/.local/bin:$PATH\": expected a non-zero exit\nPASS  t_root_ops_refuses_before_running_anything\nPASS  t_root_ops_refuses_symlinks_and_open_dirs\nFAIL  t_root_steps_are_the_recorded_ones (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261108T133311Z-8dd4b17c/cases/integration-installers-interaction/t_root_steps_are_the_recorded_ones/case.log)\n      sudo mkdir -p <W>/root/etc/NetworkManager/dispatcher.d\n      sudo install -m 755 <SAVED> <W>/root/etc/NetworkManager/dispatcher.d/91-nice-dns-ipv6\n      sudo mkdir -p <W>/root/etc/NetworkManager/dispatcher.d/pre-up.d\n      sudo install -m 755 <SAVED> <W>/root/etc/NetworkManager/dispatcher.d/pre-up.d/91-nice-dns-ipv6\n      sudo mkdir -p <W>/root/etc/systemd/system\n      sudo install -m 644 <SAVED> <W>/root/etc/systemd/system/custom-dns-deb.service\n      sudo mkdir -p <W>/root/etc/NetworkManager/conf.d\n      sudo install -m 644 <SAVED> <W>/root/etc/NetworkManager/conf.d/90-nice-dns.conf\n      sudo mkdir -p <W>/root/etc/sysctl.d\n      sudo install -m 644 <SAVED> <W>/root/etc/sysctl.d/99-nice-dns-disable-ipv6.conf\n      sudo mkdir -p <W>/root/etc/sysctl.d\n      sudo install -m 644 <SAVED> <W>/root/etc/sysctl.d/99-podman-privileged-ports.conf\n      sudo rm -f <W>/root/etc/systemd/system/NetworkManager-wait-online.service.d/10-wait-for-connectivity.conf\n      sudo systemctl reload NetworkManager\n      ## uninstall\n      rc 0\n      sudo bash <W>/src/nice-dns/deb/custom-dns-deb restore\n      sudo rm -f <W>/root/usr/bin/custom-dns-deb\n      sudo test -f <W>/root/etc/default/grub.d/99-nice-dns-ipv6.cfg\n      sudo systemctl daemon-reload]\nPASS  t_versions_are_read_as_the_user\ngroup integration/installers-interaction: collected=11 passed=9 failed=2\ncollected=11 passed=9 failed=2\nresult=fail run_id=20261108T133311Z-8dd4b17c artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T133311Z-8dd4b17c"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "1.1",
+ "test": "shellcheck deb/root-ops lib/install.sh && bash tests/run.sh integration install-prepare && bash tests/run.sh integration installers-interaction",
+ "text": "the fakes record `sudo bash <tree>/deb/root-ops <verb>` lines in the order the old sudo lines ran (the fixtures' `IP_DISRUPTIVE` patterns updated)",
+ "touched": [
+  "lib/install.sh"
+ ],
+ "touched_blobs": {
+  "lib/install.sh": "e008bb3be9148a933e3ea4de124ee5b86878ab3b"
+ },
+ "witness_blobs": {
+  "deb/root-ops": "b15ac72cb2a135128aa0855fbd0d503743f92a2d",
+  "lib/install.sh": "e008bb3be9148a933e3ea4de124ee5b86878ab3b",
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}

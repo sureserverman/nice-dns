@@ -1,0 +1,28 @@
+# Receipt manifest: helper-install (Sub-plan 5 Task 2.6). Parsed as data by tests/reports/verify.sh (never sourced).
+# Rows (tab-separated):
+#   platforms all                            the receipt holds an observed cell on every platform
+#   scenario  <id>  per-cell|global  <meaning>
+#   content   <id>  <ERE>                    the scenario's artifact has a line matching ERE
+# One observed cell per platform: a caller with no sudo (the GUI's case)
+# reinstalls and uninstalls through nice-dns-helper.
+platforms	all
+scenario	HI-INSTALL	per-cell	nice-dns install with sudo available leaves the helper root-owned, at the expected mode and version, running this tree's root-ops
+scenario	HI-REINSTALL	per-cell	nice-dns reinstall with no working sudo succeeds through the helper and DNS answers
+scenario	HI-UNINSTALL	per-cell	nice-dns uninstall with no working sudo succeeds through the helper and removes it; the host resolves
+scenario	HI-FINAL	per-cell	nice-dns install after the uninstall puts the helper and the stack back
+content	HI-INSTALL	^helper	present$
+content	HI-INSTALL	^helper_owner	0$
+content	HI-INSTALL	^helper_mode	(755|4755)$
+content	HI-INSTALL	^held_root_ops_sha	[0-9a-f]{64}$
+content	HI-INSTALL	^result	pass$
+content	HI-REINSTALL	^command_exit	0$
+content	HI-REINSTALL	^sudo_root_ops	0$
+content	HI-REINSTALL	^result	pass$
+content	HI-UNINSTALL	^command_exit	0$
+content	HI-UNINSTALL	^sudo_root_ops	0$
+content	HI-UNINSTALL	^helper	absent$
+content	HI-UNINSTALL	^helper_dir	absent$
+content	HI-UNINSTALL	^result	pass$
+content	HI-FINAL	^helper	present$
+content	HI-FINAL	^helper_owner	0$
+content	HI-FINAL	^result	pass$

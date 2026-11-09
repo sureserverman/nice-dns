@@ -1,0 +1,36 @@
+{
+ "baseline": {
+  "elapsed_s": 177.7,
+  "exit": 0,
+  "tail": "run_id=20261108T134337Z-717bd660 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T134337Z-717bd660\nPASS  t_bash32_parses_mac_root_ops\nPASS  t_bootstrap_use_is_declared\nPASS  t_lifecycle_restores_exactly_what_it_owns\nPASS  t_no_step_points_the_host_at_public_dns\nPASS  t_root_ops_fix_bin_owner\nPASS  t_root_ops_owns_the_rollback_list\nPASS  t_root_ops_refusal_aborts_or_rolls_back\nPASS  t_root_ops_refuses_before_running_anything\nPASS  t_root_ops_refuses_symlinks_and_open_dirs\nPASS  t_root_steps_are_the_recorded_ones\nPASS  t_versions_are_read_as_the_user\ngroup integration/installers-interaction: collected=11 passed=11 failed=0\ncollected=11 passed=11 failed=0\nresult=pass run_id=20261108T134337Z-717bd660 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T134337Z-717bd660\nrun_id=20261108T134450Z-cfb8e333 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T134450Z-cfb8e333\nPASS  t_anchor_and_tor_volumes_keep_their_state\nPASS  t_command_and_source_follow_the_install\nPASS  t_every_transition_keeps_the_instance_state\nPASS  t_failed_uninstall_keeps_the_command\nPASS  t_installed_bundle_works_after_the_checkout_moves\nPASS  t_linux_quadlets_mount_the_instance_state\nPASS  t_macos_install_honours_the_bridges_mode\nPASS  t_macos_launch_paths_mount_the_instance_state\nPASS  t_pihole_lists_survive_restart_image_switch_and_back\ngroup integration/lifecycle-transitions: collected=9 passed=9 failed=0\ncollected=9 passed=9 failed=0\nresult=pass run_id=20261108T134450Z-cfb8e333 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T134450Z-cfb8e333"
+ },
+ "break_patch": "--- a/mac/root-ops\t2026-11-08 13:28:53.288712999 +0000\n+++ b/mac/root-ops\t2026-11-08 13:28:53.288813247 +0000\n@@ -268,6 +268,7 @@\n   _r mkdir -p \"$(dirname \"$p\")\" && _r install -m \"$mode\" \"$tmp\" \"$p\"\n }\n \n+case \"$VERB\" in host-packages) : ;& *) : ;; esac\n # One label per line at this indent: the allow-list the stage gates read.\n case \"$VERB\" in\n   host-prereqs) v_host_prereqs ;;\n",
+ "build": null,
+ "created": "2026-11-08T13:47:47+00:00",
+ "fingerprint": "64346adb51dd08ed86f9e212526b989ab11ec217947021283c4b1903d4ec703b",
+ "index": 2,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "shell: the tests run the tree as checked out",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-05-privileged-helper-plan.md",
+ "red": {
+  "elapsed_s": 73.0,
+  "exit": 1,
+  "tail": "run_id=20261108T134635Z-ad321d3e artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T134635Z-ad321d3e\nFAIL  t_bash32_parses_mac_root_ops (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261108T134635Z-ad321d3e/cases/integration-installers-interaction/t_bash32_parses_mac_root_ops/case.log)\n      ASSERT FAIL: bash 3.2 run: /src/mac/root-ops: line 271: syntax error near unexpected token `&'\n      /src/mac/root-ops: line 271: `case \"$VERB\" in host-packages) : ;& *) : ;; esac': expected exit 0 got 91\nPASS  t_bootstrap_use_is_declared\nPASS  t_lifecycle_restores_exactly_what_it_owns\nPASS  t_no_step_points_the_host_at_public_dns\nPASS  t_root_ops_fix_bin_owner\nPASS  t_root_ops_owns_the_rollback_list\nPASS  t_root_ops_refusal_aborts_or_rolls_back\nPASS  t_root_ops_refuses_before_running_anything\nPASS  t_root_ops_refuses_symlinks_and_open_dirs\nPASS  t_root_steps_are_the_recorded_ones\nPASS  t_versions_are_read_as_the_user\ngroup integration/installers-interaction: collected=11 passed=10 failed=1\ncollected=11 passed=10 failed=1\nresult=fail run_id=20261108T134635Z-ad321d3e artifacts=/home/user/.local/state/nice-dns-tests/runs/20261108T134635Z-ad321d3e"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "1.2",
+ "test": "shellcheck mac/root-ops && bash tests/run.sh integration installers-interaction && bash tests/run.sh integration lifecycle-transitions",
+ "text": "a new case t_bash32_parses_mac_root_ops in installers-interaction has Bash 3.2 (the docker.io/library/bash:3.2 image, as tests/unit/state-policy.sh uses it) parse mac/root-ops with its -n flag (red on a Bash 4 construct)",
+ "touched": [
+  "mac/root-ops"
+ ],
+ "touched_blobs": {
+  "mac/root-ops": "7cc97078eefcde3dc0e4c4ec1653e393efe19b72"
+ },
+ "witness_blobs": {
+  "mac/root-ops": "7cc97078eefcde3dc0e4c4ec1653e393efe19b72",
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}

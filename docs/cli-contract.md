@@ -43,6 +43,7 @@ Rows of a group come together, in this order of groups.
 | `route` | `selected <route id> <state generation>`, from the controller's state. Absent before the controller has chosen a route. |
 | `bridges` | `mode on\|off` (`on` unless the bridges toggle wrote `TOR_BRIDGES=off`); `count <n>` (bridge lines in `bridges.env`); `last_refresh <epoch>\|never`. |
 | `update` | `result current\|available\|unknown`; with a cache, `checked_at <epoch>` and `remote_commit <sha>`; with none, `result unknown never-checked`. Only `nice-dns update --check` and `nice-dns update` write the cache. |
+| `helper` | `path <where nice-dns-helper is installed>` (`/usr/libexec/nice-dns-helper` on Linux, `/usr/local/libexec/nice-dns-helper` on macOS); `installed yes\|no` (the file is there and executable; it is never run); `version <v>`, what the current generation recorded after it installed or found the helper (`absent`; `unknown` when there is no generation or it recorded none). The version is the installed file's, whether or not this tree can use it. Actions without a terminal (the GUIs) need it. |
 | `admin` | `url <Pi-hole admin URL>`; when installed, `password_path <file holding the admin password>` — the path, never the password. |
 | `recent` | The last five rows of the controller's journal, oldest first: `recent<TAB><epoch><TAB><target><TAB><result>`. |
 

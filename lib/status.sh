@@ -73,13 +73,15 @@ _nd_st_paths() {
       ND_ST_STATE_DIR="${ND_STATE_DIR:-$HOME/Library/Application Support/nice-dns/controller}"
       ND_ST_RECEIPT="$HOME/Library/Application Support/nice-dns-health/install.tsv"
       ND_ST_SCHEDULE="$HOME/Library/LaunchAgents/org.nice-dns.health.plist"
-      ND_ST_ADMIN_URL="http://172.31.240.250/admin" ;;
+      ND_ST_ADMIN_URL="http://172.31.240.250/admin"
+      ND_ST_HELPER=/usr/local/libexec/nice-dns-helper ;;
     *)
       ND_ST_INSTALL_DIR="$state/nice-dns-install"
       ND_ST_STATE_DIR="${ND_STATE_DIR:-$state/nice-dns/controller}"
       ND_ST_RECEIPT="${XDG_DATA_HOME:-$HOME/.local/share}/nice-dns-health/install.tsv"
       ND_ST_SCHEDULE="$cfg/systemd/user/default.target.wants/nice-dns-health.timer"
-      ND_ST_ADMIN_URL="http://localhost:8880/admin" ;;
+      ND_ST_ADMIN_URL="http://localhost:8880/admin"
+      ND_ST_HELPER=/usr/libexec/nice-dns-helper ;;
   esac
 }
 
@@ -116,7 +118,7 @@ _nd_st_bridges() {
 # tests; a value that is not a plain number is ignored.
 nd_status_rows() {
   local plat="${1:-linux}" now stale_s=300 rc=0 st
-  local gen="" m="" mode last verdict age obs cache r sd
+  local gen="" m="" mode last verdict age obs cache r sd v
   now="${ND_STATUS_NOW:-}"
   _nd_st_epoch "$now" || now="$(date +%s)"
   case "${ND_STATUS_STALE_S:-}" in ''|0*|*[!0-9]*|??????*) ;; *) stale_s="$ND_STATUS_STALE_S" ;; esac
@@ -198,10 +200,11 @@ nd_status_rows() {
   if [ -e "$ND_ST_SCHEDULE" ]; then _nd_st_row controller schedule loaded; else _nd_st_row controller schedule stopped; fi
 
   # obs: the controller's own records, copied as written (control characters
-  # other than the tab separators removed; at most 400 characters a row)
+  # other than the tab separators removed; at most 400 characters a row). The
+  # newline is printed here: BSD cut adds none to a line that has lost it.
   if [ -n "$obs" ] && [ -n "$last" ]; then
     awk -F '\t' '$1 == "obs"' "$obs" | while IFS= read -r r; do
-      printf '%s\n' "$r" | tr -d '\000-\010\012-\037\177' | cut -c1-400
+      printf '%s\n' "$(printf '%s' "$r" | tr -d '\000-\010\012-\037\177' | cut -c1-400)"
     done
   fi
 
@@ -232,6 +235,19 @@ nd_status_rows() {
     _nd_st_row update result unknown unreadable
     _nd_st_row update unreadable "cannot read $(_nd_st_short "$cache")"; rc=2
   fi
+
+  # helper: nice-dns-helper, which actions without a terminal need (Sub-plan
+  # 5). Its file is looked at, never run; the version is what the current
+  # generation recorded after it installed or found the helper.
+  _nd_st_row helper path "$ND_ST_HELPER"
+  if [ -f "${ND_INST_ROOT:-}$ND_ST_HELPER" ] && [ -x "${ND_INST_ROOT:-}$ND_ST_HELPER" ]; then
+    _nd_st_row helper installed yes
+  else
+    _nd_st_row helper installed no
+  fi
+  v=""
+  [ -z "$m" ] || v="$(_nd_st_field "$m" helper)"
+  _nd_st_row helper version "${v:-unknown}"
 
   # admin
   _nd_st_row admin url "$ND_ST_ADMIN_URL"

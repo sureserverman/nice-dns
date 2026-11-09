@@ -1470,6 +1470,32 @@ t_ipv6_profiles_stale_undo_list_is_never_used() {
   done
 }
 
+# A reinstall whose pin fails before the profile step (here at the boot-time
+# service) rolls back without the profile undo: a list an earlier run left
+# is never used (Stage 1 gate review, 2026-11-08: the undo flag is set at the
+# profile step, after root-ops pin-setup, as before root-ops).
+t_ipv6_profiles_early_pin_failure_never_undoes() {
+  local ep
+  ip_select
+  for ep in $IP_EPS; do
+    [ "$(ip_platform "$ep")" = linux ] || continue
+    (
+      dt_world "$ep" resolved; dt_nm_v6_world
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep/early: install: $IP_OUT"
+      printf 'eth-1\tauto\n' >"$FAKE_ROOT/var/lib/nice-dns/dns-owned/ipv6-profiles.run"
+      printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' >"$FAKE/git_head"
+      : >"$FAKE_LOG"
+      printf '%s\n' '^sudo systemctl enable custom-dns-deb\.service$' >"$FAKE/fail"
+      ip_install "$ep"
+      rm -f "$FAKE/fail"
+      assert_nonzero "$IP_RC" "$ep/early: the reinstall fails at the pin: $IP_OUT"
+      assert_eq "" "$(grep -E 'profiles-undo|ipv6-profiles-undo' "$FAKE_LOG")" "$ep/early: the rollback runs no profile undo"
+      assert_eq disabled "$(cat "$FAKE_ROOT/.nm/eth-1/ipv6")" "$ep/early: the earlier install's change stays"
+    ) || exit 1
+  done
+}
+
 t_ipv6_profiles_uninstall_completes_without_nmcli() {
   local ep
   ip_select

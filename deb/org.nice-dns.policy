@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  nice-dns-helper (Sub-plan 5 Task 2.2): the one program a nice-dns install,
+  update or uninstall without a terminal runs through pkexec. The helper
+  checks the root-ops verb and its arguments, then runs the root-held copy of
+  root-ops (/usr/libexec/nice-dns/root-ops). An administrator's password is
+  asked for; it is kept about five minutes (auth_admin_keep).
+  Installed by root-ops install-helper to
+  /usr/share/polkit-1/actions/org.nice-dns.policy; removed by root-ops uninstall.
+-->
+<policyconfig>
+  <vendor>nice-dns</vendor>
+  <vendor_url>https://github.com/sureserverman/nice-dns</vendor_url>
+  <action id="org.nice-dns.helper">
+    <description>Change the system DNS setup for nice-dns</description>
+    <message>Authentication is required for nice-dns to install, update or remove its DNS setup (pin the system resolver, install its packages and services)</message>
+    <defaults>
+      <allow_any>auth_admin_keep</allow_any>
+      <allow_inactive>auth_admin_keep</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/nice-dns-helper</annotate>
+  </action>
+</policyconfig>
