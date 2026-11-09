@@ -42,6 +42,9 @@ pub enum Event {
     Failed(String),
 }
 
+/// How long the output readers get after the child exits.
+const DRAIN: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Start `argv[0]` with `argv[1..]`, stdin closed. Returns at once; a program
 /// that cannot be started is an `Err`, never a panic.
 pub fn spawn<S: AsRef<str>>(argv: &[S]) -> io::Result<Receiver<Event>> {
@@ -60,11 +63,16 @@ pub fn spawn<S: AsRef<str>>(argv: &[S]) -> io::Result<Receiver<Event>> {
     let out = child.stdout.take().map(|p| pump(p, Stream::Stdout, tx.clone()));
     let err = child.stderr.take().map(|p| pump(p, Stream::Stderr, tx.clone()));
     thread::spawn(move || {
-        // Every line is sent before the exit event.
-        for h in [out, err].into_iter().flatten() {
-            let _ = h.join();
+        let waited = child.wait();
+        // The child's lines are sent before the exit event: its pipes are read
+        // to the end. A process it left behind that still holds a pipe would
+        // keep that end away for ever, so the readers get DRAIN, then the exit
+        // is sent regardless.
+        let started = std::time::Instant::now();
+        while [&out, &err].into_iter().flatten().any(|h| !h.is_finished()) && started.elapsed() < DRAIN {
+            thread::sleep(std::time::Duration::from_millis(10));
         }
-        let ev = match child.wait() {
+        let ev = match waited {
             Ok(st) => match (st.code(), st.signal()) {
                 (Some(c), _) => Event::Exit(Exit::Code(c)),
                 (None, Some(s)) => Event::Exit(Exit::Signal(s)),
@@ -217,6 +225,17 @@ mod tests {
         assert!(t.elapsed() < Duration::from_secs(1));
         assert!(rx.try_recv().is_err());
         assert_eq!(collect(rx).last(), Some(&Event::Exit(Exit::Code(0))));
+    }
+
+    #[test]
+    fn runner_a_left_behind_process_holding_the_pipe_does_not_hold_the_exit() {
+        // The shell exits at once; its background sleep keeps stdout open.
+        let started = std::time::Instant::now();
+        let rx = spawn(&["sh", "-c", "echo before; sleep 30 & exit 4"]).unwrap();
+        let events = collect(rx);
+        assert_eq!(events.first(), Some(&Event::Line(Stream::Stdout, "before".into())));
+        assert_eq!(events.last(), Some(&Event::Exit(Exit::Code(4))));
+        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
     }
 
     #[test]

@@ -7,5 +7,6 @@ Exec=nice-dns-gui
 Icon=nice-dns
 Terminal=false
 StartupNotify=true
+StartupWMClass=org.nice_dns.Gui
 Categories=Network;Monitor;
 Keywords=DNS;Tor;Pi-hole;privacy;

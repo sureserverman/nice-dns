@@ -17,11 +17,13 @@ use std::time::Duration;
 use gtk4::{gio, glib};
 use glib::ExitCode;
 use gtk4::prelude::*;
+use adw::prelude::*;
 use libadwaita as adw;
 
 use model::View;
 
-const USAGE: &str = "usage: nice-dns-gui [--check | --version | --screenshot <png> | --run-action <id> --exit]";
+const USAGE: &str =
+    "usage: nice-dns-gui [--check | --version | --screenshot <png> | --run-action <id> --exit | --probe <id>]";
 
 /// The status command's argv: `<nice-dns> status --tsv`, the command found
 /// as `runner::resolve` finds it (PATH first, then where the installer put it).
@@ -61,13 +63,19 @@ fn check(argv: &[String]) -> (i32, String) {
                 ),
             )
         }
-        View::NotInstalled(hint) => (
-            1,
-            match hint {
-                Some(h) => format!("not installed; install with: {h}"),
-                None => "not installed".into(),
-            },
-        ),
+        // Exit 2 with `installed no` is still "not installed", with exit 2 as
+        // status gave it (the contract: 2 wins over 1).
+        View::NotInstalled { hint, unreadable } => {
+            let mut line = "not installed".to_string();
+            if !unreadable.is_empty() {
+                let rows: Vec<String> = unreadable.iter().map(|u| format!("{}: {}", u.group, u.reason)).collect();
+                line = format!("{line}; unreadable: {}", rows.join("; "));
+            }
+            if let Some(h) = hint {
+                line = format!("{line}; install with: {h}");
+            }
+            (if unreadable.is_empty() { 1 } else { 2 }, line)
+        }
         View::Unreadable(s) => {
             let rows: Vec<String> =
                 s.unreadable.iter().map(|u| format!("{}: {}", u.group, u.reason)).collect();
@@ -101,6 +109,9 @@ fn application(unique: bool) -> adw::Application {
 
 /// The window: the status, refreshed every few seconds.
 fn run_window() -> ExitCode {
+    if let Err(code) = display_or_exit() {
+        return code;
+    }
     let app = application(true);
     app.connect_activate(|app| {
         let ui = window::Ui::new(app);
@@ -115,6 +126,9 @@ fn run_window() -> ExitCode {
 /// into `png` and exit (0, or 1 with the reason on stderr). A hook for tests
 /// and proofs; it needs a display (Xvfb will do).
 fn run_screenshot(png: PathBuf) -> ExitCode {
+    if let Err(code) = display_or_exit() {
+        return code;
+    }
     let app = application(false);
     let code = Rc::new(Cell::new(1i32));
     let c = Rc::clone(&code);
@@ -146,6 +160,9 @@ fn run_action(id: String) -> ExitCode {
         eprintln!("nice-dns-gui: '{id}' is not an action that runs a command");
         return ExitCode::from(2);
     }
+    if let Err(code) = display_or_exit() {
+        return code;
+    }
     let app = application(false);
     let code = Rc::new(Cell::new(1i32));
     let c = Rc::clone(&code);
@@ -169,6 +186,128 @@ fn run_action(id: String) -> ExitCode {
     ExitCode::from(code.get().clamp(0, 255))
 }
 
+/// The window and the hooks need a display; without one GTK cannot start.
+fn display_or_exit() -> Result<(), ExitCode> {
+    gtk4::init().map_err(|e| {
+        eprintln!("nice-dns-gui: no display: {e} (the window and the hooks need one; Xvfb will do)");
+        ExitCode::from(2)
+    })
+}
+
+/// Every widget under `w`, `w` first.
+fn walk(w: &gtk4::Widget, f: &mut dyn FnMut(&gtk4::Widget)) {
+    f(w);
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        walk(&c, f);
+        child = c.next_sibling();
+    }
+}
+
+/// What a test reads off the window: the controls (action buttons and the
+/// bridges switch) and how many are disabled, the switch, the open dialog, the
+/// stale labels and how many rows are greyed.
+fn probe_report(ui: &window::Ui, when: &str) -> String {
+    let (mut controls, mut disabled, mut greyed) = (0, 0, 0);
+    let mut switch = "none".to_string();
+    let mut stale = Vec::new();
+    walk(ui.window.upcast_ref(), &mut |w| {
+        let name = w.widget_name();
+        if name == "bridges" || actions::lookup(&name).is_some() {
+            controls += 1;
+            if !w.is_sensitive() {
+                disabled += 1;
+            }
+        }
+        if let Some(sw) = w.downcast_ref::<adw::SwitchRow>() {
+            switch = if sw.is_active() { "on" } else { "off" }.into();
+        } else if w.is::<adw::ActionRow>() && !w.is_sensitive() {
+            greyed += 1;
+        }
+        if let Some(l) = w.downcast_ref::<gtk4::Label>() {
+            if l.has_css_class("warning") && l.text().starts_with("stale") {
+                stale.push(l.text().to_string());
+            }
+        }
+    });
+    let dialog = ui
+        .window
+        .visible_dialog()
+        .and_then(|d| d.downcast::<adw::AlertDialog>().ok())
+        .and_then(|d| d.heading())
+        .map_or("none".to_string(), |h| h.to_string());
+    format!(
+        "{when}: controls={controls} disabled={disabled} switch={switch} greyed={greyed} stale={} dialog={dialog} page={}",
+        if stale.is_empty() { "none".into() } else { stale.join(",") },
+        ui.page_summary()
+    )
+}
+
+/// `--probe <id>`: a test hook for the window's own behaviour. It shows the
+/// status, prints a report, clicks `id` the way a person would (the switch for
+/// `bridges-on`/`bridges-off`, otherwise the action, dialogs included), prints
+/// a report while it runs, clicks Restart again (one action at a time: that
+/// second click must start nothing) and tries to close the window (refused
+/// while an action runs), waits until the action has ended and the
+/// status was read again, prints a last report with the pane's last line, and
+/// exits 0 (3 when it never settles within 60 s). It needs a display.
+fn run_probe(id: String) -> ExitCode {
+    if let Err(code) = display_or_exit() {
+        return code;
+    }
+    let app = application(false);
+    let code = Rc::new(Cell::new(1i32));
+    let c = Rc::clone(&code);
+    app.connect_activate(move |app| {
+        let ui = window::Ui::new(app);
+        let (page, status) = window::read_page();
+        ui.show(page, status);
+        ui.window.present();
+        let (app, c, id) = (app.clone(), Rc::clone(&c), id.clone());
+        glib::timeout_add_local_once(Duration::from_millis(500), move || {
+            println!("{}", probe_report(&ui, "before"));
+            if id == "bridges-on" || id == "bridges-off" {
+                walk(ui.window.upcast_ref(), &mut |w| {
+                    if let Some(sw) = w.downcast_ref::<adw::SwitchRow>() {
+                        sw.set_active(id == "bridges-on");
+                    }
+                });
+            } else {
+                ui.act(&id);
+            }
+            println!("{}", probe_report(&ui, "during"));
+            if ui.is_busy() {
+                ui.act("restart");
+                // Closing while it runs is refused.
+                ui.window.close();
+                println!("close-while-busy: {}", if ui.window.is_visible() { "refused" } else { "closed" });
+            }
+            let started = std::time::Instant::now();
+            glib::timeout_add_local(Duration::from_millis(100), move || {
+                if !ui.settled() && started.elapsed() < Duration::from_secs(60) {
+                    return glib::ControlFlow::Continue;
+                }
+                if ui.settled() {
+                    println!("{}", probe_report(&ui, "after"));
+                    println!("pane: {}", ui.pane.text().lines().last().unwrap_or(""));
+                    c.set(0);
+                } else {
+                    eprintln!("nice-dns-gui: the window did not settle within 60 s");
+                    c.set(3);
+                }
+                if let Some(d) = ui.window.visible_dialog() {
+                    d.force_close();
+                }
+                ui.window.destroy();
+                app.quit();
+                glib::ControlFlow::Break
+            });
+        });
+    });
+    app.run_with_args::<&str>(&[]);
+    ExitCode::from(code.get())
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
@@ -180,6 +319,7 @@ fn main() -> ExitCode {
         ["--check"] => ExitCode::from(run_check()),
         ["--screenshot", png] => run_screenshot(PathBuf::from(png)),
         ["--run-action", id, "--exit"] => run_action(id.to_string()),
+        ["--probe", id] if actions::lookup(id).is_some() => run_probe(id.to_string()),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -212,6 +352,21 @@ mod tests {
         let (code, line) = check(&fake("status-not-installed.tsv", 1));
         assert_eq!(code, 1);
         assert!(line.starts_with("not installed; install with: curl -fsSL "), "{line}");
+    }
+
+    #[test]
+    fn contract_check_not_installed_with_an_unreadable_file_exits_2_and_says_not_installed() {
+        let dir = std::env::temp_dir().join(format!("nice-dns-gui-check-ni-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("ni-unreadable.tsv");
+        let text = include_str!("../../share/fixtures/status-not-installed.tsv");
+        std::fs::write(&f, format!("{text}bridges\tunreadable\t~/x: permission denied\n")).unwrap();
+        let mut argv = fake("-", 2);
+        argv[1] = f.to_string_lossy().into_owned();
+        let (code, line) = check(&argv);
+        assert_eq!(code, 2);
+        assert!(line.starts_with("not installed; unreadable: bridges: ~/x: permission denied; install with: curl "), "{line}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

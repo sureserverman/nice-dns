@@ -11,6 +11,9 @@ use crate::runner::{Event, Exit, Stream};
 pub const CANCELLED: &str = "authorisation cancelled";
 pub const NOT_AUTHORISED: &str = "not authorised";
 
+/// How many of the last output lines are kept for `outcome`.
+const KEEP_LINES: usize = 400;
+
 /// The one line said under an action's output. `id` is the action's id:
 /// `update-check` answers 0 and 10 as the contract does.
 pub fn outcome(id: &str, end: &Event, lines: &[String]) -> String {
@@ -26,6 +29,10 @@ pub fn outcome(id: &str, end: &Event, lines: &[String]) -> String {
                 "up to date (exit 0)".into()
             } else if id == "update-check" && c == 10 {
                 "an update is available (exit 10)".into()
+            } else if id == "update-check" && c == 1 {
+                "unknown (exit 1)".into()
+            } else if id == "update" && c == 11 {
+                "installed, but the check afterwards did not say current (exit 11)".into()
             } else if c == 0 {
                 "finished (exit 0)".into()
             } else {
@@ -41,7 +48,10 @@ pub fn outcome(id: &str, end: &Event, lines: &[String]) -> String {
 /// Whether an action's end counts as success: exit 0, and 10 for
 /// `update-check` (an update is available).
 pub fn succeeded(id: &str, end: &Event) -> bool {
-    matches!(end, Event::Exit(Exit::Code(0))) || (id == "update-check" && matches!(end, Event::Exit(Exit::Code(10))))
+    matches!(end, Event::Exit(Exit::Code(0)))
+        || (id == "update-check" && matches!(end, Event::Exit(Exit::Code(10))))
+        // The update was installed and the stack runs it (the contract's 11).
+        || (id == "update" && matches!(end, Event::Exit(Exit::Code(11))))
 }
 
 pub struct LogPane {
@@ -105,6 +115,8 @@ impl LogPane {
     }
 
     pub fn line(&self, stream: Stream, text: &str) {
+        // A progress bar redraws with \r: show the last state of the line.
+        let text = text.rsplit('\r').find(|t| !t.is_empty()).unwrap_or("");
         let tag = if text.contains(CANCELLED) || text.contains(NOT_AUTHORISED) {
             Some("auth")
         } else if stream == Stream::Stderr {
@@ -112,8 +124,26 @@ impl LogPane {
         } else {
             None
         };
-        self.lines.borrow_mut().push(text.to_string());
+        let mut lines = self.lines.borrow_mut();
+        // The end of the output is what `outcome` and the update offer read;
+        // the pane itself keeps everything.
+        if lines.len() >= KEEP_LINES {
+            lines.remove(0);
+        }
+        lines.push(text.to_string());
+        drop(lines);
         self.append(text, tag);
+    }
+
+    /// The last output line starting with `prefix`.
+    pub fn last_line_with_prefix(&self, prefix: &str) -> Option<String> {
+        self.lines.borrow().iter().rev().find(|l| l.starts_with(prefix)).cloned()
+    }
+
+    pub fn scroll_to_end(&self) {
+        let mark = self.buffer.create_mark(None, &self.buffer.end_iter(), false);
+        self.view.scroll_mark_onscreen(&mark);
+        self.buffer.delete_mark(&mark);
     }
 
     /// The end of the action; returns the line shown.
@@ -137,9 +167,6 @@ impl LogPane {
             Some(t) => self.buffer.insert_with_tags_by_name(&mut end, &format!("{text}\n"), &[t]),
             None => self.buffer.insert(&mut end, &format!("{text}\n")),
         }
-        let mark = self.buffer.create_mark(None, &self.buffer.end_iter(), false);
-        self.view.scroll_mark_onscreen(&mark);
-        self.buffer.delete_mark(&mark);
     }
 }
 
@@ -169,6 +196,10 @@ mod tests {
         assert!(succeeded("update-check", &code(10)));
         assert!(!succeeded("restart", &code(10)));
         assert_eq!(outcome("restart", &code(10), &[]), "failed (exit 10)");
+        assert_eq!(outcome("update-check", &code(1), &[]), "unknown (exit 1)");
+        assert!(outcome("update", &code(11), &[]).starts_with("installed, but"));
+        assert!(succeeded("update", &code(11)));
+        assert!(!succeeded("update-check", &code(11)));
     }
 
     #[test]

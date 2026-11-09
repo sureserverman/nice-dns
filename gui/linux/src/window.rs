@@ -23,6 +23,9 @@ use crate::runner::{self, Event, Exit, Stream};
 /// How often the window reads `nice-dns status --tsv` again.
 pub const REFRESH: Duration = Duration::from_secs(5);
 
+/// How many output lines the pane takes per 50 ms tick.
+const LINES_PER_TICK: usize = 200;
+
 // ---------------------------------------------------------------- description
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,8 +33,9 @@ pub enum Page {
     /// The rows were read (with or without `unreadable` groups).
     Installed(Body),
     /// `install installed no`; Install is offered only when the kept source
-    /// exists, since `nice-dns install` runs from it.
-    NotInstalled { hint: Option<String>, can_install: bool },
+    /// exists, since `nice-dns install` runs from it. `unreadable`: the files
+    /// `status` could not read (exit 2), one line each.
+    NotInstalled { hint: Option<String>, can_install: bool, unreadable: Vec<String> },
     /// The command is missing, failed, or said something the contract does not.
     Error(String),
 }
@@ -114,7 +118,11 @@ fn short(sha: &str) -> &str {
 pub fn describe(view: &View, now: u64, can_install: bool) -> Page {
     match view {
         View::Installed(s) | View::Unreadable(s) => Page::Installed(body(s, now)),
-        View::NotInstalled(hint) => Page::NotInstalled { hint: hint.clone(), can_install },
+        View::NotInstalled { hint, unreadable } => Page::NotInstalled {
+            hint: hint.clone(),
+            can_install,
+            unreadable: unreadable.iter().map(|u| format!("{}: {}", u.group, u.reason)).collect(),
+        },
         View::Error(msg) => Page::Error(format!("nice-dns status did not answer as expected: {msg}")),
     }
 }
@@ -281,7 +289,15 @@ pub fn read_page() -> (Page, Option<Status>) {
     };
     match Command::new(program).args(args).output() {
         Ok(o) => {
-            let view = model::classify(o.status.code(), &String::from_utf8_lossy(&o.stdout));
+            let mut view = model::classify(o.status.code(), &String::from_utf8_lossy(&o.stdout));
+            // The command's own reason (say, a kept source older than
+            // `status`) is on stderr: show its first line with the error.
+            if let View::Error(msg) = &view {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                if let Some(l) = stderr.lines().map(str::trim).find(|l| !l.is_empty()) {
+                    view = View::Error(format!("{msg}: {l}"));
+                }
+            }
             let status = match &view {
                 View::Installed(s) | View::Unreadable(s) => Some(s.clone()),
                 _ => None,
@@ -308,6 +324,8 @@ pub struct Ui {
     shown: RefCell<Option<Page>>,
     pub status: RefCell<Option<Status>>,
     reading: Cell<bool>,
+    /// Bumped when an action ends: a read that began before it is dropped.
+    read_gen: Cell<u64>,
     /// An action is running: buttons and the switch are disabled, one action
     /// at a time.
     busy: Cell<bool>,
@@ -356,6 +374,7 @@ impl Ui {
             shown: RefCell::new(None),
             status: RefCell::new(None),
             reading: Cell::new(false),
+            read_gen: Cell::new(0),
             busy: Cell::new(false),
             headless: RefCell::new(None),
         });
@@ -365,7 +384,40 @@ impl Ui {
                 ui.act("update");
             }
         });
+        // Closing the window would end this process and leave the running
+        // command with no one reading its output, midway through (say) a
+        // reinstall: the window stays until the action ends.
+        let weak = Rc::downgrade(&ui);
+        ui.window.connect_close_request(move |_| match weak.upgrade() {
+            Some(ui) if ui.busy.get() => {
+                ui.toast("An action is running; the window can close when it ends");
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        });
         ui
+    }
+
+    /// The page shown, in one line: `installed`, `not-installed` or
+    /// `error: <message>`.
+    pub fn page_summary(&self) -> String {
+        match self.shown.borrow().as_ref() {
+            Some(Page::Installed(_)) => "installed".into(),
+            Some(Page::NotInstalled { .. }) => "not-installed".into(),
+            Some(Page::Error(m)) => format!("error: {m}"),
+            None => "none".into(),
+        }
+    }
+
+    /// Whether an action is running.
+    pub fn is_busy(&self) -> bool {
+        self.busy.get()
+    }
+
+    /// No action running, no read under way, and a page shown: what a test
+    /// may inspect.
+    pub fn settled(&self) -> bool {
+        !self.busy.get() && !self.reading.get() && self.shown.borrow().is_some()
     }
 
     /// A button, the switch or the banner asked for action `id`. Actions
@@ -380,7 +432,7 @@ impl Ui {
         match id {
             "uninstall" => self.confirm_uninstall(),
             "reinstall" => self.choose_reinstall(),
-            "update" => self.confirm_update(),
+            "update" => self.confirm_update(None),
             _ => self.run(id, None),
         }
     }
@@ -394,6 +446,11 @@ impl Ui {
 
     /// Run action `id` now, streaming its output into the pane.
     pub fn run(self: &Rc<Self>, id: &str, choices: Option<&Choices>) {
+        // Every way in (a button, a dialog's answer, the hook) meets this:
+        // one action at a time.
+        if self.busy.get() {
+            return self.toast("Another action is running");
+        }
         let label = actions::lookup(id).map_or(id, |a| a.label).to_string();
         let argv = match actions::argv(id, choices, runner::resolve) {
             Ok(Some(v)) => v,
@@ -410,19 +467,26 @@ impl Ui {
             Err(e) => return self.end(id, Event::Failed(e.to_string())),
         };
         let (ui, id) = (Rc::clone(self), id.to_string());
-        glib::timeout_add_local(Duration::from_millis(50), move || loop {
-            match rx.try_recv() {
-                Ok(Event::Line(stream, text)) => ui.pane.line(stream, &text),
-                Ok(end) => {
-                    ui.end(&id, end);
-                    return glib::ControlFlow::Break;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    ui.end(&id, Event::Failed("the command's output stopped with no exit".into()));
-                    return glib::ControlFlow::Break;
+        // At most LINES_PER_TICK lines each 50 ms, scrolled once: a chatty
+        // command cannot hold the main loop.
+        glib::timeout_add_local(Duration::from_millis(50), move || {
+            for _ in 0..LINES_PER_TICK {
+                match rx.try_recv() {
+                    Ok(Event::Line(stream, text)) => ui.pane.line(stream, &text),
+                    Ok(end) => {
+                        ui.pane.scroll_to_end();
+                        ui.end(&id, end);
+                        return glib::ControlFlow::Break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        ui.end(&id, Event::Failed("the command's output stopped with no exit".into()));
+                        return glib::ControlFlow::Break;
+                    }
                 }
             }
+            ui.pane.scroll_to_end();
+            glib::ControlFlow::Continue
         });
     }
 
@@ -444,11 +508,15 @@ impl Ui {
             self.toast(&format!("{}: {said}", actions::lookup(id).map_or(id, |a| a.label)));
         }
         // Re-read and redraw everything: a switch the command did not turn
-        // goes back to what the status says.
+        // goes back to what the status says. A read already under way is
+        // from before the action and is dropped.
+        self.read_gen.set(self.read_gen.get() + 1);
         self.shown.borrow_mut().take();
         self.refresh();
         if id == "update-check" && matches!(end, Event::Exit(Exit::Code(10))) {
-            self.confirm_update();
+            // The commit this check found: its `available <commit>` line.
+            let found = self.pane.last_line_with_prefix("available ").map(|l| l["available ".len()..].trim().to_string());
+            self.confirm_update(found);
         }
     }
 
@@ -533,8 +601,10 @@ impl Ui {
         d.present(Some(&self.window));
     }
 
-    fn confirm_update(self: &Rc<Self>) {
-        let commit = self.status.borrow().as_ref().and_then(|s| s.update.remote_commit.clone());
+    /// Ask before `nice-dns update`. `found`: the commit a check just found;
+    /// otherwise the last check's, from the status.
+    fn confirm_update(self: &Rc<Self>, found: Option<String>) {
+        let commit = found.or_else(|| self.status.borrow().as_ref().and_then(|s| s.update.remote_commit.clone()));
         let body = match commit {
             Some(c) => format!(
                 "The branch's commit {} is installed like a reinstall, with the recorded choices. The stack restarts.",
@@ -602,21 +672,30 @@ impl Ui {
                 }
                 self.scroller.set_child(Some(&self.render_body(b)));
             }
-            Page::NotInstalled { hint, can_install } => {
+            Page::NotInstalled { hint, can_install, unreadable } => {
                 self.title.set_subtitle("not installed");
                 self.banner.set_revealed(false);
-                let mut text = "Install it with this line in a terminal:".to_string();
-                if let Some(h) = hint {
-                    text = format!("{text}\n\n{}", glib::markup_escape_text(h));
-                }
                 let page = adw::StatusPage::builder()
                     .icon_name("network-offline-symbolic")
                     .title("nice-dns is not installed")
-                    .description(text)
+                    .description("Install it with this line in a terminal:")
                     .build();
-                if *can_install {
-                    page.set_child(Some(&self.button("install")));
+                let column = gtk::Box::new(gtk::Orientation::Vertical, 12);
+                if let Some(h) = hint {
+                    // Selectable, so it can be copied into a terminal.
+                    let line = gtk::Label::builder().label(h.as_str()).selectable(true).wrap(true).build();
+                    line.add_css_class("monospace");
+                    column.append(&line);
                 }
+                for u in unreadable {
+                    let l = gtk::Label::builder().label(format!("Could not read {u}")).wrap(true).build();
+                    l.add_css_class("error");
+                    column.append(&l);
+                }
+                if *can_install {
+                    column.append(&self.button("install"));
+                }
+                page.set_child(Some(&column));
                 self.scroller.set_child(Some(&page));
             }
             Page::Error(msg) => {
@@ -759,11 +838,17 @@ impl Ui {
             return;
         }
         let ui = Rc::clone(self);
+        let gen = self.read_gen.get();
         glib::spawn_future_local(async move {
             let (page, status) = gio::spawn_blocking(read_page)
                 .await
                 .unwrap_or_else(|_| (Page::Error("the status reader stopped".into()), None));
             ui.reading.set(false);
+            if gen != ui.read_gen.get() {
+                // An action ended while this read ran: what it read may be
+                // from before; read again rather than paint it.
+                return ui.refresh();
+            }
             ui.show(page, status);
         });
     }
@@ -866,9 +951,10 @@ mod tests {
     fn window_not_installed_offers_install_only_with_the_kept_source() {
         let v = model::classify(Some(1), NOT_INSTALLED);
         match describe(&v, NOW, true) {
-            Page::NotInstalled { hint, can_install } => {
+            Page::NotInstalled { hint, can_install, unreadable } => {
                 assert!(hint.unwrap().starts_with("curl "));
                 assert!(can_install);
+                assert!(unreadable.is_empty());
             }
             other => panic!("{other:?}"),
         }
@@ -889,6 +975,18 @@ mod tests {
         let bad = INSTALLED.replacen("bridges\tcount\t7\n", "bridges\tunreadable\t~/x: permission denied\n", 1);
         let b = body_of(page(&bad, 2));
         assert_eq!(b.unreadable, ["bridges: ~/x: permission denied"]);
+    }
+
+    #[test]
+    fn window_not_installed_with_an_unreadable_file_is_still_the_not_installed_page() {
+        let both = format!("{NOT_INSTALLED}bridges\tunreadable\t~/x: permission denied\n");
+        match page(&both, 2) {
+            Page::NotInstalled { hint, unreadable, .. } => {
+                assert!(hint.unwrap().starts_with("curl "));
+                assert_eq!(unreadable, ["bridges: ~/x: permission denied"]);
+            }
+            other => panic!("an exit 2 with installed no shows {other:?}"),
+        }
     }
 
     #[test]

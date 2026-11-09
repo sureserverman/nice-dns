@@ -328,9 +328,12 @@ fn check_schema(first: &str) -> Result<(), ParseError> {
 pub enum View {
     /// Exit 0 with an installed stack.
     Installed(Status),
-    /// Exit 1: nothing is installed; the `install hint` row, when given.
-    NotInstalled(Option<String>),
-    /// Exit 2 with rows: some file `status` reads cannot be read.
+    /// Nothing is installed: exit 1, or exit 2 with `install installed no`
+    /// (the contract's 2 wins over 1) and its `unreadable` rows. `hint` is
+    /// the `install hint` row, when given.
+    NotInstalled { hint: Option<String>, unreadable: Vec<Unreadable> },
+    /// Exit 2 with rows of an installed stack: some file `status` reads
+    /// cannot be read.
     Unreadable(Status),
     /// Anything else: exit 2 with nothing on stdout, another code, a signal,
     /// a refused schema, or rows that contradict the exit code.
@@ -348,7 +351,9 @@ pub fn classify(code: Option<i32>, stdout: &str) -> View {
             Err(e) => View::Error(e.to_string()),
         },
         Some(1) => match parsed() {
-            Ok(s) if s.install.installed == Some(false) => View::NotInstalled(s.install.hint),
+            Ok(s) if s.install.installed == Some(false) => {
+                View::NotInstalled { hint: s.install.hint, unreadable: Vec::new() }
+            }
             Ok(_) => View::Error("status exited 1 but does not say 'install installed no'".into()),
             Err(e) => View::Error(e.to_string()),
         },
@@ -356,6 +361,9 @@ pub fn classify(code: Option<i32>, stdout: &str) -> View {
             View::Error("status exited 2 with nothing on stdout".into())
         }
         Some(2) => match parsed() {
+            Ok(s) if s.install.installed == Some(false) => {
+                View::NotInstalled { hint: s.install.hint, unreadable: s.unreadable }
+            }
             Ok(s) => View::Unreadable(s),
             Err(e) => View::Error(e.to_string()),
         },
@@ -437,7 +445,16 @@ mod tests {
         assert!(s.obs.is_empty());
         let hint = s.install.hint.clone().unwrap();
         assert!(hint.starts_with("curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-deb.sh"));
-        assert_eq!(classify(Some(1), NOT_INSTALLED), View::NotInstalled(Some(hint)));
+        assert_eq!(classify(Some(1), NOT_INSTALLED), View::NotInstalled { hint: Some(hint.clone()), unreadable: vec![] });
+        // Exit 2 with `installed no`: still not installed, with the unreadable rows.
+        let both = format!("{NOT_INSTALLED}bridges\tunreadable\t~/x: permission denied\n");
+        assert_eq!(
+            classify(Some(2), &both),
+            View::NotInstalled {
+                hint: Some(hint),
+                unreadable: vec![Unreadable { group: "bridges".into(), reason: "~/x: permission denied".into() }]
+            }
+        );
     }
 
     #[test]
