@@ -7,22 +7,28 @@
 mod actions;
 mod model;
 mod runner;
+mod window;
 
+use std::cell::Cell;
+use std::path::PathBuf;
 use std::process::Command;
+use std::rc::Rc;
+use std::time::Duration;
 
+use gtk4::{gio, glib};
 use glib::ExitCode;
 use gtk4::prelude::*;
 use libadwaita as adw;
 
 use model::View;
 
-const USAGE: &str = "usage: nice-dns-gui [--check | --version]";
+const USAGE: &str = "usage: nice-dns-gui [--check | --version | --screenshot <png>]";
 
 /// The status command's argv: `<installed nice-dns> status --tsv`.
 ///
 /// `NICE_DNS_GUI_STATUS_CMD`, when set, replaces it, split on whitespace. It
 /// exists for tests and proofs only (a fake status script), not for users.
-fn status_argv() -> Result<Vec<String>, runner::NotFound> {
+pub(crate) fn status_argv() -> Result<Vec<String>, runner::NotFound> {
     if let Some(cmd) = std::env::var_os("NICE_DNS_GUI_STATUS_CMD") {
         return Ok(cmd.to_string_lossy().split_whitespace().map(str::to_string).collect());
     }
@@ -86,20 +92,50 @@ fn run_check() -> i32 {
     code
 }
 
-/// For now a bare window; Task 1.2 replaces it.
+/// The application. The hooks run `unique = false`, so a window already open
+/// in the session is never handed their work.
+fn application(unique: bool) -> adw::Application {
+    let flags = if unique { gio::ApplicationFlags::empty() } else { gio::ApplicationFlags::NON_UNIQUE };
+    adw::Application::builder().application_id("org.nice_dns.Gui").flags(flags).build()
+}
+
+/// The window: the status, refreshed every few seconds.
 fn run_window() -> ExitCode {
-    let app = adw::Application::builder().application_id("org.nice-dns.gui").build();
+    let app = application(true);
     app.connect_activate(|app| {
-        adw::ApplicationWindow::builder()
-            .application(app)
-            .title("nice-dns")
-            .default_width(480)
-            .default_height(360)
-            .build()
-            .present();
+        let ui = window::Ui::new(app);
+        ui.start_refreshing();
+        ui.window.present();
     });
     // GTK is given no arguments: ours were parsed above.
     app.run_with_args::<&str>(&[])
+}
+
+/// `--screenshot <png>`: read the status once, show the window, render it
+/// into `png` and exit (0, or 1 with the reason on stderr). A hook for tests
+/// and proofs; it needs a display (Xvfb will do).
+fn run_screenshot(png: PathBuf) -> ExitCode {
+    let app = application(false);
+    let code = Rc::new(Cell::new(1i32));
+    let c = Rc::clone(&code);
+    app.connect_activate(move |app| {
+        let ui = window::Ui::new(app);
+        let (page, status) = window::read_page();
+        ui.show(page, status);
+        ui.window.present();
+        let (app, c, png) = (app.clone(), Rc::clone(&c), png.clone());
+        // Give the window a frame or two to lay out before rendering it.
+        glib::timeout_add_local_once(Duration::from_millis(800), move || {
+            match ui.save_png(&png) {
+                Ok(()) => c.set(0),
+                Err(e) => eprintln!("nice-dns-gui: screenshot: {e}"),
+            }
+            ui.window.close();
+            app.quit();
+        });
+    });
+    app.run_with_args::<&str>(&[]);
+    ExitCode::from(code.get())
 }
 
 fn main() -> ExitCode {
@@ -111,6 +147,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         ["--check"] => ExitCode::from(run_check()),
+        ["--screenshot", png] => run_screenshot(PathBuf::from(png)),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
