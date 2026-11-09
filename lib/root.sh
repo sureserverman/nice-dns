@@ -220,7 +220,7 @@ nd_root_deb() {
     # root-ops turns a step's own 126 or 127 into 125, so these are pkexec's.
     case "$rc" in
       126) echo "nice-dns: authorisation cancelled" >&2 ;;
-      127) echo "nice-dns: not authorised" >&2 ;;
+      127) echo "nice-dns: not authorised (or no polkit authentication agent could ask for a password)" >&2 ;;
     esac
     return "$rc"
   fi

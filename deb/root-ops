@@ -63,7 +63,15 @@ if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
 fi
 
 ME="root-ops"
-_die() { echo "$ME: $2" >&2; exit "$1"; }
+# _die <status> <message>: a newline, CR or tab in the message (a caller's
+# token) is shown escaped and any other control character as cat -v does, so
+# a refusal stays one line.
+_die() {
+  local m="$2"
+  m="${m//$'\n'/\\n}"; m="${m//$'\r'/\\r}"; m="${m//$'\t'/\\t}"
+  printf '%s: %s\n' "$ME" "$m" | LC_ALL=C cat -v >&2
+  exit "$1"
+}
 # _nd_exit <status>: a step's own 126 or 127 becomes 125, and once the verb
 # and its arguments passed _check a step's own 2 becomes 124, so 2 always
 # means "refused before anything ran" (lib/root.sh retries only that).

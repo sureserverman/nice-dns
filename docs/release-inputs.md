@@ -81,8 +81,10 @@ same user can submit to the runner too; that is accepted (OD-14), since such
 a process can already change the tree root-ops runs. A dismissed dialog is
 `authorisation cancelled` and the install aborts or rolls back as for any
 failed step; a step the helper refuses, or pkexec cannot authorise
-(`not authorised`), runs through sudo when sudo needs no password here, and
-otherwise fails the same way. On macOS it is setuid root and asks nothing;
+(`not authorised`; pkexec gives the same status when no polkit agent can
+ask, as over ssh, and the message says so), runs through sudo when sudo
+needs no password here, and otherwise fails the same way. While root steps
+go through the helper, the sudo keepalive does not run. On macOS it is setuid root and asks nothing;
 it serves only the admin user its owner file names (OD-10). Anything else
 keeps to sudo. An update (`nice-dns update`, a branch reinstall) clones its
 tree under `~/.cache/nice-dns`, so it goes through the helper too.

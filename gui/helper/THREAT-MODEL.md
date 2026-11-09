@@ -181,8 +181,8 @@ the next install refreshes it.
 
 | Order | Check | Exit |
 |---|---|---|
-| 0 | `--version`, `--list-verbs --platform P` (no root, no checks) | 0 |
-| 1 | no NUL/newline in any token; the verb and its fixed-list arguments; `--tree` present and not starting with `-`; `install-helper` files not starting with `-` | 2 |
+| 0 | `--version`, `--help`, `--list-verbs --platform P` (no root, no checks; another `--list-verbs` form exits 2) | 0 |
+| 1 | no NUL/newline in any token; `--tree` before the verb; the verb and its fixed-list arguments; `--tree` present and not starting with `-`; `install-helper` files not starting with `-` | 2 |
 | 2 | caller identity | 1 |
 | 3 | path arguments against the caller's home: tree, `lib/install.sh`, `install-helper` files | 2 |
 | 4 | root-ops trust chain | 3 |
@@ -190,7 +190,8 @@ the next install refreshes it.
 
 Every refusal is prefixed `nice-dns-helper: `; one about a verb or an argument
 names it (an empty argv, a missing `--tree` and a caller refusal say what is
-missing instead).
+missing instead). A token is shown with NUL, newline and other control
+characters escaped, so a refusal is one line.
 
 ## Path grammar
 
