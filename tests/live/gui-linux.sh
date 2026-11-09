@@ -8,7 +8,8 @@
 # release asset and that the owner can use it:
 #
 #   gl_before       snapshot; the cell
-#   gl_install      nice-dns install from an archive of HEAD: the program,
+#   gl_install      nice-dns install from a clone of HEAD (a git bundle, so a
+#                   clean commit is recorded): the program,
 #                   the launcher (desktop-file-validate) and the icon are
 #                   there; `nice-dns-gui --check` over ssh exits 0 and names
 #                   the generation
@@ -33,12 +34,12 @@
 gl_plan() {
   cat <<'EOF'
 gl_before        snapshot the target, record its proxy as the cell
-gl_install       nice-dns install from an archive of HEAD: nice-dns-gui, its launcher and icon are installed; --check exits 0 naming the generation
+gl_install       nice-dns install from a clone of HEAD: nice-dns-gui, its launcher and icon are installed; --check exits 0 naming the generation
 gl_screenshot    nice-dns-gui --screenshot in the user's graphical session writes a PNG; the run fetches it
 gl_restart       nice-dns-gui --run-action restart --exit in the session returns 0; DNS answers
 gl_update_check  nice-dns-gui --run-action update-check --exit in the session returns 0 or 10
 gl_uninstall     nice-dns uninstall removes the program, the launcher, the icon and the files; host DNS given back
-gl_final         nice-dns install from an archive of HEAD: the GUI and the stack are back
+gl_final         nice-dns install from a clone of HEAD: the GUI and the stack are back
 gl_privacy       no bridge material, session or hash in the evidence
 gl_receipt       assemble and verify the gui-linux receipt
 EOF
@@ -56,6 +57,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     for m in screenshot restart update-check; do
       grep -q "gui-session needs --mode .*$m" "$here/target.sh" || { echo "dry run: gui-session has no mode $m" >&2; exit 1; }
     done
+    grep -q '^      install-git)' "$here/target.sh" || { echo "dry run: target.sh command has no mode install-git" >&2; exit 1; }
     grep -qx "live	gui-linux	tests/live/gui-linux.sh	live" "$here/../manifests/groups.tsv" || { echo "dry run: the group is not registered" >&2; exit 1; }
     [ -f "$here/../manifests/gui-linux.tsv" ] || { echo "dry run: no receipt manifest" >&2; exit 1; }
     grep -q "^RECEIPTS=.* gui-linux" "$here/../reports/verify.sh" || { echo "dry run: verify.sh does not know the receipt" >&2; exit 1; }
@@ -134,7 +136,10 @@ gl_before() {
 gl_install_step() {
   local plat="$1" a="$2" label="$3" d proxy
   d="$(il_dir "$a")"; proxy="$(il_cell "$a" proxy)"
-  gl_command "$a" "$label" install --cell "$proxy/standard" --source-sha "$(il_cell "$a" source_sha)" \
+  # From a clone of HEAD (a git bundle), so the install records a clean
+  # commit and the update check can answer 0 or 10 (an archive records an
+  # unknown commit, which the contract answers with 1).
+  gl_command "$a" "$label" install-git --cell "$proxy/standard" --source-sha "$(il_cell "$a" source_sha)" \
     || fail "nice-dns install ($label) failed: $(tail -n 20 "$d/cmd-$label.log")"
   assert_eq "" "$(grep 'GUI not installed' "$d/cmd-$label.log")" "$label: the install installed the GUI"
   il_report "$a" "after-$label" || fail "lifecycle-report"

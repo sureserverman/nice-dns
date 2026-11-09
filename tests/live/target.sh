@@ -370,12 +370,15 @@ fi
 if [ "$op" = set-tunables ]; then case "$i_mode" in fast|default) ;; *) die "set-tunables needs --mode fast|default" ;; esac; fi
 if [ "$op" = command ]; then
   case "$i_mode" in
-    install)
-      case "$i_cell" in haproxy/standard|socat/standard) ;; *) die "command --mode install needs --cell haproxy|socat/standard" ;; esac
-      [[ "$i_sha" =~ ^[0-9a-f]{40}$ ]] || die "command --mode install needs --source-sha <40-hex commit>"
-      [ "$(git -C "$ND_CHECKOUT" cat-file -t "$i_sha" 2>/dev/null)" = commit ] || die "--source-sha $i_sha is not a commit in $ND_CHECKOUT" ;;
+    install|install-git)
+      case "$i_cell" in haproxy/standard|socat/standard) ;; *) die "command --mode $i_mode needs --cell haproxy|socat/standard" ;; esac
+      [[ "$i_sha" =~ ^[0-9a-f]{40}$ ]] || die "command --mode $i_mode needs --source-sha <40-hex commit>"
+      [ "$(git -C "$ND_CHECKOUT" cat-file -t "$i_sha" 2>/dev/null)" = commit ] || die "--source-sha $i_sha is not a commit in $ND_CHECKOUT"
+      # install-git (Sub-plan 6 Task 2.3) sends a git bundle of HEAD, so the
+      # install records a clean commit: only HEAD can be bundled this way.
+      [ "$i_mode" = install ] || [ "$(git -C "$ND_CHECKOUT" rev-parse HEAD)" = "$i_sha" ] || die "command --mode install-git needs --source-sha to be HEAD" ;;
     restart|reinstall|uninstall|reinstall-helper|uninstall-helper|bridges-on|bridges-off|status) [ -z "$i_cell$i_sha" ] || die "--cell/--source-sha are only for command --mode install" ;;
-    *) die "command needs --mode install|restart|reinstall|uninstall|reinstall-helper|uninstall-helper|bridges-on|bridges-off|status" ;;
+    *) die "command needs --mode install|install-git|restart|reinstall|uninstall|reinstall-helper|uninstall-helper|bridges-on|bridges-off|status" ;;
   esac
 fi
 
@@ -602,7 +605,9 @@ remote_run() {
 build_payload() {
   if [ "$op" = collect ]; then remote_bundle || return 1; fi
   case "$op" in install-cell|uninstall-cell|install-controller|install-agent|arm-prepare) source_bundle || return 1 ;; esac
-  if [ "$op" = command ] && [ -n "$i_sha" ]; then source_bundle || return 1; fi
+  if [ "$op" = command ] && [ -n "$i_sha" ]; then
+    if [ "$i_mode" = install-git ]; then git_bundle || return 1; else source_bundle || return 1; fi
+  fi
   if [ "$op" = build-proxy ]; then proxy_bundle || return 1; fi
   case "$op" in install-cell|uninstall-cell) [ -z "$i_hsha" ] || hardened_bundle || return 1 ;; esac
   remote_script
@@ -630,6 +635,20 @@ source_bundle() {
   printf '%s\n' 'ND_SOURCE_TGZ=$(mktemp "${TMPDIR:-/tmp}/nice-dns-source.XXXXXX") || exit 1' \
     "{ base64 -d 2>/dev/null || base64 -D; } >\"\$ND_SOURCE_TGZ\" <<'$BUNDLE_EOF'"
   ( set -o pipefail; git -C "$ND_CHECKOUT" archive --format=tar "$i_sha" | gzip -9 | base64 ) || return 1
+  printf '%s\n' "$BUNDLE_EOF"
+}
+
+git_bundle() {
+  # nice-dns as a git bundle of HEAD (the commit, its history), base64, into
+  # ND_GIT_BUNDLE: a clone of it is a clean checkout of that commit.
+  local b
+  b="$(mktemp "${TMPDIR:-/tmp}/nice-dns-bundle.XXXXXX")" || return 1
+  git -C "$ND_CHECKOUT" bundle create "$b" HEAD >/dev/null 2>&1 || { rm -f "$b"; return 1; }
+  # shellcheck disable=SC2016 # remote shell text, expanded on the target
+  printf '%s\n' 'ND_GIT_BUNDLE=$(mktemp "${TMPDIR:-/tmp}/nice-dns-bundle.XXXXXX") || exit 1' \
+    "{ base64 -d 2>/dev/null || base64 -D; } >\"\$ND_GIT_BUNDLE\" <<'$BUNDLE_EOF'"
+  base64 <"$b" || { rm -f "$b"; return 1; }
+  rm -f "$b"
   printf '%s\n' "$BUNDLE_EOF"
 }
 
@@ -1885,6 +1904,16 @@ case "$NICE_DNS_OP" in
         rm -f "$ND_SOURCE_TGZ"
         cli="$w/nice-dns/nice-dns"
         set -- install "$NICE_DNS_PROXY" ;;
+      install-git)
+        mac_room || exit 2
+        [ -s "${ND_GIT_BUNDLE:-}" ] || { echo "install-git without the nice-dns bundle" >&2; exit 2; }
+        w=$(mktemp -d "$HOME/.nice-dns-harness-install.XXXXXX") || exit 1
+        trap 'rm -rf "$w"' EXIT
+        git clone -q "$ND_GIT_BUNDLE" "$w/nice-dns" </dev/null || exit 1
+        rm -f "$ND_GIT_BUNDLE"
+        [ "$(git -C "$w/nice-dns" rev-parse HEAD)" = "$NICE_DNS_SOURCE_SHA" ] || { echo "the bundle's HEAD is not $NICE_DNS_SOURCE_SHA" >&2; exit 2; }
+        cli="$w/nice-dns/nice-dns"
+        set -- install "$NICE_DNS_PROXY" ;;
       reinstall|reinstall-helper) mac_room || exit 2; set -- reinstall --local ;;
       uninstall-helper) set -- uninstall ;;
       bridges-on|bridges-off) set -- bridges "${NICE_DNS_MODE#bridges-}" ;;
@@ -2319,7 +2348,7 @@ case "$op" in
     elif [ "$op" = mark-state ]; then
       remote_run "NICE_DNS_OP=mark-state NICE_DNS_RUN_ID=$RUN_ID"; rc=$?
     elif [ "$op" = command ]; then
-      remote_run "NICE_DNS_OP=command NICE_DNS_MODE=$i_mode NICE_DNS_PROXY=${i_cell%/*}"; rc=$?
+      remote_run "NICE_DNS_OP=command NICE_DNS_MODE=$i_mode NICE_DNS_PROXY=${i_cell%/*} NICE_DNS_SOURCE_SHA=$i_sha"; rc=$?
     elif [ "$op" = capture-dns ]; then
       remote_run "NICE_DNS_OP=capture-dns NICE_DNS_COUNT=$c_count"; rc=$?
     elif [ "$op" = restore ]; then
