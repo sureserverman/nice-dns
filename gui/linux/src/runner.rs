@@ -128,6 +128,23 @@ pub fn resolve_installed(name: &str) -> Result<PathBuf, NotFound> {
     resolve_installed_in(name, &home, state.as_deref())
 }
 
+/// The command `name` the GUI runs: the first on `PATH`, as a terminal in the
+/// same session would find it, else where the installer put it
+/// ([`resolve_installed`]). The error names the installer's primary path.
+pub fn resolve(name: &str) -> Result<PathBuf, NotFound> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    resolve_in_path(name, &path).map_or_else(|| resolve_installed(name), Ok)
+}
+
+/// The first executable `name` in the `PATH` value `path`; empty entries and
+/// relative directories are skipped, never read as the current directory.
+pub fn resolve_in_path(name: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .filter(|d| d.is_absolute())
+        .map(|d| d.join(name))
+        .find(|p| is_executable(p))
+}
+
 /// [`resolve_installed`] with HOME and XDG_STATE_HOME given; an empty
 /// XDG_STATE_HOME counts as unset, as `${XDG_STATE_HOME:-...}` does.
 pub fn resolve_installed_in(name: &str, home: &Path, xdg_state_home: Option<&Path>) -> Result<PathBuf, NotFound> {
@@ -222,6 +239,22 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn runner_resolve_in_path_takes_the_first_executable_and_skips_relative_entries() {
+        let base = std::env::temp_dir().join(format!("nice-dns-gui-path-{}", std::process::id()));
+        let (a, b) = (base.join("a"), base.join("b"));
+        for d in [&a, &b] {
+            fs::create_dir_all(d).unwrap();
+        }
+        fs::write(a.join("nice-dns"), "#!/bin/sh\n").unwrap(); // not executable
+        fs::write(b.join("nice-dns"), "#!/bin/sh\n").unwrap();
+        fs::set_permissions(b.join("nice-dns"), fs::Permissions::from_mode(0o755)).unwrap();
+        let path = std::env::join_paths([Path::new("rel"), &a, &b]).unwrap();
+        assert_eq!(resolve_in_path("nice-dns", &path), Some(b.join("nice-dns")));
+        assert_eq!(resolve_in_path("nice-dns-health", &path), None);
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

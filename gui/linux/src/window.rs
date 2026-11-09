@@ -15,8 +15,10 @@ use gtk4 as gtk;
 use gtk::{gio, glib};
 use libadwaita as adw;
 
-use crate::actions;
+use crate::actions::{self, Choices};
+use crate::log_pane::{self, LogPane};
 use crate::model::{self, Moment, Stale, Status, UpdateResult, View};
+use crate::runner::{self, Event, Exit, Stream};
 
 /// How often the window reads `nice-dns status --tsv` again.
 pub const REFRESH: Duration = Duration::from_secs(5);
@@ -229,7 +231,6 @@ fn body(s: &Status, now: u64) -> Body {
         unreadable: s.unreadable.iter().map(|u| format!("{}: {}", u.group, u.reason)).collect(),
         sections: vec![
             section("containers", "Containers", stale_note.clone(), greyed, containers, vec![]),
-            section("observations", "Observations", stale_note.clone(), greyed, observations, vec![]),
             section("bridges", "Bridges", bridges_note, false, vec![Row {
                 title: "Use Tor bridges".into(),
                 subtitle: bridges_sub,
@@ -238,14 +239,15 @@ fn body(s: &Status, now: u64) -> Body {
             section(
                 "controller",
                 "Health controller",
-                stale_note,
+                stale_note.clone(),
                 greyed,
                 controller,
                 vec!["health-run", "health-start", "health-stop", "failures"],
             ),
-            section("recent", "Recent actions", None, false, recent, vec![]),
             section("installed", "Installed", None, false, installed, vec!["update-check", "restart", "reinstall", "uninstall"]),
             section("admin", "Pi-hole admin", None, false, admin, vec!["open-admin", "show-password-path"]),
+            section("recent", "Recent actions", None, false, recent, vec![]),
+            section("observations", "Observations", stale_note, greyed, observations, vec![]),
         ],
     }
 }
@@ -292,8 +294,8 @@ pub fn read_page() -> (Page, Option<Status>) {
 
 // ------------------------------------------------------------------- widgets
 
-/// What a button or the switch asks for: an action id from the table.
-pub type OnAction = Rc<dyn Fn(&str)>;
+/// Called with the action's exit status when `--run-action` ran it.
+pub type OnDone = Rc<dyn Fn(i32)>;
 
 pub struct Ui {
     pub window: adw::ApplicationWindow,
@@ -301,14 +303,16 @@ pub struct Ui {
     banner: adw::Banner,
     toasts: adw::ToastOverlay,
     scroller: gtk::ScrolledWindow,
-    /// Where the log pane goes (Task 1.3).
-    pub bottom: gtk::Box,
+    /// The running or last action's output.
+    pub pane: LogPane,
     shown: RefCell<Option<Page>>,
     pub status: RefCell<Option<Status>>,
     reading: Cell<bool>,
-    /// Buttons and the switch, disabled while an action runs.
-    pub busy: Cell<bool>,
-    on_action: RefCell<Option<OnAction>>,
+    /// An action is running: buttons and the switch are disabled, one action
+    /// at a time.
+    busy: Cell<bool>,
+    /// Set by `--run-action`: no dialogs, and this is told the exit status.
+    headless: RefCell<Option<OnDone>>,
 }
 
 impl Ui {
@@ -321,11 +325,11 @@ impl Ui {
         banner.set_button_label(Some("Apply"));
 
         let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
-        let bottom = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let pane = LogPane::new();
         let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
         column.append(&banner);
         column.append(&scroller);
-        column.append(&bottom);
+        column.append(&pane.widget);
 
         let toasts = adw::ToastOverlay::new();
         toasts.set_child(Some(&column));
@@ -348,12 +352,12 @@ impl Ui {
             banner,
             toasts,
             scroller,
-            bottom,
+            pane,
             shown: RefCell::new(None),
             status: RefCell::new(None),
             reading: Cell::new(false),
             busy: Cell::new(false),
-            on_action: RefCell::new(None),
+            headless: RefCell::new(None),
         });
         let weak = Rc::downgrade(&ui);
         ui.banner.connect_button_clicked(move |_| {
@@ -364,18 +368,191 @@ impl Ui {
         ui
     }
 
-    /// Who handles a button: Task 1.3's runner. Until one is set, only the
-    /// two actions that run nothing work.
-    pub fn set_on_action(&self, f: OnAction) {
-        *self.on_action.borrow_mut() = Some(f);
+    /// A button, the switch or the banner asked for action `id`. Actions
+    /// that change the install ask first; the rest run at once.
+    pub fn act(self: &Rc<Self>, id: &str) {
+        if matches!(id, "open-admin" | "show-password-path") {
+            return self.act_local(id);
+        }
+        if self.busy.get() {
+            return self.toast("Another action is running");
+        }
+        match id {
+            "uninstall" => self.confirm_uninstall(),
+            "reinstall" => self.choose_reinstall(),
+            "update" => self.confirm_update(),
+            _ => self.run(id, None),
+        }
     }
 
-    pub fn act(&self, id: &str) {
-        let handler = self.on_action.borrow().clone();
-        match handler {
-            Some(f) => f(id),
-            None => self.act_local(id),
+    /// `--run-action`: run `id` with no dialog (reinstall keeps the recorded
+    /// choices) and call `done` with its exit status.
+    pub fn run_headless(self: &Rc<Self>, id: &str, done: OnDone) {
+        *self.headless.borrow_mut() = Some(done);
+        self.run(id, None);
+    }
+
+    /// Run action `id` now, streaming its output into the pane.
+    pub fn run(self: &Rc<Self>, id: &str, choices: Option<&Choices>) {
+        let label = actions::lookup(id).map_or(id, |a| a.label).to_string();
+        let argv = match actions::argv(id, choices, runner::resolve) {
+            Ok(Some(v)) => v,
+            Ok(None) => return self.act_local(id),
+            Err(e) => {
+                self.pane.start(&label, &[]);
+                return self.end(id, Event::Failed(e));
+            }
+        };
+        self.set_busy(true);
+        self.pane.start(&label, &argv);
+        let rx = match runner::spawn(&argv) {
+            Ok(rx) => rx,
+            Err(e) => return self.end(id, Event::Failed(e.to_string())),
+        };
+        let (ui, id) = (Rc::clone(self), id.to_string());
+        glib::timeout_add_local(Duration::from_millis(50), move || loop {
+            match rx.try_recv() {
+                Ok(Event::Line(stream, text)) => ui.pane.line(stream, &text),
+                Ok(end) => {
+                    ui.end(&id, end);
+                    return glib::ControlFlow::Break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    ui.end(&id, Event::Failed("the command's output stopped with no exit".into()));
+                    return glib::ControlFlow::Break;
+                }
+            }
+        });
+    }
+
+    fn end(self: &Rc<Self>, id: &str, end: Event) {
+        if let Event::Failed(msg) = &end {
+            self.pane.line(Stream::Stderr, msg);
         }
+        let said = self.pane.finish(id, &end);
+        self.set_busy(false);
+        let done = self.headless.borrow_mut().take();
+        if let Some(done) = done {
+            return done(match end {
+                Event::Exit(Exit::Code(c)) => c,
+                Event::Exit(Exit::Signal(s)) => 128 + s,
+                _ => 1,
+            });
+        }
+        if !log_pane::succeeded(id, &end) {
+            self.toast(&format!("{}: {said}", actions::lookup(id).map_or(id, |a| a.label)));
+        }
+        // Re-read and redraw everything: a switch the command did not turn
+        // goes back to what the status says.
+        self.shown.borrow_mut().take();
+        self.refresh();
+        if id == "update-check" && matches!(end, Event::Exit(Exit::Code(10))) {
+            self.confirm_update();
+        }
+    }
+
+    fn set_busy(self: &Rc<Self>, busy: bool) {
+        self.busy.set(busy);
+        let page = self.shown.borrow_mut().take();
+        if let Some(page) = page {
+            let status = self.status.borrow().clone();
+            self.show(page, status);
+        }
+    }
+
+    fn confirm_uninstall(self: &Rc<Self>) {
+        let d = adw::AlertDialog::new(
+            Some("Uninstall nice-dns?"),
+            Some(
+                "This removes the stack and what it keeps (Tor state, the Pi-hole lists, \
+                 the admin password) and the nice-dns command, and gives DNS back to the \
+                 system. Type uninstall to go ahead.",
+            ),
+        );
+        let entry = gtk::Entry::builder().placeholder_text("uninstall").build();
+        d.set_extra_child(Some(&entry));
+        d.add_responses(&[("cancel", "Cancel"), ("uninstall", "Uninstall")]);
+        d.set_response_appearance("uninstall", adw::ResponseAppearance::Destructive);
+        d.set_response_enabled("uninstall", false);
+        d.set_close_response("cancel");
+        let dd = d.clone();
+        entry.connect_changed(move |e| dd.set_response_enabled("uninstall", e.text() == "uninstall"));
+        let ui = Rc::clone(self);
+        d.connect_response(None, move |_, r| {
+            if r == "uninstall" {
+                ui.run("uninstall", None);
+            }
+        });
+        d.present(Some(&self.window));
+    }
+
+    fn choose_reinstall(self: &Rc<Self>) {
+        let rec = self.status.borrow().as_ref().map(|s| s.install.clone()).unwrap_or_default();
+        let variants = ["haproxy", "socat"];
+        let flavours = ["standard", "hardened"];
+        let pick = |list: &[&str], v: &Option<String>| {
+            v.as_deref().and_then(|v| list.iter().position(|x| *x == v)).unwrap_or(0) as u32
+        };
+        let variant = gtk::DropDown::from_strings(&variants);
+        variant.set_selected(pick(&variants, &rec.variant));
+        let flavour = gtk::DropDown::from_strings(&flavours);
+        flavour.set_selected(pick(&flavours, &rec.pihole));
+        let branch = gtk::Entry::builder().text(rec.branch.clone().unwrap_or_else(|| "main".into())).build();
+        let grid = gtk::Grid::builder().row_spacing(6).column_spacing(12).build();
+        for (i, (name, w)) in [("Proxy", variant.upcast_ref::<gtk::Widget>()), ("Pi-hole", flavour.upcast_ref()), ("Branch", branch.upcast_ref())]
+            .into_iter()
+            .enumerate()
+        {
+            grid.attach(&gtk::Label::builder().label(name).xalign(0.0).build(), 0, i as i32, 1, 1);
+            grid.attach(w, 1, i as i32, 1, 1);
+        }
+        let d = adw::AlertDialog::new(
+            Some("Reinstall nice-dns?"),
+            Some("The new stack is prepared first; the running one is replaced only when it is ready, and comes back if anything fails."),
+        );
+        d.set_extra_child(Some(&grid));
+        d.add_responses(&[("cancel", "Cancel"), ("reinstall", "Reinstall")]);
+        d.set_response_appearance("reinstall", adw::ResponseAppearance::Suggested);
+        d.set_close_response("cancel");
+        let ui = Rc::clone(self);
+        d.connect_response(None, move |_, r| {
+            if r != "reinstall" {
+                return;
+            }
+            let c = Choices {
+                variant: variants[variant.selected() as usize % variants.len()].into(),
+                pihole: flavours[flavour.selected() as usize % flavours.len()].into(),
+                branch: branch.text().to_string(),
+            };
+            match c.words() {
+                Ok(_) => ui.run("reinstall", Some(&c)),
+                Err(e) => ui.toast(&format!("Not reinstalled: {e}")),
+            }
+        });
+        d.present(Some(&self.window));
+    }
+
+    fn confirm_update(self: &Rc<Self>) {
+        let commit = self.status.borrow().as_ref().and_then(|s| s.update.remote_commit.clone());
+        let body = match commit {
+            Some(c) => format!(
+                "The branch's commit {} is installed like a reinstall, with the recorded choices. The stack restarts.",
+                short(&c)
+            ),
+            None => "The branch's newest commit is installed like a reinstall, with the recorded choices. The stack restarts.".into(),
+        };
+        let d = adw::AlertDialog::new(Some("Install the update?"), Some(&body));
+        d.add_responses(&[("cancel", "Not now"), ("update", "Install")]);
+        d.set_response_appearance("update", adw::ResponseAppearance::Suggested);
+        d.set_close_response("cancel");
+        let ui = Rc::clone(self);
+        d.connect_response(None, move |_, r| {
+            if r == "update" {
+                ui.run("update", None);
+            }
+        });
+        d.present(Some(&self.window));
     }
 
     /// The actions that run no command: the admin page and the password path.
@@ -651,7 +828,8 @@ mod tests {
     fn window_installed_fixture_shows_every_section_fresh() {
         let b = body_of(page(INSTALLED, 0));
         let ids: Vec<_> = b.sections.iter().map(|s| s.id).collect();
-        assert_eq!(ids, ["containers", "observations", "bridges", "controller", "recent", "installed", "admin"]);
+        // What a person acts on first; the long observation list last.
+        assert_eq!(ids, ["containers", "bridges", "controller", "installed", "admin", "recent", "observations"]);
         assert!(b.sections.iter().all(|s| !s.greyed), "a fresh controller greys nothing");
         assert!(b.subtitle.starts_with("generation 20261109T180318Z-nogit0000000 · socat"), "{}", b.subtitle);
         let c = section(&b, "containers");

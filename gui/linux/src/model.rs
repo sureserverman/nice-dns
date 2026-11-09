@@ -183,7 +183,9 @@ pub struct Status {
 }
 
 impl Status {
-    /// The `unreadable` reasons of one group, in order.
+    /// The `unreadable` reasons of one group, in order. The window lists every
+    /// unreadable row at once; the contract tests read them per group.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn unreadable_in<'a>(&'a self, group: &'a str) -> impl Iterator<Item = &'a str> + 'a {
         self.unreadable
             .iter()

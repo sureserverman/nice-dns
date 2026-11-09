@@ -5,7 +5,10 @@
 //! The command words are the program (`nice-dns` or `nice-dns-health`) and its
 //! arguments, space-separated; `-` marks an action that runs no subprocess.
 
+use std::path::PathBuf;
 use std::sync::OnceLock;
+
+use crate::runner::NotFound;
 
 const TABLE: &str = include_str!("../../share/actions.tsv");
 
@@ -80,9 +83,61 @@ pub fn lookup(id: &str) -> Option<&'static Action<'static>> {
     all().iter().find(|a| a.id == id)
 }
 
+/// The reinstall dialog's choices, prefilled from `status`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Choices {
+    pub variant: String,
+    pub pihole: String,
+    pub branch: String,
+}
+
+impl Choices {
+    /// The words `nice-dns reinstall` takes for these choices, or why they
+    /// cannot be passed (an unknown variant or flavour, an empty branch, or one
+    /// that looks like an option).
+    pub fn words(&self) -> Result<Vec<String>, String> {
+        if !matches!(self.variant.as_str(), "haproxy" | "socat") {
+            return Err(format!("unknown proxy '{}'", self.variant));
+        }
+        let flavour = match self.pihole.as_str() {
+            "standard" => "--standard",
+            "hardened" => "--hardened",
+            other => return Err(format!("unknown Pi-hole flavour '{other}'")),
+        };
+        let b = self.branch.trim();
+        if b.is_empty() || b.starts_with('-') || b.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err(format!("'{}' is not a branch name", self.branch));
+        }
+        Ok(vec![self.variant.clone(), flavour.into(), "--branch".into(), b.into()])
+    }
+}
+
+/// The argv that runs action `id`: its program found by `resolve`, then the
+/// table's words, and for `reinstall` with `choices` those choices. `Ok(None)`
+/// for an action that runs no command.
+pub fn argv(
+    id: &str,
+    choices: Option<&Choices>,
+    resolve: impl Fn(&str) -> Result<PathBuf, NotFound>,
+) -> Result<Option<Vec<String>>, String> {
+    let a = lookup(id).ok_or_else(|| format!("no action '{id}'"))?;
+    let Some(program) = a.program else { return Ok(None) };
+    let path = resolve(program).map_err(|nf| format!("{program} is not installed: looked for {}", nf.primary.display()))?;
+    let mut v = vec![path.to_string_lossy().into_owned()];
+    v.extend(a.args.iter().map(|w| w.to_string()));
+    if let (Some(c), "reinstall") = (choices, id) {
+        v.extend(c.words()?);
+    }
+    Ok(Some(v))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn at_bin(name: &str) -> Result<PathBuf, NotFound> {
+        Ok(PathBuf::from("/h/.local/bin").join(name))
+    }
 
     fn argv(id: &str) -> Vec<&'static str> {
         let a = lookup(id).unwrap_or_else(|| panic!("no action {id}"));
@@ -139,6 +194,41 @@ mod tests {
         assert!(all().iter().filter(|a| a.id != "install").all(|a| a.needs_installed));
         assert_eq!(lookup("bridges-off").unwrap().label, "Turn bridges off");
         assert_eq!(lookup("nope"), None);
+    }
+
+    #[test]
+    fn actions_argv_runs_the_resolved_program_with_the_table_words() {
+        let run = |id| super::argv(id, None, at_bin).unwrap().unwrap();
+        assert_eq!(run("bridges-off"), ["/h/.local/bin/nice-dns", "bridges", "off"]);
+        assert_eq!(run("bridges-on"), ["/h/.local/bin/nice-dns", "bridges", "on"]);
+        assert_eq!(run("restart"), ["/h/.local/bin/nice-dns", "restart"]);
+        assert_eq!(run("health-start"), ["/h/.local/bin/nice-dns-health", "start"]);
+        assert_eq!(super::argv("open-admin", None, at_bin).unwrap(), None);
+        let missing = super::argv("restart", None, |n| Err(NotFound { primary: PathBuf::from("/h/.local/bin").join(n) }));
+        assert_eq!(missing.unwrap_err(), "nice-dns is not installed: looked for /h/.local/bin/nice-dns");
+        assert!(super::argv("nope", None, at_bin).is_err());
+    }
+
+    #[test]
+    fn actions_reinstall_passes_the_chosen_variant_flavour_and_branch() {
+        let c = Choices { variant: "socat".into(), pihole: "hardened".into(), branch: "main".into() };
+        assert_eq!(
+            super::argv("reinstall", Some(&c), at_bin).unwrap().unwrap(),
+            ["/h/.local/bin/nice-dns", "reinstall", "socat", "--hardened", "--branch", "main"]
+        );
+        let std = Choices { pihole: "standard".into(), ..c.clone() };
+        assert_eq!(std.words().unwrap()[1], "--standard");
+        for bad in [
+            Choices { variant: "tor".into(), ..c.clone() },
+            Choices { pihole: "extra".into(), ..c.clone() },
+            Choices { branch: "--local".into(), ..c.clone() },
+            Choices { branch: "a b".into(), ..c.clone() },
+            Choices { branch: " ".into(), ..c.clone() },
+        ] {
+            assert!(super::argv("reinstall", Some(&bad), at_bin).is_err(), "{bad:?}");
+        }
+        // Without choices reinstall uses the recorded ones.
+        assert_eq!(super::argv("reinstall", None, at_bin).unwrap().unwrap(), ["/h/.local/bin/nice-dns", "reinstall"]);
     }
 
     #[test]

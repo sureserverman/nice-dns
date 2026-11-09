@@ -1,10 +1,9 @@
 //! nice-dns-gui: the GTK4/libadwaita desktop GUI for nice-dns on Linux. It
 //! reads only the `nice-dns` command contract (docs/cli-contract.md).
 
-// The window (Task 1.2) and the buttons (Task 1.3) use the rest of these.
-#![allow(dead_code)]
 
 mod actions;
+mod log_pane;
 mod model;
 mod runner;
 mod window;
@@ -22,9 +21,10 @@ use libadwaita as adw;
 
 use model::View;
 
-const USAGE: &str = "usage: nice-dns-gui [--check | --version | --screenshot <png>]";
+const USAGE: &str = "usage: nice-dns-gui [--check | --version | --screenshot <png> | --run-action <id> --exit]";
 
-/// The status command's argv: `<installed nice-dns> status --tsv`.
+/// The status command's argv: `<nice-dns> status --tsv`, the command found
+/// as `runner::resolve` finds it (PATH first, then where the installer put it).
 ///
 /// `NICE_DNS_GUI_STATUS_CMD`, when set, replaces it, split on whitespace. It
 /// exists for tests and proofs only (a fake status script), not for users.
@@ -32,7 +32,7 @@ pub(crate) fn status_argv() -> Result<Vec<String>, runner::NotFound> {
     if let Some(cmd) = std::env::var_os("NICE_DNS_GUI_STATUS_CMD") {
         return Ok(cmd.to_string_lossy().split_whitespace().map(str::to_string).collect());
     }
-    let bin = runner::resolve_installed("nice-dns")?;
+    let bin = runner::resolve("nice-dns")?;
     Ok(vec![bin.to_string_lossy().into_owned(), "status".into(), "--tsv".into()])
 }
 
@@ -138,6 +138,37 @@ fn run_screenshot(png: PathBuf) -> ExitCode {
     ExitCode::from(code.get())
 }
 
+/// `--run-action <id> --exit`: show the window, run action `id` with no
+/// dialog, print the log pane's text on stdout and exit with the action's
+/// status. A hook for tests and proofs; it needs a display (Xvfb will do).
+fn run_action(id: String) -> ExitCode {
+    if actions::lookup(&id).and_then(|a| a.program).is_none() {
+        eprintln!("nice-dns-gui: '{id}' is not an action that runs a command");
+        return ExitCode::from(2);
+    }
+    let app = application(false);
+    let code = Rc::new(Cell::new(1i32));
+    let c = Rc::clone(&code);
+    app.connect_activate(move |app| {
+        let ui = window::Ui::new(app);
+        let (page, status) = window::read_page();
+        ui.show(page, status);
+        ui.window.present();
+        let (app, c, pane_ui) = (app.clone(), Rc::clone(&c), Rc::clone(&ui));
+        ui.run_headless(
+            &id,
+            Rc::new(move |status| {
+                print!("{}", pane_ui.pane.text());
+                c.set(status);
+                pane_ui.window.close();
+                app.quit();
+            }),
+        );
+    });
+    app.run_with_args::<&str>(&[]);
+    ExitCode::from(code.get().clamp(0, 255))
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
@@ -148,6 +179,7 @@ fn main() -> ExitCode {
         }
         ["--check"] => ExitCode::from(run_check()),
         ["--screenshot", png] => run_screenshot(PathBuf::from(png)),
+        ["--run-action", id, "--exit"] => run_action(id.to_string()),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
