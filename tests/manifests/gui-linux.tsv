@@ -1,0 +1,32 @@
+# Receipt manifest: gui-linux (Sub-plan 6 Task 2.3). Parsed as data by tests/reports/verify.sh (never sourced).
+# Rows (tab-separated):
+#   scenario  <id>  per-cell|global  <meaning>
+#   content   <id>  <ERE>                    the scenario's artifact has a line matching ERE
+# One observed Linux cell (mint): an install puts the GUI on the host from the
+# verified release asset, it runs in the user's session, and an uninstall
+# removes it.
+scenario	GL-INSTALL	per-cell	nice-dns install puts nice-dns-gui, its launcher and its icon on the host; --check exits 0 naming the generation
+scenario	GL-SCREENSHOT	per-cell	nice-dns-gui --screenshot in the user's graphical session writes the PNG the run fetched
+scenario	GL-RESTART	per-cell	nice-dns-gui --run-action restart --exit in the session returns 0 and DNS answers
+scenario	GL-UPDATE-CHECK	per-cell	nice-dns-gui --run-action update-check --exit in the session returns 0 or 10
+scenario	GL-UNINSTALL	per-cell	nice-dns uninstall removes the program, the launcher, the icon and the GUI's files
+scenario	GL-FINAL	per-cell	nice-dns install after the uninstall puts the GUI and the stack back
+content	GL-INSTALL	^gui_bin	present$
+content	GL-INSTALL	^gui_check_exit	0$
+content	GL-INSTALL	^gui_desktop_valid	0$
+content	GL-INSTALL	^gui_icon	present$
+content	GL-INSTALL	^result	pass$
+content	GL-SCREENSHOT	^gui_exit	0$
+content	GL-SCREENSHOT	^png_sha256	[0-9a-f]{64}$
+content	GL-SCREENSHOT	^png_file	gui-linux\.png$
+content	GL-RESTART	^gui_exit	0$
+content	GL-RESTART	^resolves	yes$
+content	GL-RESTART	^result	pass$
+content	GL-UPDATE-CHECK	^gui_exit	(0|10)$
+content	GL-UNINSTALL	^gui_bin	absent$
+content	GL-UNINSTALL	^gui_desktop	absent$
+content	GL-UNINSTALL	^gui_icon	absent$
+content	GL-UNINSTALL	^gui_dir	absent$
+content	GL-FINAL	^gui_bin	present$
+content	GL-FINAL	^gui_check_exit	0$
+content	GL-FINAL	^result	pass$

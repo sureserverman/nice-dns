@@ -297,7 +297,7 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network freeze-unbound thaw-unbound stop-proxy fresh-name command command-report freeze-service thaw-service pause-container unpause-container stop-container start-container crash-container stop-crash crash-report proxy-supervisor-lines mac-runtime-ssh mac-runtime-gui helper-report polkit-test-rule'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network freeze-unbound thaw-unbound stop-proxy fresh-name command command-report freeze-service thaw-service pause-container unpause-container stop-container start-container crash-container stop-crash crash-report proxy-supervisor-lines mac-runtime-ssh mac-runtime-gui helper-report polkit-test-rule gui-report gui-session'
 FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
@@ -352,8 +352,9 @@ fi
 case "$op" in install-cell|uninstall-cell) ;; command) [ -z "$i_hsha" ] || die "--hardened-sha is not valid for command" ;; *) [ -z "$i_cell$i_hsha" ] || die "--cell/--hardened-sha are only valid for install-cell, uninstall-cell and command" ;; esac
 case "$op" in install-cell|uninstall-cell|build-proxy|install-controller|install-agent|arm-prepare|command) ;; *) [ -z "$i_sha" ] || die "--source-sha is only valid for install-cell, uninstall-cell, build-proxy, install-controller, install-agent, arm-prepare and command" ;; esac
 case "$op" in fault-route|heal-route|route-apply) ;; *) [ -z "$i_route" ] || die "--route is only valid for fault-route, heal-route and route-apply" ;; esac
-case "$op" in install-controller|set-tunables|arm-set|command|polkit-test-rule) ;; *) [ -z "$i_mode" ] || die "--mode is only valid for install-controller, set-tunables, arm-set, command and polkit-test-rule" ;; esac
+case "$op" in install-controller|set-tunables|arm-set|command|polkit-test-rule|gui-session) ;; *) [ -z "$i_mode" ] || die "--mode is only valid for install-controller, set-tunables, arm-set, command, polkit-test-rule and gui-session" ;; esac
 if [ "$op" = polkit-test-rule ]; then case "$i_mode" in add|remove) ;; *) die "polkit-test-rule needs --mode add|remove" ;; esac; fi
+if [ "$op" = gui-session ]; then case "$i_mode" in screenshot|restart|update-check) ;; *) die "gui-session needs --mode screenshot|restart|update-check" ;; esac; fi
 case "$op" in arm-prepare) [[ "$i_ptag" =~ ^v[0-9]+(\.[0-9]+)*$ ]] || die "arm-prepare needs --proxy-tag vN[.N]" ;; *) [ -z "$i_ptag" ] || die "--proxy-tag is only valid for arm-prepare" ;; esac
 if [ "$op" = arm-set ]; then case "$i_mode" in baseline|candidate) ;; *) die "arm-set needs --mode baseline|candidate" ;; esac; fi
 if [ "$op" = arm-prepare ]; then
@@ -2109,6 +2110,68 @@ case "$NICE_DNS_OP" in
       if [ -f /usr/share/polkit-1/actions/org.nice-dns.policy ]; then printf 'policy\tpresent\n'; else printf 'policy\tabsent\n'; fi
       if sudo -n test -f /etc/polkit-1/rules.d/90-nice-dns-test.rules </dev/null; then printf 'polkit_test_rule\tpresent\n'; else printf 'polkit_test_rule\tabsent\n'; fi
     fi ;;
+  gui-report)
+    # The Linux GUI as an install leaves it (Sub-plan 6 Task 2.3): the
+    # program, the launcher, the icon and the files, and its --check (no
+    # display needed).
+    identity
+    b=""
+    for c in "$HOME/.local/bin/nice-dns-gui" "${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-health/bin/nice-dns-gui"; do
+      [ -x "$c" ] && { b="$c"; break; }
+    done
+    if [ -n "$b" ]; then
+      printf 'gui_bin\tpresent\ngui_bin_path\t%s\ngui_version\t%s\n' "$b" "$("$b" --version </dev/null 2>/dev/null || echo unknown)"
+      o=$("$b" --check </dev/null 2>&1); r=$?
+      printf 'gui_check_exit\t%s\ngui_check\t%s\n' "$r" "$(printf '%s\n' "$o" | head -n 1 | tr '\t' ' ')"
+    else
+      printf 'gui_bin\tabsent\n'
+    fi
+    dd="${XDG_DATA_HOME:-$HOME/.local/share}"
+    if [ -f "$dd/applications/nice-dns.desktop" ]; then
+      printf 'gui_desktop\tpresent\ngui_desktop_exec\t%s\n' "$(sed -n 's/^Exec=//p' "$dd/applications/nice-dns.desktop")"
+      if command -v desktop-file-validate >/dev/null 2>&1; then
+        desktop-file-validate "$dd/applications/nice-dns.desktop" </dev/null >/dev/null 2>&1; printf 'gui_desktop_valid\t%s\n' "$?"
+      else
+        printf 'gui_desktop_valid\tno-validator\n'
+      fi
+    else
+      printf 'gui_desktop\tabsent\n'
+    fi
+    if [ -f "$dd/icons/hicolor/256x256/apps/nice-dns.png" ]; then printf 'gui_icon\tpresent\n'; else printf 'gui_icon\tabsent\n'; fi
+    if [ -d "$HOME/.local/share/nice-dns/gui" ]; then printf 'gui_dir\tpresent\n'; else printf 'gui_dir\tabsent\n'; fi ;;
+  gui-session)
+    # A GUI hook in the user's graphical session (Sub-plan 6 Task 2.3):
+    # systemd-run --user gives it the user manager's DISPLAY and XAUTHORITY.
+    # The hook's own exit is the gui_exit row; a screenshot comes back as
+    # one base64 row. The operation exits 0 once the hook ran.
+    [ "$plat" = linux ] || { echo "gui-session is Linux only" >&2; exit 2; }
+    b=""
+    for c in "$HOME/.local/bin/nice-dns-gui" "${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-health/bin/nice-dns-gui"; do
+      [ -x "$c" ] && { b="$c"; break; }
+    done
+    [ -n "$b" ] || { echo "nice-dns-gui is not installed" >&2; exit 1; }
+    systemctl --user show-environment </dev/null 2>/dev/null | grep -q '^DISPLAY=' || { echo "the user manager has no DISPLAY: no graphical session" >&2; exit 2; }
+    png=""
+    case "$NICE_DNS_MODE" in
+      screenshot) png=$(mktemp "${TMPDIR:-/tmp}/nd-gui.XXXXXX") || exit 1; set -- --screenshot "$png" ;;
+      *) set -- --run-action "$NICE_DNS_MODE" --exit ;;
+    esac
+    printf 'gui_session\t%s\nstarted_utc\t%s\n' "$NICE_DNS_MODE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    o=$(mktemp "${TMPDIR:-/tmp}/nd-gui-out.XXXXXX") || exit 1
+    # --wait: systemd-run exits with the hook's own status.
+    systemd-run --user --wait --pipe --quiet --collect "$b" "$@" </dev/null >"$o" 2>&1
+    rc=$?
+    sed 's/^/out\t/' "$o"; rm -f "$o"
+    printf 'finished_utc\t%s\ngui_exit\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc"
+    if [ -n "$png" ]; then
+      if [ -s "$png" ]; then
+        printf 'png_size\t%s\npng_sha256\t%s\npng_base64\t%s\n' "$(wc -c <"$png" | tr -d ' ')" "$(sha256sum "$png" | cut -d' ' -f1)" "$(base64 -w0 "$png")"
+      else
+        printf 'png_size\t0\n'
+      fi
+      rm -f "$png"
+    fi
+    exit 0 ;;
   polkit-test-rule)
     [ "$plat" = linux ] || { echo "polkit-test-rule is Linux only" >&2; exit 2; }
     f=/etc/polkit-1/rules.d/90-nice-dns-test.rules
@@ -2219,7 +2282,7 @@ case "$op" in
     } >"$STATE/receipt.tsv"
     log_op 0
     printf 'snapshot %s -> %s\n' "$alias_" "$STATE/snapshot.tsv" ;;
-  config|health|controller-report|lifecycle-report|route-report|command-report|fresh-name|crash-report|proxy-supervisor-lines|helper-report)
+  config|health|controller-report|lifecycle-report|route-report|command-report|fresh-name|crash-report|proxy-supervisor-lines|helper-report|gui-report)
     # Read-only; the output starts with the identity lines, which are checked.
     preconnect_guards
     probe_identity "$op"
@@ -2243,7 +2306,7 @@ case "$op" in
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network|freeze-unbound|thaw-unbound|stop-proxy|command|freeze-service|thaw-service|pause-container|unpause-container|stop-container|start-container|crash-container|stop-crash|mac-runtime-ssh|mac-runtime-gui|polkit-test-rule)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network|freeze-unbound|thaw-unbound|stop-proxy|command|freeze-service|thaw-service|pause-container|unpause-container|stop-container|start-container|crash-container|stop-crash|mac-runtime-ssh|mac-runtime-gui|polkit-test-rule|gui-session)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"
