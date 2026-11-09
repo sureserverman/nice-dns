@@ -214,6 +214,11 @@ t_root_ops_refuses_before_running_anything() {
     done
     rc=0; out="$(ND_ROOT_TEST_SUDO="$w/bin/sudo" ND_INST_ROOT='' bash "$NICE_DNS_ROOT/$os/root-ops" "$(ro_helper_verb "$os")" "check status" 2>&1)" || rc=$?
     assert_eq 2 "$rc" "$os: a run of helper verbs in one argument exits 2: $out"
+    # A caller's newline or escape character is shown escaped: one line.
+    rc=0; out="$(ND_ROOT_TEST_SUDO="$w/bin/sudo" ND_INST_ROOT='' bash "$NICE_DNS_ROOT/$os/root-ops" "$(printf 'pin\nuninstall\033[31m')" 2>&1)" || rc=$?
+    assert_eq 2 "$rc" "$os: a verb with a newline exits 2: $out"
+    assert_eq 1 "$(printf '%s\n' "$out" | grep -c .)" "$os: its refusal is one line: $out"
+    assert_match "unknown verb 'pin\\\\nuninstall\\^\\[\\[31m'" "$out" "$os: the newline and the escape are shown, not sent: $out"
     assert_eq "" "$(cat "$w/log")" "$os: nothing ran"
   done
 }
@@ -484,7 +489,7 @@ t_helper_linux_root_steps_go_through_pkexec() {
 t_helper_linux_refused_authorisation_aborts_or_rolls_back() {
   local rc msg dns0 dep0
   for rc in 126 127; do
-    if [ "$rc" = 126 ]; then msg='authorisation cancelled'; else msg='not authorised'; fi
+    if [ "$rc" = 126 ]; then msg='authorisation cancelled'; else msg='not authorised \(or no polkit authentication agent could ask for a password\)'; fi
     ii_helper_world
     ND_INST_HELPER_STAGED="$II_ASSET" dt_installed install-deb
     # sudo needs a password here, so a refused step has no sudo to fall to.

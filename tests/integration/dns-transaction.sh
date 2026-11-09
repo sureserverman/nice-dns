@@ -672,6 +672,37 @@ t_sudo_keepalive_refreshes_and_stops() {
   assert_eq 0 "$(ND_INST_SUDO_KEEPALIVE=0 bash -c '. "$1/lib/install.sh"; _nd_inst_sudo_keepalive; echo "${ND_INST_KEEPALIVE_PID:-0}"' _ "$NICE_DNS_ROOT")" "0 disables it"
 }
 
+# With root steps going through nice-dns-helper there is no sudo ticket, so
+# the keepalive does not start (a refresh would only log a failed sudo).
+t_sudo_keepalive_skipped_when_the_helper_runs_root_steps() {
+  local w="$CASE_DIR/kah" plat fn pid
+  mkdir -p "$w/bin"
+  printf '#!/bin/sh\nprintf "sudo %%s\\n" "$*" >>"%s/log"\n' "$w" >"$w/bin/sudo"; chmod 755 "$w/bin/sudo"
+  for plat in linux macos; do
+    if [ "$plat" = linux ]; then fn=_nd_root_helper_deb; else fn=_nd_root_helper_mac; fi
+    : >"$w/log"
+    pid="$(PATH="$w/bin:$PATH" ND_INST_SUDO_KEEPALIVE=0.1 ND_INST_PLATFORM="$plat" bash -c '
+      . "$1/lib/install.sh"
+      eval "$2() { echo /usr/libexec/nice-dns-helper; }"
+      _nd_inst_sudo_keepalive
+      echo "${ND_INST_KEEPALIVE_PID:-none}"
+      sleep 0.35
+      _nd_inst_sudo_keepalive_stop' _ "$NICE_DNS_ROOT" "$fn" 2>&1)"
+    assert_eq none "$pid" "$plat, helper in use: no keepalive"
+    assert_eq "" "$(cat "$w/log")" "$plat, helper in use: no sudo refresh"
+    : >"$w/log"
+    pid="$(PATH="$w/bin:$PATH" ND_INST_SUDO_KEEPALIVE=0.1 ND_INST_PLATFORM="$plat" bash -c '
+      . "$1/lib/install.sh"
+      eval "$2() { return 1; }"
+      _nd_inst_sudo_keepalive
+      echo "${ND_INST_KEEPALIVE_PID:-none}"
+      sleep 0.35
+      _nd_inst_sudo_keepalive_stop' _ "$NICE_DNS_ROOT" "$fn" 2>&1)"
+    assert_eq 1 "$(case "$pid" in none|'') echo 0 ;; *) echo 1 ;; esac)" "$plat, no helper: the keepalive starts: $pid"
+    assert_match 'sudo -n -v' "$(cat "$w/log")" "$plat, no helper: it refreshes sudo"
+  done
+}
+
 # Live finding 2026-09-28 (mint): an older installer had pinned the Wi-Fi
 # profile to 127.0.0.1 with automatic DNS ignored and never recorded it, so a
 # legacy uninstall left the host without DNS. The helper now records those

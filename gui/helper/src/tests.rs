@@ -437,6 +437,32 @@ fn grammar_nul_and_newline_refused_in_any_token() {
     assert!(verbs::check(Deb, "dns".as_ref(), &[nul]).is_err());
 }
 
+#[test]
+fn grammar_nul_and_newline_refusals_name_the_token_on_one_line() {
+    let e = ck(Deb, "pin\nuninstall", &[]).unwrap_err();
+    assert_eq!(e, "verb 'pin\\nuninstall' contains a NUL or a newline");
+    let e = ck(Deb, "dns", &["check\n"]).unwrap_err();
+    assert_eq!(e, "verb 'dns': argument 'check\\n' contains a NUL or a newline");
+    let nul = OsString::from(std::ffi::OsStr::from_bytes(b"check\0"));
+    let e = verbs::check(Deb, "dns".as_ref(), &[nul]).unwrap_err();
+    assert_eq!(e, "verb 'dns': argument 'check\\0' contains a NUL or a newline");
+    let fx = Fx::new();
+    let m = fx.mock(Deb);
+    let args: Vec<String> = ["--tree", "/x\ny", "pin"].iter().map(|s| s.to_string()).collect();
+    let e = go(&m, Deb, &args);
+    assert_eq!((e.code, e.msg.as_str()), (2, "--tree value '/x\\ny' contains a NUL or a newline"));
+    assert!(!e.msg.contains('\n'));
+}
+
+#[test]
+fn grammar_tree_after_the_verb_says_where_it_goes() {
+    let fx = Fx::new();
+    let m = fx.mock(Deb);
+    let t = fx.tree.to_str().unwrap();
+    let args: Vec<String> = ["pin", "--tree", t].iter().map(|s| s.to_string()).collect();
+    refused(&fx, &m, Deb, &args, 2, "--tree <dir> must come before the verb");
+}
+
 const DEB_NAMES: &[&str] = &[
     "host-packages", "podman-upgrade", "crun-upgrade", "host-setup", "host-linger",
     "interrupt-prereqs", "pin-setup", "pin", "profiles-done", "profiles-undo", "nm-reload",
@@ -478,7 +504,20 @@ fn list_verbs_prints_the_table_for_each_platform_and_version_prints_the_crate_ve
     assert_eq!(run(&m, None, &strs(&["--version"]), &mut out).code, 0);
     assert_eq!(String::from_utf8(out).unwrap(), format!("{}\n", env!("CARGO_PKG_VERSION")));
     let mut out = Vec::new();
-    assert_eq!(run(&m, None, &strs(&["--list-verbs", "--platform", "win"]), &mut out).code, 2);
+    let e = run(&m, None, &strs(&["--list-verbs", "--platform", "win"]), &mut out);
+    assert_eq!((e.code, e.msg.as_str()), (2, "unknown platform 'win' (deb or mac)"));
+    for bare in [&["--list-verbs"][..], &["--list-verbs", "deb"], &["--list-verbs", "--platform"]] {
+        let e = run(&m, None, &strs(bare), &mut Vec::new());
+        assert_eq!(e.code, 2, "{bare:?}");
+        assert!(e.msg.starts_with("usage: nice-dns-helper --list-verbs"), "{bare:?}: {}", e.msg);
+    }
+    for help in ["--help", "-h"] {
+        let mut out = Vec::new();
+        assert_eq!(run(&m, None, &strs(&[help]), &mut out).code, 0);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("usage: nice-dns-helper --tree <dir> <verb>"), "{text}");
+        assert!(text.contains("--list-verbs --platform deb|mac"), "{text}");
+    }
     assert_eq!(m.execs.get(), 0);
 }
 
@@ -677,7 +716,7 @@ fn path_with_symlink_as_lib_or_install_sh_refused() {
     put(&real, "x");
     fs::remove_file(fx.tree.join("lib/install.sh")).unwrap();
     symlink(&real, fx.tree.join("lib/install.sh")).unwrap();
-    refused(&fx, &m, Deb, &cmd(&fx.tree, &["host-packages"]), 2, "lib/install.sh");
+    refused(&fx, &m, Deb, &cmd(&fx.tree, &["host-packages"]), 2, "lib/install.sh is a symlink");
 
     let fx = Fx::new();
     let m = fx.mock(Deb);
@@ -686,7 +725,7 @@ fn path_with_symlink_as_lib_or_install_sh_refused() {
     put(elsewhere.join("install.sh"), "x");
     fs::remove_dir_all(fx.tree.join("lib")).unwrap();
     symlink(&elsewhere, fx.tree.join("lib")).unwrap();
-    refused(&fx, &m, Deb, &cmd(&fx.tree, &["host-packages"]), 2, "lib/install.sh");
+    refused(&fx, &m, Deb, &cmd(&fx.tree, &["host-packages"]), 2, "lib is a symlink");
 }
 
 #[test]
@@ -757,7 +796,7 @@ fn path_tree_without_lib_install_sh_refused() {
     let m = fx.mock(Deb);
     fs::remove_file(fx.tree.join("lib/install.sh")).unwrap();
     mkdirs(fx.tree.join("lib/install.sh"));
-    refused(&fx, &m, Deb, &cmd(&fx.tree, &["host-packages"]), 2, "lib/install.sh");
+    refused(&fx, &m, Deb, &cmd(&fx.tree, &["host-packages"]), 2, "lib/install.sh is not a regular file");
 }
 
 #[test]

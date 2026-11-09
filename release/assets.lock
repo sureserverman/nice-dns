@@ -17,7 +17,7 @@ schema	nice-dns-assets-lock/1
 #     sha256    64 lowercase hex digits; an install refuses any other bytes
 #
 # With no asset for a host, an install goes on without the helper and says so.
-release	v1.0.0
-asset	helper	linux	amd64	https://github.com/sureserverman/nice-dns/releases/download/v1.0.0/nice-dns-helper-linux-amd64	a28f5046ce21e26ca3d8c3e18b499bd2516b09823d185f20bf78d16b3fe25e75
-asset	helper	linux	arm64	https://github.com/sureserverman/nice-dns/releases/download/v1.0.0/nice-dns-helper-linux-arm64	de2844b3e36a55879dd45e3ed518add32721b649fa6f2f8874c0082cc4345083
-asset	helper	macos	arm64	https://github.com/sureserverman/nice-dns/releases/download/v1.0.0/nice-dns-helper-macos-arm64	e6e739b5cc70e9fc5c26bd3214f692a47f5199b5f52596fdc4dd0e2b998b3f20
+release	v1.0.1
+asset	helper	linux	amd64	https://github.com/sureserverman/nice-dns/releases/download/v1.0.1/nice-dns-helper-linux-amd64	e905d418552554cc33354407a1d8502fff6636c162f470d0d08e22618efa4070
+asset	helper	linux	arm64	https://github.com/sureserverman/nice-dns/releases/download/v1.0.1/nice-dns-helper-linux-arm64	71cd68fb8b102e617701f903cd41a76e995a66e1632a1d6184d245adb1330164
+asset	helper	macos	arm64	https://github.com/sureserverman/nice-dns/releases/download/v1.0.1/nice-dns-helper-macos-arm64	a5c8a61da4cfce8a78152033aa29f2ed3d820175482c5d5cde78334efd27af99

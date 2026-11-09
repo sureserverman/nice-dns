@@ -143,6 +143,12 @@ fn shown(tok: &OsStr) -> String {
     tok.to_string_lossy().into_owned()
 }
 
+/// A token as a refusal shows it: NUL, newline and other control characters
+/// escaped, so the message stays one line and names what was refused.
+pub fn escaped(tok: &OsStr) -> String {
+    tok.to_string_lossy().escape_debug().to_string()
+}
+
 /// A token that cannot be carried safely: NUL or newline.
 pub fn plain(tok: &OsStr) -> bool {
     !tok.as_bytes().iter().any(|&b| b == 0 || b == b'\n')
@@ -166,8 +172,15 @@ fn one_of(words: &[&str], tok: &OsStr) -> bool {
 /// The static grammar of a verb and its fixed-list arguments. `Err` is the
 /// message for exit 2.
 pub fn check(p: Platform, verb: &OsStr, args: &[OsString]) -> Result<Checked, String> {
-    if !plain(verb) || args.iter().any(|a| !plain(a)) {
-        return Err("an argument contains a NUL or a newline".to_string());
+    if !plain(verb) {
+        return Err(format!("verb '{}' contains a NUL or a newline", escaped(verb)));
+    }
+    if let Some(a) = args.iter().find(|a| !plain(a)) {
+        return Err(format!(
+            "verb '{}': argument '{}' contains a NUL or a newline",
+            shown(verb),
+            escaped(a)
+        ));
     }
     if verb.is_empty() {
         return Err("no verb given".to_string());
@@ -338,14 +351,20 @@ pub fn check_tree(tree: &OsStr, home: &OsStr, uid: u32) -> Result<(), String> {
     check_path(tree, home, uid, Want::Dir)?;
     let mut lib = PathBuf::from(OsString::from_vec(tree.as_bytes().to_vec()));
     lib.push("lib");
-    let md = fs::symlink_metadata(&lib);
-    if !matches!(&md, Ok(m) if m.is_dir()) {
-        return Err(format!("'{}' holds no lib/install.sh", shown(tree)));
+    match fs::symlink_metadata(&lib) {
+        Ok(m) if m.is_dir() => {}
+        Ok(m) if m.file_type().is_symlink() => {
+            return Err(format!("'{}': lib is a symlink, not a directory", shown(tree)))
+        }
+        _ => return Err(format!("'{}' holds no lib/install.sh", shown(tree))),
     }
     lib.push("install.sh");
-    let md = fs::symlink_metadata(&lib);
-    if !matches!(&md, Ok(m) if m.is_file()) {
-        return Err(format!("'{}' holds no lib/install.sh", shown(tree)));
+    match fs::symlink_metadata(&lib) {
+        Ok(m) if m.is_file() => Ok(()),
+        Ok(m) if m.file_type().is_symlink() => {
+            Err(format!("'{}': lib/install.sh is a symlink, not a regular file", shown(tree)))
+        }
+        Ok(_) => Err(format!("'{}': lib/install.sh is not a regular file", shown(tree))),
+        Err(_) => Err(format!("'{}' holds no lib/install.sh", shown(tree))),
     }
-    Ok(())
 }

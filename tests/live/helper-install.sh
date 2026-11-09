@@ -179,7 +179,7 @@ hi_reinstall() {
   {
     printf 'command_exit\t%s\nsudo_root_ops\t%s\n' "$(hi_kv "$d/cmd-reinstall.log" command_exit)" "$(hi_kv "$d/cmd-reinstall.log" sudo_root_ops)"
     printf 'pkexec_helper_runs\t%s\n' "$(grep -c '^pkexec	/usr/libexec/nice-dns-helper --tree ' "$d/cmd-reinstall.log")"
-    grep '^pkexec	' "$d/cmd-reinstall.log" | awk -F ' ' '{ print "verb\t" $NF }' | sort -u
+    grep '^pkexec	' "$d/cmd-reinstall.log" | awk -F ' ' '{ for (i = 1; i < NF; i++) if ($i == "--tree") { print "verb\t" $(i + 2); next } }' | sort -u
     printf 'resolves\t%s\nresult\tpass\n' "$(il_val "$d/after-reinstall.tsv" resolution resolves)"
   } >"$d/hi-reinstall.tsv"
 }

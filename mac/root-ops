@@ -57,7 +57,15 @@ if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
 fi
 
 ME="root-ops"
-_die() { echo "$ME: $2" >&2; exit "$1"; }
+# _die <status> <message>: a newline, CR or tab in the message (a caller's
+# token) is shown escaped and any other control character as cat -v does, so
+# a refusal stays one line.
+_die() {
+  local m="$2"
+  m="${m//$'\n'/\\n}"; m="${m//$'\r'/\\r}"; m="${m//$'\t'/\\t}"
+  printf '%s: %s\n' "$ME" "$m" | LC_ALL=C cat -v >&2
+  exit "$1"
+}
 # _nd_exit <status>: once the verb and its arguments passed _check, a step's
 # own 2 becomes 124, so 2 always means "refused before anything ran"
 # (lib/root.sh retries only that through sudo).
@@ -74,7 +82,7 @@ trap '_nd_exit $?' EXIT
 # The nice-dns-helper version this root-ops is written for (gui/helper's
 # crate version; the `version` verb prints it). lib/root.sh reads this line
 # to decide whether the installed helper can be used.
-ND_HELPER_VERSION=0.1.0
+ND_HELPER_VERSION=0.1.1
 
 ND_ROOT_TEST=0
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then

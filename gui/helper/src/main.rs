@@ -25,6 +25,13 @@ fn refuse(code: i32, msg: impl Into<String>) -> Exit {
     Exit { code, msg: msg.into() }
 }
 
+const USAGE: &str = "\
+usage: nice-dns-helper --tree <dir> <verb> [argument...]
+       nice-dns-helper --list-verbs --platform deb|mac
+       nice-dns-helper --version
+Runs one verb of nice-dns' root-ops as root, for the user who called it.
+";
+
 fn display(tok: &OsStr) -> String {
     tok.to_string_lossy().into_owned()
 }
@@ -55,13 +62,21 @@ fn run_inner(
             let _ = writeln!(out, "{}", env!("CARGO_PKG_VERSION"));
             return Ok(0);
         }
+        [a] if is(a, "--help") || is(a, "-h") => {
+            let _ = write!(out, "{USAGE}");
+            return Ok(0);
+        }
         [a, b, c] if is(a, "--list-verbs") && is(b, "--platform") => {
-            let p = Platform::parse(c)
-                .ok_or_else(|| refuse(2, format!("unknown platform '{}'", display(c))))?;
+            let p = Platform::parse(c).ok_or_else(|| {
+                refuse(2, format!("unknown platform '{}' (deb or mac)", verbs::escaped(c)))
+            })?;
             for verb in verbs::table(p) {
                 let _ = writeln!(out, "{}", verb.name);
             }
             return Ok(0);
+        }
+        [a, ..] if is(a, "--list-verbs") => {
+            return Err(refuse(2, "usage: nice-dns-helper --list-verbs --platform deb|mac"));
         }
         _ => {}
     }
@@ -76,11 +91,17 @@ fn run_inner(
     let Some((verb, verb_args)) = rest.split_first() else {
         return Err(refuse(2, "no verb given"));
     };
+    if tree.is_none() && verb_args.iter().any(|a| is(a, "--tree")) {
+        return Err(refuse(2, "--tree <dir> must come before the verb"));
+    }
 
     // 1. static grammar
     if let Some(t) = tree {
         if !verbs::plain(t) {
-            return Err(refuse(2, "an argument contains a NUL or a newline"));
+            return Err(refuse(
+                2,
+                format!("--tree value '{}' contains a NUL or a newline", verbs::escaped(t)),
+            ));
         }
         if !verbs::dash_free(t) {
             return Err(refuse(2, format!("--tree value '{}' looks like an option", display(t))));

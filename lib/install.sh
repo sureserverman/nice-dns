@@ -751,6 +751,12 @@ _nd_inst_sudo_keepalive() {
   local every="${ND_INST_SUDO_KEEPALIVE:-50}" parent=$$
   [ "$every" != 0 ] || return 0
   [ -z "${ND_INST_KEEPALIVE_PID:-}" ] || return 0
+  # Root steps through the helper hold no sudo ticket: a refresh would only
+  # log a failed sudo (a password is required; COMMAND=validate).
+  case "$ND_INST_PLATFORM" in
+    linux) ! _nd_root_helper_deb >/dev/null 2>&1 || return 0 ;;
+    macos) ! _nd_root_helper_mac >/dev/null 2>&1 || return 0 ;;
+  esac
   ( while sleep "$every"; do
       kill -0 "$parent" 2>/dev/null || exit 0
       sudo -n -v 2>/dev/null || exit 0
