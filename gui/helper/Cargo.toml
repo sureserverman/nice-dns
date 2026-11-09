@@ -1,6 +1,6 @@
 [package]
 name = "nice-dns-helper"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.77"
 description = "Privileged helper for the nice-dns GUI: validates, scrubs, then execs the root-held root-ops"

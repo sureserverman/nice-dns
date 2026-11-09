@@ -82,7 +82,7 @@ trap '_nd_exit $?' EXIT
 # The nice-dns-helper version this root-ops is written for (gui/helper's
 # crate version; the `version` verb prints it). lib/root.sh reads this line
 # to decide whether the installed helper can be used.
-ND_HELPER_VERSION=0.1.0
+ND_HELPER_VERSION=0.1.1
 
 ND_ROOT_TEST=0
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
