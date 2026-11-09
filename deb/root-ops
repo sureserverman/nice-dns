@@ -8,8 +8,9 @@
 #
 # Each verb is a closed allow-list entry; its body is the installer code it
 # replaced, with `sudo ` turned into `_r `. Nothing is taken from the
-# environment as root but the three caller variables below, and paths come
-# from fixed lists, never from the caller.
+# environment as root but the three caller variables below, and the root
+# paths it writes come from fixed lists; install-helper alone takes caller
+# file paths (the helper binary and its policy), checked for shape only.
 #
 #   ND_ROOT_USER  the user the install is for: an existing, non-root user.
 #                 Default: SUDO_USER (sudo resets the environment, so a
@@ -508,6 +509,9 @@ v_save_previous() {
 # ('-'), with the mode the list gives it, or removed ('absent'). The path and
 # mode come from the fixed list and the bytes from the caller: no caller path
 # is opened as root (lib/install.sh _nd_inst_restore_files).
+# _nd_restore_exit <status>: restore's EXIT trap; it removes its temporary
+# file and keeps the 126/127 mapping (_nd_exit) the trap it replaces made.
+_nd_restore_exit() { rm -f "${_nd_restore_tmp:-}"; _nd_exit "$1"; }
 v_restore() {
   local p="$1" mode tmp
   mode="$(_owned_root "$p")"
@@ -517,8 +521,8 @@ v_restore() {
     return 0
   fi
   tmp="$(mktemp)"
-  # shellcheck disable=SC2064  # the path is fixed now
-  trap "rm -f '$tmp'" EXIT
+  _nd_restore_tmp="$tmp"
+  trap '_nd_restore_exit $?' EXIT
   cat >"$tmp"
   _r mkdir -p "$(dirname "$p")" && _r install -m "$mode" "$tmp" "$p"
 }

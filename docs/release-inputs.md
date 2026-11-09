@@ -73,13 +73,19 @@ is one the helper takes (under `$HOME`, owned by the user, writable by no
 group or other), `lib/root.sh` runs the verb through the helper instead of
 sudo, terminal or not. The helper runs the root-held copy of root-ops
 (`/usr/libexec/nice-dns/root-ops`, `/usr/local/libexec/nice-dns/root-ops`)
-with an empty environment. On Linux pkexec starts it and polkit asks for an
-administrator's password once per install, then once more each five minutes
-of a long one: one runner process makes every pkexec call (OD-11). A
-dismissed or refused dialog is `authorisation cancelled` or `not authorised`,
-and the install aborts or rolls back as for any failed step. On macOS it is
-setuid root and asks nothing; it serves only the admin user its owner file
-names (OD-10). Anything else keeps to sudo.
+with only `PATH` and the three `ND_ROOT_*` variables. On Linux pkexec starts
+it and polkit asks for an administrator's password once per install, then
+once more each five minutes of a long one: one runner process makes every
+pkexec call (OD-11). While that grant lasts, any process running as the
+same user can submit to the runner too; that is accepted (OD-14), since such
+a process can already change the tree root-ops runs. A dismissed dialog is
+`authorisation cancelled` and the install aborts or rolls back as for any
+failed step; a step the helper refuses, or pkexec cannot authorise
+(`not authorised`), runs through sudo when sudo needs no password here, and
+otherwise fails the same way. On macOS it is setuid root and asks nothing;
+it serves only the admin user its owner file names (OD-10). Anything else
+keeps to sudo. An update (`nice-dns update`, a branch reinstall) clones its
+tree under `~/.cache/nice-dns`, so it goes through the helper too.
 
 The root steps outside it: `install-deb.sh` and `install-deb-hardened.sh`
 run `apt-get install git` before the source is cloned, when no tree exists
@@ -139,10 +145,13 @@ each. During preparation an install:
    through root-ops `install-helper` when the installed helper is missing,
    another version, runs another root-ops or (macOS) serves another user.
 
+An install whose helper is already the one this tree wants fetches nothing.
 With no asset for the host, a failed download or a sha256 that differs, the
 install goes on without the helper and says
 `GUI actions needing root will not work until a reinstall with network`,
-also in its last lines. A file that does not match is never installed.
+also in its last lines. A file that does not match is never installed. (The
+fixture tests' `ND_INST_HELPER_STAGED`, which skips the download, is honoured
+only with their root prefix `ND_INST_ROOT` set.)
 
 To pin a new release, after the workflow's run succeeded:
 

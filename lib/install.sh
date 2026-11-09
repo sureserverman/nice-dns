@@ -1458,7 +1458,15 @@ EOF
 # The helper a program without a terminal runs (Sub-plan 5 Stage 2): the
 # release asset this install staged (Task 2.4 downloads it to
 # ND_INST_HELPER_STAGED, by default <generation>/nice-dns-helper).
-_nd_inst_helper_staged() { printf '%s\n' "${ND_INST_HELPER_STAGED:-$ND_INST_STATE/generations/$ND_INST_GEN/nice-dns-helper}"; }
+# ND_INST_HELPER_STAGED (a file already there) is for the fixture tests only:
+# it is honoured only with their root prefix, ND_INST_ROOT, set.
+_nd_inst_helper_staged() {
+  if [ -n "${ND_INST_ROOT:-}" ] && [ -n "${ND_INST_HELPER_STAGED:-}" ]; then
+    printf '%s\n' "$ND_INST_HELPER_STAGED"
+  else
+    printf '%s\n' "$ND_INST_STATE/generations/$ND_INST_GEN/nice-dns-helper"
+  fi
+}
 
 # _nd_inst_helper_current <deb|mac>: 0 when the installed helper is the
 # version this tree expects and runs this tree's root-ops (wherever the tree
@@ -1505,10 +1513,12 @@ _nd_inst_asset_arch() {
 # install. With ND_INST_HELPER_STAGED set (the fixture tests), nothing is
 # fetched.
 _nd_inst_stage_helper() {
-  local lock="$ND_INST_TREE/release/assets.lock" plat arch row url sha dst tries=1 rc got
-  [ -z "${ND_INST_HELPER_STAGED:-}" ] || return 0
+  local lock="$ND_INST_TREE/release/assets.lock" plat arch row url sha dst tries=1 rc got os
+  if [ -n "${ND_INST_ROOT:-}" ] && [ -n "${ND_INST_HELPER_STAGED:-}" ]; then return 0; fi
   _nd_inst_assets_check "$lock" || return 1
-  if [ "$ND_INST_PLATFORM" = linux ]; then plat=linux; else plat=macos; fi
+  if [ "$ND_INST_PLATFORM" = linux ]; then plat=linux os=deb; else plat=macos os=mac; fi
+  # The helper already installed is the one this tree wants: nothing to fetch.
+  if _nd_inst_helper_current "$os"; then return 0; fi
   arch="$(_nd_inst_asset_arch)"
   row="$(awk -F '\t' -v p="$plat" -v a="$arch" '$1 == "asset" && $2 == "helper" && $3 == p && $4 == a { print $5 "\t" $6; exit }' "$lock")"
   if [ -z "$row" ]; then
@@ -1522,7 +1532,7 @@ _nd_inst_stage_helper() {
   echo "▸ Fetching nice-dns-helper ($plat/$arch)"
   while :; do
     rc=0
-    curl -fsSL "$url" -o "$dst.part" || rc=$?
+    curl -fsSL "$url" -o "$dst.part" --proto =https --proto-redir =https --connect-timeout 30 --max-time 600 || rc=$?
     [ "$rc" != 0 ] || break
     rm -f "$dst.part"
     if [ "$rc" = 6 ] && [ "$tries" -lt 3 ]; then
@@ -1566,6 +1576,7 @@ nd_install_helper() {
       _nd_inst_err "the nice-dns-helper just installed is not the version this tree's root-ops expects, or does not run it"
       return 1
     fi
+    echo "  nice-dns-helper is installed at $("_nd_root_helper_file_$os"); it stays if this install fails, and an uninstall removes it."
     # Then the helper path end to end before anything relies on it: its
     # root-held root-ops answers with the version this tree expects. A tree
     # the helper does not take (a clone in /tmp) keeps to sudo; the next
@@ -2492,12 +2503,13 @@ nd_install_macos_uninstall() {
   # The helper goes last, so every root step above could use it. Left
   # behind it is passwordless root for its owner, so the uninstall fails.
   nd_root_mac remove-helper || helper_ok=0
-  _nd_inst_uninstall_state "$dns_ok"
-  _nd_inst_uninstall_verdict "$dns_ok" || return 1
+  # A helper left behind keeps the state and the command too, for the retry.
   if [ "$helper_ok" = 0 ]; then
-    _nd_inst_err "nice-dns-helper, a setuid root program, was NOT removed. Remove it as root: rm -rf /usr/local/libexec/nice-dns-helper /usr/local/libexec/nice-dns"
-    return 1
+    _nd_inst_err "nice-dns-helper, a setuid root program, was NOT removed. Run nice-dns uninstall again, or remove it as root: rm -rf /usr/local/libexec/nice-dns-helper /usr/local/libexec/nice-dns"
   fi
+  if [ "$dns_ok" = 1 ] && [ "$helper_ok" = 1 ]; then _nd_inst_uninstall_state 1; else _nd_inst_uninstall_state 0; fi
+  _nd_inst_uninstall_verdict "$dns_ok" || return 1
+  [ "$helper_ok" = 1 ]
 }
 
 # nd_install_macos_build_images: the local builds, in the interruption window.

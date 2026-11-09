@@ -200,10 +200,11 @@ nd_status_rows() {
   if [ -e "$ND_ST_SCHEDULE" ]; then _nd_st_row controller schedule loaded; else _nd_st_row controller schedule stopped; fi
 
   # obs: the controller's own records, copied as written (control characters
-  # other than the tab separators removed; at most 400 characters a row)
+  # other than the tab separators removed; at most 400 characters a row). The
+  # newline is printed here: BSD cut adds none to a line that has lost it.
   if [ -n "$obs" ] && [ -n "$last" ]; then
     awk -F '\t' '$1 == "obs"' "$obs" | while IFS= read -r r; do
-      printf '%s\n' "$r" | tr -d '\000-\010\012-\037\177' | cut -c1-400
+      printf '%s\n' "$(printf '%s' "$r" | tr -d '\000-\010\012-\037\177' | cut -c1-400)"
     done
   fi
 

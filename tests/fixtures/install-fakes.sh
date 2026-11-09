@@ -130,6 +130,9 @@ case "$me" in
     fi
     exec "$@" ;;
   sudo)
+    # $FAKE/sudo_needs_password: `sudo -n` fails, as on a host with no
+    # NOPASSWD rule and no live ticket (lib/root.sh's fallback then refuses).
+    if [ "${1:-}" = -n ] && [ -f "$FAKE/sudo_needs_password" ]; then echo "sudo: a password is required" >&2; exit 1; fi
     # root-ops runs as this user in its test mode (Sub-plan 5): each root
     # step it takes comes back to this stub through ND_ROOT_TEST_SUDO and is
     # logged, and in a world run, as the direct sudo line it replaced.

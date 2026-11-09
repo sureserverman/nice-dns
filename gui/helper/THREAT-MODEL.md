@@ -1,7 +1,9 @@
 # nice-dns-helper threat model
 
-Written before the code; the code follows it. If the two disagree, the code
-is wrong.
+Written before the code (Sub-plan 5 Task 2.1) and revised at the Stage 2
+gate to the system as built: the helper, the root-ops it runs and the
+installer's use of both (lib/root.sh, lib/install.sh). Where this and the
+code disagree, one of them is wrong; the review that finds it fixes it.
 
 ## What the helper is
 
@@ -19,9 +21,9 @@ root-held copy of `root-ops` (the Bash allow-list in `deb/root-ops` and
 | Owner file | none | `/usr/local/libexec/nice-dns/owner` |
 
 The paths are compiled in. The shipped binary has no flag, variable or file
-that changes them. The test seam (a trait the tests implement) exists only
-for the `#[cfg(test)]` build and the production implementation returns
-constants.
+that changes them. The test seam is a `Sys` trait compiled into every build;
+the production implementation returns the constants, and the only other
+implementation exists in the `#[cfg(test)]` build.
 
 ## Trust boundary
 
@@ -80,10 +82,16 @@ State this plainly, because it decides what the design is worth.
 
 1. **Any process running as the (admin) user can ask the helper for any
    verb.** On macOS the helper is setuid and asks nothing: malware running
-   as the user needs no password. On Linux polkit asks the admin password
-   for each authorisation (subject to the polkit rule's retention policy),
-   so the attacker needs the password, or a moment in which the user has
-   just authenticated.
+   as the user needs no password (OD-10). On Linux polkit asks an
+   administrator's password, kept five minutes (`auth_admin_keep`), so the
+   attacker needs the password or an open window. The installer makes such
+   a window on purpose: one runner process runs every pkexec of an install
+   (lib/root.sh, OD-11), and while its grant lasts **any process running as
+   the installing user can hand that runner a request** (its directory is
+   private to that uid, not to the installer) and get it run as root with no
+   prompt, or raise a prompt that looks like the installer's. This is
+   accepted and documented, not prevented (OD-14): the same process can
+   already make root run its code by editing the install's tree (point 2).
 2. **The verb list is not a barrier against the user.** The verbs run a tree
    and bytes the user supplies:
    - `--tree <dir>` is the user's own directory. `root-ops` runs scripts
@@ -98,7 +106,10 @@ State this plainly, because it decides what the design is worth.
      hooks, `/etc/sudoers.d/start-container`). `visudo -c` checks a sudoers
      file's syntax, not its intent.
    - `install-helper` installs a caller-supplied binary as the privileged
-     helper.
+     helper and, from the caller's tree, the root-held copy of `root-ops`
+     itself, that is the allow-list (and on Linux the polkit action, which
+     must match the tree's file). On macOS that is passwordless: it replaces
+     the whole verb barrier.
    So on macOS the setuid helper is, in effect, passwordless root for
    whoever runs as the owner. On Linux it is root for whoever can
    authenticate. That is the same grant `sudo` gives an admin in a terminal
@@ -130,19 +141,41 @@ State this plainly, because it decides what the design is worth.
 - Follow a symlink in a path it validates.
 - Contain a build-time or run-time override of the compiled-in paths.
 
-## What root-ops must never do (contract for the next task)
+## What root-ops does with what it is given (as built)
 
-- Trust the environment or the working directory: the helper gives it an
-  empty one apart from the four variables, but `root-ops` still unsets
-  everything else when it is root.
-- Use `ND_ROOT_TREE` for anything root-held. Files that stay root (units,
-  hooks that run at boot) must come from a root-held copy, not the tree the
-  user can edit after the check. (Today it does use the tree; see risks.)
-- Open a caller-named path as root other than the ones the helper checked,
-  and re-check them itself: the helper's checks happen before, and the
-  files can change between the check and the use.
-- Accept `install-helper` arguments the helper has not validated, or
-  install over the running helper non-atomically.
+The contract Task 2.1 set was narrowed by OD-10 (macOS) and holds as follows.
+
+- It trusts nothing of the environment but the three caller variables (and
+  `SUDO_USER` under sudo); as root it unsets everything else first. The
+  helper gives it `PATH` and those three only.
+- It **does** use `ND_ROOT_TREE` for code root runs and installs: the DNS
+  helpers, the dispatcher hooks and units, and, through `install-helper`, the
+  root-held `root-ops` copy and the polkit action. Only `root-ops` itself is
+  root-held (OD-10). The tree is checked as the caller's and under the
+  caller's home; it is not checked against tampering by that caller.
+- `install-helper` takes caller file paths, checked for shape (absolute, no
+  `.`, `..` or symlink, a regular file); the helper checked them as under
+  the home and owned by the caller first, and they can still change between
+  that check and the use. The `root-ops` copy is installed under a temporary
+  name and renamed; the helper binary is replaced by install(1) (unlink and
+  write), and on macOS its setuid bit is set last, after its owner, so no
+  setuid file exists with a wrong owner; a running helper keeps its inode.
+- The helper's files are removed last: Linux `uninstall`, macOS
+  `remove-helper` (the uninstall's last root step), so every earlier step can
+  still use the helper. A failed macOS removal fails the uninstall and keeps
+  the state for a retry.
+- A step's own 126 or 127 leaves `deb/root-ops` as 125, so 126/127 are only
+  ever pkexec's (dismissed, not authorised). `version` prints the helper
+  version this `root-ops` expects.
+
+The installer side (lib/root.sh) uses the helper only when it is root-owned
+(macOS: 4755, its owner file naming this user, who is an admin), is that
+version, its root-held `root-ops` is byte for byte the tree's, and the tree
+is one the helper takes; `install-helper` and `dns` (macOS `agent`) take any
+version. A step the helper refuses (2) or pkexec cannot authorise (127) runs
+through sudo when sudo needs no password; anything else keeps to sudo. A
+held copy left by a rolled-back install keeps the older tree on sudo until
+the next install refreshes it.
 
 ## Order of refusals and exit codes
 
@@ -155,7 +188,9 @@ State this plainly, because it decides what the design is worth.
 | 4 | root-ops trust chain | 3 |
 | 5 | privilege setup, hardening, `execve` | 3 on failure |
 
-Every refusal names the verb or argument, prefixed `nice-dns-helper: `.
+Every refusal is prefixed `nice-dns-helper: `; one about a verb or an argument
+names it (an empty argv, a missing `--tree` and a caller refusal say what is
+missing instead).
 
 ## Path grammar
 
@@ -215,10 +250,12 @@ skipped.
   `/home -> /var/home`) are refused by the no-symlink rule. A home with a
   trailing slash is refused as malformed.
 - **Polkit retention.** `auth_admin_keep` lets a second request within the
-  five-minute window skip the prompt. The installer runs every pkexec of an
-  install from one runner process (lib/root.sh, OD-11) so the prompt is shown
-  once; for those five minutes any request that runner makes is authorised,
-  and the runner runs only this helper's path.
+  five-minute window skip the prompt, and polkit does not extend it on use.
+  The installer's runner (OD-11) shows the prompt once per five minutes of
+  an install (a long one asks again, possibly during a rollback); for that
+  window any request the runner gets is authorised, from the installer or
+  from any process of the same uid (OD-14), and it runs only this helper's
+  path.
 - **A reused uid inherits the macOS helper.** The owner file names a uid. If
   that user is deleted without an uninstall and the uid is given to a new
   admin, the new admin gets the passwordless helper.

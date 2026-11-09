@@ -107,7 +107,7 @@ cl_record() {
 cl_run() {
   local cmd="$1"
   shift
-  HOME="$CL_HOME" PATH="$CL_FAKE:$PATH" TMPDIR="$CASE_DIR" XDG_STATE_HOME="" XDG_CONFIG_HOME="" XDG_DATA_HOME="" bash "$cmd" "$@" >"$CL_W/out" 2>"$CL_W/err"
+  HOME="$CL_HOME" PATH="$CL_FAKE:$PATH" TMPDIR="$CASE_DIR" XDG_STATE_HOME="" XDG_CONFIG_HOME="" XDG_DATA_HOME="" XDG_CACHE_HOME="" bash "$cmd" "$@" >"$CL_W/out" 2>"$CL_W/err"
   CL_RC=$?
   CL_OUT="$(cat "$CL_W/out")" CL_ERR="$(cat "$CL_W/err")"
 }
@@ -222,7 +222,8 @@ t_installed_reinstall_clones_the_recorded_branch() {
   assert_rc 0 "$CL_RC" "reinstall: $CL_ERR"
   assert_match '^git .*clone .*-b dev ' "$(cl_calls '^git ')" "the recorded branch is cloned"
   assert_eq "installer[clone] install-deb.sh socat dev" "$(cl_calls '^installer')" "the clone's installer runs"
-  assert_eq "" "$(find "$CASE_DIR" -maxdepth 1 -name 'nice-dns-fetch.*')" "the clone is removed afterwards"
+  assert_eq "" "$(find "$CL_HOME/.cache/nice-dns" -mindepth 1 -maxdepth 1 2>/dev/null)" "the clone is removed afterwards"
+  assert_match "clone .* $CL_HOME/\\.cache/nice-dns/fetch\\.[A-Za-z0-9]+/nice-dns" "$(cl_calls '^git ')" "the clone sits under HOME, where nice-dns-helper takes a tree"
 }
 
 t_failed_clone_names_local_and_changes_nothing() {
@@ -233,7 +234,7 @@ t_failed_clone_names_local_and_changes_nothing() {
   assert_match 'nice-dns reinstall --local' "$CL_ERR" "it names --local"
   assert_match 'running stack is untouched' "$CL_ERR" "it says the stack is untouched"
   assert_eq "" "$(cl_calls '^installer')" "no installer ran"
-  assert_eq "" "$(find "$CASE_DIR" -maxdepth 1 -name 'nice-dns-fetch.*')" "no clone is left"
+  assert_eq "" "$(find "$CL_HOME/.cache/nice-dns" -mindepth 1 -maxdepth 1 2>/dev/null)" "no clone is left"
 }
 
 t_reinstall_local_uses_the_snapshot_with_no_clone() {
@@ -532,6 +533,8 @@ st_rows() {
   local b="$CL_W/st-bin" t p
   rm -rf "$b"; mkdir -p "$b"
   for t in awk sed cat date tr cut; do p="$(command -v "$t")" && ln -s "$p" "$b/$t"; done
+  # ST_CUT: another cut (the BSD case below).
+  [ -z "${ST_CUT:-}" ] || ln -sf "$ST_CUT" "$b/cut"
   for t in podman container dig curl git systemctl launchctl uname nc; do
     printf '#!/bin/sh\necho "%s $*" >>"%s/st-calls.log"\nexit 0\n' "$t" "$CL_W" >"$b/$t"
     chmod +x "$b/$t"
@@ -601,6 +604,29 @@ t_status_helper_rows_read_the_file_and_the_generation() {
     assert_no_path "$CL_W/helper-ran" "$u: status never runs the helper"
     assert_eq "" "$ST_CALLS" "$u: nor any probe"
     ST_ROOT=""
+  done
+}
+
+t_status_obs_rows_end_their_lines_with_a_bsd_cut() {
+  local u n real
+  real="$(command -v cut)"
+  # macOS's cut prints no newline its input lacks (GNU cut adds one): with it,
+  # every observation must still be a row of its own (the Stage 2 gate demo
+  # found them joined on the mac).
+  cat >"$CASE_DIR/bsd-cut" <<STUB
+#!/bin/sh
+f="\$($(command -v mktemp))"; $(command -v cat) >"\$f"
+if [ -s "\$f" ] && [ "\$($(command -v tail) -c 1 "\$f" | $(command -v od) -An -c | $(command -v tr) -d ' ')" != '\\n' ]; then "$real" "\$@" <"\$f" | $(command -v head) -c -1; else "$real" "\$@" <"\$f"; fi
+$(command -v rm) -f "\$f"
+STUB
+  chmod 755 "$CASE_DIR/bsd-cut"
+  for u in $(cl_platforms); do
+    st_world "$u"
+    ST_CUT="$CASE_DIR/bsd-cut" st_rows
+    assert_rc 0 "$ST_RC" "$u: rows: $(cat "$CL_W/st-err")"
+    n="$(printf '%s\n' "$ST_OUT" | awk -F '\t' '$1 == "obs"' | wc -l | tr -d ' ')"
+    assert_eq 3 "$n" "$u: three observations, three rows"
+    assert_match "^route	selected	" "$ST_OUT" "$u: the route row starts its own line"
   done
 }
 

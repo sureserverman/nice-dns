@@ -487,6 +487,8 @@ t_helper_linux_refused_authorisation_aborts_or_rolls_back() {
     if [ "$rc" = 126 ]; then msg='authorisation cancelled'; else msg='not authorised'; fi
     ii_helper_world
     ND_INST_HELPER_STAGED="$II_ASSET" dt_installed install-deb
+    # sudo needs a password here, so a refused step has no sudo to fall to.
+    : >"$FAKE/sudo_needs_password"
     # Refused at the first root step (the ownership check): nothing changes.
     dns0="$(dt_dns_state)"; dep0="$(dt_deploy_state)"
     echo "$rc" >"$FAKE/pkexec_rc"
@@ -513,8 +515,21 @@ t_helper_linux_refused_authorisation_aborts_or_rolls_back() {
     assert_nonzero "$IP_RC" "$rc rollback refused: the install fails"
     assert_match "nice-dns: $msg" "$IP_OUT" "$rc rollback refused: says why"
     assert_match "was not restored \\(root-ops exit $rc\\)" "$IP_OUT" "$rc rollback refused: each refused restore says so"
-    rm -f "$FAKE/pkexec_rc" "$FAKE/pkexec_on" "$FAKE/pkexec_after" "$FAKE/pkexec_refusing"
+    rm -f "$FAKE/pkexec_rc" "$FAKE/pkexec_on" "$FAKE/pkexec_after" "$FAKE/pkexec_refusing" "$FAKE/sudo_needs_password"
   done
+  # Not authorised (127) where sudo needs no password: that step runs through
+  # sudo and the install goes on; a dismissed dialog (126) never does.
+  ii_helper_world
+  ND_INST_HELPER_STAGED="$II_ASSET" dt_installed install-deb
+  echo 127 >"$FAKE/pkexec_rc"; printf '^pkexec [^ ]* --tree [^ ]* pin$\n' >"$FAKE/pkexec_on"
+  ip_install install-deb socat
+  assert_rc 0 "$IP_RC" "127, sudo -n works: the install goes on: $IP_OUT"
+  assert_match "nice-dns-helper could not run 'pin' \\(exit 127\\); running it through sudo" "$IP_OUT" "127, sudo -n works: says so"
+  assert_match "^sudo bash $IP_TREE/deb/root-ops pin$" "$(cat "$FAKE_LOG")" "127, sudo -n works: the pin went through sudo"
+  : >"$FAKE_LOG"; ii_next_head 8; echo 126 >"$FAKE/pkexec_rc"
+  ip_install install-deb socat
+  assert_nonzero "$IP_RC" "126, sudo -n works: a dismissed dialog still fails the install"
+  assert_eq "" "$(grep -E '^sudo bash [^ ]*/root-ops pin$' "$FAKE_LOG")" "126: no sudo fallback"
 }
 
 t_helper_linux_wrong_version_or_owner_is_not_trusted() {
@@ -588,6 +603,9 @@ t_root_ops_maps_a_steps_126_and_127_to_125() {
     printf '#!/bin/sh\nexit %s\n' "$rc" >"$s"; chmod 755 "$s"
     ND_ROOT_TEST_SUDO="$s" bash "$NICE_DNS_ROOT/deb/root-ops" dns check >/dev/null 2>&1
     case "$rc" in 9) assert_rc 9 "$?" "a step's 9 passes through" ;; *) assert_rc 125 "$?" "a step's $rc becomes 125" ;; esac
+    # restore replaces the EXIT trap with its own; the mapping must survive it.
+    printf 'bytes\n' | ND_ROOT_TEST_SUDO="$s" bash "$NICE_DNS_ROOT/deb/root-ops" restore /usr/bin/custom-dns-deb - >/dev/null 2>&1
+    case "$rc" in 9) assert_rc 9 "$?" "restore: a step's 9 passes through" ;; *) assert_rc 125 "$?" "restore: a step's $rc becomes 125" ;; esac
   done
 }
 
@@ -738,6 +756,7 @@ t_helper_macos_uninstall_removes_it() {
   printf '^sudo rm -f [^ ]*/usr/local/libexec/nice-dns-helper \n' >"$FAKE/fail"
   ip_install install-mac uninstall
   assert_nonzero "$IP_RC" "helper not removed: the uninstall fails"
-  assert_match "nice-dns-helper, a setuid root program, was NOT removed" "$IP_OUT" "helper not removed: says so"
+  assert_match "nice-dns-helper, a setuid root program, was NOT removed. Run nice-dns uninstall again" "$IP_OUT" "helper not removed: says so, and how to retry"
+  assert_file "$IP_STATE/current" "helper not removed: the install record is kept for the retry"
   rm -f "$FAKE/fail"
 }

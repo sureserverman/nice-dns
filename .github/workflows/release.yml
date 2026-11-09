@@ -28,15 +28,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
       - name: Toolchain
-        run: |
-          command -v cargo >/dev/null 2>&1 || {
-            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
-            echo "$HOME/.cargo/bin" >>"$GITHUB_PATH"
-          }
+        # The runner image's own Rust; no unverified installer is fetched.
+        run: cargo --version && rustc --version
       - name: Test
         run: cargo test --locked --manifest-path gui/helper/Cargo.toml
       - name: Build

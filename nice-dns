@@ -178,14 +178,20 @@ cleanup_tmp() { [ -z "$ND_CLI_TMP" ] || rm -rf "${ND_CLI_TMP:?}"; }
 # An install script ignores its branch argument when it sits in a checkout, so
 # a branch the operator named is only honoured from a clone. The running stack
 # is what answers DNS here, so a stalled transfer must end by itself. Nothing
-# has changed yet when this fails.
+# has changed yet when this fails. The clone sits under $HOME
+# (${XDG_CACHE_HOME:-~/.cache}/nice-dns) with no group or other write, the
+# only kind of tree nice-dns-helper takes, so an update from a program with no
+# terminal goes through the helper (lib/root.sh _nd_root_tree_ok).
 fetch_branch() {
-  ND_CLI_TMP="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-fetch.XXXXXXXX")" || return 1
+  local base="${XDG_CACHE_HOME:-$HOME/.cache}/nice-dns"
+  mkdir -p "$base" && chmod go-w "$base" || return 1
+  ND_CLI_TMP="$(mktemp -d "$base/fetch.XXXXXXXX")" || return 1
   trap cleanup_tmp EXIT
   if ! git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 clone -q --depth 1 -b "$1" "$ND_CLI_REPO" "$ND_CLI_TMP/nice-dns"; then
     err "could not fetch branch '$1' (is DNS down?). The running stack is untouched."
     return 1
   fi
+  chmod -R go-w "$ND_CLI_TMP" || return 1
   ND_CLI_SRC="$ND_CLI_TMP/nice-dns"
 }
 
