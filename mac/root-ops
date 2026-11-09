@@ -58,6 +58,18 @@ fi
 
 ME="root-ops"
 _die() { echo "$ME: $2" >&2; exit "$1"; }
+# _nd_exit <status>: once the verb and its arguments passed _check, a step's
+# own 2 becomes 124, so 2 always means "refused before anything ran"
+# (lib/root.sh retries only that through sudo).
+# _nd_tmp: the temporary files a verb made, removed here on every exit (a
+# verb never sets an EXIT trap of its own, which would drop this mapping).
+_nd_checked=0 _nd_tmp=""
+_nd_exit() {
+  # shellcheck disable=SC2086  # a list of mktemp paths, no spaces
+  [ -z "$_nd_tmp" ] || rm -f $_nd_tmp
+  [ "$1" != 2 ] || [ "$_nd_checked" = 0 ] || exit 124
+}
+trap '_nd_exit $?' EXIT
 
 # The nice-dns-helper version this root-ops is written for (gui/helper's
 # crate version; the `version` verb prints it). lib/root.sh reads this line
@@ -132,6 +144,7 @@ _check() {
   esac
 }
 _check "$@"
+_nd_checked=1
 
 # _uid_of <path>: the owner's uid (GNU stat in the tests; BSD stat, which has no -c, on macOS).
 _uid_of() { stat -c %u "$1" 2>/dev/null || stat -f %u "$1"; }
@@ -196,8 +209,7 @@ v_persist() {
   local tmp_sudoers
   _root_dirs_ok
   tmp_sudoers="$(mktemp)"
-  # shellcheck disable=SC2064  # the path is fixed now
-  trap "rm -f '$tmp_sudoers'" EXIT
+  _nd_tmp="$_nd_tmp $tmp_sudoers"
   sed "s/__USERNAME__/$U/" "$T/mac/start-container.sudoers" > "$tmp_sudoers"
   # Checked before it goes live: a rule sudo cannot parse breaks sudo for
   # everyone.
@@ -287,8 +299,7 @@ v_restore() {
     return 0
   fi
   tmp="$(mktemp)"
-  # shellcheck disable=SC2064  # the path is fixed now
-  trap "rm -f '$tmp'" EXIT
+  _nd_tmp="$_nd_tmp $tmp"
   cat >"$tmp"
   if [ "$p" = "$R/etc/sudoers.d/start-container" ] && ! _r visudo -cf "$tmp" >/dev/null; then
     exit 5
@@ -322,8 +333,7 @@ v_install_helper() {
   _root_dirs_ok
   [ -f "$T/mac/root-ops" ] && [ ! -L "$T/mac/root-ops" ] || _die 1 "install-helper: $T/mac/root-ops is not a file"
   tmp="$(mktemp)"
-  # shellcheck disable=SC2064  # the path is fixed now
-  trap "rm -f '$tmp'" EXIT
+  _nd_tmp="$_nd_tmp $tmp"
   printf '%s\n' "$UID_OF" >"$tmp"
   _r install -d -m 755 "$(dirname "$ND_HELPER_DIR")" "$ND_HELPER_DIR"
   _r install -m 644 "$tmp" "$ND_HELPER_DIR/owner"

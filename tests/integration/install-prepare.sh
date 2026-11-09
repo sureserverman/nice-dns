@@ -592,6 +592,12 @@ t_helper_asset_good_sha_is_staged_and_installed() {
     if [ "$ep" = install-deb ]; then os=deb; else os=mac; fi
     assert_match "^sudo bash $IP_TREE/$os/root-ops install-helper $(ip_staged_helper)( |$)" "$(cat "$FAKE_LOG")" "$ep: and installs it"
     assert_not_match 'GUI actions needing root will not work' "$IP_OUT" "$ep: nothing to report"
+    assert_match '^curl -fsSL https://github\.com/[^ ]+ -o .+\.part --proto =https --proto-redir =https --connect-timeout 30 --max-time 600$' "$(cat "$FAKE_LOG")" "$ep: https only, and it cannot hang"
+    # A reinstall with that helper in place fetches nothing.
+    : >"$FAKE_LOG"; printf '%040d\n' 5 >"$FAKE/git_head"
+    ip_install "$ep" haproxy
+    assert_rc 0 "$IP_RC" "$ep: the reinstall: $IP_OUT"
+    assert_eq "" "$(grep -E '^curl .*releases/download/' "$FAKE_LOG")" "$ep: the current helper is not fetched again"
   done
 }
 

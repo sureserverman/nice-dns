@@ -1563,6 +1563,14 @@ _nd_inst_stage_helper() {
 # `helper absent`.
 nd_install_helper() {
   local os="$1" s h v=absent
+  # Without polkit's pkexec the Linux helper cannot run: nothing is fetched
+  # or installed, and the install says so (now and in its last lines).
+  if [ "$os" = deb ] && ! command -v pkexec >/dev/null 2>&1; then
+    ND_INST_HELPER_NOTE="! pkexec (polkit) is not installed here, so nice-dns-helper is not: GUI actions needing root will not work until pkexec is installed and nice-dns reinstalled."
+    echo "$ND_INST_HELPER_NOTE" >&2
+    _nd_inst_manifest_row "$ND_INST_MANIFEST" helper absent
+    return
+  fi
   _nd_inst_stage_helper || return 1
   s="$(_nd_inst_helper_staged)"
   if [ -f "$s" ] && ! _nd_inst_helper_current "$os"; then

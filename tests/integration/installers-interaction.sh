@@ -599,14 +599,24 @@ t_root_ops_maps_a_steps_126_and_127_to_125() {
   s="$CASE_DIR/step"
   # A step root-ops runs that exits 126 or 127 (a command missing on the
   # host) must not read as pkexec's dismissed or refused authorisation.
-  for rc in 126 127 9; do
+  # ... and a step's own 2 must not read as root-ops refusing the call (2),
+  # which lib/root.sh retries through sudo.
+  for rc in 126 127 2 9; do
+    case "$rc" in 9) want=9 ;; 2) want=124 ;; *) want=125 ;; esac
     printf '#!/bin/sh\nexit %s\n' "$rc" >"$s"; chmod 755 "$s"
     ND_ROOT_TEST_SUDO="$s" bash "$NICE_DNS_ROOT/deb/root-ops" dns check >/dev/null 2>&1
-    case "$rc" in 9) assert_rc 9 "$?" "a step's 9 passes through" ;; *) assert_rc 125 "$?" "a step's $rc becomes 125" ;; esac
-    # restore replaces the EXIT trap with its own; the mapping must survive it.
+    assert_rc "$want" "$?" "deb: a step's $rc leaves as $want"
+    # restore makes a temporary file; the mapping must still hold.
     printf 'bytes\n' | ND_ROOT_TEST_SUDO="$s" bash "$NICE_DNS_ROOT/deb/root-ops" restore /usr/bin/custom-dns-deb - >/dev/null 2>&1
-    case "$rc" in 9) assert_rc 9 "$?" "restore: a step's 9 passes through" ;; *) assert_rc 125 "$?" "restore: a step's $rc becomes 125" ;; esac
+    assert_rc "$want" "$?" "deb restore: a step's $rc leaves as $want"
+    case "$rc" in 2) want=124 ;; *) want="$rc" ;; esac
+    ND_ROOT_TEST_SUDO="$s" bash "$NICE_DNS_ROOT/mac/root-ops" agent check >/dev/null 2>&1
+    assert_rc "$want" "$?" "mac: a step's $rc leaves as $want"
   done
+  ND_ROOT_TEST_SUDO="$s" bash "$NICE_DNS_ROOT/deb/root-ops" dns bogus >/dev/null 2>&1
+  assert_rc 2 "$?" "deb: a refused call is still 2"
+  ND_ROOT_TEST_SUDO="$s" bash "$NICE_DNS_ROOT/mac/root-ops" agent bogus >/dev/null 2>&1
+  assert_rc 2 "$?" "mac: a refused call is still 2"
 }
 
 t_root_ops_install_helper_refuses_before_running_anything() {
@@ -759,4 +769,37 @@ t_helper_macos_uninstall_removes_it() {
   assert_match "nice-dns-helper, a setuid root program, was NOT removed. Run nice-dns uninstall again" "$IP_OUT" "helper not removed: says so, and how to retry"
   assert_file "$IP_STATE/current" "helper not removed: the install record is kept for the retry"
   rm -f "$FAKE/fail"
+}
+
+t_helper_linux_no_pkexec_installs_no_helper() {
+  ii_helper_world
+  rm -f "$IP_BIN/pkexec"
+  ND_INST_HELPER_STAGED="$II_ASSET" ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "no pkexec: the install goes on: $IP_OUT"
+  assert_eq "" "$(grep -E 'root-ops install-helper' "$FAKE_LOG")" "no pkexec: no helper is installed"
+  assert_no_path "$II_HELPER" "no pkexec: nothing at the helper's path"
+  assert_eq absent "$(ii_manifest_helper)" "no pkexec: the generation records it absent"
+  assert_match 'pkexec \(polkit\) is not installed here, so nice-dns-helper is not' "$(printf '%s\n' "$IP_OUT" | tail -n 3)" "no pkexec: the last lines say so"
+}
+
+t_helper_test_seams_need_the_fixture_root() {
+  local out t real="$HOME"
+  # ND_INST_HELPER_STAGED, which skips the download, is the fixtures' only.
+  out="$(ND_INST_ROOT='' ND_INST_HELPER_STAGED=/x ND_INST_STATE=/s ND_INST_GEN=g bash -c '. "$1/lib/install.sh" >/dev/null 2>&1; _nd_inst_helper_staged' x "$NICE_DNS_ROOT")"
+  assert_eq /s/generations/g/nice-dns-helper "$out" "without ND_INST_ROOT the staged path is the generation's"
+  out="$(ND_INST_ROOT=/r ND_INST_HELPER_STAGED=/x ND_INST_STATE=/s ND_INST_GEN=g bash -c '. "$1/lib/install.sh" >/dev/null 2>&1; _nd_inst_helper_staged' x "$NICE_DNS_ROOT")"
+  assert_eq /x "$out" "with it, the fixture's file"
+  # Outside the fixtures the tree check also needs HOME to be the password
+  # database's home, as the helper reads it.
+  t="$(mktemp -d "$real/.nd-tree-check.XXXXXX")"
+  mkdir -p "$t/lib"; : >"$t/lib/install.sh"; chmod -R go-w "$t"
+  if [ "$(getent passwd "$(id -un)" | cut -d: -f6)" = "$real" ]; then
+    HOME="$real" ND_INST_TREE="$t" ND_INST_ROOT='' bash -c '. "$1/lib/root.sh"; _nd_root_tree_ok' x "$NICE_DNS_ROOT"
+    assert_rc 0 "$?" "a tree under the password database's home is taken"
+  else
+    echo "note: HOME is not the password database's home here; the positive case is skipped"
+  fi
+  mkdir -p "$CASE_DIR/home"; mv "$t" "$CASE_DIR/home/tree"
+  HOME="$CASE_DIR/home" ND_INST_TREE="$CASE_DIR/home/tree" ND_INST_ROOT='' bash -c '. "$1/lib/root.sh"; _nd_root_tree_ok' x "$NICE_DNS_ROOT"
+  assert_rc 1 "$?" "a HOME that is not the password database's is refused"
 }

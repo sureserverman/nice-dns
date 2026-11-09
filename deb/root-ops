@@ -23,9 +23,9 @@
 #
 # Exit status: the verb's own, except that a step's 126 or 127 becomes 125
 # (pkexec uses those two for a dismissed or refused authorisation, and
-# lib/root.sh reports them so); 1 when not run as root, or a caller variable
-# is refused; 2 for an unknown verb or a malformed argument, before anything
-# runs.
+# lib/root.sh reports them so) and a step's 2 becomes 124; 1 when not run as
+# root, or a caller variable is refused; 2 only for an unknown verb or a
+# malformed argument, before anything runs.
 #
 # Fixture tests: run as a non-root user with ND_ROOT_TEST_SUDO naming the
 # tests' fake sudo (an executable that is not setuid), every `_r` call goes
@@ -64,7 +64,20 @@ fi
 
 ME="root-ops"
 _die() { echo "$ME: $2" >&2; exit "$1"; }
-_nd_exit() { case "$1" in 126|127) exit 125 ;; esac; }
+# _nd_exit <status>: a step's own 126 or 127 becomes 125, and once the verb
+# and its arguments passed _check a step's own 2 becomes 124, so 2 always
+# means "refused before anything ran" (lib/root.sh retries only that).
+# _nd_tmp: the temporary files a verb made, removed here on every exit (a
+# verb never sets an EXIT trap of its own, which would drop this mapping).
+_nd_checked=0 _nd_tmp=""
+_nd_exit() {
+  # shellcheck disable=SC2086  # a list of mktemp paths, no spaces
+  [ -z "$_nd_tmp" ] || rm -f $_nd_tmp
+  case "$1" in
+    126|127) exit 125 ;;
+    2) [ "$_nd_checked" = 0 ] || exit 124 ;;
+  esac
+}
 trap '_nd_exit $?' EXIT
 
 # The nice-dns-helper version this root-ops is written for (gui/helper's
@@ -148,6 +161,7 @@ _check() {
   esac
 }
 _check "$@"
+_nd_checked=1
 
 # The caller: user, home and tree. A test run acts for the user it runs as
 # (its USER and HOME are the fixture's).
@@ -509,9 +523,6 @@ v_save_previous() {
 # ('-'), with the mode the list gives it, or removed ('absent'). The path and
 # mode come from the fixed list and the bytes from the caller: no caller path
 # is opened as root (lib/install.sh _nd_inst_restore_files).
-# _nd_restore_exit <status>: restore's EXIT trap; it removes its temporary
-# file and keeps the 126/127 mapping (_nd_exit) the trap it replaces made.
-_nd_restore_exit() { rm -f "${_nd_restore_tmp:-}"; _nd_exit "$1"; }
 v_restore() {
   local p="$1" mode tmp
   mode="$(_owned_root "$p")"
@@ -521,8 +532,7 @@ v_restore() {
     return 0
   fi
   tmp="$(mktemp)"
-  _nd_restore_tmp="$tmp"
-  trap '_nd_restore_exit $?' EXIT
+  _nd_tmp="$_nd_tmp $tmp"
   cat >"$tmp"
   _r mkdir -p "$(dirname "$p")" && _r install -m "$mode" "$tmp" "$p"
 }

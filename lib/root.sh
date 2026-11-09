@@ -20,8 +20,10 @@
 # On both, "the version the tree expects" also means the root-held root-ops
 # copy the helper runs is byte for byte the tree's: a copy left by an older
 # install, or a rollback to an older tree, keeps to sudo.
-# When the helper refuses a step (exit 2: a tree or argument it does not take)
-# or pkexec cannot authorise it (127: no agent, or not authorised), the step is
+# When the helper refuses a step (exit 2: a tree or argument it does not take,
+# or root-ops refusing the verb; root-ops turns a step's own 2 into 124, so a
+# 2 always means nothing ran) or pkexec cannot authorise it (127: no agent, or
+# not authorised), the step is
 # run through sudo instead if sudo needs no password here (NOPASSWD, or a live
 # ticket from a terminal); a dismissed dialog (126) still aborts.
 # ND_INST_ROOT (the fixture tests' root prefix, test-only) also makes
