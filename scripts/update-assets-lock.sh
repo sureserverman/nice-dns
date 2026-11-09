@@ -8,6 +8,9 @@
 # asset rows, keeping the lock's comments. Review the diff and commit it as
 # the release input change (docs/release-inputs.md).
 #
+# A release before v1.1.0 has no GUI assets: the script stops at the first
+# missing one (exit 2).
+#
 # Usage: scripts/update-assets-lock.sh [--lock FILE] [--tag vX.Y.Z] [--write]
 # Exit: 0 the lock matches the release (or was rewritten); 1 drift found and
 #       not written; 2 an error (network, a hash that does not match, usage).

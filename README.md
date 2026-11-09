@@ -53,7 +53,8 @@ the health controller, reinstall and uninstall. Each one runs the `nice-dns`
 command, and its output appears in the window. Root steps ask for your
 password through the system's dialog (polkit). The window is a release asset,
 checked against `release/assets.lock`; an install without network goes on
-without it and says so.
+without it and says so. It needs GTK 4.14 and libadwaita 1.5 (Ubuntu 24.04,
+Linux Mint 22 or later); on an older system the install goes on without it.
 
 ## Install
 

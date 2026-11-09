@@ -182,11 +182,14 @@ On Linux an install downloads this host's tarball in preparation (declared
 in `release/bootstrap.tsv` as `gui-asset`, the same three tries on a failed
 lookup) and keeps it only when its sha256 is the lock's. Only a fully
 successful install publishes it, for the user, each file by rename:
-`~/.local/share/nice-dns/gui/` (the three files as shipped),
-`nice-dns-gui` beside the `nice-dns` command, `~/.local/share/applications/
-nice-dns.desktop` (its `Exec` names that program) and the 256 px icon in the
-user's hicolor theme. The tarball must hold exactly those three plain files,
-and the program must answer `--version` on the host (its libraries). Without
-an asset, a download, a matching sha256 or a program that starts, the
-install goes on and says `GUI not installed; reinstall with network to add
-it`, also in its last lines. An uninstall removes all of it.
+`~/.local/share/nice-dns/gui/` (the three files as shipped, beside the kept
+source, with `published.tsv` saying where the rest went), `nice-dns-gui`
+beside the `nice-dns` command, `$XDG_DATA_HOME/applications/nice-dns.desktop`
+(by default under `~/.local/share`; its `Exec` names that program) and the
+256 px icon in the user's hicolor theme. Without an asset, a download or a
+matching sha256, the install goes on and says `GUI not installed; reinstall
+with network to add it`, also in its last lines. The tarball must also hold
+exactly those three plain files and the program must answer `--version` on
+the host (GTK 4.14 and libadwaita 1.5); otherwise the install goes on and
+says `GUI not installed` with the reason. An uninstall removes all of it,
+wherever `published.tsv` says it went.

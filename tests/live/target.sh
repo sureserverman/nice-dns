@@ -643,7 +643,7 @@ git_bundle() {
   # ND_GIT_BUNDLE: a clone of it is a clean checkout of that commit.
   local b
   b="$(mktemp "${TMPDIR:-/tmp}/nice-dns-bundle.XXXXXX")" || return 1
-  git -C "$ND_CHECKOUT" bundle create "$b" HEAD >/dev/null 2>&1 || { rm -f "$b"; return 1; }
+  git -C "$ND_CHECKOUT" bundle create "$b" HEAD >/dev/null || { rm -f "$b"; printf 'target.sh: git bundle of HEAD failed\n' >&2; return 1; }
   # shellcheck disable=SC2016 # remote shell text, expanded on the target
   printf '%s\n' 'ND_GIT_BUNDLE=$(mktemp "${TMPDIR:-/tmp}/nice-dns-bundle.XXXXXX") || exit 1' \
     "{ base64 -d 2>/dev/null || base64 -D; } >\"\$ND_GIT_BUNDLE\" <<'$BUNDLE_EOF'"
@@ -1905,10 +1905,11 @@ case "$NICE_DNS_OP" in
         cli="$w/nice-dns/nice-dns"
         set -- install "$NICE_DNS_PROXY" ;;
       install-git)
-        mac_room || exit 2
         [ -s "${ND_GIT_BUNDLE:-}" ] || { echo "install-git without the nice-dns bundle" >&2; exit 2; }
+        trap 'rm -f "$ND_GIT_BUNDLE"' EXIT
+        mac_room || exit 2
         w=$(mktemp -d "$HOME/.nice-dns-harness-install.XXXXXX") || exit 1
-        trap 'rm -rf "$w"' EXIT
+        trap 'rm -rf "$w"; rm -f "$ND_GIT_BUNDLE"' EXIT
         git clone -q "$ND_GIT_BUNDLE" "$w/nice-dns" </dev/null || exit 1
         rm -f "$ND_GIT_BUNDLE"
         [ "$(git -C "$w/nice-dns" rev-parse HEAD)" = "$NICE_DNS_SOURCE_SHA" ] || { echo "the bundle's HEAD is not $NICE_DNS_SOURCE_SHA" >&2; exit 2; }
@@ -2179,7 +2180,7 @@ case "$NICE_DNS_OP" in
       [ -x "$c" ] && { b="$c"; break; }
     done
     [ -n "$b" ] || { echo "nice-dns-gui is not installed" >&2; exit 1; }
-    systemctl --user show-environment </dev/null 2>/dev/null | grep -q '^DISPLAY=' || { echo "the user manager has no DISPLAY: no graphical session" >&2; exit 2; }
+    systemctl --user show-environment </dev/null 2>/dev/null | grep -Eq '^(DISPLAY|WAYLAND_DISPLAY)=' || { echo "the user manager has neither DISPLAY nor WAYLAND_DISPLAY: no graphical session" >&2; exit 2; }
     png=""
     case "$NICE_DNS_MODE" in
       screenshot) png=$(mktemp "${TMPDIR:-/tmp}/nd-gui.XXXXXX") || exit 1; set -- --screenshot "$png" ;;

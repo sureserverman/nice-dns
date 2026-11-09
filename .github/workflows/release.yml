@@ -86,13 +86,15 @@ jobs:
         env:
           ASSET: ${{ matrix.asset }}
         run: |
+          set -o pipefail
           cargo build --release --locked --manifest-path gui/linux/Cargo.toml
           desktop-file-validate gui/share/nice-dns.desktop
           mkdir -p stage dist
           cp gui/linux/target/release/nice-dns-gui gui/share/nice-dns.desktop gui/share/icons/nice-dns-256.png stage/
           chmod 755 stage/nice-dns-gui
           chmod 644 stage/nice-dns.desktop stage/nice-dns-256.png
-          tar -C stage --owner=0 --group=0 --numeric-owner -czf "dist/$ASSET.tar.gz" nice-dns-gui nice-dns.desktop nice-dns-256.png
+          # Same bytes for the same build: sorted, dated at 0, gzip without a name or time.
+          tar -C stage --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - nice-dns-gui nice-dns.desktop nice-dns-256.png | gzip -n -9 >"dist/$ASSET.tar.gz"
           cd dist
           sha256sum "$ASSET.tar.gz" >"$ASSET.tar.gz.sha256"
           cat "$ASSET.tar.gz.sha256"
