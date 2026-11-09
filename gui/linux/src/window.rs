@@ -331,6 +331,11 @@ pub struct Ui {
     busy: Cell<bool>,
     /// Set by `--run-action`: no dialogs, and this is told the exit status.
     headless: RefCell<Option<OnDone>>,
+    /// When a close was refused while an action ran.
+    close_asked: Cell<Option<std::time::Instant>>,
+    /// The bridges mode a running bridges-on/off asked for: the switch shows
+    /// it until the status says what came of it.
+    bridges_pending: Cell<Option<bool>>,
 }
 
 impl Ui {
@@ -377,6 +382,8 @@ impl Ui {
             read_gen: Cell::new(0),
             busy: Cell::new(false),
             headless: RefCell::new(None),
+            close_asked: Cell::new(None),
+            bridges_pending: Cell::new(None),
         });
         let weak = Rc::downgrade(&ui);
         ui.banner.connect_button_clicked(move |_| {
@@ -388,9 +395,16 @@ impl Ui {
         // command with no one reading its output, midway through (say) a
         // reinstall: the window stays until the action ends.
         let weak = Rc::downgrade(&ui);
+        // A command that hangs (a dialog nobody answers) must not trap the
+        // person: a second close within 10 s goes through.
         ui.window.connect_close_request(move |_| match weak.upgrade() {
             Some(ui) if ui.busy.get() => {
-                ui.toast("An action is running; the window can close when it ends");
+                let now = std::time::Instant::now();
+                if ui.close_asked.get().is_some_and(|t| now.duration_since(t) < Duration::from_secs(10)) {
+                    return glib::Propagation::Proceed;
+                }
+                ui.close_asked.set(Some(now));
+                ui.toast("An action is running; close again to leave it running without this window");
                 glib::Propagation::Stop
             }
             _ => glib::Propagation::Proceed,
@@ -460,6 +474,11 @@ impl Ui {
                 return self.end(id, Event::Failed(e));
             }
         };
+        match id {
+            "bridges-on" => self.bridges_pending.set(Some(true)),
+            "bridges-off" => self.bridges_pending.set(Some(false)),
+            _ => {}
+        }
         self.set_busy(true);
         self.pane.start(&label, &argv);
         let rx = match runner::spawn(&argv) {
@@ -470,9 +489,13 @@ impl Ui {
         // At most LINES_PER_TICK lines each 50 ms, scrolled once: a chatty
         // command cannot hold the main loop.
         glib::timeout_add_local(Duration::from_millis(50), move || {
+            let mut added = false;
             for _ in 0..LINES_PER_TICK {
                 match rx.try_recv() {
-                    Ok(Event::Line(stream, text)) => ui.pane.line(stream, &text),
+                    Ok(Event::Line(stream, text)) => {
+                        ui.pane.line(stream, &text);
+                        added = true;
+                    }
                     Ok(end) => {
                         ui.pane.scroll_to_end();
                         ui.end(&id, end);
@@ -485,7 +508,10 @@ impl Ui {
                     }
                 }
             }
-            ui.pane.scroll_to_end();
+            // Only new output scrolls: someone reading back is left there.
+            if added {
+                ui.pane.scroll_to_end();
+            }
             glib::ControlFlow::Continue
         });
     }
@@ -495,6 +521,8 @@ impl Ui {
             self.pane.line(Stream::Stderr, msg);
         }
         let said = self.pane.finish(id, &end);
+        self.bridges_pending.set(None);
+        self.close_asked.set(None);
         self.set_busy(false);
         let done = self.headless.borrow_mut().take();
         if let Some(done) = done {
@@ -557,6 +585,11 @@ impl Ui {
 
     fn choose_reinstall(self: &Rc<Self>) {
         let rec = self.status.borrow().as_ref().map(|s| s.install.clone()).unwrap_or_default();
+        // Choices the status could not tell (the install group unreadable)
+        // are not guessed: the reinstall keeps the recorded ones.
+        if rec.variant.is_none() || rec.pihole.is_none() {
+            return self.confirm_plain_reinstall();
+        }
         let variants = ["haproxy", "socat"];
         let flavours = ["standard", "hardened"];
         let pick = |list: &[&str], v: &Option<String>| {
@@ -596,6 +629,24 @@ impl Ui {
             match c.words() {
                 Ok(_) => ui.run("reinstall", Some(&c)),
                 Err(e) => ui.toast(&format!("Not reinstalled: {e}")),
+            }
+        });
+        d.present(Some(&self.window));
+    }
+
+    /// Reinstall with the recorded choices, asked first.
+    fn confirm_plain_reinstall(self: &Rc<Self>) {
+        let d = adw::AlertDialog::new(
+            Some("Reinstall nice-dns?"),
+            Some("The status does not say which choices are installed, so the reinstall keeps the recorded ones."),
+        );
+        d.add_responses(&[("cancel", "Cancel"), ("reinstall", "Reinstall")]);
+        d.set_response_appearance("reinstall", adw::ResponseAppearance::Suggested);
+        d.set_close_response("cancel");
+        let ui = Rc::clone(self);
+        d.connect_response(None, move |_, r| {
+            if r == "reinstall" {
+                ui.run("reinstall", None);
             }
         });
         d.present(Some(&self.window));
@@ -767,7 +818,7 @@ impl Ui {
                             .title(r.title.as_str())
                             .subtitle(r.subtitle.as_str())
                             .use_markup(false)
-                            .active(*on)
+                            .active(self.bridges_pending.get().unwrap_or(*on))
                             .sensitive(!self.busy.get())
                             .build();
                         sw.set_widget_name("bridges");

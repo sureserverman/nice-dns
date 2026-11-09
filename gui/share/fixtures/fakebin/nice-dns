@@ -14,5 +14,6 @@ code=${NICE_DNS_FAKE_EXIT:-0}
 echo "fake nice-dns: $*"
 echo "fake nice-dns: a line on stderr" >&2
 [ "$code" != 126 ] || echo "nice-dns: authorisation cancelled" >&2
-echo "fake nice-dns: done"
+# update --check's answer is its last line (docs/cli-contract.md).
+if [ "$*" = "update --check" ] && [ "$code" = 10 ]; then echo "available 0123456789ab"; else echo "fake nice-dns: done"; fi
 exit "$code"

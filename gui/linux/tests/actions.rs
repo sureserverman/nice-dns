@@ -158,8 +158,9 @@ fn actions_one_at_a_time_the_controls_are_disabled_while_it_runs_and_back_after_
     assert_eq!(field(p.at("before"), "disabled"), "0", "{}", p.out);
     assert_eq!(field(p.at("during"), "disabled"), controls.to_string(), "every control is disabled while it runs: {}", p.out);
     assert_eq!(field(p.at("after"), "disabled"), "0", "the controls come back after a failure: {}", p.out);
-    // The second click while it ran started nothing.
-    assert_eq!(p.record.matches("restart").count(), 1, "{}", p.record);
+    // The second click while it ran (Uninstall) opened no dialog and started nothing.
+    assert_eq!(field(p.at("second"), "dialog"), "none", "{}", p.out);
+    assert_eq!(p.record, "status --tsv\nrestart\nstatus --tsv\n", "{}", p.out);
     assert!(p.out.contains("close-while-busy: refused"), "{}", p.out);
     assert!(p.out.contains("pane: failed (exit 3)"), "{}", p.out);
 }
@@ -169,6 +170,8 @@ fn actions_the_bridges_switch_runs_its_command_and_shows_the_status_mode_after_a
     let p = probe("bridges-off", 3, None, true);
     assert_eq!(p.code, Some(0), "{}", p.out);
     assert!(p.record.contains("bridges off"), "{}", p.record);
+    // While it runs the switch shows what was asked for.
+    assert_eq!(field(p.at("during"), "switch"), "off", "{}", p.out);
     // The command failed and the status still says on: the switch says on.
     assert_eq!(field(p.at("after"), "switch"), "on", "{}", p.out);
 }
@@ -178,7 +181,10 @@ fn actions_a_check_that_finds_an_update_offers_to_install_it() {
     let p = probe("update-check", 10, None, true);
     assert_eq!(p.code, Some(0), "{}", p.out);
     assert!(p.record.contains("update --check"), "{}", p.record);
-    assert_eq!(field(p.at("after"), "dialog"), "Install", "{}", p.out);
+    let after = p.at("after");
+    assert_eq!(field(after, "dialog"), "Install_the_update?", "{}", p.out);
+    // It names the commit this check printed.
+    assert!(after.contains("0123456789ab"), "{after}");
     // Nothing was installed without an answer.
     assert!(!p.record.lines().any(|l| l == "update"), "{}", p.record);
 }

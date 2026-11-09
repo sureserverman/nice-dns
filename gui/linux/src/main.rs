@@ -230,14 +230,11 @@ fn probe_report(ui: &window::Ui, when: &str) -> String {
             }
         }
     });
-    let dialog = ui
-        .window
-        .visible_dialog()
-        .and_then(|d| d.downcast::<adw::AlertDialog>().ok())
-        .and_then(|d| d.heading())
-        .map_or("none".to_string(), |h| h.to_string());
+    let alert = ui.window.visible_dialog().and_then(|d| d.downcast::<adw::AlertDialog>().ok());
+    let dialog = alert.as_ref().and_then(|d| d.heading()).map_or("none".to_string(), |h| h.replace(' ', "_"));
+    let body = alert.as_ref().map_or(String::new(), |d| d.body().to_string());
     format!(
-        "{when}: controls={controls} disabled={disabled} switch={switch} greyed={greyed} stale={} dialog={dialog} page={}",
+        "{when}: controls={controls} disabled={disabled} switch={switch} greyed={greyed} stale={} dialog={dialog} page={} body={body}",
         if stale.is_empty() { "none".into() } else { stale.join(",") },
         ui.page_summary()
     )
@@ -246,8 +243,8 @@ fn probe_report(ui: &window::Ui, when: &str) -> String {
 /// `--probe <id>`: a test hook for the window's own behaviour. It shows the
 /// status, prints a report, clicks `id` the way a person would (the switch for
 /// `bridges-on`/`bridges-off`, otherwise the action, dialogs included), prints
-/// a report while it runs, clicks Restart again (one action at a time: that
-/// second click must start nothing) and tries to close the window (refused
+/// a report while it runs, clicks Uninstall (one action at a time: that
+/// second click must open no dialog and start nothing) and tries to close the window (refused
 /// while an action runs), waits until the action has ended and the
 /// status was read again, prints a last report with the pane's last line, and
 /// exits 0 (3 when it never settles within 60 s). It needs a display.
@@ -277,7 +274,9 @@ fn run_probe(id: String) -> ExitCode {
             }
             println!("{}", probe_report(&ui, "during"));
             if ui.is_busy() {
-                ui.act("restart");
+                // A second click while it runs: one that would open a dialog.
+                ui.act("uninstall");
+                println!("{}", probe_report(&ui, "second"));
                 // Closing while it runs is refused.
                 ui.window.close();
                 println!("close-while-busy: {}", if ui.window.is_visible() { "refused" } else { "closed" });
@@ -319,7 +318,8 @@ fn main() -> ExitCode {
         ["--check"] => ExitCode::from(run_check()),
         ["--screenshot", png] => run_screenshot(PathBuf::from(png)),
         ["--run-action", id, "--exit"] => run_action(id.to_string()),
-        ["--probe", id] if actions::lookup(id).is_some() => run_probe(id.to_string()),
+        // Like --run-action: only actions that run a command.
+        ["--probe", id] if actions::lookup(id).and_then(|a| a.program).is_some() => run_probe(id.to_string()),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
