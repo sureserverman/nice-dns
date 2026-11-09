@@ -770,6 +770,44 @@ t_gui_reinstall_replaces_the_earlier_copy() {
   assert_eq "" "$(find "$IP_HOME/.local/share/nice-dns" -maxdepth 1 -name '.gui.*')" "no leftovers"
 }
 
+t_gui_a_cut_off_publish_is_restored_even_when_the_next_fetch_fails() {
+  ip_gui_world
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "the install: $IP_OUT"
+  ip_gui_paths
+  mv "$IP_GUI_DIR" "$IP_HOME/.local/share/nice-dns/.gui.old.123"
+  printf '%040d\n' 5 >"$FAKE/git_head"
+  printf '22\n' >"$FAKE/asset_rcs"
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "a reinstall whose download fails: $IP_OUT"
+  assert_file "$IP_GUI_DIR/nice-dns-gui" "the earlier copy set aside is back"
+  assert_file "$IP_GUI_DIR/published.tsv" "with its record"
+  assert_eq "" "$(find "$IP_HOME/.local/share/nice-dns" -maxdepth 1 -name '.gui.*')" "no leftovers"
+}
+
+t_gui_a_reinstall_under_another_xdg_data_home_leaves_no_second_launcher() {
+  local xdg
+  ip_gui_world
+  xdg="$IP_HOME/.xdg-data"
+  IP_XDG_DATA_HOME="$xdg" ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "the install with XDG_DATA_HOME: $IP_OUT"
+  assert_file "$xdg/applications/nice-dns.desktop" "the launcher is under XDG_DATA_HOME"
+  printf '%040d\n' 5 >"$FAKE/git_head"
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "the reinstall without it: $IP_OUT"
+  ip_gui_paths
+  assert_file "$IP_GUI_DESK" "the launcher is in the default place now"
+  assert_no_path "$xdg/applications/nice-dns.desktop" "the earlier launcher is gone"
+  assert_no_path "$xdg/icons/hicolor/256x256/apps/nice-dns.png" "and the earlier icon"
+  # A record naming a relative or foreign path removes nothing.
+  printf 'launcher\t../x/applications/nice-dns.desktop\nicon\t%s\n' "$IP_HOME/keep.png" >>"$IP_GUI_DIR/published.tsv"
+  echo keep >"$IP_HOME/keep.png"
+  ip_install install-deb uninstall
+  assert_rc 0 "$IP_RC" "the uninstall: $IP_OUT"
+  assert_file "$IP_HOME/keep.png" "a path that is not the icon's is never removed"
+  ip_gui_absent "after the uninstall"
+}
+
 t_gui_a_reinstall_that_cannot_fetch_keeps_the_earlier_gui() {
   ip_gui_world
   ip_install install-deb haproxy

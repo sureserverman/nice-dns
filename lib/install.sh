@@ -1754,6 +1754,9 @@ _nd_inst_publish_gui() {
       _nd_inst_gui_note "The program's path $bin cannot go in a desktop entry as it is" "GUI not installed"
       return 0 ;;
   esac
+  # The earlier publish's record: a launcher or icon it put elsewhere (another
+  # XDG_DATA_HOME) goes once this one is in place.
+  [ ! -f "$dir/published.tsv" ] || cp "$dir/published.tsv" "$new/.published.prev"
   if [ -e "$dir" ]; then mv "$dir" "$old" || { rm -rf "${new:?}"; _nd_inst_gui_note "Could not replace $dir"; return 0; }; fi
   mv "$new" "$dir" || { [ ! -e "$old" ] || mv "$old" "$dir"; rm -rf "${new:?}"; _nd_inst_gui_note "Could not replace $dir"; return 0; }
   rm -rf "${old:?}"
@@ -1769,25 +1772,38 @@ _nd_inst_publish_gui() {
   # Where the three went, for the uninstall (which may run with another
   # XDG_DATA_HOME, e.g. from the desktop session).
   printf 'program\t%s\nlauncher\t%s\nicon\t%s\n' "$bin" "$desk" "$icon" >"$dir/published.tsv" || true
+  _nd_inst_gui_forget "$dir/.published.prev" "$bin" "$desk" "$icon"
+  rm -f "$dir/.published.prev"
   if command -v update-desktop-database >/dev/null 2>&1; then update-desktop-database "$(dirname "$desk")" >/dev/null 2>&1 || true; fi
   # Published: the generation need not keep the tarball.
   rm -f "$tgz"
   ND_INST_GUI_BIN="$bin"
 }
 
+# _nd_inst_gui_forget <published.tsv> [keep...]: removes the program,
+# launcher and icon a publish recorded, but not the paths named in keep. A
+# recorded path counts only when it is absolute and has its own file name.
+_nd_inst_gui_forget() {
+  local rec="$1" k f x
+  shift
+  [ -f "$rec" ] || return 0
+  while IFS="$ND_INST_TAB" read -r k f; do
+    case "$k:$f" in
+      program:/*/nice-dns-gui|launcher:/*/applications/nice-dns.desktop|icon:/*/apps/nice-dns.png) ;;
+      *) continue ;;
+    esac
+    for x in "$@"; do [ "$x" != "$f" ] || continue 2; done
+    rm -f "$f"
+  done <"$rec"
+}
+
 # _nd_inst_gui_remove: the program, the launcher, the icon and the files.
 _nd_inst_gui_remove() {
-  local dir desk k f
+  local dir desk
   [ "$ND_INST_PLATFORM" = linux ] || return 0
   dir="$(_nd_inst_gui_dir)" desk="$(_nd_inst_gui_desktop)"
   # Where the install published them, then where they go by default.
-  if [ -f "$dir/published.tsv" ]; then
-    while IFS="$ND_INST_TAB" read -r k f; do
-      case "$k:$f" in
-        program:*/nice-dns-gui|launcher:*/applications/nice-dns.desktop|icon:*/apps/nice-dns.png) rm -f "$f" ;;
-      esac
-    done <"$dir/published.tsv"
-  fi
+  _nd_inst_gui_forget "$dir/published.tsv"
   rm -f "$HOME/.local/bin/nice-dns-gui" "$(_nd_inst_command_fallback_dir)/nice-dns-gui" "$desk" "$(_nd_inst_gui_icon)" \
     "$HOME/.local/share/applications/nice-dns.desktop" "$HOME/.local/share/icons/hicolor/256x256/apps/nice-dns.png"
   rm -rf "${dir:?}" "$(dirname "$dir")"/.gui.*
