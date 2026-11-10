@@ -300,6 +300,93 @@ t_hardened_runs_name_no_sibling_checkout() {
   assert_eq "" "$(grep -nE 'hardened_sibling|HARDENED_SIBLING' "$CL_TREE/nice-dns" "$CL_TREE/lib/install.sh")" "neither the command nor the library looks for one"
 }
 
+# ─────────────── switch: one choice changed, from the kept source ───────────────
+
+# `nice-dns switch proxy|pihole <choice>` is `reinstall --local` with that one
+# choice changed (DEC-018): the kept source, the recorded branch and the other
+# recorded choice; never a clone, from anywhere it is run.
+t_switch_changes_one_choice_from_the_kept_source() {
+  local u os
+  for u in $(cl_platforms); do
+    os="$(cl_os "$u")"
+    cl_world "$u"; cl_installed; cl_record haproxy standard dev
+    cl_run "$CL_CMD" switch proxy socat
+    assert_rc 0 "$CL_RC" "$u: switch proxy socat: $CL_ERR"
+    assert_eq "installer[snapshot] install-$os.sh socat dev" "$(cl_calls '^installer')" "$u: the kept source's installer, the proxy changed, the branch recorded"
+    assert_eq "" "$(cl_calls '^git ')" "$u: nothing is cloned"
+    assert_match 'tor-socat' "$(printf '%s\n' "$CL_OUT" | tail -n 1)" "$u: the last line says what now runs"
+    assert_match 'DNS is answering' "$(printf '%s\n' "$CL_OUT" | tail -n 1)" "$u: and that DNS answers"
+    cl_world "$u"; cl_installed; cl_record socat standard dev
+    cl_run "$CL_CMD" switch proxy haproxy
+    assert_eq "installer[snapshot] install-$os.sh haproxy dev" "$(cl_calls '^installer')" "$u: switch proxy haproxy"
+    cl_world "$u"; cl_installed; cl_record socat standard main
+    cl_run "$CL_CMD" switch pihole hardened
+    assert_rc 0 "$CL_RC" "$u: switch pihole hardened: $CL_ERR"
+    assert_eq "installer[snapshot] install-$os-hardened.sh socat main" "$(cl_calls '^installer')" "$u: the hardened entrypoint, the proxy kept"
+    assert_match 'hardened' "$(printf '%s\n' "$CL_OUT" | tail -n 1)" "$u: the last line names the flavour"
+    cl_world "$u"; cl_installed; cl_record haproxy hardened main
+    cl_run "$CL_CMD" switch pihole standard
+    assert_eq "installer[snapshot] install-$os.sh haproxy main" "$(cl_calls '^installer')" "$u: switch pihole standard"
+    assert_eq "" "$(cl_calls '^git ')" "$u: nothing is cloned"
+  done
+  # Run from a checkout too, the kept source is what it reinstalls.
+  cl_world Linux; cl_installed; cl_record haproxy standard main
+  cl_run "$CL_TREE/nice-dns" switch proxy socat
+  assert_eq "installer[snapshot] install-deb.sh socat main" "$(cl_calls '^installer')" "from a checkout, the kept source still"
+}
+
+t_switch_to_the_installed_choice_changes_nothing() {
+  local w
+  for w in "proxy haproxy" "pihole standard"; do
+    cl_world Linux; cl_installed; cl_record haproxy standard main
+    # shellcheck disable=SC2086  # two words
+    cl_run "$CL_CMD" switch $w
+    assert_rc 0 "$CL_RC" "switch $w: $CL_ERR"
+    assert_eq "Already ${w#* }; nothing changed." "$CL_OUT" "switch $w: says so"
+    assert_eq "" "$(cl_calls '^installer')" "switch $w: no installer runs"
+  done
+}
+
+t_switch_with_nothing_installed_or_no_kept_source() {
+  cl_world Darwin
+  cl_run "$CL_TREE/nice-dns" switch proxy socat
+  assert_rc 1 "$CL_RC" "nothing installed: exit 1"
+  assert_match 'nice-dns is not installed; run `nice-dns install`' "$CL_ERR" "the message"
+  assert_eq "" "$(cl_calls .)" "nothing ran"
+  cl_world Linux; cl_installed; cl_record haproxy standard main
+  rm -rf "$CL_HOME/.local/share/nice-dns/source"
+  cl_run "$CL_CMD" switch pihole hardened
+  assert_rc 1 "$CL_RC" "no kept source: exit 1"
+  assert_match "$CL_HOME/\\.local/share/nice-dns/source" "$CL_ERR" "it names the missing directory"
+  assert_match 'nice-dns reinstall' "$CL_ERR" "and nice-dns reinstall"
+  assert_eq "" "$(cl_calls .)" "nothing ran"
+}
+
+t_switch_whose_install_fails_says_the_old_choice_runs() {
+  cl_world Linux; cl_installed; cl_record haproxy standard main
+  CL_INSTALLER_RC=7 cl_run "$CL_CMD" switch proxy socat
+  assert_rc 3 "$CL_RC" "a failed install: exit 3"
+  assert_match 'did not happen' "$CL_ERR" "the switch did not happen"
+  assert_match 'haproxy' "$CL_ERR" "the old choice still runs"
+  assert_eq "installer[snapshot] install-deb.sh socat main" "$(cl_calls '^installer')" "the install was tried once"
+}
+
+t_switch_usage_errors_run_nothing() {
+  local a
+  for a in "switch" "switch proxy" "switch pihole" "switch proxy nginx" "switch pihole fancy" "switch dns socat" "switch proxy socat extra"; do
+    cl_world Linux; cl_installed; cl_record haproxy standard main
+    # shellcheck disable=SC2086  # the words
+    cl_run "$CL_CMD" $a
+    assert_rc 2 "$CL_RC" "$a: exit 2"
+    assert_eq "" "$CL_OUT" "$a: nothing on stdout"
+    assert_match 'switch' "$CL_ERR" "$a: a usage line"
+    assert_eq "" "$(cl_calls .)" "$a: nothing ran"
+  done
+  cl_run "$CL_CMD" --help
+  assert_match 'switch proxy haproxy\|socat' "$CL_OUT" "--help lists switch proxy"
+  assert_match 'switch pihole standard\|hardened' "$CL_OUT" "and switch pihole"
+}
+
 t_reinstall_refuses_an_unreadable_record() {
   cl_world Linux; cl_record "" standard main
   cl_run "$CL_TREE/nice-dns" reinstall
