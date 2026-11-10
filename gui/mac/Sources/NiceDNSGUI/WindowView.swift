@@ -184,9 +184,10 @@ struct StatusPage: View {
     private var actions: some View {
         Panel(title: "Actions") {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), alignment: .leading)], alignment: .leading) {
-                ForEach(Actions.all.filter { $0.program != nil && !$0.id.hasPrefix("bridges-") }, id: \.id) { a in
+                // Install belongs to the not-installed page; the bridges have their switch.
+                ForEach(Actions.all.filter { $0.program != nil && !$0.id.hasPrefix("bridges-") && $0.id != "install" }, id: \.id) { a in
                     Button(a.label + (a.needsConfirm ? "…" : "")) { model.request(a.id) }
-                        .disabled(model.busy || (a.needsInstalled && !model.installed))
+                        .disabled(model.busy)
                 }
             }
         }
@@ -302,7 +303,7 @@ struct ConfirmSheet: View {
             switch confirm {
             case .uninstall:
                 Text("Uninstall nice-dns?").font(.title3.bold())
-                Text("The containers, the controller, the DNS pin and the GUI are removed, and DNS is given back to the system. Type uninstall to go ahead.")
+                Text("The containers, the controller and the DNS pin are removed, and DNS is given back to the system. Type uninstall to go ahead.")
                     .fixedSize(horizontal: false, vertical: true)
                 TextField("uninstall", text: $typed).textFieldStyle(.roundedBorder)
                 buttons(go: "Uninstall", enabled: typed == "uninstall") { model.run("uninstall") }
@@ -315,6 +316,11 @@ struct ConfirmSheet: View {
                     model.run("reinstall", choices: Choices(variant: variant, pihole: pihole, branch: branch))
                 }
                 .onAppear { variant = c.variant; pihole = c.pihole; branch = c.branch }
+            case .reinstallKeep:
+                Text("Reinstall nice-dns?").font(.title3.bold())
+                Text("The status does not say which choices are installed, so the reinstall keeps the recorded ones.")
+                    .fixedSize(horizontal: false, vertical: true)
+                buttons(go: "Reinstall", enabled: true) { model.run("reinstall") }
             case .update(let commit):
                 Text("Install the update?").font(.title3.bold())
                 Text("A different version is available" + (commit.map { ": " + String($0.prefix(12)) } ?? "") + ". The branch's current commit is installed like a reinstall.")

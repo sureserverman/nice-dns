@@ -230,6 +230,66 @@ check("a failed action keeps its output and its exit",
       failedRun.paneText.hasPrefix("$ \(fakebin)/nice-dns restart\n") && failedRun.paneText.contains("a line on stderr")
       && failedRun.said == "failed (exit 3)" && failedRun.exitStatus == 3, failedRun.paneText)
 
+// --- Stage 1 gate round 1 -------------------------------------------------
+
+// A command that leaves a process behind holding its output: the exit comes
+// within the drain, last, and the late line is never delivered after it.
+do {
+    var events: [CommandEvent] = []
+    let lock = NSLock()
+    let started = Date()
+    var exitAfter: TimeInterval?
+    let done = DispatchSemaphore(value: 0)
+    try CommandRunner.spawn(["/bin/sh", "-c", "echo first; (sleep 3; echo late) & exit 0"]) { ev in
+        lock.lock()
+        events.append(ev)
+        if case .exit = ev { exitAfter = Date().timeIntervalSince(started); done.signal() }
+        lock.unlock()
+    }
+    _ = done.wait(timeout: .now() + 10)
+    Thread.sleep(forTimeInterval: 4)  // the left-behind process writes `late` now
+    lock.lock()
+    let seen = events
+    let after = exitAfter
+    lock.unlock()
+    let lastIsExit: Bool = { if case .exit(.code(0))? = seen.last { return true }; return false }()
+    check("a left-behind process holding the pipe does not hold the exit",
+          (after ?? 99) < 2.5, "exit after \(after.map { "\($0)" } ?? "never") s")
+    check("the exit stays the last event when a line comes after it",
+          lastIsExit && seen.first == .line(.stdout, "first") && !seen.contains(.line(.stdout, "late")), "\(seen)")
+} catch {
+    check("a left-behind process holding the pipe does not hold the exit", false, "\(error)")
+}
+
+// Where the installer puts the command when PATH does not have it.
+let instHome = FileManager.default.temporaryDirectory.appendingPathComponent("kitcheck-inst-\(getpid())").path
+func plant(_ path: String) {
+    try? FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+    FileManager.default.createFile(atPath: path, contents: Data("#!/bin/sh\n".utf8), attributes: [.posixPermissions: 0o755])
+}
+plant("\(instHome)/.local/state/nice-dns-health/bin/nice-dns")
+check("nice-dns falls back to ~/.local/state/nice-dns-health/bin",
+      (try? CommandPaths.resolve("nice-dns", environment: ["PATH": "/usr/bin:/bin", "HOME": instHome])) == "\(instHome)/.local/state/nice-dns-health/bin/nice-dns")
+plant("\(instHome)/xdg/nice-dns-health/bin/nice-dns")
+check("an XDG_STATE_HOME fallback is used when set",
+      (try? CommandPaths.resolve("nice-dns", environment: ["PATH": "/usr/bin:/bin", "HOME": instHome, "XDG_STATE_HOME": "\(instHome)/xdg"])) == "\(instHome)/xdg/nice-dns-health/bin/nice-dns")
+plant("\(instHome)/.local/bin/nice-dns")
+check("~/.local/bin wins over the fallback",
+      (try? CommandPaths.resolve("nice-dns", environment: ["PATH": "/usr/bin:/bin", "HOME": instHome])) == "\(instHome)/.local/bin/nice-dns")
+try? FileManager.default.removeItem(atPath: instHome)
+
+// The glyph: a stale controller is amber even over an old FAIL; a missing
+// `stale` row is not stale.
+if case .installed(var s) = view("status-stale.tsv", 0) {
+    s.obs[0].verdict = "unhealthy"
+    s.controller.verdict = "FAIL [unbound]"
+    check("a stale controller is amber even when its old verdict is FAIL", Glyph.of(.installed(s)) == .amber, "\(Glyph.of(.installed(s)))")
+}
+if case .installed(var s) = view("status-installed.tsv", 0) {
+    s.controller.stale = nil
+    check("a missing stale row is not read as stale", Glyph.of(.installed(s)) == .green, "\(Glyph.of(.installed(s)))")
+}
+
 try? FileManager.default.removeItem(atPath: emptyHome)
 
 print("KitCheck: \(passed) passed, \(failed) failed")

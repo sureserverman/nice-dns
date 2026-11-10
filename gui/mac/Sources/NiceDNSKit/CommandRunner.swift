@@ -87,8 +87,9 @@ public enum CommandRunner {
         try? err.fileHandleForWriting.close()
 
         let readers = DispatchGroup()
-        pump(out.fileHandleForReading, .stdout, readers, deliver, onEvent)
-        pump(err.fileHandleForReading, .stderr, readers, deliver, onEvent)
+        let gate = Gate()
+        pump(out.fileHandleForReading, .stdout, readers, gate, deliver, onEvent)
+        pump(err.fileHandleForReading, .stderr, readers, gate, deliver, onEvent)
 
         DispatchQueue.global().async {
             exited.wait()
@@ -99,7 +100,9 @@ public enum CommandRunner {
             case .uncaughtSignal: ev = .exit(.signal(p.terminationStatus))
             @unknown default: ev = .failed("no exit code and no signal")
             }
-            deliver.async { onEvent(ev) }
+            // Lines a process the command left behind writes after this
+            // are dropped: the exit stays the last event.
+            gate.close { deliver.async { onEvent(ev) } }
         }
         return RunningCommand(p)
     }
@@ -151,6 +154,7 @@ public enum CommandRunner {
         _ handle: FileHandle,
         _ source: CommandEvent.Source,
         _ group: DispatchGroup,
+        _ gate: Gate,
         _ deliver: DispatchQueue,
         _ onEvent: @escaping (CommandEvent) -> Void
     ) {
@@ -161,7 +165,7 @@ public enum CommandRunner {
             var buf = [UInt8](repeating: 0, count: 4096)
             func send(_ bytes: ArraySlice<UInt8>) {
                 let line = String(decoding: bytes, as: UTF8.self)
-                deliver.async { onEvent(.line(source, line)) }
+                gate.ifOpen { deliver.async { onEvent(.line(source, line)) } }
             }
             while true {
                 let n = buf.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
@@ -177,5 +181,25 @@ public enum CommandRunner {
             try? handle.close()
             group.leave()
         }
+    }
+}
+
+/// Set once the exit is queued. Lines and the exit are queued under its lock,
+/// so every line queued before the exit is delivered before it, and none after.
+final class Gate {
+    private let lock = NSLock()
+    private var closed = false
+
+    func ifOpen(_ f: () -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        if !closed { f() }
+    }
+
+    func close(_ f: () -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        closed = true
+        f()
     }
 }

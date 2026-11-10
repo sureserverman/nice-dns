@@ -10,6 +10,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var item: NSStatusItem!
     private var window: NSWindow?
     private var watch: Set<AnyCancellable> = []
+    /// When Quit was refused because an action runs: a second Quit within
+    /// 10 s goes through (a command that hangs must not trap the owner).
+    private var quitAsked: Date?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -31,6 +34,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    /// Quitting mid-action would leave the command with no one reading its
+    /// output, midway through (say) a reinstall: refused once, with a notice.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard model.busy else { return .terminateNow }
+        if let t = quitAsked, Date().timeIntervalSince(t) < 10 { return .terminateNow }
+        quitAsked = Date()
+        openWindow()
+        model.say("An action is running; quit again within 10 s to leave it running without the app")
+        return .terminateCancel
+    }
 
     private func drawGlyph() {
         let g = model.glyph
@@ -70,10 +84,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             b.state = model.bridgesOn ? .on : .off
             menu.addItem(b)
         }
-        for a in Actions.all where a.program != nil && !a.id.hasPrefix("bridges-") && a.id != "update" {
-            if a.needsInstalled != model.installed && a.id != "uninstall" { continue }
-            if a.id == "uninstall" && !model.installed { continue }
-            menu.addItem(entry(a.label + (a.needsConfirm ? "…" : ""), a.id))
+        if model.installed {
+            // A described stack: every action that runs a command but Install
+            // (the not-installed page's) and the update (offered above).
+            for a in Actions.all where a.program != nil && !a.id.hasPrefix("bridges-") && a.id != "update" && a.id != "install" {
+                menu.addItem(entry(a.label + (a.needsConfirm ? "…" : ""), a.id))
+            }
+        } else if model.notInstalled && model.keptSource, let a = Actions.lookup("install") {
+            menu.addItem(entry(a.label, a.id))
         }
         menu.addItem(.separator())
         let open = NSMenuItem(title: "Open window", action: #selector(openWindow), keyEquivalent: "o")

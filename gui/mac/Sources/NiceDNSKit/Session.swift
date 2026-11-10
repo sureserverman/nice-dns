@@ -45,10 +45,10 @@ public func succeeded(id: String, end: CommandEvent) -> Bool {
 public enum Glyph: String, Equatable {
     case grey, green, amber, red
 
-    /// Grey: not installed. Red: the status cannot be shown, the controller
-    /// says FAIL, or an observation is unhealthy. Amber: the controller is
-    /// stale, its verdict is not OK, an observation is indeterminate, or a
-    /// file status reads cannot be read. Green otherwise.
+    /// Grey: not installed. Amber: the controller is stale (its verdict is
+    /// old), its verdict is not OK, an observation is indeterminate, or a file
+    /// status reads cannot be read. Red: the status cannot be shown, the
+    /// controller says FAIL, or an observation is unhealthy. Green otherwise.
     public static func of(_ view: StatusView) -> Glyph {
         switch view {
         case .notInstalled: return .grey
@@ -59,9 +59,12 @@ public enum Glyph: String, Equatable {
     }
 
     static func of(_ s: Status) -> Glyph {
+        // A stale pass's verdict is old (the window greys it): stale is amber.
+        // A missing or unreadable `stale` row is not read as stale.
+        if s.controller.stale.map({ $0 != .no }) ?? false { return .amber }
         let verdict = s.controller.verdict ?? "unknown"
         if verdict.hasPrefix("FAIL") || s.obs.contains(where: { $0.verdict == "unhealthy" }) { return .red }
-        if s.controller.stale != .no || verdict != "OK" || s.obs.contains(where: { $0.verdict != "healthy" }) { return .amber }
+        if verdict != "OK" || s.obs.contains(where: { $0.verdict != "healthy" }) { return .amber }
         return .green
     }
 }
@@ -108,6 +111,7 @@ public final class ActionRun {
             running = try CommandRunner.spawn(argv, environment: CommandPaths.childEnvironment(environment), queue: queue) { [self] ev in
                 switch ev {
                 case .line(_, let text):
+                    guard end == nil else { return }
                     // A progress bar redraws with \r: keep the last state of the line.
                     let shown = text.split(separator: "\r", omittingEmptySubsequences: true).last.map(String.init) ?? ""
                     outputLines.append(shown)
@@ -144,7 +148,7 @@ public final class ActionRun {
     /// end is delivered on `queue` like every other event.
     private func finish(_ ev: CommandEvent, _ queue: DispatchQueue, _ onChange: @escaping (ActionRun) -> Void, later: Bool) {
         let deliver = { [self] in
-            if case .failed(let m) = ev { paneLines.append(m) }
+            guard end == nil else { return }
             end = ev
             paneLines.append(outcome(id: id, end: ev, lines: outputLines))
             running = nil

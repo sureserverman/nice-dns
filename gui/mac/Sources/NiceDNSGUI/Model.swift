@@ -16,12 +16,16 @@ enum Page: Equatable {
 enum Confirm: Equatable, Identifiable {
     case uninstall
     case reinstall(Choices)
+    /// The status does not say which choices are installed: the reinstall
+    /// keeps the recorded ones, nothing is guessed.
+    case reinstallKeep
     case update(String?)
 
     var id: String {
         switch self {
         case .uninstall: return "uninstall"
         case .reinstall: return "reinstall"
+        case .reinstallKeep: return "reinstall-keep"
         case .update: return "update"
         }
     }
@@ -45,6 +49,12 @@ final class AppModel: ObservableObject {
     private var reading = false
     private var timer: Timer?
     private var current: ActionRun?
+    /// A pane update is due: chatty output is shown at most every 0.1 s.
+    private var paneScheduled = false
+    /// The bridges switch keeps what the user set until the read after the
+    /// action lands, so a switch that worked does not flick back first.
+    private var clearPendingOnRead = false
+    private var noticeToken = 0
 
     /// How often the status is read.
     static let refreshInterval: TimeInterval = 5
@@ -60,7 +70,19 @@ final class AppModel: ObservableObject {
         }
     }
 
-    var installed: Bool { status?.install.installed == true }
+    /// A stack the status describes: installed, or installed with a file it
+    /// cannot read (Uninstall and Restart are wanted most then).
+    var installed: Bool {
+        switch page {
+        case .status(.installed), .status(.unreadable): return true
+        default: return false
+        }
+    }
+
+    var notInstalled: Bool {
+        if case .status(.notInstalled) = page { return true }
+        return false
+    }
 
     var glyph: Glyph {
         switch page {
@@ -100,7 +122,12 @@ final class AppModel: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.reading = false
-                if generation == self.readGeneration { self.page = page }
+                guard generation == self.readGeneration else { return }
+                self.page = page
+                if self.clearPendingOnRead {
+                    self.clearPendingOnRead = false
+                    self.bridgesPending = nil
+                }
             }
         }
     }
@@ -131,19 +158,32 @@ final class AppModel: ObservableObject {
     /// The way in for a button or a menu item: ask first where the table
     /// says so, then run.
     func request(_ id: String) {
-        guard !busy else { notice = "Another action is running"; return }
+        // Opening the admin page or showing a path runs no command: never refused.
+        if let a = Actions.lookup(id), a.program == nil { return runInApp(id, label: a.label) }
+        guard !busy else { say("Another action is running"); return }
         switch id {
         case "uninstall": confirm = .uninstall
-        case "reinstall": confirm = .reinstall(defaultChoices())
+        case "reinstall": confirm = defaultChoices().map(Confirm.reinstall) ?? .reinstallKeep
         case "update": confirm = .update(status?.update.remoteCommit)
         default: run(id)
         }
     }
 
-    func defaultChoices() -> Choices {
-        Choices(variant: status?.install.variant ?? "haproxy",
-                pihole: status?.install.pihole ?? "standard",
-                branch: status?.install.branch ?? "main")
+    /// The reinstall dialog's choices, from the status; nil when it does not
+    /// say the proxy or the Pi-hole flavour (they are never guessed).
+    func defaultChoices() -> Choices? {
+        guard let v = status?.install.variant, let p = status?.install.pihole else { return nil }
+        return Choices(variant: v, pihole: p, branch: status?.install.branch ?? "main")
+    }
+
+    /// A short notice under the pane, cleared after 8 s or by the next action.
+    func say(_ text: String) {
+        noticeToken += 1
+        let token = noticeToken
+        notice = text
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+            if self?.noticeToken == token { self?.notice = nil }
+        }
     }
 
     func setBridges(_ on: Bool) {
@@ -153,9 +193,11 @@ final class AppModel: ObservableObject {
 
     /// Run action `id` now, one at a time, its output streamed into the pane.
     func run(_ id: String, choices: Choices? = nil) {
-        guard !busy else { notice = "Another action is running"; return }
         let label = Actions.lookup(id)?.label ?? id
         if Actions.lookup(id)?.program == nil { return runInApp(id, label: label) }
+        guard !busy else { say("Another action is running"); return }
+        noticeToken += 1
+        notice = nil
         switch id {
         case "bridges-on": bridgesPending = true
         case "bridges-off": bridgesPending = false
@@ -169,19 +211,28 @@ final class AppModel: ObservableObject {
         let run = ActionRun(id: id)
         current = run
         run.start(choices: choices, environment: environment, queue: .main) { [weak self] r in
-            guard let self else { return }
-            self.paneText = r.paneText
-            if r.end != nil { self.ended(r) }
+            guard let self, self.current === r else { return }
+            if r.end != nil {
+                self.paneText = r.paneText
+                return self.ended(r)
+            }
+            guard !self.paneScheduled else { return }
+            self.paneScheduled = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                guard let self else { return }
+                self.paneScheduled = false
+                if let c = self.current, c === r { self.paneText = c.paneText }
+            }
         }
     }
 
     private func ended(_ r: ActionRun) {
         busy = false
-        bridgesPending = nil
+        clearPendingOnRead = true
         current = nil
         paneResult = r.said ?? ""
         paneOK = r.end.map { succeeded(id: r.id, end: $0) } ?? false
-        if !paneOK { notice = "\(paneTitle): \(paneResult)" }
+        if !paneOK { say("\(paneTitle): \(paneResult)") }
         // Re-read everything: a switch the command did not turn goes back.
         readGeneration += 1
         reading = false
@@ -193,28 +244,36 @@ final class AppModel: ObservableObject {
     }
 
     /// The actions that run no command.
+    /// The actions that run no command. While a command runs its pane stays;
+    /// the answer goes in a notice instead.
     private func runInApp(_ id: String, label: String) {
-        paneTitle = label
-        paneOK = true
+        let said: String
+        var text = ""
+        var ok = true
         switch id {
         case "open-admin":
-            if let u = status?.admin.url, let url = URL(string: u) {
+            // Only a web page: the URL comes from the status, opened as a link.
+            if let u = status?.admin.url, let url = URL(string: u), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
                 NSWorkspace.shared.open(url)
-                paneText = "opened \(u)\n"
-                paneResult = "opened in the browser"
+                text = "opened \(u)"
+                said = "opened in the browser"
             } else {
-                paneText = ""
-                paneResult = "the status names no admin page"
-                paneOK = false
+                said = "the status names no admin web page"
+                ok = false
             }
         case "show-password-path":
-            let p = status?.admin.passwordPath ?? "unknown"
-            paneText = p + "\n"
-            paneResult = "the admin password is in this file"
+            text = status?.admin.passwordPath ?? "unknown"
+            said = "the admin password is in this file"
         default:
-            paneText = ""
-            paneResult = "nothing to run"
+            said = "nothing to run"
         }
+        if busy {
+            return say(text.isEmpty ? said : "\(text): \(said)")
+        }
+        paneTitle = label
+        paneText = text.isEmpty ? "" : text + "\n"
+        paneResult = said
+        paneOK = ok
     }
 
     var actionRunning: Bool { current != nil }
