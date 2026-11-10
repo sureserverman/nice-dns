@@ -126,3 +126,20 @@ Overall: PASS with residuals. Most of what the Outcomes ask could not be reached
 - `pgrep -fl NiceDNSGUI` found no NiceDNSGUI process.
 - The evaluator's helper files (`/tmp/ndeval` on mac) were removed. The build tree `~/nice-dns-gui-check` is left as the build step made it.
 - All background jobs (the 300 s wait and its sentinel waits) finished on their own.
+
+## Owner decision (2026-11-10)
+
+The owner chose option 3 on the gate's ACTION NEEDED block ("3"): accept
+the screenshot-hook evidence for Stage 1, record the menu-bar Outcomes as
+not demonstrated, and go on to Stage 2.
+
+Not demonstrated by the user's route:
+- Outcome 1: the menu-bar glyph and its colours, the menu, and Open window.
+- Outcome 2: the grey glyph and the not-installed page (no uninstall was
+  allowed on mac).
+- Outcome 3: the amber glyph.
+- Outcome 4: a failed action's output staying in the pane.
+- Outcome 5: the window's error page, opened from the menu.
+
+The verdicts above are left as the evaluator wrote them. Nothing in this
+record claims these Outcomes hold.
