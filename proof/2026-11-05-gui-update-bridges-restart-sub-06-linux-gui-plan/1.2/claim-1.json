@@ -1,0 +1,35 @@
+{
+ "baseline": {
+  "elapsed_s": 14.8,
+  "exit": 0,
+  "tail": "   Compiling nice-dns-gui v0.1.0 (/home/user/dev/containers/nice-dns/gui/linux)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.51s\n     Running unittests src/main.rs (gui/linux/target/debug/deps/nice_dns_gui-f9238d23a5d0c72a)\n\nrunning 11 tests\ntest tests::window_renderer_defaults_to_cairo_and_keeps_the_users_choice ... ok\ntest window::tests::window_ago_says_minutes_and_hours ... ok\ntest window::tests::window_errors_become_one_error_page ... ok\ntest window::tests::window_not_installed_offers_install_only_with_the_kept_source ... ok\ntest window::tests::window_bridges_off_turns_the_switch_off_and_says_what_the_isp_sees ... ok\ntest window::tests::window_every_button_is_an_action_in_the_table ... ok\ntest window::tests::window_not_installed_with_an_unreadable_file_is_still_the_not_installed_page ... ok\ntest window::tests::window_installed_fixture_shows_every_section_fresh ... ok\ntest window::tests::window_unreadable_rows_are_listed ... ok\ntest window::tests::window_update_fixture_raises_the_banner ... ok\ntest window::tests::window_stale_fixture_greys_the_controller_sections_with_the_stale_label ... ok\n\ntest result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s\n\n     Running tests/actions.rs (gui/linux/target/debug/deps/actions-a0e99b6cac519369)\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s\n\n     Running tests/xvfb.rs (gui/linux/target/debug/deps/xvfb-60fee6132405902c)\n\nrunning 2 tests\ntest window_screenshot_under_xvfb_writes_a_png_for_every_fixture ... ok\ntest window_plain_launch_keeps_reading_the_status ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.09s\n"
+ },
+ "break_patch": "diff --git a/gui/linux/src/window.rs b/gui/linux/src/window.rs\nindex c7e7841..a1d7b79 100644\n--- a/gui/linux/src/window.rs\n+++ b/gui/linux/src/window.rs\n@@ -159,7 +159,7 @@ fn body(s: &Status, now: u64) -> Body {\n     let checked = s.update.checked_at.map(|t| format!(\" (checked {})\", ago(t, now))).unwrap_or_default();\n \n     let stale = s.controller.stale.filter(|st| *st != Stale::No);\n-    let stale_note = stale.map(|st| st.to_string());\n+    let stale_note: Option<String> = None;\n     let greyed = stale.is_some();\n \n     let mut installed = vec![\n",
+ "build": "cargo build --manifest-path gui/linux/Cargo.toml",
+ "created": "2026-11-10T06:22:37+00:00",
+ "fingerprint": "272c1266e3ab4e08cfa6facc208eec86b6da8a768c9efe26443b6163bff72ce2",
+ "index": 1,
+ "kind": "claim",
+ "named_break": "the stale fixture renders without the stale label",
+ "no_build_reason": null,
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-06-linux-gui-plan.md",
+ "red": {
+  "elapsed_s": 0.7,
+  "exit": 101,
+  "tail": "   Compiling nice-dns-gui v0.1.0 (/home/user/dev/containers/nice-dns/gui/linux)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.71s\n     Running unittests src/main.rs (gui/linux/target/debug/deps/nice_dns_gui-f9238d23a5d0c72a)\n\nrunning 11 tests\ntest tests::window_renderer_defaults_to_cairo_and_keeps_the_users_choice ... ok\ntest window::tests::window_errors_become_one_error_page ... ok\ntest window::tests::window_ago_says_minutes_and_hours ... ok\ntest window::tests::window_not_installed_offers_install_only_with_the_kept_source ... ok\ntest window::tests::window_not_installed_with_an_unreadable_file_is_still_the_not_installed_page ... ok\ntest window::tests::window_bridges_off_turns_the_switch_off_and_says_what_the_isp_sees ... ok\ntest window::tests::window_every_button_is_an_action_in_the_table ... ok\ntest window::tests::window_installed_fixture_shows_every_section_fresh ... ok\ntest window::tests::window_update_fixture_raises_the_banner ... ok\ntest window::tests::window_stale_fixture_greys_the_controller_sections_with_the_stale_label ... FAILED\ntest window::tests::window_unreadable_rows_are_listed ... ok\n\nfailures:\n\n---- window::tests::window_stale_fixture_greys_the_controller_sections_with_the_stale_label stdout ----\n\nthread 'window::tests::window_stale_fixture_greys_the_controller_sections_with_the_stale_label' (3396785) panicked at src/window.rs:986:13:\nassertion `left == right` failed: containers\n  left: None\n right: Some(\"stale 942s\")\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    window::tests::window_stale_fixture_greys_the_controller_sections_with_the_stale_label\n\ntest result: FAILED. 10 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s\n\nerror: test failed, to rerun pass `--bin nice-dns-gui`"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "1.2",
+ "test": "cargo test --manifest-path gui/linux/Cargo.toml -- window && xvfb-run -a cargo run -q --manifest-path gui/linux/Cargo.toml -- --screenshot /tmp/nice-dns-gui.png && [ \"$(stat -c %s /tmp/nice-dns-gui.png)\" -gt 10000 ]",
+ "text": "the window builds from each fixture (red if the stale fixture renders without the stale label)",
+ "touched": [
+  "gui/linux/src/window.rs"
+ ],
+ "touched_blobs": {
+  "gui/linux/src/window.rs": "c7e78419d9994f6fc0bc4fe2546fc0ca00ca2635"
+ },
+ "witness_blobs": {
+  "gui/linux/Cargo.toml": "bbf399ded3075ea79a8608582c0a279f952996d5"
+ }
+}
