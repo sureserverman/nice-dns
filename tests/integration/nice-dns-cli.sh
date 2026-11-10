@@ -399,7 +399,8 @@ t_reinstall_refuses_an_unreadable_record() {
 
 # ─────────────────────────── Task 2.4: restart ──────────────────────────────
 
-# cl_restart_world <uname>: an installed stack with the controller's schedules.
+# cl_restart_world <uname>: an installed stack with the controller's three
+# schedules (the minute pass, the bridge refresh, the update check).
 cl_restart_world() {
   cl_world "$1"; cl_record haproxy standard main
   CL_RESTART_PLAT=linux
@@ -408,6 +409,7 @@ cl_restart_world() {
     mkdir -p "$CL_HOME/Library/LaunchAgents"
     : >"$CL_HOME/Library/LaunchAgents/org.nice-dns.health.plist"
     : >"$CL_HOME/Library/LaunchAgents/org.nice-dns.health-bridges.plist"
+    : >"$CL_HOME/Library/LaunchAgents/org.nice-dns.health-update.plist"
   fi
 }
 
@@ -418,7 +420,7 @@ cl_release_pat() { if [ "$CL_RESTART_PLAT" = linux ]; then echo '^systemctl --us
 cl_line() { grep -nE "$1" "$CL_LOG" | "$2" -n 1 | cut -d: -f1; }
 
 cl_assert_released() {
-  assert_eq 2 "$(grep -cE "$(cl_release_pat)" "$CL_LOG")" "$1: both schedules are released"
+  assert_eq 3 "$(grep -cE "$(cl_release_pat)" "$CL_LOG")" "$1: all three schedules are released"
 }
 
 t_restart_runs_once_between_hold_and_release() {
@@ -448,8 +450,10 @@ t_restart_leaves_a_stopped_macos_schedule_stopped() {
   : >"$CL_HOME/Library/Application Support/nice-dns-health/schedule-stopped"
   cl_run "$CL_TREE/nice-dns" restart
   assert_rc 0 "$CL_RC" "macos: restart: $CL_ERR"
-  assert_eq "" "$(cl_calls '^launchctl (un)?load .*org\.nice-dns\.health\.plist')" "macos: the stopped schedule is neither held nor loaded"
-  assert_eq 1 "$(grep -cE '^launchctl load .*org\.nice-dns\.health-bridges\.plist' "$CL_LOG")" "macos: the bridges schedule is still held and released"
+  assert_eq "" "$(cl_calls '^launchctl load .*org\.nice-dns\.health(-bridges|-update)?\.plist')" "macos: no stopped schedule is loaded again (stop stops them all)"
+  # A stop from before the update check left the bridge refresh loaded: it
+  # is quiet during the restart all the same.
+  assert_match '^launchctl unload .*org\.nice-dns\.health-bridges\.plist' "$(cat "$CL_LOG")" "macos: the bridge refresh is unloaded for the restart"
 }
 
 t_restart_without_an_answer_says_so_and_releases() {
@@ -1244,6 +1248,7 @@ bt_restart_fakes() {
     mkdir -p "$CL_HOME/Library/LaunchAgents"
     : >"$CL_HOME/Library/LaunchAgents/org.nice-dns.health.plist"
     : >"$CL_HOME/Library/LaunchAgents/org.nice-dns.health-bridges.plist"
+    : >"$CL_HOME/Library/LaunchAgents/org.nice-dns.health-update.plist"
   fi
   echo 1 >"$CL_FAKE/gen"
   # The installed proxy launcher carries the mode, as an install of this

@@ -828,7 +828,8 @@ _nd_inst_owned_paths() {
       printf 'f\t%s\t644\tuser\n' "$q/$f"
     done
     for f in nice-dns-fetch-bridges.service nice-dns-health.service nice-dns-health.timer \
-             nice-dns-health-bridges.service nice-dns-health-bridges.timer; do
+             nice-dns-health-bridges.service nice-dns-health-bridges.timer \
+             nice-dns-health-update.service nice-dns-health-update.timer; do
       printf 'f\t%s\t644\tuser\n' "$u/$f"
     done
     printf 'f\t%s\t644\tuser\n' "${XDG_CONFIG_HOME:-$HOME/.config}/containers/containers.conf.d/90-nice-dns-firewall.conf"
@@ -843,7 +844,7 @@ _nd_inst_owned_paths() {
       "$R/etc/sysctl.d/99-podman-privileged-ports.conf" \
       "$R/etc/systemd/system/NetworkManager-wait-online.service.d/10-wait-for-connectivity.conf"
   else
-    for f in start-container health health-bridges bridge-eval; do
+    for f in start-container health health-bridges health-update bridge-eval; do
       printf 'f\t%s\t644\tuser\n' "$HOME/Library/LaunchAgents/org.nice-dns.$f.plist"
     done
     printf 'f\t%s\t755\tuser\n' "$HOME/.local/bin/nice-dns-health" "$HOME/Library/Logs/nice-dns-health/bin/nice-dns-health"
@@ -990,17 +991,23 @@ nd_install_hold_controller() {
   local u p
   ND_INST_HELD=""
   if [ "$ND_INST_PLATFORM" = linux ]; then
-    for u in nice-dns-health.timer nice-dns-health-bridges.timer; do
+    for u in nice-dns-health.timer nice-dns-health-bridges.timer nice-dns-health-update.timer; do
       if systemctl --user is-active --quiet "$u" 2>/dev/null; then
         systemctl --user stop "$u"
         ND_INST_HELD="$ND_INST_HELD $u"
       fi
     done
   else
-    for p in "$HOME/Library/LaunchAgents/org.nice-dns.health.plist" "$HOME/Library/LaunchAgents/org.nice-dns.health-bridges.plist"; do
-      # A schedule `nice-dns-health stop` unloaded keeps its plist; it is not
-      # held, so the release does not load it.
-      case "$p" in */org.nice-dns.health.plist) [ -e "$HOME/Library/Application Support/nice-dns-health/schedule-stopped" ] && continue ;; esac
+    for p in "$HOME/Library/LaunchAgents/org.nice-dns.health.plist" "$HOME/Library/LaunchAgents/org.nice-dns.health-bridges.plist" \
+             "$HOME/Library/LaunchAgents/org.nice-dns.health-update.plist"; do
+      # `nice-dns-health stop` unloads every schedule and keeps the plists; a
+      # stopped one is not held, so the release does not load it. It is still
+      # unloaded here: a stop from before the update check left the bridge
+      # refresh loaded, and nothing may act during the transaction.
+      if [ -e "$HOME/Library/Application Support/nice-dns-health/schedule-stopped" ]; then
+        [ -f "$p" ] && { launchctl unload "$p" 2>/dev/null || true; }
+        continue
+      fi
       if [ -f "$p" ]; then
         launchctl unload "$p" 2>/dev/null || true
         ND_INST_HELD="$ND_INST_HELD $p"
@@ -2356,7 +2363,7 @@ nd_install_linux_uninstall() {
   systemctl --user daemon-reload 2>/dev/null || true
   # A unit that failed stays listed as "not-found failed" after its file is gone.
   for ref in nice-dns-pod nice-dns-network pi-hole unbound tor-haproxy tor-socat \
-             nice-dns-health nice-dns-health-bridges nice-dns-fetch-bridges; do
+             nice-dns-health nice-dns-health-bridges nice-dns-health-update nice-dns-fetch-bridges; do
     systemctl --user reset-failed "$ref.service" 2>/dev/null || true
   done
   # The locally built images (localhost/unbound, localhost/pi-hole and the
@@ -2797,7 +2804,7 @@ _nd_inst_macos_stop_new() {
   # buildkit up after the rollback). Stopping it does not heal a wedge that
   # already happened: the rollback also restarts the runtime.
   "$bin" builder stop >/dev/null 2>&1 || true
-  for p in start-container health health-bridges; do
+  for p in start-container health health-bridges health-update; do
     launchctl unload "$HOME/Library/LaunchAgents/org.nice-dns.$p.plist" 2>/dev/null || true
   done
   for c in pi-hole unbound tor-haproxy tor-socat; do
