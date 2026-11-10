@@ -86,7 +86,7 @@ fn actions_bridges_off_and_the_controller_run_their_exact_commands() {
     assert!(r.stdout().contains("fake nice-dns-health: run"), "{}", r.stdout());
     let r = run_action("update-check", 10);
     assert_eq!(r.code(), Some(10));
-    assert!(r.stdout().trim_end().ends_with("an update is available (exit 10)"), "{}", r.stdout());
+    assert!(r.stdout().trim_end().ends_with("a different version is available (exit 10)"), "{}", r.stdout());
 }
 
 #[test]

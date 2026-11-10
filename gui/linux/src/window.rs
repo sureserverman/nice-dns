@@ -142,8 +142,8 @@ fn body(s: &Status, now: u64) -> Body {
 
     let update_available = match s.update.result {
         Some(UpdateResult::Available) => Some(match &s.update.remote_commit {
-            Some(c) => format!("An update is available: {}", short(c)),
-            None => "An update is available".into(),
+            Some(c) => format!("A different version is available: {}", short(c)),
+            None => "A different version is available".into(),
         }),
         _ => None,
     };
@@ -661,7 +661,7 @@ impl Ui {
                 "The branch's commit {} is installed like a reinstall, with the recorded choices. The stack restarts.",
                 short(&c)
             ),
-            None => "The branch's newest commit is installed like a reinstall, with the recorded choices. The stack restarts.".into(),
+            None => "The branch's current commit is installed like a reinstall, with the recorded choices. The stack restarts.".into(),
         };
         let d = adw::AlertDialog::new(Some("Install the update?"), Some(&body));
         d.add_responses(&[("cancel", "Not now"), ("update", "Install")]);
@@ -994,8 +994,8 @@ mod tests {
     fn window_update_fixture_raises_the_banner() {
         let b = body_of(page(UPDATE, 0));
         let text = b.update_available.expect("no banner");
-        assert!(text.starts_with("An update is available: "), "{text}");
-        assert_eq!(text.len(), "An update is available: ".len() + 12);
+        assert!(text.starts_with("A different version is available: "), "{text}");
+        assert_eq!(text.len(), "A different version is available: ".len() + 12);
     }
 
     #[test]

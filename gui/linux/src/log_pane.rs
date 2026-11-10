@@ -28,7 +28,7 @@ pub fn outcome(id: &str, end: &Event, lines: &[String]) -> String {
             } else if id == "update-check" && c == 0 {
                 "up to date (exit 0)".into()
             } else if id == "update-check" && c == 10 {
-                "an update is available (exit 10)".into()
+                "a different version is available (exit 10)".into()
             } else if id == "update-check" && c == 1 {
                 "unknown (exit 1)".into()
             } else if id == "update" && c == 11 {
@@ -46,7 +46,7 @@ pub fn outcome(id: &str, end: &Event, lines: &[String]) -> String {
 }
 
 /// Whether an action's end counts as success: exit 0, and 10 for
-/// `update-check` (an update is available).
+/// `update-check` (a different version is available).
 pub fn succeeded(id: &str, end: &Event) -> bool {
     matches!(end, Event::Exit(Exit::Code(0)))
         || (id == "update-check" && matches!(end, Event::Exit(Exit::Code(10))))
@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn actions_outcome_reads_update_check_as_the_contract_does() {
         assert_eq!(outcome("update-check", &code(0), &[]), "up to date (exit 0)");
-        assert_eq!(outcome("update-check", &code(10), &[]), "an update is available (exit 10)");
+        assert_eq!(outcome("update-check", &code(10), &[]), "a different version is available (exit 10)");
         assert!(succeeded("update-check", &code(10)));
         assert!(!succeeded("restart", &code(10)));
         assert_eq!(outcome("restart", &code(10), &[]), "failed (exit 10)");

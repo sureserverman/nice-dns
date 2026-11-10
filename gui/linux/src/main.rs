@@ -8,7 +8,7 @@ mod model;
 mod runner;
 mod window;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::process::Command;
 use std::rc::Rc;
@@ -113,10 +113,19 @@ fn run_window() -> ExitCode {
         return code;
     }
     let app = application(true);
-    app.connect_activate(|app| {
+    // The window's handlers and its refresh timer hold it weakly: this is the
+    // one strong hold, for as long as the application runs. A second launch
+    // raises the window already open.
+    let held: RefCell<Option<Rc<window::Ui>>> = RefCell::new(None);
+    app.connect_activate(move |app| {
+        if let Some(ui) = held.borrow().as_ref() {
+            ui.window.present();
+            return;
+        }
         let ui = window::Ui::new(app);
         ui.start_refreshing();
         ui.window.present();
+        *held.borrow_mut() = Some(ui);
     });
     // GTK is given no arguments: ours were parsed above.
     app.run_with_args::<&str>(&[])
@@ -307,7 +316,22 @@ fn run_probe(id: String) -> ExitCode {
     ExitCode::from(code.get())
 }
 
+/// The GTK renderer to set when the user set none: cairo. The window is a
+/// page of rows, which cairo draws as well; GTK's GL renderers hang older
+/// GPUs (an Intel GM965 hung and aborted in Mesa). A `GSK_RENDERER` the user
+/// set is kept.
+fn default_renderer(set: Option<&std::ffi::OsStr>) -> Option<&'static str> {
+    match set {
+        Some(v) if !v.is_empty() => None,
+        _ => Some("cairo"),
+    }
+}
+
 fn main() -> ExitCode {
+    // Before GTK starts, and while this process has one thread.
+    if let Some(r) = default_renderer(std::env::var_os("GSK_RENDERER").as_deref()) {
+        std::env::set_var("GSK_RENDERER", r);
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         [] => run_window(),
@@ -335,6 +359,15 @@ mod tests {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../share/fixtures");
         let fx = if fixture == "-" { "-".to_string() } else { format!("{dir}/{fixture}") };
         vec![format!("{dir}/fake-status.sh"), fx, exit.to_string()]
+    }
+
+    #[test]
+    fn window_renderer_defaults_to_cairo_and_keeps_the_users_choice() {
+        use std::ffi::OsStr;
+        assert_eq!(default_renderer(None), Some("cairo"));
+        assert_eq!(default_renderer(Some(OsStr::new(""))), Some("cairo"));
+        assert_eq!(default_renderer(Some(OsStr::new("ngl"))), None);
+        assert_eq!(default_renderer(Some(OsStr::new("cairo"))), None);
     }
 
     #[test]
