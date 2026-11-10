@@ -73,6 +73,7 @@ _nd_st_paths() {
       ND_ST_STATE_DIR="${ND_STATE_DIR:-$HOME/Library/Application Support/nice-dns/controller}"
       ND_ST_RECEIPT="$HOME/Library/Application Support/nice-dns-health/install.tsv"
       ND_ST_SCHEDULE="$HOME/Library/LaunchAgents/org.nice-dns.health.plist"
+      ND_ST_SCHEDULE_STOPPED="$HOME/Library/Application Support/nice-dns-health/schedule-stopped"
       ND_ST_ADMIN_URL="http://172.31.240.250/admin"
       ND_ST_HELPER=/usr/local/libexec/nice-dns-helper ;;
     *)
@@ -80,6 +81,7 @@ _nd_st_paths() {
       ND_ST_STATE_DIR="${ND_STATE_DIR:-$state/nice-dns/controller}"
       ND_ST_RECEIPT="${XDG_DATA_HOME:-$HOME/.local/share}/nice-dns-health/install.tsv"
       ND_ST_SCHEDULE="$cfg/systemd/user/default.target.wants/nice-dns-health.timer"
+      ND_ST_SCHEDULE_STOPPED=""
       ND_ST_ADMIN_URL="http://localhost:8880/admin"
       ND_ST_HELPER=/usr/libexec/nice-dns-helper ;;
   esac
@@ -197,7 +199,13 @@ nd_status_rows() {
     elif [ "$age" -gt "$stale_s" ]; then _nd_st_row controller stale "$age"
     else _nd_st_row controller stale no; fi
   fi
-  if [ -e "$ND_ST_SCHEDULE" ]; then _nd_st_row controller schedule loaded; else _nd_st_row controller schedule stopped; fi
+  # On macOS `nice-dns-health stop` keeps the plist and leaves schedule-stopped
+  # beside the receipt (ND_ST_SCHEDULE_STOPPED); on Linux it is empty.
+  if [ -e "$ND_ST_SCHEDULE" ] && { [ -z "$ND_ST_SCHEDULE_STOPPED" ] || [ ! -e "$ND_ST_SCHEDULE_STOPPED" ]; }; then
+    _nd_st_row controller schedule loaded
+  else
+    _nd_st_row controller schedule stopped
+  fi
 
   # obs: the controller's own records, copied as written (control characters
   # other than the tab separators removed; at most 400 characters a row). The

@@ -999,6 +999,9 @@ nd_install_hold_controller() {
     done
   else
     for p in "$HOME/Library/LaunchAgents/org.nice-dns.health.plist" "$HOME/Library/LaunchAgents/org.nice-dns.health-bridges.plist"; do
+      # A schedule `nice-dns-health stop` unloaded keeps its plist; it is not
+      # held, so the release does not load it.
+      case "$p" in */org.nice-dns.health.plist) [ -e "$HOME/Library/Application Support/nice-dns-health/schedule-stopped" ] && continue ;; esac
       if [ -f "$p" ]; then
         launchctl unload "$p" 2>/dev/null || true
         ND_INST_HELD="$ND_INST_HELD $p"
