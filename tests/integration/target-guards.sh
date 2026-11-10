@@ -458,8 +458,14 @@ t_remote_script_never_reads_secret_sources() {
   # name it; every other read stays forbidden.
   assert_eq 2 "$(printf '%s\n' "$script" | grep -c 'webpassword')" "only the two sanctioned lines name the admin password file"
   assert_eq 2 "$(printf '%s\n' "$script" | grep -c '^    pwf="\${XDG_STATE_HOME:-\$HOME/\.local/state}/nice-dns/secrets/pihole/pihole_webpassword"$')" "and they are the path assignments"
+  # Sub-plan 6 Task 2.3: gui-session asks the user manager (not a container)
+  # whether a graphical session exists; its environment goes only to grep -q
+  # for the two display names. Exactly that line may read it.
+  local display_probe='    systemctl --user show-environment </dev/null 2>/dev/null | grep -Eq '"'"'^(DISPLAY|WAYLAND_DISPLAY)='"'"' || { echo "the user manager has neither DISPLAY nor WAYLAND_DISPLAY: no graphical session" >&2; exit 2; }'
+  assert_eq 1 "$(printf '%s\n' "$script" | grep -c 'show-environment')" "only the display probe reads the user manager's environment"
+  assert_eq 1 "$(printf '%s\n' "$script" | awk -v p="$display_probe" '$0 == p' | grep -c .)" "and it only greps for the display names"
   assert_not_match 'torrc|\.Env|printenv|environ|Bridge|pwhash|webpassword|ps -o[^|]*args' \
-    "$(printf '%s\n' "$script" | grep -v '^    pwf="\${XDG_STATE_HOME:-\$HOME/\.local/state}/nice-dns/secrets/pihole/pihole_webpassword"$')" \
+    "$(printf '%s\n' "$script" | grep -v '^    pwf="\${XDG_STATE_HOME:-\$HOME/\.local/state}/nice-dns/secrets/pihole/pihole_webpassword"$' | awk -v p="$display_probe" '$0 != p')" \
     "no tor arguments, container env, torrc or Pi-hole credentials are read"
 }
 
@@ -510,7 +516,14 @@ t_install_cell_maps_each_cell_to_its_installer() {
   assert_match 'macos/standard\) inst=install-mac\.sh' "$script" "macos standard"
   assert_match 'macos/hardened\) inst=install-mac-hardened\.sh' "$script" "macos hardened"
   assert_match 'tar -xzf "\$ND_SOURCE_TGZ" -C "\$w/nice-dns"' "$script" "installs the pinned commit's archive"
-  assert_not_match 'git clone' "$script" "nothing is fetched on the target (its DNS may be the broken stack)"
+  # Sub-plan 6 Task 2.3: the one sanctioned clone. install-git clones the
+  # bundle the harness copied to the target, a local file, so nothing is
+  # fetched; exactly that line may clone, and every other clone stays forbidden.
+  local bundle_clone='        git clone -q "$ND_GIT_BUNDLE" "$w/nice-dns" </dev/null || exit 1'
+  assert_eq 1 "$(printf '%s\n' "$script" | grep -c 'git clone')" "only the bundle line clones"
+  assert_eq 1 "$(printf '%s\n' "$script" | grep -cxF "$bundle_clone")" "and it clones the local bundle"
+  assert_match '\[ -s "\$\{ND_GIT_BUNDLE:-\}" \]' "$script" "the bundle is a file on the target"
+  assert_not_match 'git clone' "$(printf '%s\n' "$script" | grep -vxF "$bundle_clone")" "nothing is fetched on the target (its DNS may be the broken stack)"
   # Sub-plan 4 Task 1.1: every entrypoint installs the tree it sits in, so
   # the macOS installer runs from the inline archive like the others.
   assert_not_match 'origin/main' "$(grep -v '^[[:space:]]*#' "$TG")" "no cell depends on this checkout's origin/main"
