@@ -4,7 +4,7 @@
 # lines on both streams and exits with $NICE_DNS_FAKE_EXIT (default 0); 126
 # also prints lib/root.sh's line for a dismissed polkit dialog. `status --tsv`
 # prints the installed fixture.
-here=$(cd "$(dirname "$0")" && pwd)
+here=$(cd -P "$(dirname "$0")" && pwd)
 [ -z "${NICE_DNS_FAKE_RECORD:-}" ] || printf '%s\n' "$*" >> "$NICE_DNS_FAKE_RECORD"
 if [ "${1:-}" = status ]; then
   cat "$here/../status-installed.tsv"

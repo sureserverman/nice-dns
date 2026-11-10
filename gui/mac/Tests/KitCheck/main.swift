@@ -140,5 +140,97 @@ do {
     check("the bundled and shared action tables read", false, "\(error)")
 }
 
+// --- What the window and the hooks share (Task 1.2) ------------------------
+
+check("exit 126 says authorisation cancelled",
+      outcome(id: "restart", end: .exit(.code(126)), lines: []) == "authorisation cancelled (exit 126)")
+check("a failure that printed lib/root.sh's line says authorisation cancelled",
+      outcome(id: "restart", end: .exit(.code(1)), lines: ["nice-dns: authorisation cancelled"]) == "authorisation cancelled (exit 1)")
+check("update-check exit 10 says a different version is available (DEC-023)",
+      outcome(id: "update-check", end: .exit(.code(10)), lines: []) == "a different version is available (exit 10)")
+check("exit 0 says finished", outcome(id: "restart", end: .exit(.code(0)), lines: []) == "finished (exit 0)")
+check("update-check 10 and update 11 count as success, other non-zero exits do not",
+      succeeded(id: "update-check", end: .exit(.code(10))) && succeeded(id: "update", end: .exit(.code(11)))
+      && !succeeded(id: "restart", end: .exit(.code(10))) && !succeeded(id: "restart", end: .exit(.code(1))))
+
+func view(_ fixture: String, _ code: Int32) -> StatusView {
+    let text = (try? String(contentsOf: fixtures.appendingPathComponent(fixture), encoding: .utf8)) ?? ""
+    return classify(exit: code, stdout: text)
+}
+for (fixture, code, glyph) in [("status-installed.tsv", Int32(0), Glyph.green), ("status-stale.tsv", 0, .amber),
+                               ("status-update-available.tsv", 0, .green), ("status-not-installed.tsv", 1, .grey)] {
+    let g = Glyph.of(view(fixture, code))
+    check("the glyph for \(fixture) is \(glyph)", g == glyph, "it is \(g)")
+}
+check("the glyph for a status that cannot be shown is red", Glyph.of(.error("status exited 3")) == .red)
+if case .installed(var s) = view("status-installed.tsv", 0) {
+    s.obs[0].verdict = "unhealthy"
+    check("an unhealthy observation makes the glyph red", Glyph.of(.installed(s)) == .red)
+    s.obs[0].verdict = "indeterminate"
+    check("an indeterminate observation makes the glyph amber", Glyph.of(.installed(s)) == .amber)
+}
+
+let fakebin = fixtures.appendingPathComponent("fakebin").path
+let emptyHome = FileManager.default.temporaryDirectory.appendingPathComponent("kitcheck-home-\(getpid())").path
+try? FileManager.default.createDirectory(atPath: emptyHome, withIntermediateDirectories: true)
+let fakeEnv = ["PATH": "\(fakebin):/usr/bin:/bin", "HOME": emptyHome]
+let bareEnv = ["PATH": "/usr/bin:/bin", "HOME": emptyHome]
+
+check("nice-dns is found on PATH first",
+      (try? CommandPaths.resolve("nice-dns", environment: fakeEnv)) == "\(fakebin)/nice-dns")
+do {
+    _ = try CommandPaths.resolve("nice-dns", environment: bareEnv)
+    check("a missing nice-dns names ~/.local/bin/nice-dns", false, "it was found")
+} catch let nf as CommandNotFound {
+    check("a missing nice-dns names ~/.local/bin/nice-dns", nf.path == "\(emptyHome)/.local/bin/nice-dns", nf.path)
+} catch {
+    check("a missing nice-dns names ~/.local/bin/nice-dns", false, "\(error)")
+}
+check("the commands' PATH gains ~/.local/bin and /opt/homebrew/bin",
+      CommandPaths.childEnvironment(bareEnv)["PATH"] == "/usr/bin:/bin:\(emptyHome)/.local/bin:/opt/homebrew/bin:/usr/local/bin")
+
+let fakeStatus = fixtures.appendingPathComponent("fake-status.sh").path
+let installedFixture = fixtures.appendingPathComponent("status-installed.tsv").path
+let (c0, l0) = statusCheck(environment: bareEnv.merging(["NICE_DNS_GUI_STATUS_CMD": "\(fakeStatus) \(installedFixture) 0"]) { $1 })
+check("--check on an installed stack exits 0 naming the generation",
+      c0 == 0 && l0 == "installed: generation 20261109T180318Z-nogit0000000; controller OK, fresh", "\(c0) \(l0)")
+let (c1, l1) = statusCheck(environment: bareEnv)
+check("--check with nice-dns missing exits 1 naming the path",
+      c1 == 1 && l1 == "nice-dns command not found: looked for \(emptyHome)/.local/bin/nice-dns", "\(c1) \(l1)")
+
+/// Run action `id` through ActionRun against the fake nice-dns; what it
+/// recorded, and the run.
+func runFake(_ id: String, exit code: Int32 = 0, choices: Choices? = nil) -> (recorded: String, run: ActionRun) {
+    let record = FileManager.default.temporaryDirectory.appendingPathComponent("kitcheck-record-\(getpid())-\(id)").path
+    try? FileManager.default.removeItem(atPath: record)
+    let env = fakeEnv.merging(["NICE_DNS_FAKE_RECORD": record, "NICE_DNS_FAKE_EXIT": "\(code)"]) { $1 }
+    let run = ActionRun(id: id)
+    let done = DispatchSemaphore(value: 0)
+    run.start(choices: choices, environment: env, queue: DispatchQueue(label: "kitcheck.run")) { r in
+        if r.end != nil { done.signal() }
+    }
+    if done.wait(timeout: .now() + 30) == .timedOut { return ("<timed out>", run) }
+    let recorded = (try? String(contentsOfFile: record, encoding: .utf8)) ?? ""
+    try? FileManager.default.removeItem(atPath: record)
+    return (recorded.trimmingCharacters(in: .newlines), run)
+}
+for (id, words) in [("restart", "restart"), ("bridges-off", "bridges off"), ("bridges-on", "bridges on"),
+                    ("update-check", "update --check"), ("uninstall", "uninstall")] {
+    let (rec, run) = runFake(id)
+    check("action \(id) runs `nice-dns \(words)` and exits 0", rec == words && run.exitStatus == 0, "recorded '\(rec)', exit \(run.exitStatus)")
+}
+let (recR, _) = runFake("reinstall", choices: Choices(variant: "socat", pihole: "standard", branch: "main"))
+check("reinstall passes its choices", recR == "reinstall socat --standard --branch main", recR)
+let (_, cancelled) = runFake("restart", exit: 126)
+check("a dismissed authorisation keeps the output and says authorisation cancelled",
+      cancelled.exitStatus == 126 && cancelled.paneText.contains("fake nice-dns: restart")
+      && cancelled.paneText.hasSuffix("authorisation cancelled (exit 126)\n"), cancelled.paneText)
+let (_, failedRun) = runFake("restart", exit: 3)
+check("a failed action keeps its output and its exit",
+      failedRun.paneText.hasPrefix("$ \(fakebin)/nice-dns restart\n") && failedRun.paneText.contains("a line on stderr")
+      && failedRun.said == "failed (exit 3)" && failedRun.exitStatus == 3, failedRun.paneText)
+
+try? FileManager.default.removeItem(atPath: emptyHome)
+
 print("KitCheck: \(passed) passed, \(failed) failed")
 exit(failed == 0 ? 0 : 1)
