@@ -758,7 +758,7 @@ dns_owner() {
   fi
 }
 health_tool() {
-  for t in "$HOME/.local/bin/nice-dns-health" "${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-health/bin/nice-dns-health"; do
+  for t in "$HOME/.local/bin/nice-dns-health" "${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-health/bin/nice-dns-health" "$HOME/Library/Logs/nice-dns-health/bin/nice-dns-health"; do
     [ -x "$t" ] && { printf '%s\n' "$t"; return 0; }
   done
   return 1

@@ -267,12 +267,15 @@ func plant(_ path: String) {
     try? FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
     FileManager.default.createFile(atPath: path, contents: Data("#!/bin/sh\n".utf8), attributes: [.posixPermissions: 0o755])
 }
+// On macOS the installer's fallback is ~/Library/Logs/nice-dns-health/bin
+// (lib/install.sh _nd_inst_command_fallback_dir), not the Linux one.
 plant("\(instHome)/.local/state/nice-dns-health/bin/nice-dns")
-check("nice-dns falls back to ~/.local/state/nice-dns-health/bin",
-      (try? CommandPaths.resolve("nice-dns", environment: ["PATH": "/usr/bin:/bin", "HOME": instHome])) == "\(instHome)/.local/state/nice-dns-health/bin/nice-dns")
 plant("\(instHome)/xdg/nice-dns-health/bin/nice-dns")
-check("an XDG_STATE_HOME fallback is used when set",
-      (try? CommandPaths.resolve("nice-dns", environment: ["PATH": "/usr/bin:/bin", "HOME": instHome, "XDG_STATE_HOME": "\(instHome)/xdg"])) == "\(instHome)/xdg/nice-dns-health/bin/nice-dns")
+check("the Linux fallback is not where a Mac install puts the command",
+      (try? CommandPaths.resolve("nice-dns", environment: ["PATH": "/usr/bin:/bin", "HOME": instHome, "XDG_STATE_HOME": "\(instHome)/xdg"])) == nil)
+plant("\(instHome)/Library/Logs/nice-dns-health/bin/nice-dns")
+check("nice-dns falls back to ~/Library/Logs/nice-dns-health/bin",
+      (try? CommandPaths.resolve("nice-dns", environment: ["PATH": "/usr/bin:/bin", "HOME": instHome, "XDG_STATE_HOME": "\(instHome)/xdg"])) == "\(instHome)/Library/Logs/nice-dns-health/bin/nice-dns")
 plant("\(instHome)/.local/bin/nice-dns")
 check("~/.local/bin wins over the fallback",
       (try? CommandPaths.resolve("nice-dns", environment: ["PATH": "/usr/bin:/bin", "HOME": instHome])) == "\(instHome)/.local/bin/nice-dns")

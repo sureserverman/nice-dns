@@ -9,12 +9,11 @@ public enum CommandPaths {
         (home as NSString).appendingPathComponent(".local/bin/\(name)")
     }
 
-    /// The fallback the installer uses when `~/.local/bin` cannot hold them:
-    /// `${XDG_STATE_HOME:-~/.local/state}/nice-dns-health/bin`.
-    public static func fallback(_ name: String, home: String, xdgStateHome: String?) -> String {
-        let state: String
-        if let s = xdgStateHome, !s.isEmpty { state = s } else { state = (home as NSString).appendingPathComponent(".local/state") }
-        return (state as NSString).appendingPathComponent("nice-dns-health/bin/\(name)")
+    /// The fallback the macOS installer uses when `~/.local/bin` cannot hold
+    /// them: `~/Library/Logs/nice-dns-health/bin` (lib/install.sh
+    /// `_nd_inst_command_fallback_dir`; the Linux one is under XDG_STATE_HOME).
+    public static func fallback(_ name: String, home: String) -> String {
+        (home as NSString).appendingPathComponent("Library/Logs/nice-dns-health/bin/\(name)")
     }
 
     /// The command `name` the GUI runs: the first on `PATH`, as a terminal
@@ -26,7 +25,7 @@ public enum CommandPaths {
         let home = env["HOME"] ?? NSHomeDirectory()
         let p = primary(name, home: home)
         if isExecutable(p) { return p }
-        let f = fallback(name, home: home, xdgStateHome: env["XDG_STATE_HOME"])
+        let f = fallback(name, home: home)
         if isExecutable(f) { return f }
         throw CommandNotFound(path: p)
     }
