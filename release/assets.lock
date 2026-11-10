@@ -12,7 +12,9 @@ schema	nice-dns-assets-lock/1
 #     role      helper: nice-dns-helper (gui/helper), the privileged helper
 #               a program without a terminal runs
 #               gui: nice-dns-gui-linux-<arch>.tar.gz (gui/linux, Sub-plan 6),
-#               the Linux GUI with its launcher and icon
+#               the Linux GUI with its launcher and icon; on macOS
+#               nice-dns-gui-macos-arm64.zip (gui/mac, Sub-plan 7), the
+#               menu-bar app nice-dns.app
 #     platform  linux | macos
 #     arch      amd64 | arm64
 #     url       https://github.com/sureserverman/nice-dns/releases/download/<tag>/<file>

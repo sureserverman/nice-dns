@@ -838,3 +838,139 @@ t_gui_launcher_under_xdg_data_home_is_removed_by_an_uninstall_without_it() {
   assert_no_path "$xdg/icons/hicolor/256x256/apps/nice-dns.png" "the icon is gone"
   assert_no_path "$IP_HOME/.local/share/nice-dns" "nothing is left beside the source"
 }
+
+# ─────────── the macOS GUI's release asset (Sub-plan 7 Task 2.1) ───────────
+
+IP_GUI_MAC_URL=https://github.com/sureserverman/nice-dns/releases/download/v1.2.0/nice-dns-gui-macos-arm64.zip
+
+# ip_gui_mac_world [sha] [good|dead|extra|link]: an install-mac world whose
+# lock pins a GUI asset for macos/arm64 (and no helper);
+# $FAKE/assets/nice-dns-gui-macos-arm64.zip is a stand-in for the zip the
+# release job makes with `ditto -c -k --keepParent` (a tar archive the fake
+# ditto unpacks) holding nice-dns.app: good (its program answers --version),
+# dead (it does not start), extra (a second top-level entry) or link (a
+# symlink inside the bundle). IP_GUI_MAC_SHA is its sha256; a first argument
+# pins another.
+ip_gui_mac_world() {
+  local t a
+  dt_world install-mac "$(dt_fresh_state install-mac)"
+  t="$FAKE/gui-mac-src" a="$FAKE/gui-mac-src/nice-dns.app"
+  rm -rf "$t"; mkdir -p "$a/Contents/MacOS" "$a/Contents/Resources/NiceDNS_NiceDNSKit.bundle" "$FAKE/assets"
+  if [ "${2:-good}" = dead ]; then
+    printf '#!/bin/sh\necho "dyld: Library not loaded: /usr/lib/swift/libswiftCore.dylib" >&2\nexit 134\n' >"$a/Contents/MacOS/NiceDNSGUI"
+  else
+    # shellcheck disable=SC2016  # expanded by the stand-in
+    printf '#!/bin/sh\n[ "$1" = --version ] && { echo "nice-dns-gui 1.2.0"; exit 0; }\nexit 0\n' >"$a/Contents/MacOS/NiceDNSGUI"
+  fi
+  chmod 755 "$a/Contents/MacOS/NiceDNSGUI"
+  echo '<plist/>' >"$a/Contents/Info.plist"
+  cp "$NICE_DNS_ROOT/gui/share/actions.tsv" "$a/Contents/Resources/NiceDNS_NiceDNSKit.bundle/"
+  case "${2:-good}" in
+    extra) echo x >"$t/extra" ;;
+    link) ln -s /etc/passwd "$a/Contents/Resources/passwd" ;;
+  esac
+  (cd "$t" && tar -cf "$FAKE/assets/nice-dns-gui-macos-arm64.zip" -- *)
+  IP_GUI_MAC_SHA="$(sha256sum "$FAKE/assets/nice-dns-gui-macos-arm64.zip" | cut -d' ' -f1)"
+  printf 'schema\tnice-dns-assets-lock/1\nrelease\tv1.2.0\nasset\tgui\tmacos\tarm64\t%s\t%s\n' "$IP_GUI_MAC_URL" "${1:-$IP_GUI_MAC_SHA}" >"$IP_TREE/release/assets.lock"
+  IP_GUI_APP="$IP_HOME/Applications/nice-dns.app"
+}
+
+ip_gui_mac_absent() {
+  assert_no_path "$IP_GUI_APP" "$1: no app in ~/Applications"
+  assert_eq "" "$(find "$IP_HOME/.local/share/nice-dns" "$IP_HOME/Applications" -maxdepth 1 -name '.gui.*' 2>/dev/null)" "$1: no staging directory is left"
+}
+
+t_gui_mac_asset_good_sha_lands_the_app_and_uninstall_removes_it() {
+  ip_gui_mac_world
+  ip_install install-mac haproxy
+  assert_rc 0 "$IP_RC" "the install: $IP_OUT"
+  assert_match "^curl -fsSL ${IP_GUI_MAC_URL//./\\.} -o .+\\.part --proto =https --proto-redir =https --connect-timeout 30 --max-time 600$" "$(cat "$FAKE_LOG")" "the zip is fetched, https only, bounded"
+  cmp -s "$FAKE/gui-mac-src/nice-dns.app/Contents/MacOS/NiceDNSGUI" "$IP_GUI_APP/Contents/MacOS/NiceDNSGUI" || fail "the app is in ~/Applications: $IP_OUT"
+  assert_file "$IP_GUI_APP/Contents/Resources/NiceDNS_NiceDNSKit.bundle/actions.tsv" "with its action table"
+  assert_match '^ditto -x -k .+/nice-dns-gui\.zip .+$' "$(cat "$FAKE_LOG")" "the zip is unpacked with ditto"
+  assert_match '^xattr -dr com\.apple\.quarantine .+/nice-dns\.app$' "$(cat "$FAKE_LOG")" "the quarantine is stripped from the whole bundle"
+  assert_eq "" "$(grep -n 'xattr -dr com.apple.quarantine' "$FAKE_LOG" | grep -F "$IP_GUI_APP" || true)" "before the bundle is in place, not after"
+  assert_eq "" "$(find "$IP_STATE/generations" -name 'nice-dns-gui.zip*' 2>/dev/null)" "the published zip is not kept"
+  assert_eq "" "$(find "$IP_HOME/.local/share/nice-dns" "$IP_HOME/Applications" -maxdepth 1 -name '.gui.*' 2>/dev/null)" "no staging directory is left"
+  assert_match "The nice-dns menu-bar app: open $IP_GUI_APP" "$IP_OUT" "the summary names the app"
+  assert_not_match 'GUI not installed' "$IP_OUT" "and reports nothing missing"
+  ip_install install-mac uninstall
+  assert_rc 0 "$IP_RC" "the uninstall: $IP_OUT"
+  ip_gui_mac_absent "after the uninstall"
+  assert_eq "" "$(find "$IP_HOME/Applications" -mindepth 1 2>/dev/null)" "nothing else of it in ~/Applications"
+}
+
+t_gui_mac_asset_wrong_sha_lands_nothing_and_the_install_goes_on() {
+  ip_gui_mac_world "$(printf '%064d' 0)"
+  ip_install install-mac haproxy
+  assert_rc 0 "$IP_RC" "the install goes on: $IP_OUT"
+  ip_gui_mac_absent "a mismatched zip"
+  assert_eq "" "$(find "$IP_STATE/generations" -name 'nice-dns-gui.zip*' 2>/dev/null)" "nor is it kept"
+  assert_eq "" "$(grep -E '^(ditto|xattr) ' "$FAKE_LOG" || true)" "nothing is unpacked"
+  assert_match "sha256 is not the one release/assets.lock pins; it was not installed: GUI not installed; reinstall with network to add it" "$(printf '%s\n' "$IP_OUT" | tail -n 3)" "the last lines say why"
+}
+
+t_gui_mac_asset_download_failure_and_no_asset_say_so() {
+  ip_gui_mac_world
+  printf '22\n' >"$FAKE/asset_rcs"
+  ip_install install-mac haproxy
+  assert_rc 0 "$IP_RC" "a failed download: $IP_OUT"
+  ip_gui_mac_absent "a failed download"
+  assert_match 'nice-dns-gui download failed \(curl exit 22\): GUI not installed; reinstall with network to add it' "$IP_OUT" "a failed download says so"
+  ip_gui_mac_world
+  printf 'schema\tnice-dns-assets-lock/1\nrelease\tv1.2.0\n' >"$IP_TREE/release/assets.lock"
+  ip_install install-mac haproxy
+  assert_rc 0 "$IP_RC" "no asset: $IP_OUT"
+  ip_gui_mac_absent "no asset"
+  assert_match 'No nice-dns-gui release asset for macos/arm64 in release/assets.lock: GUI not installed' "$IP_OUT" "no asset says so"
+}
+
+t_gui_mac_asset_that_does_not_start_or_holds_more_is_not_landed() {
+  local kind
+  for kind in dead extra link; do
+    ip_gui_mac_world "" "$kind"
+    ip_install install-mac haproxy
+    assert_rc 0 "$IP_RC" "$kind: the install goes on: $IP_OUT"
+    ip_gui_mac_absent "$kind"
+    assert_match 'GUI not installed' "$IP_OUT" "$kind: says so"
+    assert_not_match 'reinstall with network' "$(grep 'GUI not installed' <<<"$IP_OUT")" "$kind: and does not blame the network"
+    case "$kind" in
+      dead) assert_match 'does not start on this host \(dyld: Library not loaded.*exit 134\)' "$IP_OUT" "dead: the reason is the loader's" ;;
+      *) assert_match 'does not hold just nice-dns\.app' "$IP_OUT" "$kind: names what is wrong" ;;
+    esac
+  done
+}
+
+t_gui_mac_reinstall_replaces_the_app_and_keeps_it_when_it_cannot() {
+  ip_gui_mac_world
+  ip_install install-mac haproxy
+  assert_rc 0 "$IP_RC" "the install: $IP_OUT"
+  echo '# earlier' >>"$IP_GUI_APP/Contents/MacOS/NiceDNSGUI"
+  printf '%040d\n' 5 >"$FAKE/git_head"
+  ip_install install-mac haproxy
+  assert_rc 0 "$IP_RC" "the reinstall: $IP_OUT"
+  cmp -s "$FAKE/gui-mac-src/nice-dns.app/Contents/MacOS/NiceDNSGUI" "$IP_GUI_APP/Contents/MacOS/NiceDNSGUI" || fail "the reinstall lands the asset's app again"
+  # A reinstall whose download fails keeps the app in place.
+  echo '# earlier' >>"$IP_GUI_APP/Contents/MacOS/NiceDNSGUI"
+  printf '%040d\n' 6 >"$FAKE/git_head"
+  printf '22\n' >"$FAKE/asset_rcs"
+  ip_install install-mac haproxy
+  assert_rc 0 "$IP_RC" "a reinstall whose download fails: $IP_OUT"
+  assert_match '# earlier' "$(cat "$IP_GUI_APP/Contents/MacOS/NiceDNSGUI")" "the earlier app stays"
+  # A failed install publishes nothing: the earlier app stays.
+  printf '%040d\n' 7 >"$FAKE/git_head"
+  : >"$FAKE/never_ready"
+  ip_install install-mac haproxy
+  rm -f "$FAKE/never_ready"
+  [ "$IP_RC" != 0 ] || fail "the injected readiness failure did not fail the install: $IP_OUT"
+  assert_match '# earlier' "$(cat "$IP_GUI_APP/Contents/MacOS/NiceDNSGUI")" "a rolled-back install keeps the earlier app"
+  # A publish cut off between its two renames: the next install puts it back.
+  mkdir -p "$IP_HOME/.local/share/nice-dns"
+  mv "$IP_GUI_APP" "$IP_HOME/.local/share/nice-dns/.gui.old.123"
+  printf '%040d\n' 8 >"$FAKE/git_head"
+  printf '22\n' >"$FAKE/asset_rcs"
+  ip_install install-mac haproxy
+  assert_rc 0 "$IP_RC" "after a cut-off publish: $IP_OUT"
+  assert_match '# earlier' "$(cat "$IP_GUI_APP/Contents/MacOS/NiceDNSGUI")" "the app set aside is back"
+  assert_eq "" "$(find "$IP_HOME/.local/share/nice-dns" -maxdepth 1 -name '.gui.*')" "no leftovers"
+}
