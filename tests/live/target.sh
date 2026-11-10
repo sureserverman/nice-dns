@@ -354,7 +354,7 @@ case "$op" in install-cell|uninstall-cell|build-proxy|install-controller|install
 case "$op" in fault-route|heal-route|route-apply) ;; *) [ -z "$i_route" ] || die "--route is only valid for fault-route, heal-route and route-apply" ;; esac
 case "$op" in install-controller|set-tunables|arm-set|command|polkit-test-rule|gui-session) ;; *) [ -z "$i_mode" ] || die "--mode is only valid for install-controller, set-tunables, arm-set, command, polkit-test-rule and gui-session" ;; esac
 if [ "$op" = polkit-test-rule ]; then case "$i_mode" in add|remove) ;; *) die "polkit-test-rule needs --mode add|remove" ;; esac; fi
-if [ "$op" = gui-session ]; then case "$i_mode" in screenshot|restart|update-check) ;; *) die "gui-session needs --mode screenshot|restart|update-check" ;; esac; fi
+if [ "$op" = gui-session ]; then case "$i_mode" in screenshot|restart|update-check|bridges-off|bridges-on|open|launch|running) ;; *) die "gui-session needs --mode screenshot|restart|update-check|bridges-off|bridges-on|open|launch|running" ;; esac; fi
 case "$op" in arm-prepare) [[ "$i_ptag" =~ ^v[0-9]+(\.[0-9]+)*$ ]] || die "arm-prepare needs --proxy-tag vN[.N]" ;; *) [ -z "$i_ptag" ] || die "--proxy-tag is only valid for arm-prepare" ;; esac
 if [ "$op" = arm-set ]; then case "$i_mode" in baseline|candidate) ;; *) die "arm-set needs --mode baseline|candidate" ;; esac; fi
 if [ "$op" = arm-prepare ]; then
@@ -758,7 +758,7 @@ dns_owner() {
   fi
 }
 health_tool() {
-  for t in "$HOME/.local/bin/nice-dns-health" "${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-health/bin/nice-dns-health"; do
+  for t in "$HOME/.local/bin/nice-dns-health" "${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-health/bin/nice-dns-health" "$HOME/Library/Logs/nice-dns-health/bin/nice-dns-health"; do
     [ -x "$t" ] && { printf '%s\n' "$t"; return 0; }
   done
   return 1
@@ -2143,14 +2143,38 @@ case "$NICE_DNS_OP" in
   gui-report)
     # The Linux GUI as an install leaves it (Sub-plan 6 Task 2.3): the
     # program, the launcher, the icon and the files, and its --check (no
-    # display needed).
+    # display needed). On macOS (Sub-plan 7 Task 2.3): ~/Applications/
+    # nice-dns.app, its signature, any quarantine left on it, and --check in
+    # the gui domain, where the stack's commands see the runtime (DEC-024).
     identity
+    if [ "$plat" = macos ]; then
+      app="$HOME/Applications/nice-dns.app" b="$HOME/Applications/nice-dns.app/Contents/MacOS/NiceDNSGUI"
+      if [ -x "$b" ]; then
+        printf 'gui_app\tpresent\ngui_bin_path\t%s\ngui_version\t%s\n' "$b" "$("$b" --version </dev/null 2>/dev/null || echo unknown)"
+        printf 'gui_program_sha256\t%s\n' "$(shasum -a 256 "$b" </dev/null | cut -d' ' -f1)"
+        # A failing xattr is no answer, not "no quarantine".
+        if q=$(xattr -lr "$app" </dev/null 2>&1); then
+          printf 'gui_quarantine\t%s\n' "$(printf '%s\n' "$q" | grep -c 'com\.apple\.quarantine')"
+        else
+          printf 'gui_quarantine\terror\n'
+        fi
+        codesign --verify --deep "$app" </dev/null >/dev/null 2>&1; printf 'gui_codesign\t%s\n' "$?"
+        o=$(sudo -n launchctl asuser "$(id -u)" sudo -n -u "$(id -un)" env HOME="$HOME" PATH="$PATH" "$b" --check </dev/null 2>&1); r=$?
+        printf 'gui_check_exit\t%s\ngui_check\t%s\n' "$r" "$(printf '%s\n' "$o" | head -n 1 | tr '\t' ' ')"
+      elif [ -e "$app" ]; then
+        printf 'gui_app\tbroken\n'
+      else
+        printf 'gui_app\tabsent\n'
+      fi
+      exit 0
+    fi
     b=""
     for c in "$HOME/.local/bin/nice-dns-gui" "${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-health/bin/nice-dns-gui"; do
       [ -x "$c" ] && { b="$c"; break; }
     done
     if [ -n "$b" ]; then
       printf 'gui_bin\tpresent\ngui_bin_path\t%s\ngui_version\t%s\n' "$b" "$("$b" --version </dev/null 2>/dev/null || echo unknown)"
+      printf 'gui_program_sha256\t%s\n' "$(sha256sum "$b" </dev/null | cut -d' ' -f1)"
       o=$("$b" --check </dev/null 2>&1); r=$?
       printf 'gui_check_exit\t%s\ngui_check\t%s\n' "$r" "$(printf '%s\n' "$o" | head -n 1 | tr '\t' ' ')"
     else
@@ -2174,7 +2198,66 @@ case "$NICE_DNS_OP" in
     # systemd-run --user gives it the user manager's DISPLAY and XAUTHORITY.
     # The hook's own exit is the gui_exit row; a screenshot comes back as
     # one base64 row. The operation exits 0 once the hook ran.
-    [ "$plat" = linux ] || { echo "gui-session is Linux only" >&2; exit 2; }
+    # On macOS (Sub-plan 7 Task 2.3) the hook runs in the gui domain through
+    # launchctl asuser (DEC-024), and `open` launches the app as Finder does
+    # (open -a), records that it runs, then quits it (SIGTERM: Apple events
+    # to it need an Automation grant ssh does not have).
+    if [ "$plat" = macos ]; then
+      homebrew_path
+      app="$HOME/Applications/nice-dns.app" b="$HOME/Applications/nice-dns.app/Contents/MacOS/NiceDNSGUI"
+      [ -x "$b" ] || [ "$NICE_DNS_MODE" = running ] || { echo "nice-dns.app is not installed" >&2; exit 1; }
+      asu() { sudo -n launchctl asuser "$(id -u)" sudo -n -u "$(id -un)" env HOME="$HOME" PATH="$PATH" "$@"; }
+      printf 'gui_session\t%s\nstarted_utc\t%s\n' "$NICE_DNS_MODE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      if [ "$NICE_DNS_MODE" = running ]; then
+        if pgrep -f "$b" >/dev/null 2>&1; then printf 'gui_running\tyes\n'; else printf 'gui_running\tno\n'; fi
+        printf 'finished_utc\t%s\ngui_exit\t0\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        exit 0
+      fi
+      if [ "$NICE_DNS_MODE" = launch ]; then
+        asu open -a "$app" </dev/null 2>&1 | sed 's/^/out\t/'
+        n=0; while [ "$n" -lt 20 ] && ! pgrep -f "$b" >/dev/null 2>&1; do sleep 1; n=$((n + 1)); done
+        if pgrep -f "$b" >/dev/null 2>&1; then printf 'gui_running\tyes\n'; else printf 'gui_running\tno\n'; fi
+        printf 'finished_utc\t%s\ngui_exit\t0\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        exit 0
+      fi
+      if [ "$NICE_DNS_MODE" = open ]; then
+        pkill -f "$b" </dev/null 2>/dev/null; sleep 1
+        asu open -a "$app" </dev/null 2>&1 | sed 's/^/out\t/'
+        n=0 pid=""
+        while [ "$n" -lt 20 ]; do pid=$(pgrep -f "$b" | head -n 1); [ -n "$pid" ] && break; sleep 1; n=$((n + 1)); done
+        if [ -n "$pid" ]; then
+          sleep 3
+          if kill -0 "$pid" 2>/dev/null; then printf 'gui_running\tyes\ngui_pid\t%s\n' "$pid"; else printf 'gui_running\texited\n'; fi
+          kill -TERM "$pid" 2>/dev/null
+          n=0; while [ "$n" -lt 10 ] && kill -0 "$pid" 2>/dev/null; do sleep 1; n=$((n + 1)); done
+          if kill -0 "$pid" 2>/dev/null; then printf 'gui_quit\tno\n'; else printf 'gui_quit\tyes\n'; fi
+        else
+          printf 'gui_running\tno\n'
+        fi
+        printf 'finished_utc\t%s\ngui_exit\t0\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        exit 0
+      fi
+      png=""
+      case "$NICE_DNS_MODE" in
+        screenshot) png=$(mktemp "${TMPDIR:-/tmp}/nd-gui.XXXXXX") || exit 1; set -- --screenshot "$png" ;;
+        *) set -- --run-action "$NICE_DNS_MODE" --exit ;;
+      esac
+      o=$(mktemp "${TMPDIR:-/tmp}/nd-gui-out.XXXXXX") || exit 1
+      asu "$b" "$@" </dev/null >"$o" 2>&1
+      rc=$?
+      sed 's/^/out\t/' "$o"; rm -f "$o"
+      printf 'finished_utc\t%s\ngui_exit\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc"
+      if [ -n "$png" ]; then
+        if [ -s "$png" ]; then
+          printf 'png_size\t%s\npng_sha256\t%s\npng_base64\t%s\n' "$(wc -c <"$png" | tr -d ' ')" "$(shasum -a 256 "$png" | cut -d' ' -f1)" "$(base64 <"$png" | tr -d '\n')"
+        else
+          printf 'png_size\t0\n'
+        fi
+        rm -f "$png"
+      fi
+      exit 0
+    fi
+    case "$NICE_DNS_MODE" in open|launch|running) echo "gui-session --mode $NICE_DNS_MODE is macOS only" >&2; exit 2 ;; esac
     b=""
     for c in "$HOME/.local/bin/nice-dns-gui" "${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-health/bin/nice-dns-gui"; do
       [ -x "$c" ] && { b="$c"; break; }

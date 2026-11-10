@@ -574,6 +574,14 @@ _nd_inst_publish_source() {
       [ -d "$old" ] && mv "$old" "$dst" && break
     done
   fi
+  # A set-aside copy that could not go back is the only one: keep it.
+  if [ ! -d "$dst" ]; then
+    for old in "$base"/.source.*.old; do
+      [ -d "$old" ] || continue
+      echo "! The earlier nice-dns source set aside at $old could not be put back at $dst; it is kept there." >&2
+      return 1
+    done
+  fi
   rm -rf "$base"/.source.*
   new="$(mktemp -d "$base/.source.XXXXXXXX")" || return 1
   old="$new.old"
@@ -625,6 +633,8 @@ nd_install_command_notice() {
   [ -z "${ND_INST_HELPER_NOTE:-}" ] || echo "$ND_INST_HELPER_NOTE"
   if [ -n "${ND_INST_GUI_NOTE:-}" ]; then
     echo "$ND_INST_GUI_NOTE"
+  elif [ -n "${ND_INST_GUI_BIN:-}" ] && [ "$ND_INST_PLATFORM" != linux ]; then
+    echo "The nice-dns menu-bar app: open $ND_INST_GUI_BIN"
   elif [ -n "${ND_INST_GUI_BIN:-}" ]; then
     echo "The nice-dns window: open nice-dns from the applications menu, or run $ND_INST_GUI_BIN"
   fi
@@ -989,6 +999,9 @@ nd_install_hold_controller() {
     done
   else
     for p in "$HOME/Library/LaunchAgents/org.nice-dns.health.plist" "$HOME/Library/LaunchAgents/org.nice-dns.health-bridges.plist"; do
+      # A schedule `nice-dns-health stop` unloaded keeps its plist; it is not
+      # held, so the release does not load it.
+      case "$p" in */org.nice-dns.health.plist) [ -e "$HOME/Library/Application Support/nice-dns-health/schedule-stopped" ] && continue ;; esac
       if [ -f "$p" ]; then
         launchctl unload "$p" 2>/dev/null || true
         ND_INST_HELD="$ND_INST_HELD $p"
@@ -1640,9 +1653,25 @@ nd_install_helper() {
 # and says so, now and in its last lines (ND_INST_GUI_NOTE); also without a
 # program that starts (`--version`) or with an asset holding anything else.
 # An uninstall removes all of it, wherever published.tsv says it went.
+#
+# On macOS (Sub-plan 7 Task 2.1) the asset is nice-dns-gui-macos-arm64.zip
+# (row `asset gui macos arm64 <url> <sha256>`, made by the release job with
+# `ditto -c -k --keepParent`), holding nice-dns.app and nothing else. A fully
+# successful install unpacks it with `ditto -x -k` beside the kept source,
+# strips com.apple.quarantine from the whole bundle, checks that its program
+# answers --version, and renames it to ~/Applications/nice-dns.app, as the
+# user (no root). The same notes say when it was not; an uninstall removes the
+# app.
 ND_INST_GUI_MISSING="GUI not installed; reinstall with network to add it"
 
-_nd_inst_gui_staged() { printf '%s\n' "$ND_INST_STATE/generations/$ND_INST_GEN/nice-dns-gui.tar.gz"; }
+_nd_inst_gui_staged() {
+  if [ "$ND_INST_PLATFORM" = linux ]; then
+    printf '%s\n' "$ND_INST_STATE/generations/$ND_INST_GEN/nice-dns-gui.tar.gz"
+  else
+    printf '%s\n' "$ND_INST_STATE/generations/$ND_INST_GEN/nice-dns-gui.zip"
+  fi
+}
+_nd_inst_gui_app() { printf '%s\n' "$HOME/Applications/nice-dns.app"; }
 _nd_inst_gui_dir() { printf '%s\n' "$(dirname "$(_nd_inst_source_dir)")/gui"; }
 _nd_inst_gui_desktop() { printf '%s\n' "${XDG_DATA_HOME:-$HOME/.local/share}/applications/nice-dns.desktop"; }
 _nd_inst_gui_icon() { printf '%s\n' "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/256x256/apps/nice-dns.png"; }
@@ -1655,23 +1684,23 @@ _nd_inst_gui_note() {
   echo "$ND_INST_GUI_NOTE" >&2
 }
 
-# _nd_inst_stage_gui: preparation (release/bootstrap.tsv `assets`). Linux
-# only; the lock was checked by _nd_inst_stage_helper.
+# _nd_inst_stage_gui: preparation (release/bootstrap.tsv `gui-asset`,
+# `gui-asset-macos`), on both platforms.
 _nd_inst_stage_gui() {
-  local lock="$ND_INST_TREE/release/assets.lock" arch row url sha dst tries=1 rc got
-  [ "$ND_INST_PLATFORM" = linux ] || return 0
+  local lock="$ND_INST_TREE/release/assets.lock" plat arch row url sha dst tries=1 rc got
+  if [ "$ND_INST_PLATFORM" = linux ]; then plat=linux; else plat=macos; fi
   ND_INST_GUI_NOTE=""
   _nd_inst_assets_check "$lock" || return 1
   arch="$(_nd_inst_asset_arch)"
-  row="$(awk -F '\t' -v a="$arch" '$1 == "asset" && $2 == "gui" && $3 == "linux" && $4 == a { print $5 "\t" $6; exit }' "$lock")"
+  row="$(awk -F '\t' -v p="$plat" -v a="$arch" '$1 == "asset" && $2 == "gui" && $3 == p && $4 == a { print $5 "\t" $6; exit }' "$lock")"
   if [ -z "$row" ]; then
-    _nd_inst_gui_note "No nice-dns-gui release asset for linux/${arch:-$(uname -m)} in release/assets.lock"
+    _nd_inst_gui_note "No nice-dns-gui release asset for $plat/${arch:-$(uname -m)} in release/assets.lock"
     return 0
   fi
   url="${row%%"$ND_INST_TAB"*}" sha="${row#*"$ND_INST_TAB"}"
   dst="$(_nd_inst_gui_staged)"
   rm -f "$dst" "$dst.part"
-  echo "▸ Fetching nice-dns-gui (linux/$arch)"
+  echo "▸ Fetching nice-dns-gui ($plat/$arch)"
   while :; do
     rc=0
     curl -fsSL "$url" -o "$dst.part" --proto =https --proto-redir =https --connect-timeout 30 --max-time 600 || rc=$?
@@ -1700,7 +1729,7 @@ _nd_inst_stage_gui() {
 # says so; it never fails the install, whose stack is already running.
 _nd_inst_publish_gui() {
   local tgz dir base new old v rc d bin desk icon to=""
-  [ "$ND_INST_PLATFORM" = linux ] || return 0
+  [ "$ND_INST_PLATFORM" = linux ] || { _nd_inst_publish_gui_mac; return 0; }
   ND_INST_GUI_BIN=""
   dir="$(_nd_inst_gui_dir)" base="$(dirname "$(_nd_inst_gui_dir)")"
   # A publish cut off between its two renames left the earlier copy aside:
@@ -1708,6 +1737,14 @@ _nd_inst_publish_gui() {
   if [ ! -e "$dir" ]; then
     for old in "$base"/.gui.old.*; do
       [ -d "$old" ] && mv "$old" "$dir" && break
+    done
+  fi
+  # A set-aside copy that could not go back is the only one: keep it.
+  if [ ! -d "$dir" ]; then
+    for old in "$base"/.gui.old.*; do
+      [ -d "$old" ] || continue
+      _nd_inst_gui_note "The earlier nice-dns-gui set aside at $old could not be put back at $dir; it is kept there" "GUI not updated"
+      return 0
     done
   fi
   rm -rf "$base"/.gui.new.* "$base"/.gui.old.*
@@ -1780,6 +1817,76 @@ _nd_inst_publish_gui() {
   ND_INST_GUI_BIN="$bin"
 }
 
+# _nd_inst_publish_gui_mac: the staged zip into ~/Applications/nice-dns.app
+# (macOS). Like the Linux publish, every failure leaves the earlier app and
+# says so, and never fails the install.
+_nd_inst_publish_gui_mac() {
+  local zip base app apps new old top v rc to=""
+  ND_INST_GUI_BIN=""
+  base="$(dirname "$(_nd_inst_gui_dir)")" app="$(_nd_inst_gui_app)"
+  apps="$(dirname "$app")"
+  # A publish cut off between its two renames left the earlier app aside: put
+  # it back, then clear what any earlier publish left.
+  if [ ! -e "$app" ]; then
+    for old in "$base"/.gui.old.*; do
+      [ -d "$old/Contents" ] && mkdir -p "$apps" && mv "$old" "$app" && break
+    done
+  fi
+  # A set-aside app that could not go back is the only one: keep it.
+  if [ ! -d "$app" ]; then
+    for old in "$base"/.gui.old.*; do
+      [ -d "$old/Contents" ] || continue
+      _nd_inst_gui_note "The earlier nice-dns.app set aside at $old could not be put back at $app; it is kept there" "GUI not updated"
+      return 0
+    done
+  fi
+  rm -rf "$base"/.gui.new.* "$base"/.gui.old.*
+  zip="$(_nd_inst_gui_staged)"
+  [ -f "$zip" ] || return 0
+  new="$base/.gui.new.$$" old="$base/.gui.old.$$"
+  if ! { mkdir -p "$base" && mkdir "$new" && ditto -x -k "$zip" "$new"; }; then
+    rm -rf "${new:?}"
+    _nd_inst_gui_note "Could not unpack nice-dns-gui under $base" "GUI not installed"
+    return 0
+  fi
+  # Exactly nice-dns.app: a directory of plain files and directories (no
+  # link, nothing else) holding its program and Info.plist.
+  top="$(cd "$new" && find . -mindepth 1 -maxdepth 1 | LC_ALL=C sort | tr '\n' ' ')"
+  if [ "$top" != "./nice-dns.app " ] || [ -L "$new/nice-dns.app" ] || [ ! -d "$new/nice-dns.app" ] \
+    || [ -n "$(find "$new/nice-dns.app" ! -type f ! -type d | head -n 1)" ] \
+    || [ ! -f "$new/nice-dns.app/Contents/MacOS/NiceDNSGUI" ] || [ ! -f "$new/nice-dns.app/Contents/Info.plist" ]; then
+    rm -rf "${new:?}"
+    _nd_inst_gui_note "The nice-dns-gui asset does not hold just nice-dns.app" "GUI not installed"
+    return 0
+  fi
+  # curl sets no quarantine, but whatever else touched the file might have:
+  # an ad-hoc signed app launches only without it.
+  if ! xattr -dr com.apple.quarantine "$new/nice-dns.app"; then
+    rm -rf "${new:?}"
+    _nd_inst_gui_note "Could not clear the quarantine of nice-dns.app" "GUI not installed"
+    return 0
+  fi
+  # The program must start here. A program that hangs is cut off after 20 s
+  # where timeout exists.
+  command -v timeout >/dev/null 2>&1 && to="timeout 20"
+  rc=0; v="$($to "$new/nice-dns.app/Contents/MacOS/NiceDNSGUI" --version 2>&1)" || rc=$?
+  v="${v%%"$ND_INST_NL"*}"
+  case "$rc:$v" in
+    "0:nice-dns-gui "*) ;;
+    *)
+      rm -rf "${new:?}"
+      _nd_inst_gui_note "nice-dns-gui does not start on this host (${v:-no output}; exit $rc)" "GUI not installed"
+      return 0 ;;
+  esac
+  mkdir -p "$apps" || { rm -rf "${new:?}"; _nd_inst_gui_note "Could not make $apps" "GUI not installed"; return 0; }
+  if [ -e "$app" ] || [ -L "$app" ]; then mv "$app" "$old" || { rm -rf "${new:?}"; _nd_inst_gui_note "Could not replace $app"; return 0; }; fi
+  mv "$new/nice-dns.app" "$app" || { [ ! -e "$old" ] || mv "$old" "$app"; rm -rf "${new:?}"; _nd_inst_gui_note "Could not replace $app"; return 0; }
+  rm -rf "${new:?}" "${old:?}"
+  # Published: the generation need not keep the zip.
+  rm -f "$zip"
+  ND_INST_GUI_BIN="$app"
+}
+
 # _nd_inst_gui_forget <published.tsv> [keep...]: removes the program,
 # launcher and icon a publish recorded, but not the paths named in keep. A
 # recorded path counts only when it is absolute and has its own file name.
@@ -1800,7 +1907,10 @@ _nd_inst_gui_forget() {
 # _nd_inst_gui_remove: the program, the launcher, the icon and the files.
 _nd_inst_gui_remove() {
   local dir desk
-  [ "$ND_INST_PLATFORM" = linux ] || return 0
+  if [ "$ND_INST_PLATFORM" != linux ]; then
+    rm -rf "$(_nd_inst_gui_app)" "$(dirname "$(_nd_inst_gui_dir)")"/.gui.*
+    return 0
+  fi
   dir="$(_nd_inst_gui_dir)" desk="$(_nd_inst_gui_desktop)"
   # Where the install published them, then where they go by default.
   _nd_inst_gui_forget "$dir/published.tsv"
@@ -2353,6 +2463,9 @@ nd_install_macos_host_prereqs() {
   # The helper first, so a run without a terminal takes every later root step
   # through the version this tree expects.
   nd_install_helper mac || return 1
+  # The menu-bar app's release asset (Sub-plan 7 Task 2.1), landed in
+  # ~/Applications only when the whole install succeeds.
+  _nd_inst_stage_gui || return 1
   # -- Homebrew + container + Rosetta + git --
   if ! command -v brew >/dev/null; then
     echo "Homebrew not found. Install from https://brew.sh and re-run." >&2

@@ -92,12 +92,41 @@ gl_gui_report() { il_t "$1" gui-report >"$(il_dir "$1")/gui-$2.tsv" 2>>"$(il_dir
 # session-<mode>.log (the PNG row is cut out before anything is kept as tsv).
 gl_session() { il_t "$1" gui-session --mode "$2" >"$(il_dir "$1")/session-$2.log" 2>>"$(il_dir "$1")/ops.log"; }
 
+# gl_pinned <alias>: the Linux GUI tarballs the lock pins, fetched here and
+# checked against the lock; pinned.tsv names the sha256 of the program inside
+# each, one of which an install must publish (Sub-plan 7 Stage 2 gate).
+gl_pinned() {
+  local d row url sha t
+  d="$(il_dir "$1")"; : >"$d/pinned.tsv"
+  while IFS= read -r row; do
+    url="${row%%	*}" sha="${row#*	}"; t="$d/pinned.tar.gz"
+    curl -fsSL --proto =https --max-time 300 "$url" -o "$t" || fail "cannot fetch the pinned GUI $url"
+    assert_eq "$sha" "$(sha256sum "$t" | cut -d' ' -f1)" "the pinned tarball ${url##*/} is the lock's"
+    printf 'program_sha256\t%s\n' "$(tar -xzOf "$t" nice-dns-gui | sha256sum | cut -d' ' -f1)" >>"$d/pinned.tsv"
+    rm -f "$t"
+  done <<EOF
+$(awk -F '\t' '$1 == "asset" && $2 == "gui" && $3 == "linux" { print $5 "\t" $6 }' "$NICE_DNS_ROOT/release/assets.lock")
+EOF
+  assert_match '^program_sha256	[0-9a-f]{64}$' "$(head -n 1 "$d/pinned.tsv")" "the lock pins a Linux GUI"
+}
+
+# gl_started <alias> <label>: the proxy container's start time, which a
+# restart changes.
+gl_started() {
+  local a="$1" d
+  d="$(il_dir "$a")"
+  il_t "$a" config >"$d/config-$2.tsv" 2>>"$d/ops.log" || fail "config: $(tail -n 3 "$d/ops.log")"
+  awk -F '\t' -v c="tor-$(il_cell "$a" proxy)" '$1 == "started" && $2 == c { print $3; exit }' "$d/config-$2.tsv"
+}
+
 # gl_assert_gui <alias> <label>: the GUI as an install leaves it.
 gl_assert_gui() {
   local a="$1" label="$2" r gen
   r="$(il_dir "$a")/gui-$label.tsv"
   gen="$(il_val "$(il_dir "$a")/after-$label.tsv" generation current)"
   assert_eq present "$(gl_kv "$r" gui_bin)" "$label: nice-dns-gui is installed"
+  grep -qx "program_sha256	$(gl_kv "$r" gui_program_sha256)" "$(il_dir "$a")/pinned.tsv" \
+    || fail "$label: the installed program is not the one in a pinned release asset"
   assert_match '^nice-dns-gui [0-9]' "$(gl_kv "$r" gui_version)" "$label: it answers --version"
   assert_eq 0 "$(gl_kv "$r" gui_check_exit)" "$label: --check exits 0: $(gl_kv "$r" gui_check)"
   assert_match "^installed: generation $gen;" "$(gl_kv "$r" gui_check)" "$label: --check names the generation"
@@ -129,6 +158,7 @@ gl_before() {
   assert_match '^(haproxy|socat)$' "$proxy" "$a runs a proxy now, or --proxies names one"
   printf 'cell\t%s/%s/standard\nproxy\t%s\nsource_sha\t%s\nadapter\t%s\ntarget\t%s\n' "$plat" "$proxy" "$proxy" "$(il_sha)" \
     "$( [ -n "${NICE_DNS_TARGET_ADAPTER:-}" ] && echo fake || echo real)" "$a" >"$d/cell.tsv"
+  gl_pinned "$a"
 }
 
 # gl_install_step <platform> <alias> <label>: nice-dns install from an archive
@@ -146,7 +176,7 @@ gl_install_step() {
   il_check_deployed "$plat" "$d/after-$label.tsv" "$proxy"
   gl_gui_report "$a" "$label" || fail "gui-report: $(tail -n 5 "$d/ops.log")"
   gl_assert_gui "$a" "$label"
-  { grep -v '^gui_check	' "$d/gui-$label.tsv"; printf 'gui_check_generation\t%s\nresolves\t%s\nresult\tpass\n' \
+  { grep -v '^gui_check	' "$d/gui-$label.tsv"; printf 'gui_check_generation\t%s\ngui_program_pinned\tyes\nresolves\t%s\nresult\tpass\n' \
       "$(il_val "$d/after-$label.tsv" generation current)" "$(il_val "$d/after-$label.tsv" resolution resolves)"; } >"$d/gl-$label.tsv"
 }
 
@@ -168,15 +198,19 @@ gl_screenshot() {
 }
 
 gl_restart() {
-  local plat="$1" a="$2" d l proxy
+  local plat="$1" a="$2" d l proxy s0 s1
   d="$(il_dir "$a")"; l="$d/session-restart.log"; proxy="$(il_cell "$a" proxy)"
   gl_require "$a" gl_install
+  s0="$(gl_started "$a" before-restart)"
+  assert_ne "" "$s0" "the proxy's start time is read before the restart"
   gl_session "$a" restart || fail "gui-session restart: $(tail -n 5 "$d/ops.log")"
   assert_eq 0 "$(gl_kv "$l" gui_exit)" "--run-action restart exits 0: $(grep '^out	' "$l" | tail -n 5)"
   assert_match 'finished \(exit 0\)$' "$(grep '^out	' "$l" | tail -n 1)" "the pane ends with the action's exit"
   il_report "$a" after-restart || fail "lifecycle-report"
   il_check_deployed "$plat" "$d/after-restart.tsv" "$proxy"
-  printf 'gui_exit\t%s\npane_last\t%s\nresolves\t%s\nresult\tpass\n' "$(gl_kv "$l" gui_exit)" \
+  s1="$(gl_started "$a" after-restart)"
+  assert_ne "$s0" "$s1" "the proxy restarted (start time $s0, then $s1)"
+  printf 'gui_exit\t%s\nproxy_restarted\tyes\npane_last\t%s\nresolves\t%s\nresult\tpass\n' "$(gl_kv "$l" gui_exit)" \
     "$(grep '^out	' "$l" | tail -n 1 | cut -f2- | tr '\t' ' ')" "$(il_val "$d/after-restart.tsv" resolution resolves)" >"$d/gl-restart.tsv"
 }
 

@@ -247,6 +247,36 @@ t_uninstall_removes_only_what_install_owns() {
   done
 }
 
+# Close-out M1: on macOS `stop` unloads the agent and keeps its plist, so it
+# leaves schedule-stopped beside the receipt for `nice-dns status` and the
+# installer's hold to read; `start` and an install, which load it, clear it.
+# Linux disables the timer, which removes its enable link: no mark there.
+t_stop_marks_the_schedule_stopped_until_it_is_loaded_again() {
+  local plat
+  for plat in $(sc_platforms); do
+    (
+      sc_env "$plat"
+      sc_cli "$SC_TREE/health/nice-dns-health" install
+      assert_rc 0 "$SC_RC" "$plat: install: $SC_OUT"
+      sc_cli "$SC_BIN" stop
+      assert_rc 0 "$SC_RC" "$plat: stop: $SC_OUT"
+      if [ "$plat" = linux ]; then
+        assert_no_path "$SC_ROOT/schedule-stopped" "linux: the disabled timer is the record"
+      else
+        assert_file "$SC_ROOT/schedule-stopped" "macos: stop marks the kept plist stopped"
+        assert_file "$SC_UNIT" "macos: the plist is kept"
+        sc_cli "$SC_BIN" start
+        assert_rc 0 "$SC_RC" "macos: start: $SC_OUT"
+        assert_no_path "$SC_ROOT/schedule-stopped" "macos: start clears the mark"
+        sc_cli "$SC_BIN" stop
+        sc_cli "$SC_TREE/health/nice-dns-health" install
+        assert_rc 0 "$SC_RC" "macos: reinstall: $SC_OUT"
+        assert_no_path "$SC_ROOT/schedule-stopped" "macos: an install loads the agent, so it clears the mark"
+      fi
+    ) || exit 1
+  done
+}
+
 # The patterns are literal installer text on purpose.
 # shellcheck disable=SC2016
 t_installers_install_the_controller() {

@@ -265,6 +265,12 @@ case "$me" in
     esac
     exit 0 ;;
   shasum) shift 2; sha256sum "$@"; exit 0 ;;
+  # The macOS GUI's zip (Sub-plan 7 Task 2.1): `ditto -x -k <zip> <dir>`. The
+  # fixtures' stand-in zip is a tar archive, so this unpacks it with tar.
+  ditto)
+    [ "$1 $2" = "-x -k" ] && [ $# = 4 ] || exit 2
+    mkdir -p "$4" && tar -xf "$3" -C "$4"
+    exit $? ;;
   sw_vers) echo 26.0; exit 0 ;;
   uname) case "${1:-}" in -m) echo "$FAKE_ARCH" ;; *) echo "$FAKE_UNAME" ;; esac; exit 0 ;;
   crun) echo "crun version 1.19.1"; exit 0 ;;
@@ -468,7 +474,7 @@ STUB
   if [ "$plat" = linux ]; then
     for s in podman crun pkexec; do ln -s fakecmd "$b/$s"; done
   else
-    for s in container brew softwareupdate sw_vers networksetup launchctl ifconfig dscacheutil killall pfctl route; do ln -s fakecmd "$b/$s"; done
+    for s in container brew softwareupdate sw_vers networksetup launchctl ifconfig dscacheutil killall pfctl route ditto xattr; do ln -s fakecmd "$b/$s"; done
   fi
   for s in $IP_TOOLS; do [ -e "$b/$s" ] || ln -s "$(type -P "$s")" "$b/$s"; done
 }

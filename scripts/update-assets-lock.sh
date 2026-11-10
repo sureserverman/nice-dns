@@ -2,14 +2,14 @@
 # Refresh release/assets.lock (Sub-plan 5 Task 2.4). A maintainer tool, never
 # run by an installer. For a nice-dns release (the latest, or --tag) it
 # fetches each asset's .sha256 that .github/workflows/release.yml attached
-# (the three helpers and the two Linux GUIs), downloads the asset itself and
-# requires its sha256 to be that one, then compares the result with the lock.
-# It reports the drift; with --write it records the release and the five
-# asset rows, keeping the lock's comments. Review the diff and commit it as
+# (the three helpers, the two Linux GUIs and the macOS app), downloads the
+# asset itself and requires its sha256 to be that one, then compares the
+# result with the lock. It reports the drift; with --write it records the
+# release and the six asset rows, keeping the lock's comments. Review the diff and commit it as
 # the release input change (docs/release-inputs.md).
 #
-# A release before v1.1.0 has no GUI assets: the script stops at the first
-# missing one (exit 2).
+# A release before v1.1.0 has no GUI assets, and one before v1.2.0 no macOS
+# app: the script stops at the first missing one (exit 2).
 #
 # Usage: scripts/update-assets-lock.sh [--lock FILE] [--tag vX.Y.Z] [--write]
 # Exit: 0 the lock matches the release (or was rewritten); 1 drift found and
@@ -19,13 +19,15 @@
 set -euo pipefail
 
 REPO=sureserverman/nice-dns
-# role platform arch file: the helper (Sub-plan 5) and the Linux GUI
-# (Sub-plan 6 Task 2.1), as .github/workflows/release.yml names them.
+# role platform arch file: the helper (Sub-plan 5), the Linux GUI (Sub-plan 6
+# Task 2.1) and the macOS app (Sub-plan 7 Task 2.1), as
+# .github/workflows/release.yml names them.
 ASSETS="helper linux amd64 nice-dns-helper-linux-amd64
 helper linux arm64 nice-dns-helper-linux-arm64
 helper macos arm64 nice-dns-helper-macos-arm64
 gui linux amd64 nice-dns-gui-linux-amd64.tar.gz
-gui linux arm64 nice-dns-gui-linux-arm64.tar.gz"
+gui linux arm64 nice-dns-gui-linux-arm64.tar.gz
+gui macos arm64 nice-dns-gui-macos-arm64.zip"
 LOCK="$(cd "$(dirname "$0")/.." && pwd)/release/assets.lock"
 TAG="" WRITE=0
 while [ $# -gt 0 ]; do

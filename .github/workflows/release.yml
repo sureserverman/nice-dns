@@ -1,8 +1,9 @@
 # Release (Sub-plan 5 Task 2.4): on a v* tag, builds gui/helper
 # (nice-dns-helper) for each platform an install fetches it for, and the
 # Linux GUI gui/linux (Sub-plan 6 Task 2.1) as nice-dns-gui-linux-<arch>.tar.gz,
-# writes each asset's .sha256, and attaches them all to the GitHub release of
-# that tag.
+# and the macOS menu-bar app gui/mac (Sub-plan 7 Task 2.1) as
+# nice-dns-gui-macos-arm64.zip, writes each asset's .sha256, and attaches them
+# all to the GitHub release of that tag.
 # scripts/update-assets-lock.sh --write then pins them in
 # release/assets.lock (docs/release-inputs.md). Actions are pinned by SHA.
 name: release
@@ -104,8 +105,45 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  build-gui-macos:
+    # The macOS menu-bar app (Sub-plan 7 Task 2.1): gui/mac tested (XCTest and
+    # KitCheck) and built with the runner's Xcode Swift, assembled by its
+    # Makefile into nice-dns.app (ad-hoc signed, the tag's version in its
+    # Info.plist), and zipped with ditto as nice-dns-gui-macos-arm64.zip.
+    name: build nice-dns-gui-macos-arm64
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: swift --version && xcodebuild -version
+      - name: Test
+        working-directory: gui/mac
+        run: swift test && swift run KitCheck
+      - name: Build
+        working-directory: gui/mac
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -o pipefail
+          make VERSION="${TAG#v}"
+          codesign --verify --deep build/nice-dns.app
+          mkdir -p ../../dist
+          ditto -c -k --keepParent build/nice-dns.app ../../dist/nice-dns-gui-macos-arm64.zip
+          cd ../../dist
+          shasum -a 256 nice-dns-gui-macos-arm64.zip >nice-dns-gui-macos-arm64.zip.sha256
+          cat nice-dns-gui-macos-arm64.zip.sha256
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: nice-dns-gui-macos-arm64
+          path: dist/
+          if-no-files-found: error
+
   release:
-    needs: [build, build-gui]
+    needs: [build, build-gui, build-gui-macos]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -120,10 +158,11 @@ jobs:
           ls -l
           [ "$(find . -maxdepth 1 -name 'nice-dns-helper-*.sha256' | wc -l)" -eq 3 ] || { echo "expected 3 helper assets" >&2; exit 1; }
           [ "$(find . -maxdepth 1 -name 'nice-dns-gui-linux-*.tar.gz.sha256' | wc -l)" -eq 2 ] || { echo "expected 2 GUI assets" >&2; exit 1; }
-          sha256sum -c nice-dns-helper-*.sha256 nice-dns-gui-linux-*.sha256
+          [ -f nice-dns-gui-macos-arm64.zip.sha256 ] || { echo "expected the macOS GUI asset" >&2; exit 1; }
+          sha256sum -c nice-dns-helper-*.sha256 nice-dns-gui-linux-*.sha256 nice-dns-gui-macos-arm64.zip.sha256
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
-        run: gh release create "$TAG" --repo "$REPO" --verify-tag --generate-notes dist/nice-dns-helper-* dist/nice-dns-gui-linux-*
+        run: gh release create "$TAG" --repo "$REPO" --verify-tag --generate-notes dist/nice-dns-helper-* dist/nice-dns-gui-linux-* dist/nice-dns-gui-macos-*

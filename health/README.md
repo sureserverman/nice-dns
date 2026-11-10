@@ -18,7 +18,8 @@ From a `nice-dns/` checkout:
 keeps working even if the repo is moved or deleted:
 
 - Primary:  `~/.local/bin/nice-dns-health` (when user-writable)
-- Fallback: `~/.local/state/nice-dns-health/bin/nice-dns-health`
+- Fallback: `~/.local/state/nice-dns-health/bin/nice-dns-health` on Linux,
+  `~/Library/Logs/nice-dns-health/bin/nice-dns-health` on macOS
   (used when `~/.local/bin` is owned by root, e.g. on Ubuntu hosts where
   apt-installed `xdg-utils` claimed it)
 

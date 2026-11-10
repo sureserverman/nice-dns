@@ -38,7 +38,7 @@ Rows of a group come together, in this order of groups.
 | Group | Keys and values |
 |---|---|
 | `install` | `installed yes\|no`; when installed: `generation <id>`, `source_commit <sha or unknown>`, `branch <name>`, `variant haproxy\|socat`, `pihole standard\|hardened`, `platform linux\|macos`, `lock sha256:<digest of release/images.lock>`; when not: `hint <the README's install line>`, which the `nice-dns` command adds (the library itself names no command). |
-| `controller` | `mode active\|shadow\|not-installed`; `last_pass <epoch>\|never`; `verdict <text>\|unknown` — `OK`, `FAIL [<names>]` (optionally followed by ` indeterminate=(<names>)`) or `INDETERMINATE [<names>]`; `stale no\|<seconds>\|never\|future` — a pass older than 300 s is stale, and its observations are still printed; `future` is a pass dated after the clock (the clock moved back), also stale; `schedule loaded\|stopped`; when the state cannot be read, `unreadable <reason>`. |
+| `controller` | `mode active\|shadow\|not-installed`; `last_pass <epoch>\|never`; `verdict <text>\|unknown` — `OK`, `FAIL [<names>]` (optionally followed by ` indeterminate=(<names>)`) or `INDETERMINATE [<names>]`; `stale no\|<seconds>\|never\|future` — a pass older than 300 s is stale, and its observations are still printed; `future` is a pass dated after the clock (the clock moved back), also stale; `schedule loaded\|stopped` — `stopped` when the schedule is not installed or `nice-dns-health stop` stopped it (on macOS the stop keeps the agent's plist and leaves `schedule-stopped` beside the controller's receipt; `start` and an install remove it); when the state cannot be read, `unreadable <reason>`. |
 | `obs` | The last pass's records, one per observation: `obs<TAB><name><TAB><verdict><TAB><ms><TAB><reason>`, with `<name>` like `container:pi-hole` or `route:cloudflare-onion` and `<verdict>` `healthy\|unhealthy\|indeterminate`. Absent when no pass was recorded. |
 | `route` | `selected <route id> <state generation>`, from the controller's state. Absent before the controller has chosen a route. |
 | `bridges` | `mode on\|off` (`on` unless the bridges toggle wrote `TOR_BRIDGES=off`); `count <n>` (bridge lines in `bridges.env`); `last_refresh <epoch>\|never`. |
@@ -147,5 +147,36 @@ Its hooks are for tests and live proofs, not for people:
 | `--run-action <id> --exit` | Runs one action of the table with no dialog, prints the log pane and exits with the action's status. |
 | `--probe <id>` | Clicks `id` as a person would and prints what the window shows before, during and after (the test suite's hook). |
 | `--version` | `nice-dns-gui <version>`. |
+
+`NICE_DNS_GUI_STATUS_CMD` replaces the status command for the fixture tests.
+
+## Consumers: `nice-dns.app` (macOS)
+
+The menu-bar app (`gui/mac`, Swift; installed by the macOS installer into
+`~/Applications/nice-dns.app` from a release asset, `docs/release-inputs.md`)
+reads this contract the same way as the Linux GUI: `nice-dns status --tsv`
+when it starts and every 5 s, schema `nice-dns-status/1` only, and every
+menu item, button and the bridges switch is a row of its bundled copy of
+`gui/share/actions.tsv` (checked against the shared table at build time). It
+finds `nice-dns` on `PATH`, else in `~/.local/bin`, else where the installer
+falls back to; the commands it runs get `~/.local/bin`, `/opt/homebrew/bin` and
+`/usr/local/bin` on their `PATH`. The menu-bar glyph is grey when nothing is
+installed; red when the status cannot be shown, the controller's verdict is
+`FAIL` or an observation is `unhealthy`; amber when the controller is stale,
+its verdict is not `OK`, an observation is not `healthy` or a file status reads
+is unreadable; green otherwise (gui/mac/Sources/NiceDNSKit/Session.swift). One action runs at a time; uninstall (typed) and
+reinstall ask first.
+
+Its hooks are for tests and live proofs. The program is
+`~/Applications/nice-dns.app/Contents/MacOS/NiceDNSGUI`; over ssh, run it in
+the user's gui domain (`launchctl asuser`), where the stack's commands see the
+container runtime.
+
+| Hook | What it does |
+|---|---|
+| `--check` | Reads the status once; prints one line; exit 0 installed (`installed: generation <g>; controller <verdict>, <freshness>`), 1 not installed or no `nice-dns` (the line names the path looked for), 2 otherwise. |
+| `--screenshot <png>` | Draws the window for the current status into `<png>` from an off-screen window (no Screen Recording permission) and exits. |
+| `--run-action <id> --exit` | Runs one action of the table with no dialog, prints the output pane and exits with the action's status; an action that runs no command (`open-admin`, `show-password-path`) is refused with exit 2. |
+| `--version` | `nice-dns-gui <version>` (the release tag without its `v`). |
 
 `NICE_DNS_GUI_STATUS_CMD` replaces the status command for the fixture tests.

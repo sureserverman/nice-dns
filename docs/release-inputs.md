@@ -193,3 +193,25 @@ exactly those three plain files and the program must answer `--version` on
 the host (GTK 4.14 and libadwaita 1.5); otherwise the install goes on and
 says `GUI not installed` with the reason. An uninstall removes all of it,
 wherever `published.tsv` says it went.
+
+## Release assets: the macOS menu-bar app
+
+`nice-dns.app` (`gui/mac`, Swift, macOS 13 or later) is built by the same
+workflow on the `macos-15` runner: `swift test` and `KitCheck`, then
+`make VERSION=<tag without v>` assembles the bundle and signs it ad hoc, and
+`ditto -c -k --keepParent` zips it as `nice-dns-gui-macos-arm64.zip` (a
+`.sha256` beside it). The lock pins it as `asset gui macos arm64 <url>
+<sha256>`; the script above records it with the others (a release before
+v1.2.0 has none).
+
+On macOS an install downloads the zip in preparation (declared in
+`release/bootstrap.tsv` as `gui-asset-macos`, the same three tries on a
+failed lookup) and keeps it only when its sha256 is the lock's. Only a fully
+successful install lands it, as the user and without root: `ditto -x -k`
+beside the kept source, `xattr -dr com.apple.quarantine` over the whole
+bundle, then a rename to `~/Applications/nice-dns.app`. The zip must hold
+`nice-dns.app` alone, of plain files and directories only, and its program
+must answer `--version`; otherwise, or without an asset, a download or a
+matching sha256, the install goes on and says `GUI not installed` with the
+reason, also in its last lines. A failed install keeps the earlier app; an
+uninstall removes it.

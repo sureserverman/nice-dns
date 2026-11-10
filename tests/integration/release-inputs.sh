@@ -402,6 +402,9 @@ t_assets_refresh_script_checks_and_writes() {
     printf 'gui %s\n' "$n" >"$w/rel/v1.0.0/nice-dns-gui-$n.tar.gz"
     (cd "$w/rel/v1.0.0" && sha256sum "nice-dns-gui-$n.tar.gz" >"nice-dns-gui-$n.tar.gz.sha256")
   done
+  # The macOS app's zip (Sub-plan 7 Task 2.1).
+  printf 'gui macos\n' >"$w/rel/v1.0.0/nice-dns-gui-macos-arm64.zip"
+  (cd "$w/rel/v1.0.0" && sha256sum nice-dns-gui-macos-arm64.zip >nice-dns-gui-macos-arm64.zip.sha256)
   # The release as GitHub serves it: the latest tag, and each download.
   cat >"$b/curl" <<STUB
 #!/bin/sh
@@ -420,7 +423,8 @@ STUB
   assert_eq "$(cat "$NICE_DNS_ROOT/release/assets.lock")" "$(cat "$w/assets.lock")" "without --write the lock is untouched"
   out="$(PATH="$b:$PATH" bash "$NICE_DNS_ROOT/scripts/update-assets-lock.sh" --lock "$w/assets.lock" --write 2>&1)"; rc=$?
   assert_rc 0 "$rc" "--write: $out"
-  assert_eq 5 "$(grep -c '^asset' "$w/assets.lock")" "--write records the five assets"
+  assert_eq 6 "$(grep -c '^asset' "$w/assets.lock")" "--write records the six assets"
+  assert_match "$(printf 'asset\tgui\tmacos\tarm64\thttps://github.com/sureserverman/nice-dns/releases/download/v1.0.0/nice-dns-gui-macos-arm64.zip\t')$(cut -d' ' -f1 "$w/rel/v1.0.0/nice-dns-gui-macos-arm64.zip.sha256")$" "$(cat "$w/assets.lock")" "and the macOS app's row"
   assert_match "$(printf 'asset\tgui\tlinux\tamd64\thttps://github.com/sureserverman/nice-dns/releases/download/v1.0.0/nice-dns-gui-linux-amd64.tar.gz\t')$(cut -d' ' -f1 "$w/rel/v1.0.0/nice-dns-gui-linux-amd64.tar.gz.sha256")$" "$(cat "$w/assets.lock")" "and the GUI's rows"
   assert_match "$(printf '^release\tv1\\.0\\.0$')" "$(cat "$w/assets.lock")" "and the release"
   assert_match "$(printf 'asset\thelper\tmacos\tarm64\thttps://github.com/sureserverman/nice-dns/releases/download/v1.0.0/nice-dns-helper-macos-arm64\t')$(cut -d' ' -f1 "$w/rel/v1.0.0/nice-dns-helper-macos-arm64.sha256")$" "$(cat "$w/assets.lock")" "each row is the asset's url and sha256"

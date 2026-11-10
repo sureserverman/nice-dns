@@ -362,6 +362,19 @@ $(cat "$CL_LOG")"
   done
 }
 
+# Close-out M1: a schedule the owner stopped stays stopped. On macOS its plist
+# is kept, so the hold must not read the plist as a loaded agent and the
+# release must not load it.
+t_restart_leaves_a_stopped_macos_schedule_stopped() {
+  cl_restart_world Darwin
+  mkdir -p "$CL_HOME/Library/Application Support/nice-dns-health"
+  : >"$CL_HOME/Library/Application Support/nice-dns-health/schedule-stopped"
+  cl_run "$CL_TREE/nice-dns" restart
+  assert_rc 0 "$CL_RC" "macos: restart: $CL_ERR"
+  assert_eq "" "$(cl_calls '^launchctl (un)?load .*org\.nice-dns\.health\.plist')" "macos: the stopped schedule is neither held nor loaded"
+  assert_eq 1 "$(grep -cE '^launchctl load .*org\.nice-dns\.health-bridges\.plist' "$CL_LOG")" "macos: the bridges schedule is still held and released"
+}
+
 t_restart_without_an_answer_says_so_and_releases() {
   local u
   for u in $(cl_platforms); do
@@ -646,6 +659,20 @@ t_status_flags_a_stale_or_missing_pass_and_still_prints_it() {
     rm -f "$ST_SCHED"; st_rows
     assert_eq stopped "$(st_val controller schedule)" "$u: no schedule"
   done
+}
+
+# Close-out M1: `nice-dns-health stop` on macOS unloads the agent but keeps
+# its plist, so the plist alone is no evidence the schedule runs; the stop
+# leaves schedule-stopped beside the controller's receipt.
+t_status_a_stopped_macos_schedule_reads_stopped() {
+  st_world Darwin
+  st_pass $((ST_NOW - 30)) OK
+  st_rows
+  assert_eq loaded "$(st_val controller schedule)" "macos: the agent's plist, no stop mark"
+  : >"$CL_HOME/Library/Application Support/nice-dns-health/schedule-stopped"
+  st_rows
+  assert_rc 0 "$ST_RC" "macos: rows: $(cat "$CL_W/st-err")"
+  assert_eq stopped "$(st_val controller schedule)" "macos: the plist is kept, but nice-dns-health stop marked it stopped"
 }
 
 t_status_not_installed_names_the_curl_line_and_exits_1() {

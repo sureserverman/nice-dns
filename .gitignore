@@ -55,3 +55,5 @@ __pycache__/
 # ===== Local test targets (sub-plan 01 Task 2.1) — never commit =====
 tests/live/targets.env
 gui/linux/target/
+gui/mac/.build/
+gui/mac/build/
