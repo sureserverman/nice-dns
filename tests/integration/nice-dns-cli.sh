@@ -756,6 +756,30 @@ t_status_a_stopped_macos_schedule_reads_stopped() {
   assert_eq stopped "$(st_val controller schedule)" "macos: the plist is kept, but nice-dns-health stop marked it stopped"
 }
 
+# `update auto loaded|stopped`: whether the twice-daily check (Task 1.4) is
+# scheduled, read from its files only, like `controller schedule`: on Linux
+# the timer's enable link, on macOS its plist without the stop mark.
+t_status_says_whether_the_update_check_is_scheduled() {
+  local u up
+  for u in $(cl_platforms); do
+    st_world "$u"
+    if [ "$u" = Linux ]; then up="$CL_HOME/.config/systemd/user/default.target.wants/nice-dns-health-update.timer"
+    else up="$CL_HOME/Library/LaunchAgents/org.nice-dns.health-update.plist"; fi
+    st_rows
+    assert_eq stopped "$(st_val update auto)" "$u: no update schedule installed reads stopped"
+    mkdir -p "${up%/*}"; : >"$up"
+    st_rows
+    assert_rc 0 "$ST_RC" "$u: rows: $(cat "$CL_W/st-err")"
+    assert_eq loaded "$(st_val update auto)" "$u: the schedule file is there"
+    assert_eq 1 "$(printf '%s\n' "$ST_OUT" | grep -c "$(printf '^update\tauto\t')")" "$u: one update auto row"
+    if [ "$u" = Darwin ]; then
+      : >"$CL_HOME/Library/Application Support/nice-dns-health/schedule-stopped"
+      st_rows
+      assert_eq stopped "$(st_val update auto)" "macos: the plist is kept, but nice-dns-health stop marked it stopped"
+    fi
+  done
+}
+
 t_status_not_installed_names_the_curl_line_and_exits_1() {
   local u
   for u in $(cl_platforms); do

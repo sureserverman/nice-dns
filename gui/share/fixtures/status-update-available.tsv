@@ -34,6 +34,7 @@ bridges	last_refresh	never
 update	result	available
 update	checked_at	1794251900
 update	remote_commit	0f6a6e7c3d2b1a09f8e7d6c5b4a39281706f5e4d
+update	auto	loaded
 helper	path	/usr/libexec/nice-dns-helper
 helper	installed	yes
 helper	version	0.1.1

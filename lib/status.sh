@@ -73,6 +73,7 @@ _nd_st_paths() {
       ND_ST_STATE_DIR="${ND_STATE_DIR:-$HOME/Library/Application Support/nice-dns/controller}"
       ND_ST_RECEIPT="$HOME/Library/Application Support/nice-dns-health/install.tsv"
       ND_ST_SCHEDULE="$HOME/Library/LaunchAgents/org.nice-dns.health.plist"
+      ND_ST_UPDATE_SCHEDULE="$HOME/Library/LaunchAgents/org.nice-dns.health-update.plist"
       ND_ST_SCHEDULE_STOPPED="$HOME/Library/Application Support/nice-dns-health/schedule-stopped"
       ND_ST_ADMIN_URL="http://172.31.240.250/admin"
       ND_ST_HELPER=/usr/local/libexec/nice-dns-helper ;;
@@ -81,6 +82,7 @@ _nd_st_paths() {
       ND_ST_STATE_DIR="${ND_STATE_DIR:-$state/nice-dns/controller}"
       ND_ST_RECEIPT="${XDG_DATA_HOME:-$HOME/.local/share}/nice-dns-health/install.tsv"
       ND_ST_SCHEDULE="$cfg/systemd/user/default.target.wants/nice-dns-health.timer"
+      ND_ST_UPDATE_SCHEDULE="$cfg/systemd/user/default.target.wants/nice-dns-health-update.timer"
       ND_ST_SCHEDULE_STOPPED=""
       ND_ST_ADMIN_URL="http://localhost:8880/admin"
       ND_ST_HELPER=/usr/libexec/nice-dns-helper ;;
@@ -242,6 +244,15 @@ nd_status_rows() {
   else
     _nd_st_row update result unknown unreadable
     _nd_st_row update unreadable "cannot read $(_nd_st_short "$cache")"; rc=2
+  fi
+  # update auto: the controller's twice-daily check (nice-dns-health
+  # update-check) is scheduled. Its files only, as `controller schedule`:
+  # the timer's enable link on Linux, the agent's plist without the stop
+  # mark on macOS (`nice-dns-health stop` stops every schedule).
+  if [ -e "$ND_ST_UPDATE_SCHEDULE" ] && { [ -z "$ND_ST_SCHEDULE_STOPPED" ] || [ ! -e "$ND_ST_SCHEDULE_STOPPED" ]; }; then
+    _nd_st_row update auto loaded
+  else
+    _nd_st_row update auto stopped
   fi
 
   # helper: nice-dns-helper, which actions without a terminal need (Sub-plan
