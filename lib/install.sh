@@ -574,6 +574,14 @@ _nd_inst_publish_source() {
       [ -d "$old" ] && mv "$old" "$dst" && break
     done
   fi
+  # A set-aside copy that could not go back is the only one: keep it.
+  if [ ! -d "$dst" ]; then
+    for old in "$base"/.source.*.old; do
+      [ -d "$old" ] || continue
+      echo "! The earlier nice-dns source set aside at $old could not be put back at $dst; it is kept there." >&2
+      return 1
+    done
+  fi
   rm -rf "$base"/.source.*
   new="$(mktemp -d "$base/.source.XXXXXXXX")" || return 1
   old="$new.old"
@@ -1728,6 +1736,14 @@ _nd_inst_publish_gui() {
       [ -d "$old" ] && mv "$old" "$dir" && break
     done
   fi
+  # A set-aside copy that could not go back is the only one: keep it.
+  if [ ! -d "$dir" ]; then
+    for old in "$base"/.gui.old.*; do
+      [ -d "$old" ] || continue
+      _nd_inst_gui_note "The earlier nice-dns-gui set aside at $old could not be put back at $dir; it is kept there" "GUI not updated"
+      return 0
+    done
+  fi
   rm -rf "$base"/.gui.new.* "$base"/.gui.old.*
   tgz="$(_nd_inst_gui_staged)"
   [ -f "$tgz" ] || return 0
@@ -1811,6 +1827,14 @@ _nd_inst_publish_gui_mac() {
   if [ ! -e "$app" ]; then
     for old in "$base"/.gui.old.*; do
       [ -d "$old/Contents" ] && mkdir -p "$apps" && mv "$old" "$app" && break
+    done
+  fi
+  # A set-aside app that could not go back is the only one: keep it.
+  if [ ! -d "$app" ]; then
+    for old in "$base"/.gui.old.*; do
+      [ -d "$old/Contents" ] || continue
+      _nd_inst_gui_note "The earlier nice-dns.app set aside at $old could not be put back at $app; it is kept there" "GUI not updated"
+      return 0
     done
   fi
   rm -rf "$base"/.gui.new.* "$base"/.gui.old.*

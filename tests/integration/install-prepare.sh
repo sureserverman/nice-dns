@@ -974,3 +974,49 @@ t_gui_mac_reinstall_replaces_the_app_and_keeps_it_when_it_cannot() {
   assert_match '# earlier' "$(cat "$IP_GUI_APP/Contents/MacOS/NiceDNSGUI")" "the app set aside is back"
   assert_eq "" "$(find "$IP_HOME/.local/share/nice-dns" -maxdepth 1 -name '.gui.*')" "no leftovers"
 }
+
+# A set-aside earlier copy that cannot be put back (Stage 2 gate round 1):
+# here the destination is a dangling symlink, which a directory cannot be
+# renamed onto. The set-aside copy is the only one left: it is kept, and the
+# install says where.
+t_gui_a_set_aside_copy_that_cannot_go_back_is_kept() {
+  ip_gui_world
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "the install: $IP_OUT"
+  ip_gui_paths
+  mv "$IP_GUI_DIR" "$IP_HOME/.local/share/nice-dns/.gui.old.123"
+  ln -s "$IP_HOME/nowhere" "$IP_GUI_DIR"
+  printf '%040d\n' 5 >"$FAKE/git_head"
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "the reinstall goes on: $IP_OUT"
+  assert_file "$IP_HOME/.local/share/nice-dns/.gui.old.123/nice-dns-gui" "the set-aside copy is kept"
+  assert_match 'set aside at .*\.gui\.old\.123 could not be put back' "$IP_OUT" "and the install says where it is"
+}
+
+t_gui_mac_a_set_aside_app_that_cannot_go_back_is_kept() {
+  ip_gui_mac_world
+  ip_install install-mac haproxy
+  assert_rc 0 "$IP_RC" "the install: $IP_OUT"
+  mkdir -p "$IP_HOME/.local/share/nice-dns"
+  mv "$IP_GUI_APP" "$IP_HOME/.local/share/nice-dns/.gui.old.123"
+  ln -s "$IP_HOME/nowhere" "$IP_GUI_APP"
+  printf '%040d\n' 5 >"$FAKE/git_head"
+  ip_install install-mac haproxy
+  assert_rc 0 "$IP_RC" "the reinstall goes on: $IP_OUT"
+  assert_file "$IP_HOME/.local/share/nice-dns/.gui.old.123/Contents/MacOS/NiceDNSGUI" "the set-aside app is kept"
+  assert_match 'set aside at .*\.gui\.old\.123 could not be put back' "$IP_OUT" "and the install says where it is"
+}
+
+t_source_a_set_aside_copy_that_cannot_go_back_is_kept() {
+  local src
+  dt_world install-deb "$(dt_fresh_state install-deb)"
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "the install: $IP_OUT"
+  src="$IP_HOME/.local/share/nice-dns/source"
+  mv "$src" "$IP_HOME/.local/share/nice-dns/.source.cut.old"
+  ln -s "$IP_HOME/nowhere" "$src"
+  printf '%040d\n' 5 >"$FAKE/git_head"
+  ip_install install-deb haproxy
+  assert_file "$IP_HOME/.local/share/nice-dns/.source.cut.old/lib/install.sh" "the set-aside source is kept: $IP_OUT"
+  assert_match 'set aside at .*\.source\.cut\.old could not be put back' "$IP_OUT" "and the install says where it is"
+}
