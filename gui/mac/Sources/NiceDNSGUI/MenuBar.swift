@@ -94,7 +94,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if model.installed {
             // A described stack: every action that runs a command but Install
             // (the not-installed page's) and the update (offered above).
-            for a in Actions.all where a.program != nil && !a.id.hasPrefix("bridges-") && a.id != "update" && a.id != "install" {
+            // The switches get their own controls (Stage 2), never a plain button.
+            for a in Actions.all where a.program != nil && !a.id.hasPrefix("bridges-") && !a.id.hasPrefix("proxy-") && !a.id.hasPrefix("pihole-") && a.id != "update" && a.id != "install" {
                 menu.addItem(entry(a.label + (a.needsConfirm ? "…" : ""), a.id))
             }
         } else if model.notInstalled && model.keptSource, let a = Actions.lookup("install") {

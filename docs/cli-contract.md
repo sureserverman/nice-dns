@@ -117,6 +117,28 @@ The last line on stdout is the answer.
 | 1 | — | Nothing is installed (stderr: ``nice-dns is not installed; run `nice-dns install` ``); the mode file is not written. Or `on`/`off` would change the mode on an install whose proxy launcher does not pass `TOR_BRIDGES` (stderr: `predates the bridges switch` and ``Run `nice-dns update` first``): nothing is written or restarted. Or `on`/`off` could not write the mode file: stderr names its path, and the mode and everything else are unchanged. Or the controller stayed busy (stderr: `still busy`): the mode is unchanged. Or the restart failed (stderr: the mode is written and takes effect at the next proxy start; `nice-dns restart` applies it now, since asking for the same mode again restarts nothing) or DNS did not answer after it (stderr: `not answering yet`). |
 | 2 | — | A usage error (no subcommand, another word, or more than one), with nothing on stdout; or `status` found a file it reads there but unreadable (an `unreadable<TAB><reason>` line, as in `status`). |
 
+## `nice-dns switch proxy haproxy|socat` and `nice-dns switch pihole standard|hardened`
+
+A switch reinstalls the source kept at the last install
+(`~/.local/share/nice-dns/source`) with that one choice changed: the recorded
+branch and the other recorded choice stay. It runs what `reinstall --local`
+runs, through the install transaction and its rollback (DEC-018). It never
+clones, and the installed commit (`source_commit`) does not change. The
+GUIs' actions `proxy-haproxy`, `proxy-socat`, `pihole-standard` and
+`pihole-hardened` (gui/share/actions.tsv) run these four commands.
+
+### Exit codes and output
+
+The last line on stdout is the answer; the installer's own output comes before it.
+
+| Code | Last line on stdout | Meaning |
+|---|---|---|
+| 0 | `Switched: the proxy is now tor-<variant>, and DNS is answering.` or `Switched: Pi-hole is now the <flavour> one, and DNS is answering.` | The install with the new choice finished: the installer returns only after DNS answers through the new stack. `status` shows the new `variant` or `pihole`. |
+| 0 | `Already <choice>; nothing changed.` | The choice asked for is the one installed; no installer ran. |
+| 1 | — | Nothing is installed (stderr: ``nice-dns is not installed; run `nice-dns install` ``), or there is no kept source (stderr names the missing directory and ``nice-dns reinstall``), or the record names no variant or flavour. Nothing ran. |
+| 2 | — | A usage error (no word, an unknown word, or more than two), with nothing on stdout. Nothing ran. |
+| 3 | — | The install failed (stderr: `the switch did not happen`, and which proxy or Pi-hole still runs): the installer kept or restored the running stack. |
+
 ## Consumers: `nice-dns-gui` (Linux)
 
 `nice-dns-gui` (`gui/linux`, GTK 4 and libadwaita; installed by the Linux

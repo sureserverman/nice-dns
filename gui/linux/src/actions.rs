@@ -148,7 +148,7 @@ mod tests {
     fn actions_table_parses_with_five_fields_per_row() {
         assert!(TABLE.lines().all(|l| l.split('\t').count() == 5));
         assert_eq!(all().len(), TABLE.lines().count());
-        assert_eq!(all().len(), 14);
+        assert_eq!(all().len(), 18);
     }
 
     #[test]
@@ -164,7 +164,7 @@ mod tests {
         let reached = |program: &str, verb: &str| {
             all().iter().any(|a| a.program == Some(program) && a.args.first() == Some(&verb))
         };
-        for verb in ["install", "reinstall", "restart", "uninstall", "update", "bridges"] {
+        for verb in ["install", "reinstall", "restart", "uninstall", "update", "bridges", "switch"] {
             assert!(reached("nice-dns", verb), "nice-dns {verb}");
         }
         for verb in ["start", "stop", "run"] {
@@ -185,8 +185,23 @@ mod tests {
     }
 
     #[test]
+    fn actions_the_four_switches_change_one_choice_and_ask_first() {
+        for (id, words) in [
+            ("proxy-haproxy", ["nice-dns", "switch", "proxy", "haproxy"]),
+            ("proxy-socat", ["nice-dns", "switch", "proxy", "socat"]),
+            ("pihole-standard", ["nice-dns", "switch", "pihole", "standard"]),
+            ("pihole-hardened", ["nice-dns", "switch", "pihole", "hardened"]),
+        ] {
+            assert_eq!(argv(id), words, "{id}");
+            let a = lookup(id).unwrap();
+            assert!(a.needs_confirm, "{id} asks first: it reinstalls the stack");
+            assert!(a.needs_installed, "{id} needs an install");
+        }
+    }
+
+    #[test]
     fn actions_confirm_and_installed_flags() {
-        for id in ["reinstall", "uninstall", "update"] {
+        for id in ["reinstall", "uninstall", "update", "proxy-haproxy", "proxy-socat", "pihole-standard", "pihole-hardened"] {
             assert!(lookup(id).unwrap().needs_confirm, "{id}");
         }
         assert!(!lookup("restart").unwrap().needs_confirm);

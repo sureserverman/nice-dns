@@ -4,6 +4,10 @@ restart	Restart the stack	nice-dns restart	no	yes
 uninstall	Uninstall nice-dns	nice-dns uninstall	yes	yes
 update-check	Check for an update	nice-dns update --check	no	yes
 update	Install the update	nice-dns update	yes	yes
+proxy-haproxy	Switch the proxy to haproxy	nice-dns switch proxy haproxy	yes	yes
+proxy-socat	Switch the proxy to socat	nice-dns switch proxy socat	yes	yes
+pihole-standard	Switch to the standard Pi-hole	nice-dns switch pihole standard	yes	yes
+pihole-hardened	Switch to the hardened Pi-hole	nice-dns switch pihole hardened	yes	yes
 bridges-on	Turn bridges on	nice-dns bridges on	no	yes
 bridges-off	Turn bridges off	nice-dns bridges off	no	yes
 health-start	Start the health controller	nice-dns-health start	no	yes

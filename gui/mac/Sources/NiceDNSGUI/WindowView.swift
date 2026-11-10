@@ -185,7 +185,7 @@ struct StatusPage: View {
         Panel(title: "Actions") {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), alignment: .leading)], alignment: .leading) {
                 // Install belongs to the not-installed page; the bridges have their switch.
-                ForEach(Actions.all.filter { $0.program != nil && !$0.id.hasPrefix("bridges-") && $0.id != "install" }, id: \.id) { a in
+                ForEach(Actions.all.filter { $0.program != nil && !$0.id.hasPrefix("bridges-") && !$0.id.hasPrefix("proxy-") && !$0.id.hasPrefix("pihole-") && $0.id != "install" }, id: \.id) { a in
                     Button(a.label + (a.needsConfirm ? "…" : "")) { model.request(a.id) }
                         .disabled(model.busy)
                 }
