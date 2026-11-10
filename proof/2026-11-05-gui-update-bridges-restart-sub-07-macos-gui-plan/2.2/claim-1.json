@@ -1,0 +1,36 @@
+{
+ "baseline": {
+  "elapsed_s": 8.4,
+  "exit": 0,
+  "tail": "release/assets.lock matches v1.2.0"
+ },
+ "break_patch": "--- a/release/assets.lock\n+++ b/release/assets.lock\n@@ -28,4 +28,3 @@\n asset\thelper\tmacos\tarm64\thttps://github.com/sureserverman/nice-dns/releases/download/v1.2.0/nice-dns-helper-macos-arm64\ta5c8a61da4cfce8a78152033aa29f2ed3d820175482c5d5cde78334efd27af99\n asset\tgui\tlinux\tamd64\thttps://github.com/sureserverman/nice-dns/releases/download/v1.2.0/nice-dns-gui-linux-amd64.tar.gz\t32134feea603a5b8de98948171cd20da59ba3ed611fff6201306122333a4fa2b\n asset\tgui\tlinux\tarm64\thttps://github.com/sureserverman/nice-dns/releases/download/v1.2.0/nice-dns-gui-linux-arm64.tar.gz\t2dd2c1ffe565bc9a00248ba5c62bae410cd492f6b4ddc6642c7b60297fb4e58e\n-asset\tgui\tmacos\tarm64\thttps://github.com/sureserverman/nice-dns/releases/download/v1.2.0/nice-dns-gui-macos-arm64.zip\t6974b7119f3ad1382f7545aabba4b4238fd0f91d904445fe6e69ec0ca9d7cf24\n",
+ "build": null,
+ "created": "2026-11-10T13:13:14+00:00",
+ "fingerprint": "92403435bad1c1ba2d951833a660bff3980c826087906d4032094faa2b70e57c",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "the lock is data; CI built the assets",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-07-macos-gui-plan.md",
+ "red": {
+  "elapsed_s": 8.4,
+  "exit": 1,
+  "tail": "release/assets.lock drifts from v1.2.0:\n6a7\n> asset\tgui\tmacos\tarm64\thttps://github.com/sureserverman/nice-dns/releases/download/v1.2.0/nice-dns-gui-macos-arm64.zip\t6974b7119f3ad1382f7545aabba4b4238fd0f91d904445fe6e69ec0ca9d7cf24"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "2.2",
+ "test": "gh run list --workflow release.yml --limit 1 --json conclusion -q '.[0].conclusion' | grep -qx success && scripts/update-assets-lock.sh && grep -q \"^asset$(printf '\\t')gui$(printf '\\t')macos\" release/assets.lock",
+ "text": "`gh run list --workflow release.yml --limit 1 --json conclusion -q '.[0].conclusion' | grep -qx success && scripts/update-assets-lock.sh && grep -q \"^asset$(printf '\\t')gui$(printf '\\t')macos\" release/assets.lock`",
+ "touched": [
+  "release/assets.lock"
+ ],
+ "touched_blobs": {
+  "release/assets.lock": "42166e441850921990b1abd78234d88385b8e8a4"
+ },
+ "witness_blobs": {
+  "release/assets.lock": "42166e441850921990b1abd78234d88385b8e8a4",
+  "scripts/update-assets-lock.sh": "6d985f5ed82f67968785bc7bdac725915b352d56"
+ }
+}
