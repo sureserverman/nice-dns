@@ -168,3 +168,28 @@ Commit the lock on its own. `ND_HELPER_VERSION` in `deb/root-ops` and
 `mac/root-ops` must be the helper crate's version
 (`tests/integration/installers-interaction.sh`
 `t_root_ops_expects_the_crates_helper_version`).
+
+## Release assets: the Linux GUI
+
+`nice-dns-gui` (`gui/linux`, GTK 4.14 and libadwaita 1.5) is built by the
+same workflow on the Ubuntu 24.04 runners, for `linux/amd64` and
+`linux/arm64`, and packed with its launcher and icon into
+`nice-dns-gui-linux-<arch>.tar.gz` (a `.sha256` beside each). The lock pins
+each as `asset gui linux <arch> <url> <sha256>`; the script above records
+them with the helpers.
+
+On Linux an install downloads this host's tarball in preparation (declared
+in `release/bootstrap.tsv` as `gui-asset`, the same three tries on a failed
+lookup) and keeps it only when its sha256 is the lock's. Only a fully
+successful install publishes it, for the user, each file by rename:
+`~/.local/share/nice-dns/gui/` (the three files as shipped, beside the kept
+source, with `published.tsv` saying where the rest went), `nice-dns-gui`
+beside the `nice-dns` command, `$XDG_DATA_HOME/applications/nice-dns.desktop`
+(by default under `~/.local/share`; its `Exec` names that program) and the
+256 px icon in the user's hicolor theme. Without an asset, a download or a
+matching sha256, the install goes on and says `GUI not installed; reinstall
+with network to add it`, also in its last lines. The tarball must also hold
+exactly those three plain files and the program must answer `--version` on
+the host (GTK 4.14 and libadwaita 1.5); otherwise the install goes on and
+says `GUI not installed` with the reason. An uninstall removes all of it,
+wherever `published.tsv` says it went.

@@ -1,0 +1,22 @@
+# schema	nice-dns-receipt/1
+receipt	gui-linux
+run_id	20261109T205402Z-2c933b54
+created_utc	2026-11-09T21:06:31Z
+source	nice-dns	b9127e2fba9e9b3a2b0c4c38dafca73fb2067b6a	clean
+source	tor-haproxy	7bf2ae0c48b88a5bc0f09faabcfb735b251bbaa7	clean
+source	tor-socat	165a127e08e8a42a27b1042797c81cf2bd928909	clean
+source	hardened-unbound	9aaf5c6db8d42f9baba15938dd65ec06a868c7b1	clean
+source	pi-hole-hardened	4574d52b4f712f3d0f51a33a05d3f735c485a33d	clean
+arch	tor-haproxy	7bf2ae0c48b88a5bc0f09faabcfb735b251bbaa7	linux/amd64,linux/arm64,linux/arm/v7,linux/riscv64
+arch	tor-socat	165a127e08e8a42a27b1042797c81cf2bd928909	linux/amd64,linux/arm64,linux/arm/v7,linux/riscv64
+arch	hardened-unbound	9aaf5c6db8d42f9baba15938dd65ec06a868c7b1	linux/amd64,linux/arm64,linux/arm/v7,linux/riscv64
+arch	pi-hole-hardened	4574d52b4f712f3d0f51a33a05d3f735c485a33d	linux/amd64,linux/arm64,linux/arm/v7,linux/riscv64
+product	nice-dns	b9127e2fba9e9b3a2b0c4c38dafca73fb2067b6a
+limit	no-person-clicked	-	scope=sub-plan-6	the session hooks ran the code a click runs (Ui::run) with no dialog; the restart needs no root, so no polkit prompt was shown
+cell	linux	socat	standard	mint	generation=20261109T210323Z-b9127e2fba9e	observed
+scenario	GL-INSTALL	linux/socat/standard	pass	cells/linux-socat-standard/gl-install.tsv	738b5d5814d647512212f56f7868794e21963452019f8a7fc73248a1a5d5f5f9	generation=20261109T210323Z-b9127e2fba9e
+scenario	GL-SCREENSHOT	linux/socat/standard	pass	cells/linux-socat-standard/gl-screenshot.tsv	b13fd01835394a0f90527253115cda2af562da24772ab4a4291c48ec25bea3e9	generation=20261109T210323Z-b9127e2fba9e
+scenario	GL-RESTART	linux/socat/standard	pass	cells/linux-socat-standard/gl-restart.tsv	7ee04b1d54b7057d594ebaca0ad45dbb7367304e9c1f0580c766e1de36755cde	generation=20261109T210323Z-b9127e2fba9e
+scenario	GL-UPDATE-CHECK	linux/socat/standard	pass	cells/linux-socat-standard/gl-update-check.tsv	efe672f3f5edbe88a1e91959f01b821ab64d09f3f558027378742264ee31f906	generation=20261109T210323Z-b9127e2fba9e
+scenario	GL-UNINSTALL	linux/socat/standard	pass	cells/linux-socat-standard/gl-uninstall.tsv	690d30f1a49b741306c77844836065649eaa39f38c642589f2e69fe3b00ac039	generation=20261109T210323Z-b9127e2fba9e
+scenario	GL-FINAL	linux/socat/standard	pass	cells/linux-socat-standard/gl-final.tsv	51065b5f6bb5773207bf25142e0c448841b4759b2e3c2ce45790295de5c850c0	generation=20261109T210323Z-b9127e2fba9e

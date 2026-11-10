@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=nice-dns
+GenericName=DNS privacy stack
+Comment=See and manage the nice-dns stack: Pi-hole, Unbound and Tor
+Exec=nice-dns-gui
+Icon=nice-dns
+Terminal=false
+StartupNotify=true
+StartupWMClass=org.nice_dns.Gui
+Categories=Network;Monitor;
+Keywords=DNS;Tor;Pi-hole;privacy;

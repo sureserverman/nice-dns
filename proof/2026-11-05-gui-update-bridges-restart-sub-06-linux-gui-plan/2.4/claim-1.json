@@ -1,0 +1,68 @@
+{
+ "baseline": {
+  "elapsed_s": 2.5,
+  "exit": 0,
+  "tail": "check-contracts: OK (WF-DNS-001..004 and all operations in /home/user/dev/containers/nice-dns/tests/manifests/privacy-ops.tsv) docs/workflows/dns-lifecycle.md"
+ },
+ "break_patch": "diff --git a/README.md b/README.md\nindex 74890bd..0d9d42d 100644\n--- a/README.md\n+++ b/README.md\n@@ -42,7 +42,7 @@ nice-dns uninstall\n \n ## The window (Linux)\n \n-![The nice-dns window on Linux Mint](docs/images/gui-linux.png)\n+![The nice-dns window on Linux Mint](docs/images/gui-linux-gone.png)\n \n On Linux the installer also puts `nice-dns-gui` on the machine, with a\n launcher in the applications menu. The window shows what the stack is doing:\n",
+ "build": null,
+ "created": "2026-11-10T06:20:48+00:00",
+ "fingerprint": "272c1266e3ab4e08cfa6facc208eec86b6da8a768c9efe26443b6163bff72ce2",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "docs only",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-06-linux-gui-plan.md",
+ "red": {
+  "elapsed_s": 2.5,
+  "exit": 1,
+  "tail": "check-contracts: OK (WF-DNS-001..004 and all operations in /home/user/dev/containers/nice-dns/tests/manifests/privacy-ops.tsv) docs/workflows/dns-lifecycle.md"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "2.4",
+ "test": "bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md && grep -q 'gui-linux.png' README.md && grep -q 'nice-dns-gui' docs/cli-contract.md && grep -q 'gui/' CLAUDE.md",
+ "text": "`bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md && grep -q 'gui-linux.png' README.md && grep -q 'nice-dns-gui' docs/cli-contract.md && grep -q 'gui/' CLAUDE.md`",
+ "touched": [
+  "README.md"
+ ],
+ "touched_blobs": {
+  "README.md": "74890bd8be816a8e5fafd7ee5bfbdb2352f97146"
+ },
+ "witness_blobs": {
+  "README.md": "74890bd8be816a8e5fafd7ee5bfbdb2352f97146",
+  "docs/cli-contract.md": "2f54bac29c1c458dce06283808e16dff46df08f9",
+  "docs/workflows/dns-lifecycle.md": "43bcc975d2a82e99742fb660264f482ac35a2ad2",
+  "gui/helper/.gitignore": "ea8c4bf7f35f6f77f75d92ad8ce8349f6e81ddba",
+  "gui/helper/Cargo.lock": "bf00d234dc75338367f5924dd65ab24ddc325060",
+  "gui/helper/Cargo.toml": "b9fdbbeb6f3d5ab8eb6c44e9aa499dfb9ecabed8",
+  "gui/helper/THREAT-MODEL.md": "55c402c620b010d476a1eb77344cd9c99a94a786",
+  "gui/helper/src/caller.rs": "3d74a421f1f0c58d9bc3720160dbfd4a7d4c0018",
+  "gui/helper/src/exec.rs": "0cb3e5dfbd36854ed8fc05dab88f24c659cbc5c8",
+  "gui/helper/src/main.rs": "1dbe31339c487aa1a13fcd1f0590e5c2835d5572",
+  "gui/helper/src/tests.rs": "5336142a5c43e6b46eaaa4dc3a54caeb03d1d3fd",
+  "gui/helper/src/verbs.rs": "fb57035c30746dadc49555cc4c1b615fe1b61cbd",
+  "gui/helper/tests/cli.rs": "974a92dd17a086fce32a9b5721cf0e72a852bdfc",
+  "gui/linux/Cargo.lock": "35ebb8e843d314d0927e99227934e48e4faa8f17",
+  "gui/linux/Cargo.toml": "bbf399ded3075ea79a8608582c0a279f952996d5",
+  "gui/linux/src/actions.rs": "9ac737b3390e2a529549488b2079cbc31244a233",
+  "gui/linux/src/log_pane.rs": "f7e18c3936916d73059cd92107157be1f20e6815",
+  "gui/linux/src/main.rs": "1e9c100e8a9fa634fd1a500eac48cf7e2466c643",
+  "gui/linux/src/model.rs": "083a8e3648268716e5a1e1ff2820295edd7c2672",
+  "gui/linux/src/runner.rs": "7c517449e2811050e25d85dc4d4affc7b483b98d",
+  "gui/linux/src/window.rs": "c7e78419d9994f6fc0bc4fe2546fc0ca00ca2635",
+  "gui/linux/tests/actions.rs": "6e9e47ecc7a789acdf5dde1a1c2d06f3b76ede3f",
+  "gui/linux/tests/xvfb.rs": "dd13462c3b504c086067908b12163c7b7f71d6ad",
+  "gui/share/actions.tsv": "130a24719ff5fed06a88474581fd76a7bd43b432",
+  "gui/share/fixtures/fake-status.sh": "cba163524574a8612d6f0588c651803ac9066a4c",
+  "gui/share/fixtures/fakebin/nice-dns": "052976093ff8779caf56b6c706cc02722a3ac1b8",
+  "gui/share/fixtures/fakebin/nice-dns-health": "ee1e139c889bc7d5f7aabfd9defde78b88d7f654",
+  "gui/share/fixtures/status-installed.tsv": "c39c46eac9541e45f502c23db5db7fef9fd3dd65",
+  "gui/share/fixtures/status-not-installed.tsv": "373d5bf609dbbe4311af09da9a084431465a3383",
+  "gui/share/fixtures/status-stale.tsv": "2ed2a90a59f31d60d839e2e6831858c542c072d9",
+  "gui/share/fixtures/status-update-available.tsv": "45ed7c5a33b8fb9547625770dd0f1ae241e7dfff",
+  "gui/share/icons/nice-dns-256.png": "003a2687b095f6356a694ca77be879be947e26c9",
+  "gui/share/nice-dns.desktop": "f8f7c91b5815da0419d01325616f6ed1df3c445d",
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}

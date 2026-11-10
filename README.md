@@ -40,6 +40,22 @@ nice-dns uninstall
 - **`nice-dns update`** asks GitHub whether your branch's commit differs from the installed one (usually: is newer). If it does, it installs it like `nice-dns reinstall`, with the recorded choices; `--check` only asks, and `--force` reinstalls even when nothing differs. If it cannot tell (offline, DNS down, or an install from a modified checkout), it installs nothing and says why. An install from a local commit GitHub does not have counts as different, so `update` would install the branch's commit over it.
 - **`nice-dns uninstall`** removes the stack, gives host DNS back, then removes the command.
 
+## The window (Linux)
+
+![The nice-dns window on Linux Mint](docs/images/gui-linux.png)
+
+On Linux the installer also puts `nice-dns-gui` on the machine, with a
+launcher in the applications menu. The window shows what the stack is doing:
+each container, the health controller's last verdict, the bridges switch,
+recent actions, and whether an update is waiting. Its buttons restart the
+stack, check for and install an update, turn bridges on or off, run or stop
+the health controller, reinstall and uninstall. Each one runs the `nice-dns`
+command, and its output appears in the window. Root steps ask for your
+password through the system's dialog (polkit). The window is a release asset,
+checked against `release/assets.lock`; an install without network goes on
+without it and says so. It needs GTK 4.14 and libadwaita 1.5 (Ubuntu 24.04,
+Linux Mint 22 or later); on an older system the install goes on without it.
+
 ## Install
 
 Run as a **regular user** (no `sudo`). macOS needs macOS 26+ on Apple silicon and [Homebrew](https://brew.sh/).

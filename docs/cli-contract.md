@@ -116,3 +116,36 @@ The last line on stdout is the answer.
 | 0 | `last_refresh <epoch>\|never` | `status`: the `bridges` rows of `status --tsv` without the group column, in order: `mode<TAB>on\|off`, `count<TAB><n>` (bridge lines in `bridges.env`), `last_refresh<TAB><epoch>\|never`. |
 | 1 | — | Nothing is installed (stderr: ``nice-dns is not installed; run `nice-dns install` ``); the mode file is not written. Or `on`/`off` would change the mode on an install whose proxy launcher does not pass `TOR_BRIDGES` (stderr: `predates the bridges switch` and ``Run `nice-dns update` first``): nothing is written or restarted. Or `on`/`off` could not write the mode file: stderr names its path, and the mode and everything else are unchanged. Or the controller stayed busy (stderr: `still busy`): the mode is unchanged. Or the restart failed (stderr: the mode is written and takes effect at the next proxy start; `nice-dns restart` applies it now, since asking for the same mode again restarts nothing) or DNS did not answer after it (stderr: `not answering yet`). |
 | 2 | — | A usage error (no subcommand, another word, or more than one), with nothing on stdout; or `status` found a file it reads there but unreadable (an `unreadable<TAB><reason>` line, as in `status`). |
+
+## Consumers: `nice-dns-gui` (Linux)
+
+`nice-dns-gui` (`gui/linux`, GTK 4 and libadwaita; installed by the Linux
+installer from a release asset, `docs/release-inputs.md`) reads this contract
+and nothing else:
+
+- It runs `nice-dns status --tsv` when its window opens and every 5 s, and
+  refuses any schema but `nice-dns-status/1`. Exit 1 (or 2 with
+  `install installed no`) is the not-installed page with the hint; exit 2
+  with rows of an installed stack lists the `unreadable` rows; anything else
+  is one error page naming what went wrong.
+- Every button, the bridges switch and the update banner is a row of
+  `gui/share/actions.tsv`: the command words it runs as a subprocess of
+  `nice-dns` or `nice-dns-health` (the first on `PATH`, else where the
+  installer put them), with no shell. It reads exits and last lines as the
+  tables above say: `update --check` 0 and 10 are answers, `update` 11 is an
+  install whose re-check disagreed, and a root step a person dismissed or
+  could not authorise shows `authorisation cancelled` or `not authorised`.
+- One action runs at a time; uninstall (typed), reinstall and update ask
+  first.
+
+Its hooks are for tests and live proofs, not for people:
+
+| Hook | What it does |
+|---|---|
+| `--check` | Reads the status once with no display; prints one line; exit 0 installed, 1 not installed or no `nice-dns` (the line names the path looked for), 2 otherwise. |
+| `--screenshot <png>` | Shows the window for the status, renders it into `<png>` and exits (needs a display; Xvfb will do). |
+| `--run-action <id> --exit` | Runs one action of the table with no dialog, prints the log pane and exits with the action's status. |
+| `--probe <id>` | Clicks `id` as a person would and prints what the window shows before, during and after (the test suite's hook). |
+| `--version` | `nice-dns-gui <version>`. |
+
+`NICE_DNS_GUI_STATUS_CMD` replaces the status command for the fixture tests.

@@ -1,6 +1,8 @@
 # Release (Sub-plan 5 Task 2.4): on a v* tag, builds gui/helper
-# (nice-dns-helper) for each platform an install fetches it for, writes each
-# binary's .sha256, and attaches them all to the GitHub release of that tag.
+# (nice-dns-helper) for each platform an install fetches it for, and the
+# Linux GUI gui/linux (Sub-plan 6 Task 2.1) as nice-dns-gui-linux-<arch>.tar.gz,
+# writes each asset's .sha256, and attaches them all to the GitHub release of
+# that tag.
 # scripts/update-assets-lock.sh --write then pins them in
 # release/assets.lock (docs/release-inputs.md). Actions are pinned by SHA.
 name: release
@@ -52,8 +54,58 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  build-gui:
+    # The Linux GUI (Sub-plan 6 Task 2.1): gui/linux built on the runner's
+    # Ubuntu 24.04 GTK 4.14 and libadwaita 1.5, then packed with its launcher
+    # and icon into nice-dns-gui-linux-<arch>.tar.gz.
+    name: build ${{ matrix.asset }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            asset: nice-dns-gui-linux-amd64
+          - runner: ubuntu-24.04-arm
+            asset: nice-dns-gui-linux-arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - name: GTK, libadwaita and Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-4-dev libadwaita-1-dev xvfb xauth desktop-file-utils
+      - name: Toolchain
+        run: cargo --version && rustc --version
+      - name: Test
+        run: cargo test --locked --manifest-path gui/linux/Cargo.toml
+      - name: Build
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          set -o pipefail
+          cargo build --release --locked --manifest-path gui/linux/Cargo.toml
+          desktop-file-validate gui/share/nice-dns.desktop
+          mkdir -p stage dist
+          cp gui/linux/target/release/nice-dns-gui gui/share/nice-dns.desktop gui/share/icons/nice-dns-256.png stage/
+          chmod 755 stage/nice-dns-gui
+          chmod 644 stage/nice-dns.desktop stage/nice-dns-256.png
+          # Same bytes for the same build: sorted, dated at 0, gzip without a name or time.
+          tar -C stage --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - nice-dns-gui nice-dns.desktop nice-dns-256.png | gzip -n -9 >"dist/$ASSET.tar.gz"
+          cd dist
+          sha256sum "$ASSET.tar.gz" >"$ASSET.tar.gz.sha256"
+          cat "$ASSET.tar.gz.sha256"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/
+          if-no-files-found: error
+
   release:
-    needs: build
+    needs: [build, build-gui]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -66,11 +118,12 @@ jobs:
         working-directory: dist
         run: |
           ls -l
-          [ "$(find . -maxdepth 1 -name 'nice-dns-helper-*.sha256' | wc -l)" -eq 3 ] || { echo "expected 3 assets" >&2; exit 1; }
-          sha256sum -c nice-dns-helper-*.sha256
+          [ "$(find . -maxdepth 1 -name 'nice-dns-helper-*.sha256' | wc -l)" -eq 3 ] || { echo "expected 3 helper assets" >&2; exit 1; }
+          [ "$(find . -maxdepth 1 -name 'nice-dns-gui-linux-*.tar.gz.sha256' | wc -l)" -eq 2 ] || { echo "expected 2 GUI assets" >&2; exit 1; }
+          sha256sum -c nice-dns-helper-*.sha256 nice-dns-gui-linux-*.sha256
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
-        run: gh release create "$TAG" --repo "$REPO" --verify-tag --generate-notes dist/nice-dns-helper-*
+        run: gh release create "$TAG" --repo "$REPO" --verify-tag --generate-notes dist/nice-dns-helper-* dist/nice-dns-gui-linux-*

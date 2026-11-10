@@ -1,0 +1,46 @@
+schema	nice-dns-status/1
+install	installed	yes
+install	generation	20261109T180318Z-4b5432d1e0a9
+install	source_commit	4b5432d1e0a9c8b7a6f5e4d3c2b1a09f8e7d6c5b
+install	branch	main
+install	variant	socat
+install	pihole	standard
+install	platform	linux
+install	lock	sha256:90abe9101eaa5c5396223f9e60167dd4f4a9717abffb1ba5c4758f712a068e99
+controller	mode	active
+controller	last_pass	1794251828
+controller	verdict	OK
+controller	stale	no
+controller	schedule	loaded
+obs	runtime	healthy	102	running: pi-hole unbound tor-socat
+obs	container:pi-hole	healthy	149	running: health healthy restarts 0
+obs	container:unbound	healthy	117	running: health healthy restarts 0
+obs	container:tor-socat	healthy	128	running: health healthy restarts 0
+obs	proxy	healthy	96	generation:7b9d40db613fec7b
+obs	dns-owner	healthy	7	/etc/resolv.conf: nameserver 127.0.0.1 only
+obs	install-drift	healthy	28	generation 20261109T180318Z-nogit0000000; the quadlets declare :53 on loopback only
+obs	local-service	healthy	97	pi.hole A 0.0.0.0 from 127.0.0.1#53
+obs	filtering	healthy	35	doubleclick.net sinkholed to 0.0.0.0 at 127.0.0.1#53
+obs	local-cache	healthy	34	Pi-hole at 127.0.0.1#53 answered cloudflare.com NOERROR (A 104.16.133.229 104.16.132.229); a local answer may be cached or stale and is not upstream health
+obs	route:cloudflare-onion	healthy	1930	rcode NOERROR in 0 ms via tor-socat:18531 as tor.cloudflare-dns.com
+obs	route:cloudflare-exit	healthy	1005	rcode NOERROR in 0 ms via tor-socat:18532 as one.one.one.one
+obs	route:quad9-exit	healthy	936	rcode NOERROR in 0 ms via tor-socat:18533 as dns.quad9.net
+obs	route:cloudflare-legacy	healthy	1665	rcode NOERROR in 0 ms via tor-socat:853 as tor.cloudflare-dns.com
+obs	unbound	healthy	1567	control and route answer
+route	selected	cloudflare-onion	73
+bridges	mode	on
+bridges	count	7
+bridges	last_refresh	never
+update	result	available
+update	checked_at	1794251900
+update	remote_commit	0f6a6e7c3d2b1a09f8e7d6c5b4a39281706f5e4d
+helper	path	/usr/libexec/nice-dns-helper
+helper	installed	yes
+helper	version	0.1.1
+admin	url	http://localhost:8880/admin
+admin	password_path	/home/user/.local/state/nice-dns/secrets/pihole/pihole_webpassword
+recent	1794247583	route:cloudflare-exit	acknowledged
+recent	1794247627	route:cloudflare-exit	ready
+recent	1794247747	route:cloudflare-onion	requested
+recent	1794247750	route:cloudflare-onion	acknowledged
+recent	1794247806	route:cloudflare-onion	ready

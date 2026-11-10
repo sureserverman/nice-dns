@@ -1,0 +1,35 @@
+{
+ "baseline": {
+  "elapsed_s": 7.9,
+  "exit": 0,
+  "tail": "test runner::tests::runner_resolve_in_path_takes_the_first_executable_and_skips_relative_entries ... ok\ntest runner::tests::runner_missing_program_is_an_error ... ok\ntest runner::tests::runner_resolver_prefers_local_bin_and_falls_back ... ok\ntest tests::contract_check_not_installed_exits_1_with_the_hint ... ok\ntest tests::contract_check_not_installed_with_an_unreadable_file_exits_2_and_says_not_installed ... ok\ntest runner::tests::runner_delivers_lines_in_order_and_the_exit_code ... ok\ntest tests::contract_check_installed_exits_0_naming_generation_verdict_and_staleness ... ok\ntest tests::contract_check_unreadable_and_refused_schema_exit_2 ... ok\ntest tests::contract_check_failures_exit_2 ... ok\ntest runner::tests::runner_reports_a_signal ... ok\ntest runner::tests::runner_a_left_behind_process_holding_the_pipe_does_not_hold_the_exit ... ok\ntest runner::tests::runner_does_not_block_the_caller ... ok\n\ntest result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 2.01s\n\n     Running tests/actions.rs (gui/linux/target/debug/deps/actions-a0e99b6cac519369)\n\nrunning 11 tests\ntest contract_check_without_the_command_exits_1_naming_the_path ... ok\ntest actions_an_action_that_runs_nothing_is_refused_as_a_hook ... ok\ntest actions_a_missing_command_is_one_error_page_naming_the_path ... ok\ntest actions_a_check_that_finds_an_update_offers_to_install_it ... ok\ntest actions_bridges_off_and_the_controller_run_their_exact_commands ... ok\ntest actions_a_failure_keeps_its_output_and_exit_code ... ok\ntest actions_a_dismissed_dialog_shows_authorisation_cancelled ... ok\ntest actions_one_at_a_time_the_controls_are_disabled_while_it_runs_and_back_after_a_failure ... ok\ntest actions_the_bridges_switch_runs_its_command_and_shows_the_status_mode_after_a_failure ... ok\ntest actions_restart_runs_the_fake_and_its_lines_reach_the_pane_in_order ... ok\ntest actions_a_stale_controller_shows_the_label_and_greys_its_rows ... ok\n\ntest result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.92s\n\n     Running tests/xvfb.rs (gui/linux/target/debug/deps/xvfb-60fee6132405902c)\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s\n\n    Checking nice-dns-gui v0.1.0 (/home/user/dev/containers/nice-dns/gui/linux)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.40s"
+ },
+ "break_patch": "diff --git a/gui/linux/src/model.rs b/gui/linux/src/model.rs\nindex 083a8e3..3bccabf 100644\n--- a/gui/linux/src/model.rs\n+++ b/gui/linux/src/model.rs\n@@ -230,7 +230,7 @@ pub fn parse(input: &str) -> Result<Status, ParseError> {\n                 let i = &mut s.install;\n                 match key {\n                     \"installed\" => i.installed = yes_no(val),\n-                    \"generation\" => i.generation = text(val),\n+                    \"generation\" => {}\n                     \"source_commit\" => i.source_commit = text(val),\n                     \"branch\" => i.branch = text(val),\n                     \"variant\" => i.variant = text(val),\n",
+ "build": "cargo build --manifest-path gui/linux/Cargo.toml",
+ "created": "2026-11-10T06:22:08+00:00",
+ "fingerprint": "272c1266e3ab4e08cfa6facc208eec86b6da8a768c9efe26443b6163bff72ce2",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": null,
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-06-linux-gui-plan.md",
+ "red": {
+  "elapsed_s": 2.5,
+  "exit": 101,
+  "tail": "test tests::contract_check_not_installed_exits_1_with_the_hint ... ok\ntest tests::contract_check_not_installed_with_an_unreadable_file_exits_2_and_says_not_installed ... ok\ntest tests::contract_check_failures_exit_2 ... ok\ntest tests::contract_check_unreadable_and_refused_schema_exit_2 ... ok\ntest runner::tests::runner_a_left_behind_process_holding_the_pipe_does_not_hold_the_exit ... ok\ntest runner::tests::runner_does_not_block_the_caller ... ok\n\nfailures:\n\n---- model::tests::contract_installed_fixture_parses stdout ----\n\nthread 'model::tests::contract_installed_fixture_parses' (3392472) panicked at src/model.rs:408:9:\nassertion `left == right` failed\n  left: None\n right: Some(\"20261109T180318Z-nogit0000000\")\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n---- model::tests::contract_stale_fixture_parses stdout ----\n\nthread 'model::tests::contract_stale_fixture_parses' (3392475) panicked at src/model.rs:463:9:\nassertion `left == right` failed\n  left: None\n right: Some(\"20261109T180318Z-nogit0000000\")\n\n---- tests::contract_check_installed_exits_0_naming_generation_verdict_and_staleness stdout ----\n\nthread 'tests::contract_check_installed_exits_0_naming_generation_verdict_and_staleness' (3392492) panicked at src/main.rs:377:9:\nassertion `left == right` failed\n  left: \"installed: generation unknown; controller OK, fresh\"\n right: \"installed: generation 20261109T180318Z-nogit0000000; controller OK, fresh\"\n\n\nfailures:\n    model::tests::contract_installed_fixture_parses\n    model::tests::contract_stale_fixture_parses\n    tests::contract_check_installed_exits_0_naming_generation_verdict_and_staleness\n\ntest result: FAILED. 30 passed; 3 failed; 0 ignored; 0 measured; 11 filtered out; finished in 2.00s\n\nerror: test failed, to rerun pass `--bin nice-dns-gui`"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "1.1",
+ "test": "cargo test --manifest-path gui/linux/Cargo.toml -- contract actions runner && cargo clippy --manifest-path gui/linux/Cargo.toml --all-targets -- -D warnings",
+ "text": "every fixture parses to the expected struct",
+ "touched": [
+  "gui/linux/src/model.rs"
+ ],
+ "touched_blobs": {
+  "gui/linux/src/model.rs": "083a8e3648268716e5a1e1ff2820295edd7c2672"
+ },
+ "witness_blobs": {
+  "gui/linux/Cargo.toml": "bbf399ded3075ea79a8608582c0a279f952996d5"
+ }
+}

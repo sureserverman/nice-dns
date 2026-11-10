@@ -527,6 +527,7 @@ nd_install_finish() {
   _nd_inst_write_file "$d/activated" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
   _nd_inst_write_file "$ND_INST_STATE/current" "$ND_INST_GEN" || return 1
   _nd_inst_publish_command
+  _nd_inst_publish_gui
   _nd_inst_prune
   _nd_inst_sudo_keepalive_stop
   nd_root_runner_stop
@@ -620,8 +621,13 @@ _nd_inst_publish_command() {
 # line to add; no shell profile is edited.
 nd_install_command_notice() {
   local d
-  # An install that went on without the helper says so again, last.
+  # An install that went on without the helper or the GUI says so again, last.
   [ -z "${ND_INST_HELPER_NOTE:-}" ] || echo "$ND_INST_HELPER_NOTE"
+  if [ -n "${ND_INST_GUI_NOTE:-}" ]; then
+    echo "$ND_INST_GUI_NOTE"
+  elif [ -n "${ND_INST_GUI_BIN:-}" ]; then
+    echo "The nice-dns window: open nice-dns from the applications menu, or run $ND_INST_GUI_BIN"
+  fi
   d="$(_nd_inst_command_dir)" || return 0
   [ -x "$d/nice-dns" ] || return 0
   # shellcheck disable=SC2016  # $PATH is text for the reader's profile
@@ -633,6 +639,8 @@ nd_install_command_notice() {
 
 _nd_inst_command_remove() {
   local dst
+  # The GUI first: its files sit beside the kept source.
+  _nd_inst_gui_remove
   rm -f "$HOME/.local/bin/nice-dns" "$(_nd_inst_command_fallback_dir)/nice-dns"
   dst="$(_nd_inst_source_dir)"
   rm -rf "${dst:?}" "$(dirname "$dst")"/.source.*
@@ -1354,6 +1362,9 @@ nd_install_linux_host_prereqs() {
   # The helper first, so a run without a terminal takes every later root step
   # through the version this tree expects.
   nd_install_helper deb || return 1
+  # The GUI's release asset (Sub-plan 6 Task 2.1), published only when the
+  # whole install succeeds.
+  _nd_inst_stage_gui || return 1
   # The podman PPA's priority pin, a half-configured PPA repaired, and the
   # base packages (deb/root-ops host-packages says why each one).
   nd_root_deb host-packages
@@ -1497,9 +1508,9 @@ _nd_inst_assets_check() {
   bad="$(awk -F '\t' '
     NR == 1 || /^#/ || NF == 0 { next }
     $1 == "release" && NF == 2 && ($2 == "none" || $2 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) { rel++; next }
-    $1 == "asset" && NF == 6 && $2 == "helper" && ($3 == "linux" || $3 == "macos") && ($4 == "amd64" || $4 == "arm64") \
+    $1 == "asset" && NF == 6 && ($2 == "helper" || $2 == "gui") && ($3 == "linux" || $3 == "macos") && ($4 == "amd64" || $4 == "arm64") \
       && index($5, "https://github.com/sureserverman/nice-dns/releases/download/v") == 1 && $5 !~ /[^A-Za-z0-9._\/:-]/ && $5 !~ /\.\./ \
-      && length($6) == 64 && $6 !~ /[^0-9a-f]/ { k = $3 "/" $4; if (k in seen) { print FNR ": a second asset for " k; next } seen[k] = 1; next }
+      && length($6) == 64 && $6 !~ /[^0-9a-f]/ { k = $2 " " $3 "/" $4; if (k in seen) { print FNR ": a second " $2 " asset for " $3 "/" $4; next } seen[k] = 1; next }
     { print FNR ": " $0 }
     END { if (rel != 1) print "the lock needs exactly one release row" }' "$1")"
   [ -z "$bad" ] || { _nd_inst_err "malformed $1: $bad"; return 1; }
@@ -1609,6 +1620,194 @@ nd_install_helper() {
     case "$v" in ''|*[!0-9A-Za-z.+-]*) v=unknown ;; esac
   fi
   _nd_inst_manifest_row "$ND_INST_MANIFEST" helper "$v"
+}
+
+# ─────────── the Linux GUI (Sub-plan 6 Task 2.1) ───────────
+# The release asset nice-dns-gui-linux-<arch>.tar.gz (release/assets.lock row
+# `asset gui linux <arch> <url> <sha256>`) holds three files: nice-dns-gui,
+# nice-dns.desktop and nice-dns-256.png. Preparation downloads it into the
+# generation and keeps it only when its sha256 is the lock's; a fully
+# successful install publishes it for this user, each file by rename:
+#   ~/.local/share/nice-dns/gui/            the three files as shipped, and
+#                                           published.tsv: where the next
+#                                           three went
+#   <command dir>/nice-dns-gui              the program (the command's rule)
+#   $XDG_DATA_HOME/applications/nice-dns.desktop   Exec names that program
+#   $XDG_DATA_HOME/icons/hicolor/256x256/apps/nice-dns.png
+# ($XDG_DATA_HOME, where desktops look for launchers, defaults to
+# ~/.local/share; the GUI's own files sit beside the kept source.) Without the
+# asset, a download or a matching file, the install goes on without the GUI
+# and says so, now and in its last lines (ND_INST_GUI_NOTE); also without a
+# program that starts (`--version`) or with an asset holding anything else.
+# An uninstall removes all of it, wherever published.tsv says it went.
+ND_INST_GUI_MISSING="GUI not installed; reinstall with network to add it"
+
+_nd_inst_gui_staged() { printf '%s\n' "$ND_INST_STATE/generations/$ND_INST_GEN/nice-dns-gui.tar.gz"; }
+_nd_inst_gui_dir() { printf '%s\n' "$(dirname "$(_nd_inst_source_dir)")/gui"; }
+_nd_inst_gui_desktop() { printf '%s\n' "${XDG_DATA_HOME:-$HOME/.local/share}/applications/nice-dns.desktop"; }
+_nd_inst_gui_icon() { printf '%s\n' "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/256x256/apps/nice-dns.png"; }
+
+# _nd_inst_gui_note <reason> [tail]: the GUI was not installed; the tail is
+# what to do (default: reinstall with network, for a download that failed or
+# did not match).
+_nd_inst_gui_note() {
+  ND_INST_GUI_NOTE="! $1: ${2:-$ND_INST_GUI_MISSING}."
+  echo "$ND_INST_GUI_NOTE" >&2
+}
+
+# _nd_inst_stage_gui: preparation (release/bootstrap.tsv `assets`). Linux
+# only; the lock was checked by _nd_inst_stage_helper.
+_nd_inst_stage_gui() {
+  local lock="$ND_INST_TREE/release/assets.lock" arch row url sha dst tries=1 rc got
+  [ "$ND_INST_PLATFORM" = linux ] || return 0
+  ND_INST_GUI_NOTE=""
+  _nd_inst_assets_check "$lock" || return 1
+  arch="$(_nd_inst_asset_arch)"
+  row="$(awk -F '\t' -v a="$arch" '$1 == "asset" && $2 == "gui" && $3 == "linux" && $4 == a { print $5 "\t" $6; exit }' "$lock")"
+  if [ -z "$row" ]; then
+    _nd_inst_gui_note "No nice-dns-gui release asset for linux/${arch:-$(uname -m)} in release/assets.lock"
+    return 0
+  fi
+  url="${row%%"$ND_INST_TAB"*}" sha="${row#*"$ND_INST_TAB"}"
+  dst="$(_nd_inst_gui_staged)"
+  rm -f "$dst" "$dst.part"
+  echo "▸ Fetching nice-dns-gui (linux/$arch)"
+  while :; do
+    rc=0
+    curl -fsSL "$url" -o "$dst.part" --proto =https --proto-redir =https --connect-timeout 30 --max-time 600 || rc=$?
+    [ "$rc" != 0 ] || break
+    rm -f "$dst.part"
+    if [ "$rc" = 6 ] && [ "$tries" -lt 3 ]; then
+      tries=$((tries + 1))
+      echo "  the name lookup failed; trying again in 20 s ($tries of 3)" >&2
+      sleep 20
+      continue
+    fi
+    _nd_inst_gui_note "The nice-dns-gui download failed (curl exit $rc)"
+    return 0
+  done
+  got="$(health_sha_file "$dst.part")" || got=""
+  if [ "$got" != "$sha" ]; then
+    rm -f "$dst.part"
+    _nd_inst_gui_note "The nice-dns-gui download's sha256 is not the one release/assets.lock pins; it was not installed"
+    return 0
+  fi
+  mv -f "$dst.part" "$dst"
+}
+
+# _nd_inst_publish_gui: after a fully successful install (nd_install_finish),
+# the staged GUI for this user. Every failure leaves the earlier copies and
+# says so; it never fails the install, whose stack is already running.
+_nd_inst_publish_gui() {
+  local tgz dir base new old v rc d bin desk icon to=""
+  [ "$ND_INST_PLATFORM" = linux ] || return 0
+  ND_INST_GUI_BIN=""
+  dir="$(_nd_inst_gui_dir)" base="$(dirname "$(_nd_inst_gui_dir)")"
+  # A publish cut off between its two renames left the earlier copy aside:
+  # put it back, then clear what any earlier publish left.
+  if [ ! -e "$dir" ]; then
+    for old in "$base"/.gui.old.*; do
+      [ -d "$old" ] && mv "$old" "$dir" && break
+    done
+  fi
+  rm -rf "$base"/.gui.new.* "$base"/.gui.old.*
+  tgz="$(_nd_inst_gui_staged)"
+  [ -f "$tgz" ] || return 0
+  # Exactly the three files: plain files with plain names, no link, no
+  # directory, nothing else.
+  if [ "$(tar -tvzf "$tgz" 2>/dev/null | cut -c1 | LC_ALL=C sort -u)" != "-" ] \
+    || [ "$(tar -tzf "$tgz" 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')" != "nice-dns-256.png nice-dns-gui nice-dns.desktop " ]; then
+    _nd_inst_gui_note "The nice-dns-gui asset does not hold just its three files" "GUI not installed"
+    return 0
+  fi
+  new="$base/.gui.new.$$" old="$base/.gui.old.$$"
+  if ! { mkdir -p "$base" && rm -rf "${new:?}" && mkdir "$new" \
+    && tar -xzf "$tgz" -C "$new" --no-same-owner \
+    && chmod 755 "$new/nice-dns-gui" && chmod 644 "$new/nice-dns.desktop" "$new/nice-dns-256.png"; }; then
+    rm -rf "${new:?}"
+    _nd_inst_gui_note "Could not unpack nice-dns-gui under $base" "GUI not installed"
+    return 0
+  fi
+  # The program must start here (its GTK and libadwaita libraries).
+  # Its exit status and its first line are kept apart: the loader's message
+  # is the reason to show when it does not start.
+  # A program that hangs is cut off after 20 s where timeout exists.
+  command -v timeout >/dev/null 2>&1 && to="timeout 20"
+  rc=0; v="$($to "$new/nice-dns-gui" --version 2>&1)" || rc=$?
+  v="${v%%"$ND_INST_NL"*}"
+  case "$rc:$v" in
+    "0:nice-dns-gui "*) ;;
+    *)
+      rm -rf "${new:?}"
+      _nd_inst_gui_note "nice-dns-gui does not start on this host (${v:-no output}; exit $rc)" \
+        "GUI not installed; it needs GTK 4.14 and libadwaita 1.5 (Ubuntu 24.04 or later)"
+      return 0 ;;
+  esac
+  d="$(_nd_inst_command_dir)" || { rm -rf "${new:?}"; _nd_inst_gui_note "No directory for the nice-dns-gui program" "GUI not installed"; return 0; }
+  bin="$d/nice-dns-gui"
+  # The launcher's Exec names the program, written as is: only a path of
+  # these characters needs no quoting or escaping there (nor in the sed
+  # replacement below).
+  case "$bin" in
+    *[!A-Za-z0-9._/+@:,=-]*)
+      rm -rf "${new:?}"
+      _nd_inst_gui_note "The program's path $bin cannot go in a desktop entry as it is" "GUI not installed"
+      return 0 ;;
+  esac
+  # The earlier publish's record: a launcher or icon it put elsewhere (another
+  # XDG_DATA_HOME) goes once this one is in place.
+  [ ! -f "$dir/published.tsv" ] || cp "$dir/published.tsv" "$new/.published.prev"
+  if [ -e "$dir" ]; then mv "$dir" "$old" || { rm -rf "${new:?}"; _nd_inst_gui_note "Could not replace $dir"; return 0; }; fi
+  mv "$new" "$dir" || { [ ! -e "$old" ] || mv "$old" "$dir"; rm -rf "${new:?}"; _nd_inst_gui_note "Could not replace $dir"; return 0; }
+  rm -rf "${old:?}"
+  desk="$(_nd_inst_gui_desktop)" icon="$(_nd_inst_gui_icon)"
+  if ! { mkdir -p "$(dirname "$desk")" "$(dirname "$icon")" \
+    && cp "$dir/nice-dns-gui" "$d/.nice-dns-gui.new.$$" && chmod 755 "$d/.nice-dns-gui.new.$$" && mv -f "$d/.nice-dns-gui.new.$$" "$bin" \
+    && sed "s|^Exec=.*|Exec=$bin|" "$dir/nice-dns.desktop" >"$desk.new.$$" && mv -f "$desk.new.$$" "$desk" \
+    && cp "$dir/nice-dns-256.png" "$icon.new.$$" && mv -f "$icon.new.$$" "$icon"; }; then
+    rm -f "$d/.nice-dns-gui.new.$$" "$desk.new.$$" "$icon.new.$$"
+    _nd_inst_gui_note "Could not publish nice-dns-gui" "GUI not installed"
+    return 0
+  fi
+  # Where the three went, for the uninstall (which may run with another
+  # XDG_DATA_HOME, e.g. from the desktop session).
+  printf 'program\t%s\nlauncher\t%s\nicon\t%s\n' "$bin" "$desk" "$icon" >"$dir/published.tsv" || true
+  _nd_inst_gui_forget "$dir/.published.prev" "$bin" "$desk" "$icon"
+  rm -f "$dir/.published.prev"
+  if command -v update-desktop-database >/dev/null 2>&1; then update-desktop-database "$(dirname "$desk")" >/dev/null 2>&1 || true; fi
+  # Published: the generation need not keep the tarball.
+  rm -f "$tgz"
+  ND_INST_GUI_BIN="$bin"
+}
+
+# _nd_inst_gui_forget <published.tsv> [keep...]: removes the program,
+# launcher and icon a publish recorded, but not the paths named in keep. A
+# recorded path counts only when it is absolute and has its own file name.
+_nd_inst_gui_forget() {
+  local rec="$1" k f x
+  shift
+  [ -f "$rec" ] || return 0
+  while IFS="$ND_INST_TAB" read -r k f; do
+    case "$k:$f" in
+      program:/*/nice-dns-gui|launcher:/*/applications/nice-dns.desktop|icon:/*/apps/nice-dns.png) ;;
+      *) continue ;;
+    esac
+    for x in "$@"; do [ "$x" != "$f" ] || continue 2; done
+    rm -f "$f"
+  done <"$rec"
+}
+
+# _nd_inst_gui_remove: the program, the launcher, the icon and the files.
+_nd_inst_gui_remove() {
+  local dir desk
+  [ "$ND_INST_PLATFORM" = linux ] || return 0
+  dir="$(_nd_inst_gui_dir)" desk="$(_nd_inst_gui_desktop)"
+  # Where the install published them, then where they go by default.
+  _nd_inst_gui_forget "$dir/published.tsv"
+  rm -f "$HOME/.local/bin/nice-dns-gui" "$(_nd_inst_command_fallback_dir)/nice-dns-gui" "$desk" "$(_nd_inst_gui_icon)" \
+    "$HOME/.local/share/applications/nice-dns.desktop" "$HOME/.local/share/icons/hicolor/256x256/apps/nice-dns.png"
+  rm -rf "${dir:?}" "$(dirname "$dir")"/.gui.*
+  if command -v update-desktop-database >/dev/null 2>&1; then update-desktop-database "$(dirname "$desk")" >/dev/null 2>&1 || true; fi
 }
 
 # nd_install_linux_prepare_images: builds unbound and pi-hole (and the hardened

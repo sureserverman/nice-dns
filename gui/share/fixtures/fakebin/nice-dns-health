@@ -1,0 +1,18 @@
+#!/bin/sh
+# A fake `nice-dns-health` for the GUI's tests: it touches nothing on the host.
+# It appends its arguments to $NICE_DNS_FAKE_RECORD (when set), prints a few
+# lines on both streams and exits with $NICE_DNS_FAKE_EXIT (default 0); 126
+# also prints lib/root.sh's line for a dismissed polkit dialog. `status --tsv`
+# prints the installed fixture.
+here=$(cd "$(dirname "$0")" && pwd)
+[ -z "${NICE_DNS_FAKE_RECORD:-}" ] || printf '%s\n' "$*" >> "$NICE_DNS_FAKE_RECORD"
+if [ "${1:-}" = status ]; then
+  cat "$here/../status-installed.tsv"
+  exit 0
+fi
+code=${NICE_DNS_FAKE_EXIT:-0}
+echo "fake nice-dns-health: $*"
+echo "fake nice-dns-health: a line on stderr" >&2
+[ "$code" != 126 ] || echo "nice-dns: authorisation cancelled" >&2
+echo "fake nice-dns-health: done"
+exit "$code"

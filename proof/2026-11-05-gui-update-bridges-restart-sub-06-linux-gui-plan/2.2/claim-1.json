@@ -1,0 +1,36 @@
+{
+ "baseline": {
+  "elapsed_s": 11.5,
+  "exit": 0,
+  "tail": "release/assets.lock matches v1.1.0"
+ },
+ "break_patch": "diff --git a/release/assets.lock b/release/assets.lock\nindex 33e5b9d..92b575b 100644\n--- a/release/assets.lock\n+++ b/release/assets.lock\n@@ -25,4 +25,3 @@ asset\thelper\tlinux\tamd64\thttps://github.com/sureserverman/nice-dns/releases/down\n asset\thelper\tlinux\tarm64\thttps://github.com/sureserverman/nice-dns/releases/download/v1.1.0/nice-dns-helper-linux-arm64\t71cd68fb8b102e617701f903cd41a76e995a66e1632a1d6184d245adb1330164\n asset\thelper\tmacos\tarm64\thttps://github.com/sureserverman/nice-dns/releases/download/v1.1.0/nice-dns-helper-macos-arm64\ta5c8a61da4cfce8a78152033aa29f2ed3d820175482c5d5cde78334efd27af99\n asset\tgui\tlinux\tamd64\thttps://github.com/sureserverman/nice-dns/releases/download/v1.1.0/nice-dns-gui-linux-amd64.tar.gz\t9557135b332c5f2c9805fa54bf11bcf8d24d0fe2f71d403aebfd631360167788\n-asset\tgui\tlinux\tarm64\thttps://github.com/sureserverman/nice-dns/releases/download/v1.1.0/nice-dns-gui-linux-arm64.tar.gz\t24dddb51e5bf736dd4224e4fedf34974011179b8de39cd3a954db5c65811d05a\n",
+ "build": null,
+ "created": "2026-11-10T06:21:22+00:00",
+ "fingerprint": "272c1266e3ab4e08cfa6facc208eec86b6da8a768c9efe26443b6163bff72ce2",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "the lock is data; the release assets were built by CI",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-05-gui-update-bridges-restart-sub-06-linux-gui-plan.md",
+ "red": {
+  "elapsed_s": 7.4,
+  "exit": 1,
+  "tail": "release/assets.lock drifts from v1.1.0:\n5a6\n> asset\tgui\tlinux\tarm64\thttps://github.com/sureserverman/nice-dns/releases/download/v1.1.0/nice-dns-gui-linux-arm64.tar.gz\t24dddb51e5bf736dd4224e4fedf34974011179b8de39cd3a954db5c65811d05a"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "2.2",
+ "test": "gh run list --workflow release.yml --limit 1 --json conclusion -q '.[0].conclusion' | grep -qx success && scripts/update-assets-lock.sh && [ \"$(grep -c \"^asset$(printf '\\t')gui$(printf '\\t')linux\" release/assets.lock)\" -eq 2 ]",
+ "text": "`gh run list --workflow release.yml --limit 1 --json conclusion -q '.[0].conclusion' | grep -qx success && scripts/update-assets-lock.sh && [ \"$(grep -c \"^asset$(printf '\\t')gui$(printf '\\t')linux\" release/assets.lock)\" -eq 2 ]`",
+ "touched": [
+  "release/assets.lock"
+ ],
+ "touched_blobs": {
+  "release/assets.lock": "33e5b9da0b37b9685e7da30f71704d6b6b288c97"
+ },
+ "witness_blobs": {
+  "release/assets.lock": "33e5b9da0b37b9685e7da30f71704d6b6b288c97",
+  "scripts/update-assets-lock.sh": "60cc949754bb503d3ee9a89c5c1bdabbb2aa3cd8"
+ }
+}
