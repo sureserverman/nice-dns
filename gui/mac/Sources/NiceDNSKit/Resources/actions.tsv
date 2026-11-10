@@ -1,0 +1,14 @@
+install	Install nice-dns	nice-dns install	no	no
+reinstall	Reinstall the stack	nice-dns reinstall	yes	yes
+restart	Restart the stack	nice-dns restart	no	yes
+uninstall	Uninstall nice-dns	nice-dns uninstall	yes	yes
+update-check	Check for an update	nice-dns update --check	no	yes
+update	Install the update	nice-dns update	yes	yes
+bridges-on	Turn bridges on	nice-dns bridges on	no	yes
+bridges-off	Turn bridges off	nice-dns bridges off	no	yes
+health-start	Start the health controller	nice-dns-health start	no	yes
+health-stop	Stop the health controller	nice-dns-health stop	no	yes
+health-run	Run a health check now	nice-dns-health run	no	yes
+open-admin	Open the Pi-hole admin page	-	no	yes
+show-password-path	Show where the admin password is	-	no	yes
+failures	Show recent failures	nice-dns-health failures	no	yes
