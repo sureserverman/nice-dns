@@ -10,9 +10,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var item: NSStatusItem!
     private var window: NSWindow?
     private var watch: Set<AnyCancellable> = []
-    /// When Quit was refused because an action runs: a second Quit within
-    /// 10 s goes through (a command that hangs must not trap the owner).
-    private var quitAsked: Date?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -39,10 +36,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     /// output, midway through (say) a reinstall: refused once, with a notice.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard model.busy else { return .terminateNow }
-        if let t = quitAsked, Date().timeIntervalSince(t) < 10 { return .terminateNow }
-        quitAsked = Date()
+        if let t = model.quitAsked, Date().timeIntervalSince(t) < 10 { return .terminateNow }
+        model.quitAsked = Date()
         openWindow()
-        model.say("An action is running; quit again within 10 s to leave it running without the app")
+        // Quitting closes the command's output, so it is cut off midway: said plainly.
+        model.say("An action is running. Quitting now stops it midway; quit again within 10 s to quit anyway")
         return .terminateCancel
     }
 

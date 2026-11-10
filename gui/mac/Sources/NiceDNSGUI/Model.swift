@@ -55,6 +55,10 @@ final class AppModel: ObservableObject {
     /// action lands, so a switch that worked does not flick back first.
     private var clearPendingOnRead = false
     private var noticeToken = 0
+    /// When Quit was refused because an action runs: a second Quit within
+    /// 10 s goes through (a command that hangs must not trap the owner). A
+    /// new action starts the count again.
+    var quitAsked: Date?
 
     /// How often the status is read.
     static let refreshInterval: TimeInterval = 5
@@ -199,11 +203,13 @@ final class AppModel: ObservableObject {
         noticeToken += 1
         notice = nil
         switch id {
-        case "bridges-on": bridgesPending = true
-        case "bridges-off": bridgesPending = false
+        // A read still due from the last action must not undo this switch.
+        case "bridges-on": bridgesPending = true; clearPendingOnRead = false
+        case "bridges-off": bridgesPending = false; clearPendingOnRead = false
         default: break
         }
         busy = true
+        quitAsked = nil
         paneTitle = label
         paneResult = "running…"
         paneOK = true
