@@ -281,6 +281,25 @@ check("~/.local/bin wins over the fallback",
       (try? CommandPaths.resolve("nice-dns", environment: ["PATH": "/usr/bin:/bin", "HOME": instHome])) == "\(instHome)/.local/bin/nice-dns")
 try? FileManager.default.removeItem(atPath: instHome)
 
+// An uninstall removes the bundle under a running app (Stage 2 gate round 1):
+// it quits once its program has been gone on two ticks running and no action
+// runs, so a reinstall's rename window or an uninstall run from the app does
+// not end it.
+do {
+    var w = BundleWatch()
+    check("a present program keeps the app", w.tick(programExists: true, busy: false) == false)
+    check("one tick without the program is not enough", w.tick(programExists: false, busy: false) == false)
+    check("two ticks without it quit the app", w.tick(programExists: false, busy: false) == true)
+    var b = BundleWatch()
+    _ = b.tick(programExists: false, busy: true)
+    check("never while an action runs", b.tick(programExists: false, busy: true) == false)
+    check("and once the action ended, after two ticks", b.tick(programExists: false, busy: false) == false && b.tick(programExists: false, busy: false) == true)
+    var r = BundleWatch()
+    _ = r.tick(programExists: false, busy: false)
+    _ = r.tick(programExists: true, busy: false)
+    check("a program back in place starts the count again", r.tick(programExists: false, busy: false) == false)
+}
+
 // The glyph: a stale controller is amber even over an old FAIL; a missing
 // `stale` row is not stale.
 if case .installed(var s) = view("status-stale.tsv", 0) {

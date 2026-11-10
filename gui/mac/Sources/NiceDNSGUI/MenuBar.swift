@@ -10,6 +10,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var item: NSStatusItem!
     private var window: NSWindow?
     private var watch: Set<AnyCancellable> = []
+    private var bundleWatch = BundleWatch()
+    private var bundleTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -28,6 +30,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             .store(in: &watch)
         drawGlyph()
         model.startRefreshing()
+        // An uninstall removes the bundle under the running app: quit then,
+        // or the menu-bar item outlives the app (Stage 2 gate round 1).
+        bundleTimer = Timer.scheduledTimer(withTimeInterval: AppModel.refreshInterval, repeats: true) { [weak self] _ in
+            guard let self, let program = Bundle.main.executablePath else { return }
+            let exists = FileManager.default.fileExists(atPath: program)
+            if self.bundleWatch.tick(programExists: exists, busy: self.model.busy) { NSApp.terminate(nil) }
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
