@@ -1,0 +1,37 @@
+# Receipt manifest: gui-mac (Sub-plan 7 Task 2.3). Parsed as data by tests/reports/verify.sh (never sourced).
+# Rows (tab-separated):
+#   scenario  <id>  per-cell|global  <meaning>
+#   content   <id>  <ERE>                    the scenario's artifact has a line matching ERE
+# One observed macOS cell (mac): an install puts the menu-bar app into
+# ~/Applications from the verified release asset, it runs in the owner's gui
+# domain, and an uninstall removes it.
+scenario	GM-INSTALL	per-cell	nice-dns install puts ~/Applications/nice-dns.app on the Mac, signed and without quarantine; --check exits 0 naming the generation
+scenario	GM-SCREENSHOT	per-cell	NiceDNSGUI --screenshot in the gui domain writes the PNG the run fetched
+scenario	GM-RESTART	per-cell	NiceDNSGUI --run-action restart --exit returns 0 and DNS answers
+scenario	GM-BRIDGES	per-cell	NiceDNSGUI --run-action bridges-off then bridges-on each return 0 with DNS answering after
+scenario	GM-OPEN	per-cell	open -a ~/Applications/nice-dns.app leaves a running NiceDNSGUI, which then quits
+scenario	GM-UNINSTALL	per-cell	nice-dns uninstall removes ~/Applications/nice-dns.app
+scenario	GM-FINAL	per-cell	nice-dns install after the uninstall puts the app and the stack back
+content	GM-INSTALL	^gui_app	present$
+content	GM-INSTALL	^gui_quarantine	0$
+content	GM-INSTALL	^gui_codesign	0$
+content	GM-INSTALL	^gui_check_exit	0$
+content	GM-INSTALL	^result	pass$
+content	GM-SCREENSHOT	^gui_exit	0$
+content	GM-SCREENSHOT	^png_sha256	[0-9a-f]{64}$
+content	GM-SCREENSHOT	^png_file	gui-mac\.png$
+content	GM-RESTART	^gui_exit	0$
+content	GM-RESTART	^resolves	yes$
+content	GM-RESTART	^result	pass$
+content	GM-BRIDGES	^off_exit	0$
+content	GM-BRIDGES	^off_resolves	yes$
+content	GM-BRIDGES	^on_exit	0$
+content	GM-BRIDGES	^on_resolves	yes$
+content	GM-OPEN	^gui_running	yes$
+content	GM-OPEN	^gui_quit	yes$
+content	GM-UNINSTALL	^gui_app	absent$
+content	GM-UNINSTALL	^result	pass$
+content	GM-FINAL	^gui_app	present$
+content	GM-FINAL	^gui_quarantine	0$
+content	GM-FINAL	^gui_check_exit	0$
+content	GM-FINAL	^result	pass$
