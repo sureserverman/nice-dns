@@ -1,0 +1,56 @@
+{
+ "baseline": {
+  "elapsed_s": 104.7,
+  "exit": 0,
+  "tail": "PASS  t_relative_targets_path_reaches_live_cases\nPASS  t_req_a01_scenario_row_deleted\nPASS  t_req_a02_require_row_deleted\nPASS  t_req_a03_both_rows_deleted_count_kept\nPASS  t_req_a04_case_repointed\nPASS  t_req_a05_group_repointed_same_case_name\nPASS  t_req_a06_group_file_swapped\nPASS  t_req_a07_scenario_deferred\nPASS  t_req_a08_group_dropped_from_stage\nPASS  t_req_a09_manifest_missing\nPASS  t_req_a10_manifest_emptied\nPASS  t_req_a11_crlf_rows\nPASS  t_req_a12_leading_tab_scenario\nPASS  t_req_a13_duplicate_require_row\nPASS  t_req_a14_misspelt_row_type\nPASS  t_req_a15_stage_key_renamed\nPASS  t_req_a16_count_row_missing\nPASS  t_req_b1_delimiter_in_group_path_refused\nPASS  t_req_b2_escape_in_group_path_refused\nPASS  t_req_m1_empty_scenarios_refused\nPASS  t_req_m1b_relative_manifests_with_equals_sign\nPASS  t_req_m2a_case_hidden_at_run_time_fails\nPASS  t_req_m2b_exported_case_function_ignored\nPASS  t_req_owner_rows_must_all_run\nPASS  t_req_positive_control\nPASS  t_run_receipt_records_manifest_override\nPASS  t_slow_tier_refused_without_include_slow\nPASS  t_stage_and_plan_refuse_narrowed_variants\nPASS  t_stage_runs_listed_groups\nPASS  t_stage_with_one_empty_group_fails\nPASS  t_stage_with_unregistered_group_rejected\nPASS  t_two_runs_get_distinct_run_ids\nPASS  t_unknown_group_rejected\nPASS  t_unknown_kind_rejected\nPASS  t_unknown_option_rejected\nPASS  t_unknown_stage_rejected\nPASS  t_zero_case_group_rejected\ngroup unit/harness-contracts: collected=68 passed=68 failed=0\ncollected=68 passed=68 failed=0\nresult=pass run_id=20261110T231113Z-19ff3192 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261110T231113Z-19ff3192"
+ },
+ "break_patch": "--- a/gui/share/actions.tsv\n+++ b/gui/share/actions.tsv\n@@ -4,10 +4,6 @@\n uninstall\tUninstall nice-dns\tnice-dns uninstall\tyes\tyes\n update-check\tCheck for an update\tnice-dns update --check\tno\tyes\n update\tInstall the update\tnice-dns update\tyes\tyes\n-proxy-haproxy\tSwitch the proxy to haproxy\tnice-dns switch proxy haproxy\tyes\tyes\n-proxy-socat\tSwitch the proxy to socat\tnice-dns switch proxy socat\tyes\tyes\n-pihole-standard\tSwitch to the standard Pi-hole\tnice-dns switch pihole standard\tyes\tyes\n-pihole-hardened\tSwitch to the hardened Pi-hole\tnice-dns switch pihole hardened\tyes\tyes\n bridges-on\tTurn bridges on\tnice-dns bridges on\tno\tyes\n bridges-off\tTurn bridges off\tnice-dns bridges off\tno\tyes\n health-start\tStart the health controller\tnice-dns-health start\tno\tyes\n",
+ "build": "cargo build --manifest-path gui/linux/Cargo.toml",
+ "created": "2026-11-10T23:12:44+00:00",
+ "fingerprint": "2f4c5ec0cd088093fd01def879f131706efe1e6a313e0dd04af846726db4a0d3",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": null,
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-10-app-switches-autocheck-plan.md",
+ "red": {
+  "elapsed_s": 0.5,
+  "exit": 101,
+  "tail": "test actions::tests::actions_table_parses_with_five_fields_per_row ... FAILED\ntest log_pane::tests::actions_outcome_plain_exits ... ok\ntest log_pane::tests::actions_outcome_names_a_dismissed_dialog_and_a_refusal ... ok\ntest log_pane::tests::actions_outcome_reads_update_check_as_the_contract_does ... ok\n\nfailures:\n\n---- actions::tests::actions_confirm_and_installed_flags stdout ----\n\nthread 'actions::tests::actions_confirm_and_installed_flags' (1638938) panicked at src/actions.rs:205:32:\ncalled `Option::unwrap()` on a `None` value\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n---- actions::tests::actions_reach_every_cli_command_and_controller_verb stdout ----\n\nthread 'actions::tests::actions_reach_every_cli_command_and_controller_verb' (1638942) panicked at src/actions.rs:168:13:\nnice-dns switch\n\n---- actions::tests::actions_the_four_switches_change_one_choice_and_ask_first stdout ----\n\nthread 'actions::tests::actions_the_four_switches_change_one_choice_and_ask_first' (1638945) panicked at src/actions.rs:143:46:\nno action proxy-haproxy\n\n---- actions::tests::actions_table_parses_with_five_fields_per_row stdout ----\n\nthread 'actions::tests::actions_table_parses_with_five_fields_per_row' (1638944) panicked at src/actions.rs:151:9:\nassertion `left == right` failed\n  left: 14\n right: 18\n\n\nfailures:\n    actions::tests::actions_confirm_and_installed_flags\n    actions::tests::actions_reach_every_cli_command_and_controller_verb\n    actions::tests::actions_table_parses_with_five_fields_per_row\n    actions::tests::actions_the_four_switches_change_one_choice_and_ask_first\n\ntest result: FAILED. 8 passed; 4 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s\n\nerror: test failed, to rerun pass `--bin nice-dns-gui`"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "1.3",
+ "test": "cargo test --manifest-path gui/linux/Cargo.toml actions && make -C gui/mac strings-check && bash tests/run.sh unit harness-contracts",
+ "text": "the Linux actions tests assert the four ids, their argv and both flags (red before: `lookup(\"proxy-socat\")` is None)",
+ "touched": [
+  "gui/share/actions.tsv"
+ ],
+ "touched_blobs": {
+  "gui/share/actions.tsv": "15b7d861da3351fca1a1caa12ec7997481cf599c"
+ },
+ "witness_blobs": {
+  "gui/linux/Cargo.toml": "bbf399ded3075ea79a8608582c0a279f952996d5",
+  "gui/mac/Info.plist": "343866b12a246719e078a1e5a51605c031d1b85c",
+  "gui/mac/Makefile": "6191bb177cf105fa411a63f88c9fa0cf988a5cb6",
+  "gui/mac/Package.swift": "a6a620e692ccd2d88d73fcde18f1d59bafcbc331",
+  "gui/mac/Sources/NiceDNSGUI/MenuBar.swift": "91f269262468af937d46cbcb96fc21988591147f",
+  "gui/mac/Sources/NiceDNSGUI/Model.swift": "255ac04a45a8d3103f7c186162ee197e03c3056b",
+  "gui/mac/Sources/NiceDNSGUI/WindowView.swift": "ec8991d340824f4fc6287e3034a5b683f9793808",
+  "gui/mac/Sources/NiceDNSGUI/main.swift": "d5009575f0dcd2c00a0e28b066e00352003762ce",
+  "gui/mac/Sources/NiceDNSKit/Actions.swift": "987012f02edf3317d357b8ec590a5e0e98b00145",
+  "gui/mac/Sources/NiceDNSKit/BundleWatch.swift": "b84790f76116539372c3f66a87609777b95fbc1b",
+  "gui/mac/Sources/NiceDNSKit/CommandRunner.swift": "392c912915c928996be8158023374b64dd2cf2bf",
+  "gui/mac/Sources/NiceDNSKit/Paths.swift": "cf1f0c0f0d8676235481d93f86d4a4792874bd2c",
+  "gui/mac/Sources/NiceDNSKit/Resources/actions.tsv": "15b7d861da3351fca1a1caa12ec7997481cf599c",
+  "gui/mac/Sources/NiceDNSKit/Session.swift": "f887cf26295d985d53520b49263b643be8a938a8",
+  "gui/mac/Sources/NiceDNSKit/Status.swift": "583669e6fbca586ee63f1b69cfe17a9551d12caa",
+  "gui/mac/Tests/KitCheck/main.swift": "c8ec42f61473c456ff832332a42ea6d031ab0d35",
+  "gui/mac/Tests/NiceDNSKitTests/ActionsTests.swift": "5bfeecaa489e6d162fbec13c1d069dc198fbf87f",
+  "gui/mac/Tests/NiceDNSKitTests/CommandRunnerTests.swift": "9c6da329972520fcfa55c0f7094be56331b5b5ff",
+  "gui/mac/Tests/NiceDNSKitTests/StatusTests.swift": "dd58fd91886525b5aee53a1796109524d97da239",
+  "gui/mac/Tests/fakebin": "3bfa5fdbf9e870702add0855099249e45171a365",
+  "gui/mac/Tests/fixtures": "44d9780a305503268ea545c531ee257885b83d1f",
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}
