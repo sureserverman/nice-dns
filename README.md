@@ -56,6 +56,21 @@ checked against `release/assets.lock`; an install without network goes on
 without it and says so. It needs GTK 4.14 and libadwaita 1.5 (Ubuntu 24.04,
 Linux Mint 22 or later); on an older system the install goes on without it.
 
+## The menu bar (macOS)
+
+![The nice-dns window on a Mac](docs/images/gui-mac.png)
+
+On macOS the installer puts `nice-dns.app` in `~/Applications` (yours, no
+administrator password). Open it and a shield appears in the menu bar: green
+when every check is healthy, amber when the health controller is behind or a
+check cannot tell, red when the controller or a check reports a failure, grey
+when nothing is installed. Its menu runs the
+same actions as the Linux window, and Open window shows the same sections with
+the output of the last action. Like the Linux window it is a release asset
+checked against `release/assets.lock`; an install without network goes on
+without it and says so. It does not start by itself at login yet; add it under
+System Settings > General > Login Items if you want it there.
+
 ## Install
 
 Run as a **regular user** (no `sudo`). macOS needs macOS 26+ on Apple silicon and [Homebrew](https://brew.sh/).
