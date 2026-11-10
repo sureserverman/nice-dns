@@ -354,7 +354,7 @@ case "$op" in install-cell|uninstall-cell|build-proxy|install-controller|install
 case "$op" in fault-route|heal-route|route-apply) ;; *) [ -z "$i_route" ] || die "--route is only valid for fault-route, heal-route and route-apply" ;; esac
 case "$op" in install-controller|set-tunables|arm-set|command|polkit-test-rule|gui-session) ;; *) [ -z "$i_mode" ] || die "--mode is only valid for install-controller, set-tunables, arm-set, command, polkit-test-rule and gui-session" ;; esac
 if [ "$op" = polkit-test-rule ]; then case "$i_mode" in add|remove) ;; *) die "polkit-test-rule needs --mode add|remove" ;; esac; fi
-if [ "$op" = gui-session ]; then case "$i_mode" in screenshot|restart|update-check|bridges-off|bridges-on|open) ;; *) die "gui-session needs --mode screenshot|restart|update-check|bridges-off|bridges-on|open" ;; esac; fi
+if [ "$op" = gui-session ]; then case "$i_mode" in screenshot|restart|update-check|bridges-off|bridges-on|open|launch|running) ;; *) die "gui-session needs --mode screenshot|restart|update-check|bridges-off|bridges-on|open|launch|running" ;; esac; fi
 case "$op" in arm-prepare) [[ "$i_ptag" =~ ^v[0-9]+(\.[0-9]+)*$ ]] || die "arm-prepare needs --proxy-tag vN[.N]" ;; *) [ -z "$i_ptag" ] || die "--proxy-tag is only valid for arm-prepare" ;; esac
 if [ "$op" = arm-set ]; then case "$i_mode" in baseline|candidate) ;; *) die "arm-set needs --mode baseline|candidate" ;; esac; fi
 if [ "$op" = arm-prepare ]; then
@@ -2151,7 +2151,13 @@ case "$NICE_DNS_OP" in
       app="$HOME/Applications/nice-dns.app" b="$HOME/Applications/nice-dns.app/Contents/MacOS/NiceDNSGUI"
       if [ -x "$b" ]; then
         printf 'gui_app\tpresent\ngui_bin_path\t%s\ngui_version\t%s\n' "$b" "$("$b" --version </dev/null 2>/dev/null || echo unknown)"
-        printf 'gui_quarantine\t%s\n' "$(xattr -lr "$app" </dev/null 2>/dev/null | grep -c 'com\.apple\.quarantine')"
+        printf 'gui_program_sha256\t%s\n' "$(shasum -a 256 "$b" </dev/null | cut -d' ' -f1)"
+        # A failing xattr is no answer, not "no quarantine".
+        if q=$(xattr -lr "$app" </dev/null 2>&1); then
+          printf 'gui_quarantine\t%s\n' "$(printf '%s\n' "$q" | grep -c 'com\.apple\.quarantine')"
+        else
+          printf 'gui_quarantine\terror\n'
+        fi
         codesign --verify --deep "$app" </dev/null >/dev/null 2>&1; printf 'gui_codesign\t%s\n' "$?"
         o=$(sudo -n launchctl asuser "$(id -u)" sudo -n -u "$(id -un)" env HOME="$HOME" PATH="$PATH" "$b" --check </dev/null 2>&1); r=$?
         printf 'gui_check_exit\t%s\ngui_check\t%s\n' "$r" "$(printf '%s\n' "$o" | head -n 1 | tr '\t' ' ')"
@@ -2168,6 +2174,7 @@ case "$NICE_DNS_OP" in
     done
     if [ -n "$b" ]; then
       printf 'gui_bin\tpresent\ngui_bin_path\t%s\ngui_version\t%s\n' "$b" "$("$b" --version </dev/null 2>/dev/null || echo unknown)"
+      printf 'gui_program_sha256\t%s\n' "$(sha256sum "$b" </dev/null | cut -d' ' -f1)"
       o=$("$b" --check </dev/null 2>&1); r=$?
       printf 'gui_check_exit\t%s\ngui_check\t%s\n' "$r" "$(printf '%s\n' "$o" | head -n 1 | tr '\t' ' ')"
     else
@@ -2198,9 +2205,21 @@ case "$NICE_DNS_OP" in
     if [ "$plat" = macos ]; then
       homebrew_path
       app="$HOME/Applications/nice-dns.app" b="$HOME/Applications/nice-dns.app/Contents/MacOS/NiceDNSGUI"
-      [ -x "$b" ] || { echo "nice-dns.app is not installed" >&2; exit 1; }
+      [ -x "$b" ] || [ "$NICE_DNS_MODE" = running ] || { echo "nice-dns.app is not installed" >&2; exit 1; }
       asu() { sudo -n launchctl asuser "$(id -u)" sudo -n -u "$(id -un)" env HOME="$HOME" PATH="$PATH" "$@"; }
       printf 'gui_session\t%s\nstarted_utc\t%s\n' "$NICE_DNS_MODE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      if [ "$NICE_DNS_MODE" = running ]; then
+        if pgrep -f "$b" >/dev/null 2>&1; then printf 'gui_running\tyes\n'; else printf 'gui_running\tno\n'; fi
+        printf 'finished_utc\t%s\ngui_exit\t0\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        exit 0
+      fi
+      if [ "$NICE_DNS_MODE" = launch ]; then
+        asu open -a "$app" </dev/null 2>&1 | sed 's/^/out\t/'
+        n=0; while [ "$n" -lt 20 ] && ! pgrep -f "$b" >/dev/null 2>&1; do sleep 1; n=$((n + 1)); done
+        if pgrep -f "$b" >/dev/null 2>&1; then printf 'gui_running\tyes\n'; else printf 'gui_running\tno\n'; fi
+        printf 'finished_utc\t%s\ngui_exit\t0\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        exit 0
+      fi
       if [ "$NICE_DNS_MODE" = open ]; then
         pkill -f "$b" </dev/null 2>/dev/null; sleep 1
         asu open -a "$app" </dev/null 2>&1 | sed 's/^/out\t/'
@@ -2238,7 +2257,7 @@ case "$NICE_DNS_OP" in
       fi
       exit 0
     fi
-    [ "$NICE_DNS_MODE" != open ] || { echo "gui-session --mode open is macOS only" >&2; exit 2; }
+    case "$NICE_DNS_MODE" in open|launch|running) echo "gui-session --mode $NICE_DNS_MODE is macOS only" >&2; exit 2 ;; esac
     b=""
     for c in "$HOME/.local/bin/nice-dns-gui" "${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-health/bin/nice-dns-gui"; do
       [ -x "$c" ] && { b="$c"; break; }

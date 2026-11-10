@@ -56,7 +56,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     for o in snapshot lifecycle-report command gui-report gui-session; do
       case " $ops " in *" $o "*) ;; *) echo "dry run: target.sh has no operation $o" >&2; exit 1 ;; esac
     done
-    for m in screenshot restart bridges-off bridges-on open; do
+    for m in screenshot restart bridges-off bridges-on open launch running; do
       grep -q "gui-session needs --mode .*$m" "$here/target.sh" || { echo "dry run: gui-session has no mode $m" >&2; exit 1; }
     done
     grep -q '^    if \[ "\$plat" = macos \]; then$' "$here/target.sh" || { echo "dry run: target.sh has no macOS GUI branch" >&2; exit 1; }
@@ -97,6 +97,44 @@ gm_gui_report() { il_t "$1" gui-report >"$(il_dir "$1")/gui-$2.tsv" 2>>"$(il_dir
 gm_session() { il_t "$1" gui-session --mode "$2" >"$(il_dir "$1")/session-$2.log" 2>>"$(il_dir "$1")/ops.log"; }
 gm_pane_last() { grep '^out	' "$1" | tail -n 1 | cut -f2- | tr '\t' ' '; }
 
+# gm_pinned <alias>: the macOS app the lock pins, fetched here and checked
+# against the lock; pinned.tsv names the release and the sha256 of the
+# program inside it, which an install must put in ~/Applications.
+gm_pinned() {
+  local d row url sha rel z
+  d="$(il_dir "$1")"
+  rel="$(awk -F '\t' '$1 == "release" { print $2; exit }' "$NICE_DNS_ROOT/release/assets.lock")"
+  row="$(awk -F '\t' '$1 == "asset" && $2 == "gui" && $3 == "macos" && $4 == "arm64" { print $5 "\t" $6; exit }' "$NICE_DNS_ROOT/release/assets.lock")"
+  [ -n "$row" ] || fail "release/assets.lock pins no macOS app"
+  url="${row%%	*}" sha="${row#*	}"; z="$d/pinned.zip"
+  curl -fsSL --proto =https --max-time 300 "$url" -o "$z" || fail "cannot fetch the pinned app $url"
+  assert_eq "$sha" "$(sha256sum "$z" | cut -d' ' -f1)" "the pinned zip is the lock's"
+  printf 'release\t%s\nasset_sha256\t%s\nprogram_sha256\t%s\n' "$rel" "$sha" \
+    "$(python3 -I -c 'import hashlib, sys, zipfile
+z = zipfile.ZipFile(sys.argv[1])
+n = [i for i in z.namelist() if i.endswith("nice-dns.app/Contents/MacOS/NiceDNSGUI")]
+print(hashlib.sha256(z.read(n[0])).hexdigest() if len(n) == 1 else "none")' "$z")" >"$d/pinned.tsv"
+  rm -f "$z"
+  assert_match '^[0-9a-f]{64}$' "$(gm_kv "$d/pinned.tsv" program_sha256)" "the pinned zip holds one NiceDNSGUI"
+}
+
+# gm_started <alias> <label>: the proxy container's start time, which a
+# restart of the proxy (on macOS, of the whole stack) changes.
+gm_started() {
+  local a="$1" d
+  d="$(il_dir "$a")"
+  il_t "$a" config >"$d/config-$2.tsv" 2>>"$d/ops.log" || fail "config: $(tail -n 3 "$d/ops.log")"
+  awk -F '\t' -v c="tor-$(il_cell "$a" proxy)" '$1 == "started" && $2 == c { print $3; exit }' "$d/config-$2.tsv"
+}
+
+# gm_mode <alias> <label>: the bridges mode status --tsv reports.
+gm_mode() {
+  local a="$1" d
+  d="$(il_dir "$a")"
+  gm_command "$a" "status-$2" status || fail "nice-dns status --tsv: $(tail -n 5 "$d/cmd-status-$2.log")"
+  awk -F '\t' '$1 == "bridges" && $2 == "mode" { print $3; exit }' "$d/cmd-status-$2.log"
+}
+
 # gm_dns <alias> <label>: DNS answers through the stack within GM_DNS_MAX s
 # (a proxy restart bootstraps Tor again); after-<label>.tsv is the last report.
 gm_dns() {
@@ -112,25 +150,34 @@ gm_dns() {
 
 # gm_assert_gui <alias> <label>: the app as an install leaves it.
 gm_assert_gui() {
-  local a="$1" label="$2" r gen
+  local a="$1" label="$2" r gen p
   r="$(il_dir "$a")/gui-$label.tsv"
   gen="$(il_val "$(il_dir "$a")/after-$label.tsv" generation current)"
+  p="$(il_dir "$a")/pinned.tsv"
   assert_eq present "$(gm_kv "$r" gui_app)" "$label: ~/Applications/nice-dns.app is installed"
-  assert_match '^nice-dns-gui [0-9]' "$(gm_kv "$r" gui_version)" "$label: it answers --version"
+  assert_eq "nice-dns-gui $(gm_kv "$p" release | sed 's/^v//')" "$(gm_kv "$r" gui_version)" "$label: it is the pinned release"
+  assert_eq "$(gm_kv "$p" program_sha256)" "$(gm_kv "$r" gui_program_sha256)" "$label: its program is the one in the pinned release asset"
   assert_eq 0 "$(gm_kv "$r" gui_quarantine)" "$label: no quarantine is left on the bundle"
   assert_eq 0 "$(gm_kv "$r" gui_codesign)" "$label: codesign --verify --deep accepts it"
   assert_eq 0 "$(gm_kv "$r" gui_check_exit)" "$label: --check exits 0: $(gm_kv "$r" gui_check)"
   assert_match "^installed: generation $gen;" "$(gm_kv "$r" gui_check)" "$label: --check names the generation"
 }
 
-# gm_action <alias> <action>: one action through the app's hook; DNS after.
+# gm_action <alias> <action>: one action through the app's hook; the proxy
+# restarted (its start time changed) and DNS answers after.
 gm_action() {
-  local a="$1" act="$2" d l
+  local a="$1" act="$2" d l s0 s1
   d="$(il_dir "$a")"; l="$d/session-$act.log"
+  s0="$(gm_started "$a" "before-$act")"
+  assert_ne "" "$s0" "$act: the proxy's start time is read before"
   gm_session "$a" "$act" || fail "gui-session $act: $(tail -n 5 "$d/ops.log")"
   assert_eq 0 "$(gm_kv "$l" gui_exit)" "--run-action $act exits 0: $(grep '^out	' "$l" | tail -n 5)"
   assert_match 'finished \(exit 0\)$' "$(gm_pane_last "$l")" "$act: the pane ends with the action's exit"
   gm_dns "$a" "$act"
+  s1="$(gm_started "$a" "after-$act")"
+  assert_ne "" "$s1" "$act: the proxy's start time is read after"
+  assert_ne "$s0" "$s1" "$act: the proxy restarted (start time $s0, then $s1)"
+  printf 'proxy_started_before\t%s\nproxy_started_after\t%s\n' "$s0" "$s1" >"$d/started-$act.tsv"
 }
 
 # ─────────────────────────── steps ───────────────────────────────────────────
@@ -154,6 +201,8 @@ gm_before() {
   assert_match '^(haproxy|socat)$' "$proxy" "$a runs a proxy now, or --proxies names one"
   printf 'cell\t%s/%s/standard\nproxy\t%s\nsource_sha\t%s\nadapter\t%s\ntarget\t%s\n' "$plat" "$proxy" "$proxy" "$(il_sha)" \
     "$( [ -n "${NICE_DNS_TARGET_ADAPTER:-}" ] && echo fake || echo real)" "$a" >"$d/cell.tsv"
+  gm_pinned "$a"
+  gm_gui_report "$a" before || fail "gui-report: $(tail -n 5 "$d/ops.log")"
 }
 
 # gm_install_step <platform> <alias> <label>: nice-dns install from a bundle
@@ -169,8 +218,8 @@ gm_install_step() {
   il_check_deployed "$plat" "$d/after-$label.tsv" "$proxy"
   gm_gui_report "$a" "$label" || fail "gui-report: $(tail -n 5 "$d/ops.log")"
   gm_assert_gui "$a" "$label"
-  { grep -v '^gui_check	' "$d/gui-$label.tsv"; printf 'gui_check_generation\t%s\nresolves\t%s\nresult\tpass\n' \
-      "$(il_val "$d/after-$label.tsv" generation current)" "$(il_val "$d/after-$label.tsv" resolution resolves)"; } >"$d/gm-$label.tsv"
+  { grep -v '^gui_check	' "$d/gui-$label.tsv"; printf 'gui_check_generation\t%s\ngui_program_pinned\tyes\npinned_release\t%s\nresolves\t%s\nresult\tpass\n' \
+      "$(il_val "$d/after-$label.tsv" generation current)" "$(gm_kv "$d/pinned.tsv" release)" "$(il_val "$d/after-$label.tsv" resolution resolves)"; } >"$d/gm-$label.tsv"
 }
 
 gm_install() { gm_install_step "$1" "$2" install; }
@@ -195,27 +244,35 @@ gm_restart() {
   d="$(il_dir "$a")"
   gm_require "$a" gm_install
   gm_action "$a" restart
-  printf 'gui_exit\t%s\npane_last\t%s\nresolves\t%s\nresult\tpass\n' "$(gm_kv "$d/session-restart.log" gui_exit)" \
+  printf 'gui_exit\t%s\npane_last\t%s\nproxy_restarted\tyes\nresolves\t%s\nresult\tpass\n' "$(gm_kv "$d/session-restart.log" gui_exit)" \
     "$(gm_pane_last "$d/session-restart.log")" "$(il_val "$d/after-restart.tsv" resolution resolves)" >"$d/gm-restart.tsv"
 }
 
 gm_bridges() {
-  local a="$2" d m
+  local a="$2" d m off on
   d="$(il_dir "$a")"
   gm_require "$a" gm_install
-  gm_command "$a" status-before-bridges status || fail "nice-dns status --tsv: $(tail -n 5 "$d/cmd-status-before-bridges.log")"
-  m="$(awk -F '\t' '$1 == "bridges" && $2 == "mode" { print $3; exit }' "$d/cmd-status-before-bridges.log")"
+  m="$(gm_mode "$a" before-bridges)"
   assert_match '^(on|off)$' "$m" "status --tsv names the bridges mode"
+  # Asking for the mode in force restarts nothing: start from on.
+  if [ "$m" = off ]; then
+    gm_command "$a" bridges-start bridges-on || fail "nice-dns bridges on (start): $(tail -n 5 "$d/cmd-bridges-start.log")"
+    gm_dns "$a" bridges-start
+  fi
   gm_action "$a" bridges-off
+  off="$(gm_mode "$a" after-bridges-off)"
+  assert_eq off "$off" "after bridges-off, status --tsv says off"
   gm_action "$a" bridges-on
+  on="$(gm_mode "$a" after-bridges-on)"
+  assert_eq on "$on" "after bridges-on, status --tsv says on"
   # The target ends as it was.
   if [ "$m" = off ]; then
     gm_command "$a" bridges-restore bridges-off || fail "nice-dns bridges off (restore): $(tail -n 5 "$d/cmd-bridges-restore.log")"
     gm_dns "$a" bridges-restore
   fi
-  printf 'bridges_mode_before\t%s\noff_exit\t%s\noff_resolves\t%s\non_exit\t%s\non_resolves\t%s\nresult\tpass\n' "$m" \
-    "$(gm_kv "$d/session-bridges-off.log" gui_exit)" "$(il_val "$d/after-bridges-off.tsv" resolution resolves)" \
-    "$(gm_kv "$d/session-bridges-on.log" gui_exit)" "$(il_val "$d/after-bridges-on.tsv" resolution resolves)" >"$d/gm-bridges.tsv"
+  printf 'bridges_mode_before\t%s\noff_exit\t%s\noff_mode\t%s\noff_resolves\t%s\non_exit\t%s\non_mode\t%s\non_resolves\t%s\nproxy_restarted\tyes\nresult\tpass\n' "$m" \
+    "$(gm_kv "$d/session-bridges-off.log" gui_exit)" "$off" "$(il_val "$d/after-bridges-off.tsv" resolution resolves)" \
+    "$(gm_kv "$d/session-bridges-on.log" gui_exit)" "$on" "$(il_val "$d/after-bridges-on.tsv" resolution resolves)" >"$d/gm-bridges.tsv"
 }
 
 gm_open() {
@@ -229,16 +286,26 @@ gm_open() {
 }
 
 gm_uninstall() {
-  local plat="$1" a="$2" d r
+  local plat="$1" a="$2" d r n q
   d="$(il_dir "$a")"
   gm_require "$a" gm_install
+  # The app open during the uninstall quits by itself once its bundle is gone.
+  gm_session "$a" launch || fail "gui-session launch: $(tail -n 5 "$d/ops.log")"
+  assert_eq yes "$(gm_kv "$d/session-launch.log" gui_running)" "the app runs before the uninstall"
   gm_command "$a" uninstall uninstall || fail "nice-dns uninstall failed: $(tail -n 20 "$d/cmd-uninstall.log")"
+  n=0 q=no
+  while [ "$n" -lt 8 ]; do
+    gm_session "$a" running || fail "gui-session running: $(tail -n 5 "$d/ops.log")"
+    [ "$(gm_kv "$d/session-running.log" gui_running)" = no ] && { q=yes; break; }
+    sleep 5; n=$((n + 1))
+  done
+  assert_eq yes "$q" "the open app quit by itself after the uninstall removed it"
   il_report "$a" after-uninstall || fail "lifecycle-report"
   il_assert_uninstalled "$plat" "$d/before.tsv" "$d/after-uninstall.tsv"
   gm_gui_report "$a" uninstall || fail "gui-report"
   r="$d/gui-uninstall.tsv"
   assert_eq absent "$(gm_kv "$r" gui_app)" "nice-dns.app in ~/Applications is gone"
-  { cat "$r"; printf 'resolves\t%s\nresult\tpass\n' "$(il_val "$d/after-uninstall.tsv" resolution resolves)"; } >"$d/gm-uninstall.tsv"
+  { cat "$r"; printf 'app_quit_after_uninstall\t%s\nresolves\t%s\nresult\tpass\n' "$q" "$(il_val "$d/after-uninstall.tsv" resolution resolves)"; } >"$d/gm-uninstall.tsv"
 }
 
 # Runs whatever came before it: the target must end with a working stack.
