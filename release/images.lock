@@ -15,8 +15,9 @@ schema	nice-dns-images-lock/1
 #               (not signed by a publisher nice-dns can name)
 #   unpublished <role> <repository> <why>
 #                                an input with no published image; it is built
-#                                from a sibling checkout, whose commit the
-#                                install records
+#                                from this tree (pihole-hardened/base, whose
+#                                UPSTREAM names the commit it was copied from),
+#                                and the install records the tree's commit
 #   provides <role> <interface>  what the pinned image offers (qualified by
 #                                the transport and controller receipts)
 #   requires <component> <interface>
@@ -24,6 +25,10 @@ schema	nice-dns-images-lock/1
 #                                routes need from <component> (proxy = the
 #                                chosen proxy role); an install refuses a lock
 #                                whose image lacks one, before any interruption
+#
+# 2026-11-10 (OD-6): the hardened Pi-hole base is built from the tree's
+# pihole-hardened/base; hardened-os pins the Alpine its Dockerfile builds FROM
+# (the install puts this digest in place of the tag). Upstream, unsigned.
 #
 # Qualified 2026-11-06: tor-haproxy v2.16 and tor-socat v2.12 (bridges-mode/1,
 # TOR_BRIDGES on|off) and the moved pihole-base digest. Signatures verified
@@ -44,7 +49,8 @@ image	proxy-haproxy	docker.io/sureserver/tor-haproxy	v2.17	sha256:21ba507e92c90c
 image	proxy-socat	docker.io/sureserver/tor-socat	v2.13	sha256:a6b018eb3eb5bd17b876605fe8584cac6894fdf63b1679d9ea73f78b91f97de2	linux/arm64,linux/riscv64,linux/amd64,linux/arm/v7	github.com/sureserverman/tor-socat@0e587fdf0a190407d4f19774b0657e9a4b61d3f6	v2.13	https://github.com/sureserverman/tor-socat/.github/workflows/main.yml@refs/tags/v
 image	unbound-base	docker.io/sureserver/hardened-unbound	v1.4.1	sha256:7e803dcf42a90e2de05dffe6f55fde1a0c3f26e1ad1439352625bc05bd2a7586	linux/arm/v7,linux/arm64,linux/amd64,linux/riscv64	github.com/sureserverman/hardened-unbound@0e32c138d1e15fa0cca05011f89793637808c181	v1.4.1	https://github.com/sureserverman/hardened-unbound/.github/workflows/main.yml@refs/tags/v
 image	pihole-base	docker.io/pihole/pihole	latest	sha256:30f803ad5dd60ff96cc0a63008a2e9271af481c1b0399a182192b2e91152c1f9	linux/amd64,linux/arm/v7,linux/arm64,linux/riscv64,linux/386,linux/arm/v6	upstream	2026-11-06	none
-unpublished	hardened-base	docker.io/sureserver/pi-hole-hardened	not on Docker Hub (401, 2026-09-27); built from a sibling pi-hole-hardened checkout
+image	hardened-os	docker.io/library/alpine	3.21.3	sha256:a8560b36e8b8210634f77d9f7f9efd7ffa463e380b75e2e74aff4511df3ef88c	linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64,linux/386,linux/ppc64le,linux/riscv64,linux/s390x	upstream	3.21.3	none
+unpublished	hardened-base	docker.io/sureserver/pi-hole-hardened	not on Docker Hub (401, 2026-09-27); built from the nice-dns tree (pihole-hardened/base)
 provides	proxy-haproxy	route-listeners/1
 provides	proxy-haproxy	route-probe/1
 provides	proxy-haproxy	control-restart/1

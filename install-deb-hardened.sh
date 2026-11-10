@@ -6,9 +6,9 @@
 # quadlet install, custom-dns-deb.service). The ONLY differences are:
 #
 #   1. Before building pihole/, build localhost/pi-hole-hardened-base (under
-#      the install's generation tag) from the sibling ../pi-hole-hardened repo.
-#      The hardened base is not published (release/images.lock), so without
-#      that sibling checkout the install refuses before changing anything.
+#      the install's generation tag) from this tree's pihole-hardened/base,
+#      on the Alpine release/images.lock pins (hardened-os). The hardened
+#      base is not published; its build inputs travel with the tree.
 #
 #   2. Build pihole-hardened/Containerfile (FROM the hardened base) instead
 #      of pihole/Containerfile (FROM pihole/pihole:latest).

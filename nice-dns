@@ -134,35 +134,10 @@ parse_choices() {
   done
 }
 
-# hardened_sibling: the pi-hole-hardened checkout for an install run from
-# anywhere but a checkout, whose own parent directory holds nothing useful: the
-# checkout's neighbour, else the one the last hardened install recorded, else a
-# stable place the installer's refusal can name.
-hardened_sibling() {
-  local m row
-  if [ "$ND_CLI_CHECKOUT" = 1 ]; then
-    printf '%s\n' "$(cd "$ND_CLI_HERE/.." && pwd)/pi-hole-hardened"
-    return 0
-  fi
-  if m="$(recorded_manifest)"; then
-    row="$(awk -F '\t' '$1 == "source" && $2 == "hardened-base" { print $3; exit }' "$m")"
-    row="${row%@*}"
-    if [ -n "$row" ] && [ -f "$row/Dockerfile" ]; then
-      printf '%s\n' "$row"
-      return 0
-    fi
-  fi
-  printf '%s\n' "$HOME/.local/share/nice-dns/pi-hole-hardened"
-}
-
 # run_installer <source root> <variant> <flavour> <branch>
 run_installer() {
   local script="install-$ND_CLI_OS"
   [ "$3" = hardened ] && script="$script-hardened"
-  if [ "$3" = hardened ] && { [ "$ND_CLI_CHECKOUT" = 0 ] || [ "$1" != "$ND_CLI_HERE" ]; }; then
-    ND_INST_HARDENED_SIBLING="$(hardened_sibling)"
-    export ND_INST_HARDENED_SIBLING
-  fi
   script="$1/$script.sh"
   if [ ! -f "$script" ]; then
     err "no installer at $script"

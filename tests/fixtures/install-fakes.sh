@@ -557,11 +557,6 @@ ip_env() {
   : >"$FAKE_LOG"
   ip_tree "$IP_TREE"
   ip_tree "$FAKE/upstream"
-  if [ "${1%-hardened}" != "$1" ] && [ "${IP_NO_SIBLING:-0}" != 1 ]; then
-    mkdir -p "$IP_W/src/pi-hole-hardened"
-    printf 'FROM alpine:3.21.3\n' >"$IP_W/src/pi-hole-hardened/Dockerfile"
-    : >"$IP_W/src/pi-hole-hardened/post-install.sh"
-  fi
   ip_write_stubs "$IP_BIN" "$plat"
   printf '0123456789abcdef0123456789abcdef01234567\n' >"$FAKE/git_head"
   : >"$FAKE/nm_active"

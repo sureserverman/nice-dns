@@ -68,15 +68,12 @@ t_builds_and_pulls_precede_the_interruption() {
   local ep sib
   ip_select
   for ep in $IP_EPS; do
-    for sib in no yes; do
-      # Hardened needs its sibling (the base is unpublished): the fixture
-      # provides it; standard has none.
-      [ "$sib" = yes ] && [ "$(ip_flavor "$ep")" = standard ] && continue
-      [ "$sib" = no ] && [ "$(ip_flavor "$ep")" = hardened ] && continue
+    # The hardened base is built from the tree (pihole-hardened/base); no
+    # checkout sits next to it in the fixture.
+    for sib in tree; do
       (
         local first last_bp stop n
         ip_env "$ep"
-        if [ "$sib" = yes ]; then mkdir -p "$IP_W/src/pi-hole-hardened"; printf 'FROM alpine:3.21.3\n' >"$IP_W/src/pi-hole-hardened/Dockerfile"; : >"$IP_W/src/pi-hole-hardened/post-install.sh"; fi
         ip_install "$ep"
         assert_rc 0 "$IP_RC" "$ep (sibling=$sib): $IP_OUT"
         first="$(ip_first "$FAKE_LOG" "$IP_DISRUPTIVE")"
@@ -89,8 +86,8 @@ t_builds_and_pulls_precede_the_interruption() {
 $(cat -n "$FAKE_LOG")"
           assert_match '^podman build .*-t localhost/unbound:' "$(cat "$FAKE_LOG")" "$ep: unbound is built"
           assert_match '^podman build .*-t localhost/pi-hole:' "$(cat "$FAKE_LOG")" "$ep: pi-hole is built"
-          if [ "$sib" = yes ]; then
-            assert_match '^podman build .*pi-hole-hardened-base:' "$(sed -n "1,${first}p" "$FAKE_LOG")" "$ep: the sibling hardened base is built before the interruption"
+          if [ "$(ip_flavor "$ep")" = hardened ]; then
+            assert_match '^podman build .*pi-hole-hardened-base:[^ ]+ pihole-hardened/base$' "$(sed -n "1,${first}p" "$FAKE_LOG")" "$ep: the hardened base is built from the tree before the interruption"
           fi
         else
           last_bp="$(ip_last "$FAKE_LOG" '^container image pull ')"
@@ -119,7 +116,7 @@ ip_injections() {
     [ "$(ip_flavor "$1")" = hardened ] && printf '%s\n' 'podman build .*pi-hole-hardened-base:'
   else
     printf '%s\n' 'container image pull docker\.io/sureserver/tor-' 'git clone' 'bridges' 'brew install'
-    [ "$(ip_flavor "$1")" = hardened ] && printf '%s\n' 'container image pull alpine:3\.21\.3'
+    [ "$(ip_flavor "$1")" = hardened ] && printf '%s\n' 'container image pull docker\.io/library/alpine@sha256:'
   fi
   return 0
 }
@@ -241,7 +238,6 @@ t_standard_and_hardened_share_build_flags() {
     (
       plat="$(ip_platform "$ep")"
       ip_env "$ep"
-      mkdir -p "$IP_W/src/pi-hole-hardened"; printf 'FROM alpine:3.21.3\n' >"$IP_W/src/pi-hole-hardened/Dockerfile"; : >"$IP_W/src/pi-hole-hardened/post-install.sh"
       ip_install "$ep"
       assert_rc 0 "$IP_RC" "$ep: $IP_OUT"
       # macOS builds take no --pull: they run while host DNS is pinned to the
@@ -250,11 +246,12 @@ t_standard_and_hardened_share_build_flags() {
       # in preparation (BL-047).
       if [ "$plat" = linux ]; then want='--pull=newer --no-cache'; else want='--no-cache --dns 1.1.1.1'; fi
       # Each build's policy flags, with the recipe selectors (-t, -f,
-      # --build-arg) and the context removed.
+      # --build-arg, --from: the base a build starts on) and the context
+      # removed.
       flags="$(grep -E '^(podman|container) build ' "$FAKE_LOG" | awk '{
         out = ""
         for (i = 3; i <= NF; i++) {
-          if ($i == "-t" || $i == "-f" || $i == "--build-arg" || $i == "--tag" || $i == "--file") { i++; continue }
+          if ($i == "-t" || $i == "-f" || $i == "--build-arg" || $i == "--tag" || $i == "--file" || $i == "--from") { i++; continue }
           if (i == NF) continue
           out = out (out == "" ? "" : " ") $i
         }
@@ -428,23 +425,72 @@ $(cat "$FAKE/build-cwd")"
       gens="$(find "$IP_HOME" -path '*nice-dns-install/generations/*' 2>/dev/null | LC_ALL=C sort)"
       ip_run "$IP_W/solo/$ep.sh" haproxy dev
       assert_match '^git clone (-q )?-b dev https://github\.com/sureserverman/nice-dns\.git ' "$(cat "$FAKE_LOG")" "$ep: clones the branch"
-      if [ "$(ip_flavor "$ep")" = hardened ]; then
-        # The hardened base is unpublished and no sibling checkout sits next
-        # to a temporary clone: refused in preparation (Task 1.3).
-        assert_nonzero "$IP_RC" "$ep solo: $IP_OUT"
-        assert_match 'pi-hole-hardened' "$IP_OUT" "$ep solo: says what is missing"
-        ip_assert_untouched "$ep solo"
-        # Before anything at all: live 2026-10-31, the refusal came after package
-        # updates, a generation directory and pre-* image tags.
-        assert_not_match 'Preparing generation' "$IP_OUT" "$ep solo: no generation is begun"
-        assert_eq "" "$(grep -E '^(sudo |apt|brew (update|upgrade|install)|podman |container )' "$FAKE_LOG" | cut -c1-200)" "$ep solo: no package or image command ran"
-        assert_eq "$gens" "$(find "$IP_HOME" -path '*nice-dns-install/generations/*' 2>/dev/null | LC_ALL=C sort)" "$ep solo: no new generation directory"
-        exit 0
-      fi
+      # A hardened install from a temporary clone builds its base from the
+      # clone (pihole-hardened/base): no checkout is needed beside it.
       assert_rc 0 "$IP_RC" "$ep solo: $IP_OUT"
       assert_eq clone "$(ip_row "$(ip_manifest "$(ip_gen_current)")" source_origin)" "$ep: source_origin clone"
       assert_eq 1 "$(( $(ip_first "$FAKE_LOG" '^git clone') < $(ip_first "$FAKE_LOG" "$IP_BUILD_PULL") ))" "$ep: the source is staged before any image work"
     ) || exit 1
+  done
+}
+
+# The hardened base is built from the nice-dns tree's own copy of the
+# pi-hole-hardened inputs, with no checkout beside the tree (OD-6), on the
+# Alpine base the lock pins; the kept source carries the copy, so a
+# `reinstall --local --hardened` builds the same way.
+t_hardened_builds_its_base_from_the_tree() {
+  local ep
+  ip_select
+  for ep in $IP_EPS; do
+    [ "$(ip_flavor "$ep")" = hardened ] || continue
+    (
+      local m os
+      ip_env "$ep"
+      assert_eq "" "$(ls -d "$IP_W/src/pi-hole-hardened" "$IP_W/pi-hole-hardened" 2>/dev/null)" "$ep: no pi-hole-hardened checkout beside the tree"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: $IP_OUT"
+      os="$(awk -F '\t' '$1 == "image" && $2 == "hardened-os" { print $3 "@" $5; exit }' "$IP_TREE/release/images.lock")"
+      assert_match '^docker\.io/library/alpine@sha256:[0-9a-f]{64}$' "$os" "$ep: the lock pins the hardened base's Alpine"
+      if [ "$(ip_platform "$ep")" = linux ]; then
+        assert_match "^podman build .*--from $os -t localhost/pi-hole-hardened-base:[^ ]+ pihole-hardened/base\$" "$(cat "$FAKE_LOG")" "$ep: the base is built from pihole-hardened/base on the pinned Alpine"
+      else
+        assert_match "^container image pull $os\$" "$(cat "$FAKE_LOG")" "$ep: the pinned Alpine is pulled by digest"
+        assert_match '^container image tag docker\.io/library/alpine@sha256:[0-9a-f]{64} alpine:3\.21\.3$' "$(cat "$FAKE_LOG")" "$ep: under the name the Dockerfile builds FROM"
+        assert_match '^container build .*-t pi-hole-hardened-base:[^ ]+ pihole-hardened/base$' "$(cat "$FAKE_LOG")" "$ep: the base is built from pihole-hardened/base"
+      fi
+      assert_eq "" "$(grep -E '^(podman pull|container image pull) [^@ ]+$' "$FAKE_LOG")" "$ep: nothing is pulled by a floating tag"
+      m="$(ip_manifest "$(ip_gen_current)")"
+      assert_match "$(printf '^source\thardened-base\tpihole-hardened/base@0123456789abcdef0123456789abcdef01234567\tupstream=')[0-9a-f]{40}$" "$(grep "^source	hardened-base	" "$m")" "$ep: the manifest names the tree's commit and the upstream one"
+      assert_match "$(printf '^locked\thardened-os\t')docker\.io/library/alpine@" "$(cat "$m")" "$ep: and the locked Alpine"
+      assert_file "$IP_HOME/.local/share/nice-dns/source/pihole-hardened/base/Dockerfile" "$ep: the kept source carries the base's inputs"
+      assert_file "$IP_HOME/.local/share/nice-dns/source/pihole-hardened/base/UPSTREAM" "$ep: and where they came from"
+    ) || exit 1
+  done
+}
+
+# A tree that cannot build the hardened base (no pihole-hardened/base, or a
+# copy missing the FTL checksums its Dockerfile COPYs) refuses before any
+# package, image or generation work, on both platforms.
+t_hardened_without_its_base_refuses_before_any_change() {
+  local ep what
+  ip_select
+  for ep in $IP_EPS; do
+    [ "$(ip_flavor "$ep")" = hardened ] || continue
+    for what in base checksums; do
+      (
+        local gens
+        ip_env "$ep"
+        if [ "$what" = base ]; then rm -rf "${IP_TREE:?}/pihole-hardened/base"; else rm -f "$IP_TREE"/pihole-hardened/base/checksums/FTL-*.sha256; fi
+        gens="$(find "$IP_HOME" -path '*nice-dns-install/generations/*' 2>/dev/null | LC_ALL=C sort)"
+        ip_install "$ep"
+        assert_nonzero "$IP_RC" "$ep without $what: refused: $IP_OUT"
+        assert_match 'pihole-hardened/base' "$IP_OUT" "$ep without $what: it names what is missing"
+        ip_assert_untouched "$ep without $what"
+        assert_not_match 'Preparing generation' "$IP_OUT" "$ep without $what: no generation is begun"
+        assert_eq "" "$(grep -E '^(sudo |apt|brew (update|upgrade|install)|podman |container )' "$FAKE_LOG" | cut -c1-200)" "$ep without $what: no package or image command ran"
+        assert_eq "$gens" "$(find "$IP_HOME" -path '*nice-dns-install/generations/*' 2>/dev/null | LC_ALL=C sort)" "$ep without $what: no new generation directory"
+      ) || exit 1
+    done
   done
 }
 

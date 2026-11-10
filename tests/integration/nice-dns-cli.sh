@@ -279,35 +279,25 @@ t_a_named_branch_is_what_gets_installed_and_recorded() {
   assert_eq "" "$(cl_calls '^installer')" "and installs nothing"
 }
 
-t_hardened_off_a_clone_or_the_kept_source_finds_its_sibling() {
-  local sd
+# The hardened base is built from the source tree's own pihole-hardened/base
+# (OD-6): no run names a checkout beside it, whether from the kept source, a
+# clone or a checkout, and the library has no lookup left to honour one.
+t_hardened_runs_name_no_sibling_checkout() {
   cl_world Linux; cl_installed; cl_record haproxy standard main
   cl_run "$CL_CMD" reinstall --hardened --local
-  assert_eq "sibling $CL_HOME/.local/share/nice-dns/pi-hole-hardened" "$(cl_calls '^sibling')" "nothing recorded: a stable place the refusal can name"
-  sd="$CL_HOME/.local/state/nice-dns-install"
-  mkdir -p "$CL_W/mine/pi-hole-hardened"; : >"$CL_W/mine/pi-hole-hardened/Dockerfile"
-  printf 'source\thardened-base\t%s@abc\n' "$CL_W/mine/pi-hole-hardened" >>"$sd/generations/g1/prepare.tsv"
+  assert_rc 0 "$CL_RC" "a hardened reinstall from the kept source runs: $CL_OUT"
+  assert_eq "installer[snapshot] install-deb-hardened.sh haproxy main" "$(cl_calls '^installer')" "from the kept source, with the hardened entrypoint"
+  assert_eq "" "$(cl_calls '^sibling')" "the kept source: no checkout is named"
   : >"$CL_LOG"
   cl_run "$CL_CMD" reinstall --hardened
-  assert_eq "sibling $CL_W/mine/pi-hole-hardened" "$(cl_calls '^sibling')" "the recorded one"
+  assert_eq "" "$(cl_calls '^sibling')" "a clone: no checkout is named"
   cl_world Linux; cl_record haproxy standard main
   cl_run "$CL_TREE/nice-dns" install --hardened --branch dev
-  assert_eq "sibling $CL_W/pi-hole-hardened" "$(cl_calls '^sibling')" "a checkout's neighbour, for its clone"
+  assert_eq "" "$(cl_calls '^sibling')" "a checkout's clone: no checkout is named"
   : >"$CL_LOG"
   cl_run "$CL_TREE/nice-dns" install --hardened
-  assert_eq "" "$(cl_calls '^sibling')" "a checkout's own run is the installer's business"
-  (
-    # shellcheck disable=SC2034  # read by the sourced lib/install.sh
-    ND_INST_SRC="$CL_TREE" ND_INST_HARDENED_SIBLING="$CL_W/mine/pi-hole-hardened" ND_INST_PLATFORM=linux
-    # shellcheck source=lib/install.sh
-    . "$CL_TREE/lib/install.sh"
-    mkdir -p "$CL_W/mine/pi-hole-hardened"
-    : >"$CL_W/mine/pi-hole-hardened/Dockerfile"; : >"$CL_W/mine/pi-hole-hardened/post-install.sh"
-    # shellcheck disable=SC2034
-    ND_INST_MANIFEST=/dev/null
-    _nd_inst_manifest_row() { return 0; }
-    assert_eq "$CL_W/mine/pi-hole-hardened" "$(_nd_inst_hardened_sibling 2>/dev/null)" "the library honours the name it is given"
-  ) || exit 1
+  assert_eq "" "$(cl_calls '^sibling')" "a checkout: no checkout is named"
+  assert_eq "" "$(grep -nE 'hardened_sibling|HARDENED_SIBLING' "$CL_TREE/nice-dns" "$CL_TREE/lib/install.sh")" "neither the command nor the library looks for one"
 }
 
 t_reinstall_refuses_an_unreadable_record() {
