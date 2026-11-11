@@ -67,3 +67,5 @@ live	container-faults	tests/live/container-faults.sh	live
 integration	container-faults-dryrun	tests/integration/container-faults-dryrun.sh	local
 live	bridges-toggle	tests/live/bridges-toggle.sh	live
 integration	bridges-toggle-dryrun	tests/integration/bridges-toggle-dryrun.sh	local
+live	switch-autocheck	tests/live/switch-autocheck.sh	live
+integration	switch-autocheck-dryrun	tests/integration/switch-autocheck-dryrun.sh	local

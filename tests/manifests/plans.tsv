@@ -24,6 +24,7 @@ installers	integration	deployment-security
 installers	integration	lifecycle-transitions
 installers	integration	installers-interaction
 installers	integration	install-lifecycle-dryrun
+installers	integration	switch-autocheck-dryrun
 installers	live	install-lifecycle
 installers	live	install-hardened
 installers	live	installers-receipt
