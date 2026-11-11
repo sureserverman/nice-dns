@@ -184,12 +184,13 @@ sa_running() { il_sec "$(il_dir "$1")/after-$2.tsv" running | awk -F '\t' '$1 ==
 # ─────────────────────────── steps ───────────────────────────────────────────
 
 sa_before() {
-  local plat="$1" a="$2" d proxy ph r
+  local plat="$1" a="$2" d proxy ph r why
   d="$(il_dir "$a")"
   sa_budget sa_before
   rm -f "$d/offline.tsv"
   if ! il_t "$a" probe >"$d/probe.log" 2>&1; then
-    printf 'offline\t%s\t%s\n' "$plat" "$(grep -v 'level=warning' "$d/probe.log" | tail -n 1 | tr '\t' ' ')" >"$d/offline.tsv"
+    why="$(grep -v -e 'level=warning' -e '^[[:space:]]*$' "$d/probe.log" | tail -n 1 | tr '\t' ' ')"
+    printf 'offline\t%s\t%s\n' "$plat" "${why:-no answer}" >"$d/offline.tsv"
     fail "OFFLINE: $a does not answer ($(cut -f3 "$d/offline.tsv")). The cell is not run. Ask the owner to wake $a (mint: its Wi-Fi after a suspend), then rerun only this platform: --platforms $plat"
   fi
   cr_before "$@"
@@ -197,6 +198,8 @@ sa_before() {
   sa_status "$a" before
   assert_eq "$proxy" "$(sa_st "$a" before install variant)" "status names the proxy that runs"
   ph="$(sa_st "$a" before install pihole)"
+  # Recorded before any check here can fail, so sa_restore always has them.
+  printf 'other\t%s\nrecorded_proxy\t%s\nrecorded_pihole\t%s\n' "$([ "$proxy" = haproxy ] && echo socat || echo haproxy)" "$proxy" "$ph" >>"$d/cell.tsv"
   assert_eq standard "$ph" "the cell starts from the standard Pi-hole (status pihole)"
   sa_switch_report "$a" before
   sa_no_checkout "$a" before
@@ -205,7 +208,6 @@ sa_before() {
     il_t "$a" polkit-test-rule --mode add >"$r" 2>>"$d/ops.log" || fail "polkit-test-rule add: $(tail -n 5 "$d/ops.log")"
     assert_eq present "$(sa_kv "$r" polkit_test_rule)" "the polkit test rule is in place"
   fi
-  printf 'other\t%s\nrecorded_proxy\t%s\nrecorded_pihole\t%s\n' "$([ "$proxy" = haproxy ] && echo socat || echo haproxy)" "$proxy" "$ph" >>"$d/cell.tsv"
   {
     printf 'recorded_proxy\t%s\nrecorded_pihole\t%s\n' "$proxy" "$ph"
     awk -F '\t' '$1 == "hardened_checkout"' "$d/switch-before.tsv"
@@ -355,25 +357,43 @@ sa_restore() {
 
 # sa_reuse_dir <platform>: that platform's cell in a run listed in
 # NICE_DNS_CELL_REUSE_RUNS, passed in every step, at the same product (DEC-009).
+# Each candidate it refuses is written, with why, to $CASE_DIR/reuse-refused.tsv
+# (DEC-009: a reuse, or its refusal, is visible, never silent).
+SA_REUSE_FILES='tests/live/switch-autocheck.sh tests/live/command-recovery.sh tests/live/install-lifecycle.sh tests/live/target.sh tests/manifests/switch-autocheck.tsv tests/reports/verify.sh'
 sa_reuse_dir() {
-  local r d s ok
+  local r d s ok sha miss found
   for r in ${NICE_DNS_CELL_REUSE_RUNS:-}; do
     case "$r" in /*) ;; *) fail "NICE_DNS_CELL_REUSE_RUNS: $r is not an absolute run directory" ;; esac
     [ -d "$r" ] || fail "NICE_DNS_CELL_REUSE_RUNS: no run directory $r"
+    found=0
     for d in "$r"/switch-autocheck/*/; do
       [ -f "$d/cell.tsv" ] || continue
       [ "$(il_cell_of "$d" cell | cut -d/ -f1)" = "$1" ] || continue
-      [ "$(il_cell_of "$d" adapter)" = "$(cr_adapter)" ] || continue
-      ok=1
-      for s in $SA_STEPS; do grep -qx "$s" "$d/passed.tsv" 2>/dev/null || ok=0; done
-      [ "$ok" = 1 ] || continue
-      il_same_product "$(il_cell_of "$d" source_sha)" "$1" || continue
+      found=1
+      sha="$(il_cell_of "$d" source_sha)"
+      if [ "$(il_cell_of "$d" adapter)" != "$(cr_adapter)" ]; then
+        printf '%s\t%s\tran against the %s adapter, this run uses the %s one\n' "$1" "${d%/}" "$(il_cell_of "$d" adapter)" "$(cr_adapter)" >>"$CASE_DIR/reuse-refused.tsv"; continue
+      fi
+      ok=1 miss=""
+      for s in $SA_STEPS; do grep -qx "$s" "$d/passed.tsv" 2>/dev/null || { ok=0; miss="$miss $s"; }; done
+      if [ "$ok" != 1 ]; then
+        printf '%s\t%s\tthe cell did not pass:%s\n' "$1" "${d%/}" "$miss" >>"$CASE_DIR/reuse-refused.tsv"; continue
+      fi
+      if ! il_same_product "$sha" "$1"; then
+        printf '%s\t%s\tthe product files changed since %s (%s)\n' "$1" "${d%/}" "${sha:0:12}" \
+          "$(git -C "$NICE_DNS_ROOT" diff --name-only "$sha" HEAD -- . ':(exclude)tests' ':(exclude)docs' ':(exclude,glob)**/*.md' 2>/dev/null | head -n 3 | tr '\n' ' ')" >>"$CASE_DIR/reuse-refused.tsv"; continue
+      fi
       # A cell proven under a looser scenario does not prove this one.
-      git -C "$NICE_DNS_ROOT" diff --quiet "$(il_cell_of "$d" source_sha)" HEAD -- \
-        tests/live/switch-autocheck.sh tests/live/command-recovery.sh tests/live/install-lifecycle.sh tests/live/target.sh tests/manifests/switch-autocheck.tsv tests/reports/verify.sh 2>/dev/null || continue
+      # shellcheck disable=SC2086 # the file list is words
+      if ! git -C "$NICE_DNS_ROOT" diff --quiet "$sha" HEAD -- $SA_REUSE_FILES 2>/dev/null; then
+        # shellcheck disable=SC2086 # the file list is words
+        printf '%s\t%s\tthe scenario changed since %s (%s)\n' "$1" "${d%/}" "${sha:0:12}" \
+          "$(git -C "$NICE_DNS_ROOT" diff --name-only "$sha" HEAD -- $SA_REUSE_FILES 2>/dev/null | tr '\n' ' ')" >>"$CASE_DIR/reuse-refused.tsv"; continue
+      fi
       printf '%s\n' "${d%/}"
       return 0
     done
+    [ "$found" = 1 ] || printf '%s\t%s\tthe run has no %s cell of this group\n' "$1" "$r" "$1" >>"$CASE_DIR/reuse-refused.tsv"
   done
   return 0
 }
@@ -382,7 +402,7 @@ SA_SCENARIOS='SA-BEFORE:sa-before.tsv SA-INSTALL:sa-install.tsv SA-PROXY:sa-prox
 SA_SECRETS='cert=[A-Za-z0-9+/]{20}|(^|[^0-9A-Fa-f])[0-9A-F]{40}([^0-9A-Fa-f]|$)|PRIVATE KEY|"sid":|pwhash|BRIDGE[0-9]+=|obfs4 [0-9]'
 
 sa_receipt() {
-  local root out r repo cd st d from cell key gen a f id n=0 v s ok p selected rd off
+  local root out r repo cd st d from cell key gen a f id n=0 v s ok p selected rd off nore failed
   root="$(dirname "$(dirname "$ARTIFACT_DIR")")"
   out="$root/receipts/switch-autocheck/$RUN_ID"; r="$out/receipt.tsv"
   assert_no_path "$out" "this run has no switch-autocheck receipt yet"
@@ -409,7 +429,7 @@ sa_receipt() {
     printf 'limit\tschedule-by-hand\t-\tscope=BL-066\tthe update schedule was started by hand; its 12-hour calendar firing was not waited for (the calendar itself: integration/scheduling)\n'
   } >"$r"
   selected=" $(il_platforms) "
-  : >"$CASE_DIR/cell-dirs.tsv"
+  : >"$CASE_DIR/cell-dirs.tsv"; : >"$CASE_DIR/reuse-refused.tsv"; nore="" failed=""
   for d in "$ARTIFACT_DIR"/switch-autocheck/*/; do
     [ -f "$d/cell.tsv" ] || continue
     printf '%s\t-\n' "${d%/}" >>"$CASE_DIR/cell-dirs.tsv"
@@ -417,7 +437,8 @@ sa_receipt() {
   for p in linux macos; do
     case "$selected" in *" $p "*) continue ;; esac
     rd="$(sa_reuse_dir "$p")"
-    [ -z "$rd" ] || printf '%s\t%s\n' "$rd" "$(basename "$(dirname "$(dirname "$rd")")")" >>"$CASE_DIR/cell-dirs.tsv"
+    if [ -n "$rd" ]; then printf '%s\t%s\n' "$rd" "$(basename "$(dirname "$(dirname "$rd")")")" >>"$CASE_DIR/cell-dirs.tsv"
+    else nore="$nore $p"; fi
   done
   while IFS="$(printf '\t')" read -r d from; do
     cell="$(il_cell_of "$d" cell)"; key="$(printf '%s' "$cell" | tr / -)"
@@ -430,6 +451,7 @@ sa_receipt() {
     for id in $SA_SCENARIOS; do [ -f "$d/${id#*:}" ] || ok=0; done
     if [ "$ok" != 1 ]; then
       printf 'cell\t%s\t%s\t%s\t%s\t%s\tfailed\n' "${cell%%/*}" "$(printf '%s' "$cell" | cut -d/ -f2)" "${cell##*/}" "$a" "$gen" >>"$r"
+      failed="$failed ${cell%%/*}"
       # The first step this cell did not pass, as a failed scenario row:
       # the verifier names the cell and the step.
       for s in $SA_STEPS; do
@@ -452,6 +474,10 @@ sa_receipt() {
   off="$(cat "$ARTIFACT_DIR"/switch-autocheck/*/offline.tsv 2>/dev/null | cut -f2 | tr '\n' ' ')"
   [ -z "$off" ] || printf 'offline\t%s\n' "$off" >"$CASE_DIR/offline.tsv"
   assert_eq "" "$off" "every selected target answered (offline: ${off}ask the owner to wake it, then rerun only that platform)"
+  # A failed cell says how to rerun it alone, carrying the passed ones.
+  [ -z "$failed" ] || fail "cell(s) failed on:$failed (the receipt names each one's step). Rerun only those: --platforms $(printf '%s' "${failed# }" | tr ' ' ',') with NICE_DNS_CELL_REUSE_RUNS=$ARTIFACT_DIR"
+  # A platform this run did not select and could not carry over is named, with why.
+  [ -z "$nore" ] || fail "no cell for:$nore. NICE_DNS_CELL_REUSE_RUNS=${NICE_DNS_CELL_REUSE_RUNS:-(unset)} carried none: $(awk -F '\t' '{ printf "%s: %s; ", $1, $3 }' "$CASE_DIR/reuse-refused.tsv")Run that platform too, or name a run whose cell passed at this product and scenario"
   assert_match '^[1-9]' "$n" "at least one fully passed cell"
   v="$(bash "$NICE_DNS_ROOT/tests/reports/verify.sh" check "$r" 2>&1)"
   assert_rc 0 "$?" "the switch-autocheck receipt verifies: $v"

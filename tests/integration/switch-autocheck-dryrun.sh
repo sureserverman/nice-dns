@@ -288,9 +288,12 @@ t_a_failed_step_stops_the_platform_and_the_restore_still_runs() {
 
 # The polkit test rule never outlives the run on Linux: a restore that fails,
 # and a sa_before that stops right after adding the rule, still remove it.
+# A host that a first-step failure left untouched restores cleanly: the
+# choices are recorded as soon as status is read.
 t_the_polkit_rule_is_removed_on_every_path() {
-  local brk out
-  for brk in restore-fails polkit-unconfirmed; do
+  local brk want out
+  for brk in restore-fails:restore-failed polkit-unconfirmed:restore-passed checkout-present:restore-passed; do
+    want="${brk#*:}" brk="${brk%%:*}"
     out="$(
       sad_world "$CASE_DIR/pk-$brk"
       printf '%s\n' "$brk" >"$IL_FAKE_DIR/break"
@@ -298,10 +301,11 @@ t_the_polkit_rule_is_removed_on_every_path() {
       ( il_each sa_restore ) >"$CASE_DIR/pk-$brk.log" 2>&1 && { echo restore-passed; exit 0; }
       echo restore-failed
     )"
-    assert_eq restore-failed "$out" "$brk: the restore step fails"
-    assert_eq absent "$(cat "$CASE_DIR/pk-$brk/fake/lin1/polkit")" "$brk: and the polkit test rule is gone from lin1"
+    assert_eq "$want" "$out" "$brk: the restore step ($(grep 'ASSERT FAIL' "$CASE_DIR/pk-$brk.log" | head -n 2 | tr '\n' ' '))"
+    assert_eq absent "$(cat "$CASE_DIR/pk-$brk/fake/lin1/polkit" 2>/dev/null || echo absent)" "$brk: and the polkit test rule is not on lin1"
+    assert_not_match 'no recorded choices' "$(cat "$CASE_DIR/pk-$brk.log")" "$brk: the choices were recorded"
   done
-  assert_match 'restore|recorded choices' "$(cat "$CASE_DIR/pk-polkit-unconfirmed.log")" "the failure says why"
+  assert_match 'is not back on its recorded choices' "$(cat "$CASE_DIR/pk-restore-fails.log")" "a failed restore says so"
 }
 
 # A failed cell's receipt row names the first step it did not pass.
@@ -322,6 +326,38 @@ t_a_failed_cell_names_its_step() {
   assert_match '^scenario	SA-HARDENED	macos/socat/standard	fail	' "$(cat "$r")" "so does the macOS cell"
   v="$(bash "$NICE_DNS_ROOT/tests/reports/verify.sh" check "$r" 2>&1)"
   assert_match 'scenario SA-HARDENED \(linux/haproxy/standard\) is fail' "$v" "the verifier names the cell and the step"
+  assert_match 'Rerun only those: --platforms linux,macos with NICE_DNS_CELL_REUSE_RUNS=/' "$(cat "$CASE_DIR/named-receipt.log")" "and the run says how to rerun only the failed cells"
+}
+
+# A reuse that is refused says why (DEC-009: visible, never silent).
+t_a_refused_reuse_says_why() {
+  local how out old
+  old="$(git -C "$NICE_DNS_ROOT" rev-parse 671d950)"
+  for how in product step absent; do
+    out="$(
+      sad_world "$CASE_DIR/re-$how"
+      for s in $SA_STEPS; do ( il_each "$s" ) >/dev/null 2>&1 || { echo "first-run-failed:$s"; exit 0; }; done
+      first="$ARTIFACT_DIR"
+      case "$how" in
+        product) sed -i "s/^source_sha\t.*/source_sha\t$old/" "$first/switch-autocheck/lin1/cell.tsv" ;;
+        step) sed -i '/^sa_update$/d' "$first/switch-autocheck/lin1/passed.tsv" ;;
+        absent) rm -rf "$first/switch-autocheck/lin1" ;;
+      esac
+      # shellcheck disable=SC2030 # this subshell's own run
+      ARTIFACT_DIR="$CASE_DIR/re-$how/runs/20260101T000200Z-0000000b" RUN_ID=20260101T000200Z-0000000b
+      NICE_DNS_OPT_PLATFORMS=macos NICE_DNS_CELL_REUSE_RUNS="$first"
+      export ARTIFACT_DIR RUN_ID NICE_DNS_OPT_PLATFORMS NICE_DNS_CELL_REUSE_RUNS
+      mkdir -p "$ARTIFACT_DIR"; sa_budget_start
+      for s in $SA_STEPS; do ( il_each "$s" ) >/dev/null 2>&1 || { echo "second-run-failed:$s"; exit 0; }; done
+      ( sa_receipt ) >"$CASE_DIR/re-$how.log" 2>&1 && { echo receipt-passed; exit 0; }
+      echo refused
+    )"
+    assert_eq refused "$out" "$how: the rerun has no Linux cell to carry, so no passing receipt"
+    assert_match 'no cell for: linux\. NICE_DNS_CELL_REUSE_RUNS=/' "$(cat "$CASE_DIR/re-$how.log")" "$how: the run names the platform it could not carry"
+  done
+  assert_match "linux: the product files changed since ${old:0:12} \([a-z][^)]*/[^)]*\)" "$(cat "$CASE_DIR/re-product.log")" "and why: the product changed (naming the files)"
+  assert_match 'linux: the cell did not pass: sa_update' "$(cat "$CASE_DIR/re-step.log")" "or a step the cell did not pass"
+  assert_match 'linux: the run has no linux cell of this group' "$(cat "$CASE_DIR/re-absent.log")" "or a run with no such cell"
 }
 
 # A target that does not answer is not run, is named, and the owner is asked
@@ -352,6 +388,7 @@ t_a_passed_cell_is_reused_on_a_rerun() {
   out="$(
     sad_world "$CASE_DIR/reuse"
     for s in $SA_STEPS; do ( il_each "$s" ) >/dev/null 2>&1 || { echo "first-run-failed:$s"; exit 0; }; done
+    # shellcheck disable=SC2031 # sad_world set it in this same subshell
     first="$ARTIFACT_DIR"
     # shellcheck disable=SC2030 # this subshell's own run
     ARTIFACT_DIR="$CASE_DIR/reuse/runs/20260101T000200Z-0000000b" RUN_ID=20260101T000200Z-0000000b
