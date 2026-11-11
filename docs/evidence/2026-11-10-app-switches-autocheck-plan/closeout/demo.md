@@ -313,3 +313,18 @@ End state, checked 12:20–12:27Z:
   - App v1.4.0 (19f82cd9…) and helper a5c8a61d… = lock.
   - /etc/hosts has no added lines and no backup. The app instance I launched is quit.
 - Background work: all finished, every one waited on by its own pid or task notification. None running.
+
+# M1 re-check on mint with v1.4.1 (executor, 2026-11-11, after the owner's "3 yes")
+
+The fix (7310c48, 11ee4f1) shipped as v1.4.1 (release.yml run 43101590201; lock pinned in d5ccea9). mint was installed from a git bundle of d5ccea9 (`target.sh command mint --mode install-git`, then `--mode reinstall` because the first install's GUI fetch failed with curl exit 7, see below). Installed: `nice-dns-gui 0.2.1`, program sha256 0cc8b720…a5fe = the program inside the v1.4.1 `nice-dns-gui-linux-amd64.tar.gz`; socat/standard, controller OK, `dig @127.0.0.1` answers.
+
+Route: the installed window in normal mode in an Xvfb display on mint (`GSK_RENDERER=cairo GDK_BACKEND=x11`), scrolled with the wheel to the Installed section, driven by `xdotool` clicks, captured with `xwd`. Not a hook.
+
+- The list stays open: a click on Proxy opened the list; captures at 2, 20, 45 and 75 s all show it open (haproxy / socat ✓) while the window read the status every 5 s through a controller pass (`last_pass` 1794432906 → 1794432967). `shots/mint-v141-list-open-75s.png`.
+- The selector behind the question stays the pick: a click on haproxy opened "Switch the proxy to haproxy?"; at 2 s and 75 s, through another controller pass (`last_pass` 1794432967 → 1794433030), the selector behind it still shows haproxy. `shots/mint-v141-question-held-75s.png`.
+- Not now: the selector went back to socat; the log pane still says "No action run yet". `shots/mint-v141-notnow.png`.
+- Redraws resume: 70 s later the Health controller's Last pass reads "just now" with `status` last_pass 29 s old.
+
+Verdict for M1: fixed.
+
+Seen during the re-check, not caused by it: the first install of d5ccea9 on mint printed `curl: (7) Failed to connect to github.com port 443 after 1783 ms` at "Fetching nice-dns-gui" in preparation, so the GUI was not installed (the install went on, as Stage 3 Outcome 3 says); a minute later three fetches of the same release from mint answered in 0.4-0.8 s, and the reinstall fetched it. The step before the fetch is root-ops `dns check` (reads only). This is the second such failure on mint (the first: live run 20261111T103616Z-8a709d2a). Cause not found; recorded in the backlog.
