@@ -188,6 +188,7 @@ sa_before() {
   d="$(il_dir "$a")"
   sa_budget sa_before
   rm -f "$d/offline.tsv"
+  printf 'platform\t%s\n' "$plat" >"$d/started.tsv"
   if ! il_t "$a" probe >"$d/probe.log" 2>&1; then
     why="$(grep -v -e 'level=warning' -e '^[[:space:]]*$' "$d/probe.log" | tail -n 1 | tr '\t' ' ')"
     printf 'offline\t%s\t%s\n' "$plat" "${why:-no answer}" >"$d/offline.tsv"
@@ -381,7 +382,7 @@ sa_reuse_dir() {
       fi
       if ! il_same_product "$sha" "$1"; then
         printf '%s\t%s\tthe product files changed since %s (%s)\n' "$1" "${d%/}" "${sha:0:12}" \
-          "$(git -C "$NICE_DNS_ROOT" diff --name-only "$sha" HEAD -- . ':(exclude)tests' ':(exclude)docs' ':(exclude,glob)**/*.md' 2>/dev/null | head -n 3 | tr '\n' ' ')" >>"$CASE_DIR/reuse-refused.tsv"; continue
+          "$(git -C "$NICE_DNS_ROOT" diff --name-only "$sha" HEAD -- . ':(exclude)tests' ':(exclude)docs' ':(exclude)proof' ':(exclude,glob)**/*.md' ":(exclude)$([ "$1" = linux ] && echo mac || echo deb)" 2>/dev/null | head -n 3 | tr '\n' ' ')" >>"$CASE_DIR/reuse-refused.tsv"; continue
       fi
       # A cell proven under a looser scenario does not prove this one.
       # shellcheck disable=SC2086 # the file list is words
@@ -402,7 +403,7 @@ SA_SCENARIOS='SA-BEFORE:sa-before.tsv SA-INSTALL:sa-install.tsv SA-PROXY:sa-prox
 SA_SECRETS='cert=[A-Za-z0-9+/]{20}|(^|[^0-9A-Fa-f])[0-9A-F]{40}([^0-9A-Fa-f]|$)|PRIVATE KEY|"sid":|pwhash|BRIDGE[0-9]+=|obfs4 [0-9]'
 
 sa_receipt() {
-  local root out r repo cd st d from cell key gen a f id n=0 v s ok p selected rd off nore failed
+  local root out r repo cd st d from cell key gen a f id n=0 v s ok p selected rd off nore failed why
   root="$(dirname "$(dirname "$ARTIFACT_DIR")")"
   out="$root/receipts/switch-autocheck/$RUN_ID"; r="$out/receipt.tsv"
   assert_no_path "$out" "this run has no switch-autocheck receipt yet"
@@ -431,13 +432,20 @@ sa_receipt() {
   selected=" $(il_platforms) "
   : >"$CASE_DIR/cell-dirs.tsv"; : >"$CASE_DIR/reuse-refused.tsv"; nore="" failed=""
   for d in "$ARTIFACT_DIR"/switch-autocheck/*/; do
-    [ -f "$d/cell.tsv" ] || continue
+    if [ ! -f "$d/cell.tsv" ]; then
+      # Started but stopped before the cell was recorded, and not offline:
+      # that platform failed in sa_before (e.g. the snapshot).
+      [ -f "$d/started.tsv" ] && [ ! -f "$d/offline.tsv" ] && failed="$failed $(cut -f2 "$d/started.tsv")"
+      continue
+    fi
     printf '%s\t-\n' "${d%/}" >>"$CASE_DIR/cell-dirs.tsv"
   done
   for p in linux macos; do
     case "$selected" in *" $p "*) continue ;; esac
     rd="$(sa_reuse_dir "$p")"
-    if [ -n "$rd" ]; then printf '%s\t%s\n' "$rd" "$(basename "$(dirname "$(dirname "$rd")")")" >>"$CASE_DIR/cell-dirs.tsv"
+    if [ -n "$rd" ]; then
+      printf '%s\t%s\n' "$rd" "$(basename "$(dirname "$(dirname "$rd")")")" >>"$CASE_DIR/cell-dirs.tsv"
+      printf 'carried: the %s cell from run %s (DEC-009)\n' "$p" "$(basename "$(dirname "$(dirname "$rd")")")"
     else nore="$nore $p"; fi
   done
   while IFS="$(printf '\t')" read -r d from; do
@@ -473,11 +481,13 @@ sa_receipt() {
   # A target that did not answer is named, with what to do.
   off="$(cat "$ARTIFACT_DIR"/switch-autocheck/*/offline.tsv 2>/dev/null | cut -f2 | tr '\n' ' ')"
   [ -z "$off" ] || printf 'offline\t%s\n' "$off" >"$CASE_DIR/offline.tsv"
-  assert_eq "" "$off" "every selected target answered (offline: ${off}ask the owner to wake it, then rerun only that platform)"
-  # A failed cell says how to rerun it alone, carrying the passed ones.
-  [ -z "$failed" ] || fail "cell(s) failed on:$failed (the receipt names each one's step). Rerun only those: --platforms $(printf '%s' "${failed# }" | tr ' ' ',') with NICE_DNS_CELL_REUSE_RUNS=$ARTIFACT_DIR"
-  # A platform this run did not select and could not carry over is named, with why.
-  [ -z "$nore" ] || fail "no cell for:$nore. NICE_DNS_CELL_REUSE_RUNS=${NICE_DNS_CELL_REUSE_RUNS:-(unset)} carried none: $(awk -F '\t' '{ printf "%s: %s; ", $1, $3 }' "$CASE_DIR/reuse-refused.tsv")Run that platform too, or name a run whose cell passed at this product and scenario"
+  # Every problem is named at once, each with what to do: one found first
+  # must not hide another (an offline target and a refused carry together).
+  why=""
+  [ -z "$off" ] || why="${why}offline: ${off}ask the owner to wake it, then rerun only that platform. "
+  [ -z "$failed" ] || why="${why}cell(s) failed on:$failed (the receipt or the step's output names the step). Rerun only those: --platforms $(printf '%s' "${failed# }" | tr ' ' ',') with NICE_DNS_CELL_REUSE_RUNS=$ARTIFACT_DIR. "
+  [ -z "$nore" ] || why="${why}no cell for:$nore. NICE_DNS_CELL_REUSE_RUNS=${NICE_DNS_CELL_REUSE_RUNS:-(unset)} carried none: $(awk -F '\t' '{ printf "%s: %s; ", $1, $3 }' "$CASE_DIR/reuse-refused.tsv")run that platform too, or name a run whose cell passed at this product and scenario. "
+  [ -z "$why" ] || fail "$why"
   assert_match '^[1-9]' "$n" "at least one fully passed cell"
   v="$(bash "$NICE_DNS_ROOT/tests/reports/verify.sh" check "$r" 2>&1)"
   assert_rc 0 "$?" "the switch-autocheck receipt verifies: $v"

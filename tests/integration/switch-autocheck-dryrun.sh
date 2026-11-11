@@ -329,6 +329,42 @@ t_a_failed_cell_names_its_step() {
   assert_match 'Rerun only those: --platforms linux,macos with NICE_DNS_CELL_REUSE_RUNS=/' "$(cat "$CASE_DIR/named-receipt.log")" "and the run says how to rerun only the failed cells"
 }
 
+# Every problem is named together: an offline target does not hide a refused
+# carry, and a target that answers the probe but fails before its cell is
+# recorded is a failed cell with a rerun line.
+t_every_problem_is_named_together() {
+  local out old
+  old="$(git -C "$NICE_DNS_ROOT" rev-parse 671d950)"
+  out="$(
+    sad_world "$CASE_DIR/both"
+    for s in $SA_STEPS; do ( il_each "$s" ) >/dev/null 2>&1 || { echo "first-run-failed:$s"; exit 0; }; done
+    first="$ARTIFACT_DIR"
+    sed -i "s/^source_sha\t.*/source_sha\t$old/" "$first/switch-autocheck/mac1/cell.tsv"
+    # shellcheck disable=SC2030 # this subshell's own run
+    ARTIFACT_DIR="$CASE_DIR/both/runs/20260101T000200Z-0000000b" RUN_ID=20260101T000200Z-0000000b
+    NICE_DNS_OPT_PLATFORMS=linux NICE_DNS_CELL_REUSE_RUNS="$first"
+    export ARTIFACT_DIR RUN_ID NICE_DNS_OPT_PLATFORMS NICE_DNS_CELL_REUSE_RUNS
+    mkdir -p "$ARTIFACT_DIR"; sa_budget_start
+    printf 'offline-lin1\n' >"$IL_FAKE_DIR/break"
+    for s in $SA_STEPS; do ( il_each "$s" ) >/dev/null 2>&1; done
+    ( sa_receipt ) >"$CASE_DIR/both-receipt.log" 2>&1 && { echo receipt-passed; exit 0; }
+    echo refused
+  )"
+  assert_eq refused "$out" "an offline target with a refused carry has no passing receipt"
+  assert_match 'offline: linux' "$(cat "$CASE_DIR/both-receipt.log")" "the offline target is named"
+  assert_match "no cell for: macos\\. .*macos: the product files changed since ${old:0:12}" "$(cat "$CASE_DIR/both-receipt.log")" "and so is the carry it refused, with why"
+  out="$(
+    sad_world "$CASE_DIR/snap"
+    printf 'snapshot-fails-lin1\n' >"$IL_FAKE_DIR/break"
+    for s in $SA_STEPS; do ( il_each "$s" ) >/dev/null 2>&1; done
+    ( sa_receipt ) >"$CASE_DIR/snap-receipt.log" 2>&1 && { echo receipt-passed; exit 0; }
+    echo refused
+  )"
+  assert_eq refused "$out" "a target whose snapshot fails has no passing receipt"
+  assert_match 'cell\(s\) failed on: linux .*Rerun only those: --platforms linux with NICE_DNS_CELL_REUSE_RUNS=/' "$(cat "$CASE_DIR/snap-receipt.log")" "it is a failed cell with a rerun line"
+  assert_not_match 'offline: linux' "$(cat "$CASE_DIR/snap-receipt.log")" "not an offline one: it answered the probe"
+}
+
 # A reuse that is refused says why (DEC-009: visible, never silent).
 t_a_refused_reuse_says_why() {
   local how out old
@@ -337,6 +373,7 @@ t_a_refused_reuse_says_why() {
     out="$(
       sad_world "$CASE_DIR/re-$how"
       for s in $SA_STEPS; do ( il_each "$s" ) >/dev/null 2>&1 || { echo "first-run-failed:$s"; exit 0; }; done
+      # shellcheck disable=SC2031 # sad_world set it in this same subshell
       first="$ARTIFACT_DIR"
       case "$how" in
         product) sed -i "s/^source_sha\t.*/source_sha\t$old/" "$first/switch-autocheck/lin1/cell.tsv" ;;
@@ -403,6 +440,7 @@ t_a_passed_cell_is_reused_on_a_rerun() {
   assert_eq passed "$out" "the rerun's receipt verifies"
   r="$CASE_DIR/reuse/receipts/switch-autocheck/20260101T000200Z-0000000b/receipt.tsv"
   assert_match '^reuse	linux/' "$(grep '^reuse' "$r")" "and names the reused Linux cell"
+  assert_match '^carried: the linux cell from run 20260101T000100Z-0000000a \(DEC-009\)$' "$(cat "$CASE_DIR/reuse.log")" "and says so on the console"
   assert_eq 2 "$(grep -c '^cell	' "$r")" "both cells are in it"
   assert_no_path "$CASE_DIR/reuse/runs/20260101T000200Z-0000000b/switch-autocheck/lin1" "the Linux target was not touched again"
 }

@@ -68,7 +68,7 @@ il_gate() { [ "${NICE_DNS_OPT_MATRIX:-}" = all ]; }
 il_same_product() {
   local other
   case "$2" in linux) other=mac ;; macos) other=deb ;; *) return 1 ;; esac
-  git -C "$NICE_DNS_ROOT" diff --quiet "$1" HEAD -- . ':(exclude)tests' ':(exclude)docs' ':(exclude,glob)**/*.md' ":(exclude)$other" 2>/dev/null
+  git -C "$NICE_DNS_ROOT" diff --quiet "$1" HEAD -- . ':(exclude)tests' ':(exclude)docs' ':(exclude)proof' ':(exclude,glob)**/*.md' ":(exclude)$other" 2>/dev/null
 }
 
 # il_reusable <platform> <alias> <proxy>: the directory of that standard cell

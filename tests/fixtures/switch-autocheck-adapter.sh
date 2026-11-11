@@ -29,6 +29,7 @@
 #   restore-fails      the restoring reinstall exits 1
 #   schedule-unknown   the scheduled check moves checked_at but could not reach GitHub
 #   offline-lin1       lin1 does not answer (probe times out); mac1 does
+#   snapshot-fails-lin1  lin1 answers the probe, then its snapshot fails
 # Nothing here touches the host.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -91,6 +92,7 @@ case "$op" in
     identity ;;
   snapshot|lifecycle-report)
     if [ "$brk" = offline-lin1 ] && [ "$alias_" = lin1 ]; then echo "fake adapter: lin1 is offline" >&2; exit 1; fi
+    if [ "$op" = snapshot ] && [ "$brk" = snapshot-fails-lin1 ] && [ "$alias_" = lin1 ]; then echo "ssh: connect to host lin1-ssh port 22: Connection timed out" >&2; exit 1; fi
     if [ "$op" = lifecycle-report ] && [ "$brk" = servfail-hardened ] && [ "$(get pihole standard)" = hardened ]; then
       lif "${args[@]}" | sed 's/^resolves	yes$/resolves	no/'
     else
