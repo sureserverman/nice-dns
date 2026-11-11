@@ -222,7 +222,7 @@ fn probe_report(ui: &window::Ui, when: &str) -> String {
     let mut stale = Vec::new();
     walk(ui.window.upcast_ref(), &mut |w| {
         let name = w.widget_name();
-        if name == "bridges" || actions::lookup(&name).is_some() {
+        if name == "bridges" || name.starts_with("selector-") || actions::lookup(&name).is_some() {
             controls += 1;
             if !w.is_sensitive() {
                 disabled += 1;
@@ -239,19 +239,52 @@ fn probe_report(ui: &window::Ui, when: &str) -> String {
             }
         }
     });
+    let (proxy, pihole) = (selector_value(ui, "proxy"), selector_value(ui, "pihole"));
     let alert = ui.window.visible_dialog().and_then(|d| d.downcast::<adw::AlertDialog>().ok());
     let dialog = alert.as_ref().and_then(|d| d.heading()).map_or("none".to_string(), |h| h.replace(' ', "_"));
     let body = alert.as_ref().map_or(String::new(), |d| d.body().to_string());
     format!(
-        "{when}: controls={controls} disabled={disabled} switch={switch} greyed={greyed} stale={} dialog={dialog} page={} body={body}",
+        "{when}: controls={controls} disabled={disabled} switch={switch} proxy={proxy} pihole={pihole} greyed={greyed} stale={} dialog={dialog} page={} body={body}",
         if stale.is_empty() { "none".into() } else { stale.join(",") },
         ui.page_summary()
     )
 }
 
+/// The value a selector (`proxy` or `pihole`) shows, or `none`.
+fn selector_value(ui: &window::Ui, kind: &str) -> String {
+    let want = format!("selector-{kind}");
+    let mut value = "none".to_string();
+    walk(ui.window.upcast_ref(), &mut |w| {
+        if let Some(c) = w.downcast_ref::<adw::ComboRow>() {
+            if c.widget_name() == want {
+                if let Some(s) = c.selected_item().and_downcast::<gtk4::StringObject>() {
+                    value = s.string().to_string();
+                }
+            }
+        }
+    });
+    value
+}
+
+/// Click the button labelled `label` in the open dialog, as a person would.
+fn click_in_dialog(ui: &window::Ui, label: &str) {
+    if let Some(d) = ui.window.visible_dialog() {
+        walk(d.upcast_ref(), &mut |w| {
+            if let Some(b) = w.downcast_ref::<gtk4::Button>() {
+                if b.label().as_deref() == Some(label) {
+                    b.emit_clicked();
+                }
+            }
+        });
+    }
+}
+
 /// `--probe <id>`: a test hook for the window's own behaviour. It shows the
 /// status, prints a report, clicks `id` the way a person would (the switch for
-/// `bridges-on`/`bridges-off`, otherwise the action, dialogs included), prints
+/// `bridges-on`/`bridges-off`; the Proxy or Pi-hole selector for the four
+/// selector ids, which prints a `question` report with the dialog open and
+/// then answers it: Switch, or Not now when `NICE_DNS_GUI_PROBE_ANSWER` is
+/// `cancel`; otherwise the action, dialogs included), prints
 /// a report while it runs, clicks Uninstall (one action at a time: that
 /// second click must open no dialog and start nothing) and tries to close the window (refused
 /// while an action runs), waits until the action has ended and the
@@ -278,6 +311,18 @@ fn run_probe(id: String) -> ExitCode {
                         sw.set_active(id == "bridges-on");
                     }
                 });
+            } else if let Some((sel, idx)) = window::selector_for(&id) {
+                let want = format!("selector-{}", sel.kind);
+                walk(ui.window.upcast_ref(), &mut |w| {
+                    if let Some(c) = w.downcast_ref::<adw::ComboRow>() {
+                        if c.widget_name() == want {
+                            c.set_selected(idx as u32);
+                        }
+                    }
+                });
+                println!("{}", probe_report(&ui, "question"));
+                let cancel = std::env::var("NICE_DNS_GUI_PROBE_ANSWER").is_ok_and(|a| a == "cancel");
+                click_in_dialog(&ui, if cancel { "Not now" } else { "Switch" });
             } else {
                 ui.act(&id);
             }
@@ -298,6 +343,8 @@ fn run_probe(id: String) -> ExitCode {
                 if ui.settled() {
                     println!("{}", probe_report(&ui, "after"));
                     println!("pane: {}", ui.pane.text().lines().last().unwrap_or(""));
+                    println!("log: {}", ui.pane.text().replace('\n', "|"));
+                    println!("toast: {}", ui.last_toast());
                     c.set(0);
                 } else {
                     eprintln!("nice-dns-gui: the window did not settle within 60 s");

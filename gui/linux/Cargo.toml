@@ -1,6 +1,6 @@
 [package]
 name = "nice-dns-gui"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.77"
 description = "GTK4/libadwaita desktop GUI for nice-dns on Linux; reads only the nice-dns command contract"
