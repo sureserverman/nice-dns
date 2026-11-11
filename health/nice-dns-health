@@ -1377,7 +1377,7 @@ cmd_bridges_refresh() {
 # check that could not reach the remote is, so `status` never shows an old
 # answer as this one. Exit 0 whatever the check found, 2 on usage.
 cmd_update_check() {
-  local bin="" c t rc to="${ND_UPDATE_CHECK_S:-$UPDATE_CHECK_SECS}" sd prev
+  local bin="" c f t rc to="${ND_UPDATE_CHECK_S:-$UPDATE_CHECK_SECS}" sd prev
   [ $# -eq 0 ] || { echo "$SCRIPT_NAME: update-check takes no arguments" >&2; return 2; }
   if ! load_health_libs; then echo "$SCRIPT_NAME: not loading the health libraries: $HEALTH_LIB_ERROR" >&2; return 2; fi
   mkdir -p "$LOG_DIR"
@@ -1402,15 +1402,17 @@ cmd_update_check() {
       fi
       # The cache in the controller's state directory, with the branch and
       # commit the last check recorded (read as data).
+      # Written beside the cache and renamed over it, as nice-dns does
+      # (update_write_cache), so a `status` read never sees half a file.
       sd="$(nd_platform_state_dir)"
-      if nd_state_init 2>/dev/null && [ -d "$sd" ] && [ ! -L "$sd" ]; then
+      if nd_state_init 2>/dev/null && [ -d "$sd" ] && [ ! -L "$sd" ] && c="$(mktemp "$sd/.update-check.XXXXXX")"; then
         prev="$sd/update-check.tsv"
-        { printf 'schema\tnice-dns-update-check/1\nchecked_at\t%s\n' "$(date +%s)"
-          for c in branch local_commit; do
-            printf '%s\t%s\n' "$c" "$(awk -F '\t' -v k="$c" 'NR > 1 && $1 == k && $2 ~ /^[A-Za-z0-9._\/-]+$/ { print $2; exit }' "$prev" 2>/dev/null | grep . || echo -)"
-          done
-          printf 'remote_commit\t-\nresult\tunknown\n'; } >"$t/cache" \
-          && chmod 600 "$t/cache" && mv -f "$t/cache" "$prev"
+        if { printf 'schema\tnice-dns-update-check/1\nchecked_at\t%s\n' "$(date +%s)"
+             for f in branch local_commit; do
+               printf '%s\t%s\n' "$f" "$(awk -F '\t' -v k="$f" 'NR > 1 && $1 == k && $2 ~ /^[A-Za-z0-9._\/-]+$/ { print $2; exit }' "$prev" 2>/dev/null | grep . || echo -)"
+             done
+             printf 'remote_commit\t-\nresult\tunknown\n'; } >"$c" && chmod 600 "$c" && mv -f "$c" "$prev"; then :
+        else rm -f "$c"; fi
       fi ;;
   esac
   rm -rf "${t:?}"

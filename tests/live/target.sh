@@ -79,10 +79,12 @@
 #                    inline and unpacked next to the clone.
 #   quiesce-agents   stop the schedules that could mutate the stack beside the
 #                    controller under test: macOS org.nice-dns.health (the old
-#                    30-minute run), org.nice-dns.bridge-eval and
-#                    org.nice-dns.health-bridges (launchctl bootout; the
-#                    plists stay); Linux nice-dns-health.timer and
-#                    nice-dns-health-bridges.timer (stopped). The stack's own
+#                    30-minute run), org.nice-dns.bridge-eval,
+#                    org.nice-dns.health-bridges and org.nice-dns.health-update
+#                    (launchctl bootout; the plists stay); Linux
+#                    nice-dns-health.timer, nice-dns-health-bridges.timer and
+#                    nice-dns-health-update.timer (stopped; the update check
+#                    writes the controller's update cache). The stack's own
 #                    starter and the read-only debug monitor keep running.
 #   resume-agents    start those schedules again (the inverse): macOS loads
 #                    each agent whose plist is installed and that is not
@@ -1381,14 +1383,14 @@ case "$NICE_DNS_OP" in
     exit $rc ;;
   quiesce-agents)
     if [ "$plat" = macos ]; then
-      for l in org.nice-dns.health org.nice-dns.bridge-eval org.nice-dns.health-bridges; do
+      for l in org.nice-dns.health org.nice-dns.bridge-eval org.nice-dns.health-bridges org.nice-dns.health-update; do
         if launchctl list "$l" >/dev/null 2>&1; then
           launchctl bootout "gui/$(id -u)/$l"; printf 'quiesced\t%s\trc=%s\n' "$l" "$?"
         else printf 'absent\t%s\n' "$l"; fi
       done
       launchctl list | awk '$3 ~ /^org\.nice-dns\./ { printf "loaded\t%s\n", $3 }'
     else
-      for u in nice-dns-health.timer nice-dns-health-bridges.timer; do
+      for u in nice-dns-health.timer nice-dns-health-bridges.timer nice-dns-health-update.timer; do
         if systemctl --user is-active --quiet "$u"; then
           systemctl --user stop "$u"; printf 'quiesced\t%s\trc=%s\n' "$u" "$?"
         else printf 'absent\t%s\n' "$u"; fi
@@ -1397,14 +1399,14 @@ case "$NICE_DNS_OP" in
     fi ;;
   resume-agents)
     if [ "$plat" = macos ]; then
-      for l in org.nice-dns.health org.nice-dns.bridge-eval org.nice-dns.health-bridges; do
+      for l in org.nice-dns.health org.nice-dns.bridge-eval org.nice-dns.health-bridges org.nice-dns.health-update; do
         p="$HOME/Library/LaunchAgents/$l.plist"
         if [ ! -f "$p" ]; then printf 'absent\t%s\n' "$l"
         elif launchctl list "$l" </dev/null >/dev/null 2>&1; then printf 'loaded\t%s\n' "$l"
         else launchctl bootstrap "gui/$(id -u)" "$p" </dev/null; printf 'resumed\t%s\trc=%s\n' "$l" "$?"; fi
       done
     else
-      for u in nice-dns-health.timer nice-dns-health-bridges.timer; do
+      for u in nice-dns-health.timer nice-dns-health-bridges.timer nice-dns-health-update.timer; do
         if ! systemctl --user cat "$u" </dev/null >/dev/null 2>&1; then printf 'absent\t%s\n' "$u"
         elif systemctl --user is-active --quiet "$u" </dev/null; then printf 'active\t%s\n' "$u"
         else systemctl --user start "$u" </dev/null; printf 'resumed\t%s\trc=%s\n' "$u" "$?"; fi

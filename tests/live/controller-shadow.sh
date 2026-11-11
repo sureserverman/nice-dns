@@ -87,7 +87,7 @@ cs_deploy() {
   assert_eq "" "$(cs_clean "$CS_SIBS/$proxy")" "$a: the $proxy sibling is committed (the image is built from HEAD)"
   psha="$(git -C "$CS_SIBS/$proxy" rev-parse HEAD)"
   cs_t "$a" quiesce-agents >"$d/quiesce.tsv" 2>>"$d/ops.log" || fail "$a: quiesce-agents: $(cat "$d/quiesce.tsv")"
-  assert_not_match '^loaded	org\.nice-dns\.(health|bridge-eval|health-bridges)$' "$(cat "$d/quiesce.tsv")" "$a: no legacy mutating agent is loaded"
+  assert_not_match '^loaded	org\.nice-dns\.(health|bridge-eval|health-bridges|health-update)$' "$(cat "$d/quiesce.tsv")" "$a: no legacy mutating agent is loaded"
   cs_t "$a" install-controller --source-sha "$sha" --mode shadow >"$d/install.log" 2>&1 || fail "$a: install-controller: $(tail -n 5 "$d/install.log")"
   assert_match '^receipt	mode	shadow$' "$(cat "$d/install.log")" "$a: the controller is installed in shadow mode"
   cs_t "$a" build-proxy --component "$proxy" --source-sha "$psha" >"$d/build.log" 2>&1 || fail "$a: build-proxy: $(tail -n 8 "$d/build.log")"
