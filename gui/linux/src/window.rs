@@ -390,7 +390,7 @@ pub struct Ui {
     /// index): the selector shows it until the status says what came of it.
     selector_pending: Cell<Option<(&'static str, usize)>>,
     /// While a selector's list or the switch question is open, a redraw would
-    /// replace the selector under the person: `show` keeps the newest page in
+    /// replace the selector under the person: `show` keeps the latest page in
     /// `held` instead, and it is drawn when the last hold is released.
     holds: Cell<u32>,
     held: RefCell<Option<(Page, Option<Status>)>>,
@@ -640,7 +640,7 @@ impl Ui {
     fn set_busy(self: &Rc<Self>, busy: bool) {
         self.busy.set(busy);
         if self.holds.get() > 0 {
-            // Redrawn on release; a newer page already held is the one drawn.
+            // Redrawn on release; a later page already held is the one drawn.
             if self.held.borrow().is_none() {
                 if let Some(page) = self.shown.borrow_mut().take() {
                     *self.held.borrow_mut() = Some((page, self.status.borrow().clone()));
@@ -660,7 +660,7 @@ impl Ui {
         self.holds.set(self.holds.get() + 1);
     }
 
-    /// Release a hold; the last one draws the newest held page: at once, or,
+    /// Release a hold; the last one draws the latest held page: at once, or,
     /// from inside a signal of a widget the redraw would replace
     /// (`later`), on the main loop's next turn.
     fn release(self: &Rc<Self>, later: bool) {
