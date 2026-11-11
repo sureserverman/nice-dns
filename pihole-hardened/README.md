@@ -2,9 +2,10 @@
 
 Side-by-side alternative to `nice-dns/pihole/`. Same runtime contract — same
 container name (`pi-hole`), same image name (`localhost/pi-hole:latest`),
-same quadlets, same DNS pinning — but the **base image** is the hardened,
-multi-arch [`pi-hole-hardened`](../../pi-hole-hardened) instead of upstream
-`pihole/pihole:latest`.
+same quadlets, same DNS pinning — but the **base image** is the hardened
+pi-hole-hardened build, made from the inputs in [`base/`](base/) (copied from
+the pi-hole-hardened project at the commit `base/UPSTREAM` names), instead of
+upstream `pihole/pihole:latest`.
 
 ## Why
 
@@ -29,9 +30,10 @@ Run the parallel installer instead of `install-deb.sh` / `install-mac.sh`:
 
 These installers:
 
-1. Build `localhost/pi-hole-hardened-base:latest` from the sibling
-   `../pi-hole-hardened` checkout (or pull `sureserver/pi-hole-hardened:latest`
-   from Docker Hub if no sibling exists).
+1. Build the hardened base from `pihole-hardened/base/` in this tree, on the
+   Alpine image `release/images.lock` pins (the `hardened-os` row). Nothing
+   outside the tree is needed; `scripts/sync-hardened-base.sh <checkout>`
+   refreshes `base/` from a reviewed pi-hole-hardened commit.
 2. Build this `pihole-hardened/Containerfile` on top of that base, tagged
    as `localhost/pi-hole:latest` so the existing quadlets pick it up
    unchanged.
