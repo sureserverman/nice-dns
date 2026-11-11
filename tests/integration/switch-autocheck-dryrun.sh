@@ -98,6 +98,21 @@ t_target_sh_has_every_operation_and_mode_the_group_uses() {
   grep -q "^RECEIPTS=.* switch-autocheck" "$NICE_DNS_ROOT/tests/reports/verify.sh" || fail "verify.sh does not know the receipt"
 }
 
+# Every operation target.sh accepts has a route in its local dispatch (the
+# case after "operations"): the fake adapter replaces target.sh, so only this
+# reads the dispatch. validate exits before it.
+t_target_sh_routes_every_operation() {
+  local tg="$NICE_DNS_ROOT/tests/live/target.sh" routed o miss=""
+  routed="$(sed -n '/^# ─── operations ─/,$p' "$tg" | awk '/^  [a-z|-]+\)$/' | tr -d ' )' | tr '|' '\n' | sort -u)"
+  # shellcheck disable=SC2013 # OPS is one line of words
+  for o in $(sed -n "s/^OPS='\(.*\)'$/\1/p" "$tg"); do
+    [ "$o" = validate ] && continue
+    printf '%s\n' "$routed" | grep -qx -- "$o" || miss="$miss $o"
+  done
+  assert_eq "" "$miss" "every operation is routed in target.sh's dispatch"
+  assert_match '^  \*\) die "operation' "$(sed -n '/^# ─── operations ─/,$p' "$tg")" "an unrouted operation is refused, never a silent exit 0"
+}
+
 # Without --live --targets the group refuses before it touches anything.
 t_the_group_refuses_without_targets() {
   local out

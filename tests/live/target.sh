@@ -2463,7 +2463,7 @@ case "$op" in
     } >"$STATE/receipt.tsv"
     log_op 0
     printf 'snapshot %s -> %s\n' "$alias_" "$STATE/snapshot.tsv" ;;
-  config|health|controller-report|lifecycle-report|route-report|command-report|fresh-name|crash-report|proxy-supervisor-lines|helper-report|gui-report)
+  config|health|controller-report|lifecycle-report|route-report|command-report|fresh-name|crash-report|proxy-supervisor-lines|helper-report|gui-report|switch-report)
     # Read-only; the output starts with the identity lines, which are checked.
     preconnect_guards
     probe_identity "$op"
@@ -2487,7 +2487,7 @@ case "$op" in
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network|freeze-unbound|thaw-unbound|stop-proxy|command|freeze-service|thaw-service|pause-container|unpause-container|stop-container|start-container|crash-container|stop-crash|mac-runtime-ssh|mac-runtime-gui|polkit-test-rule|gui-session)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network|freeze-unbound|thaw-unbound|stop-proxy|command|freeze-service|thaw-service|pause-container|unpause-container|stop-container|start-container|crash-container|stop-crash|mac-runtime-ssh|mac-runtime-gui|polkit-test-rule|gui-session|update-schedule)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"
@@ -2515,5 +2515,8 @@ case "$op" in
     fi
     log_op "$rc"
     [ "$rc" -eq 0 ] || exit 1 ;;
+  # An operation in OPS with no route here would otherwise do nothing and
+  # exit 0 (live 2026-11-11: switch-report and update-schedule).
+  *) die "operation '$op' has no local route in target.sh" ;;
 esac
 exit 0
