@@ -434,6 +434,68 @@ $(cat "$FAKE/build-cwd")"
   done
 }
 
+# An install from the kept source (every `nice-dns switch`, `reinstall
+# --local`) has no git: it records the commit the kept copy came from, read
+# from the copy's .source-commit as data, and records it dirty once a kept
+# file changed. Only the kept source is trusted that way (live 2026-11-11: a
+# switch recorded commit unknown, which the update check refuses).
+t_kept_source_keeps_the_commit() {
+  local ep
+  ip_select
+  for ep in $IP_EPS; do
+    (
+      local k m c
+      ip_env "$ep"
+      k="$IP_HOME/.local/share/nice-dns/source"
+      c=0123456789abcdef0123456789abcdef01234567
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: $IP_OUT"
+      assert_file "$k/.source-commit" "$ep: the kept source records where it came from"
+      assert_eq "$c" "$(awk -F '\t' '$1 == "commit" { print $2 }' "$k/.source-commit")" "$ep: the commit it was kept from"
+      rm -f "$FAKE/git_head" "$FAKE/git_status"
+      ip_run "$k/$ep.sh"
+      assert_rc 0 "$IP_RC" "$ep from the kept source: $IP_OUT"
+      m="$(ip_manifest "$(ip_gen_current)")"
+      assert_match '^[0-9]{8}T[0-9]{6}Z-0123456789ab$' "$(ip_gen_current)" "$ep: the kept source's generation names the commit"
+      assert_eq "$c" "$(ip_row "$m" source_commit)" "$ep: an install from the kept source keeps the commit"
+      assert_eq 0 "$(ip_row "$m" source_dirty)" "$ep: and its clean state"
+      # A kept file changed: the commit stays, the tree is dirty.
+      printf '# local edit\n' >>"$k/unbound/etc/unbound.conf"
+      ip_run "$k/$ep.sh"
+      assert_rc 0 "$IP_RC" "$ep from an edited kept source: $IP_OUT"
+      m="$(ip_manifest "$(ip_gen_current)")"
+      assert_eq "$c" "$(ip_row "$m" source_commit)" "$ep: an edited kept source keeps the commit"
+      assert_eq 1 "$(ip_row "$m" source_dirty)" "$ep: and is recorded dirty"
+      # Each change the hash covers reads dirty from a clean kept copy: a file
+      # added, a file removed, a symlink added. A symlinked record is refused.
+      for x in add rm link record-link; do
+        printf '%s\n' "$c" >"$FAKE/git_head"; ip_install "$ep"; rm -f "$FAKE/git_head"
+        assert_rc 0 "$IP_RC" "$ep $x: a clean kept copy: $IP_OUT"
+        case "$x" in
+          add) : >"$k/lib/nd-added-file" ;;
+          rm) rm -f "$k/scripts/sync-hardened-base.sh" ;;
+          link) ln -s install.sh "$k/lib/nd-added-link" ;;
+          record-link) cp "$k/.source-commit" "$IP_W/record" && rm -f "$k/.source-commit" && ln -s "$IP_W/record" "$k/.source-commit" ;;
+        esac
+        ip_run "$k/$ep.sh"
+        assert_rc 0 "$IP_RC" "$ep $x: from the kept source: $IP_OUT"
+        m="$(ip_manifest "$(ip_gen_current)")"
+        if [ "$x" = record-link ]; then
+          assert_eq unknown "$(ip_row "$m" source_commit)" "$ep: a symlinked .source-commit is not trusted"
+        else
+          assert_eq "$c" "$(ip_row "$m" source_commit)" "$ep $x: the commit is kept"
+          assert_eq 1 "$(ip_row "$m" source_dirty)" "$ep $x: and the change is recorded dirty"
+        fi
+      done
+      # Another tree without git carrying a copied record is not trusted.
+      cp "$k/.source-commit" "$IP_TREE/.source-commit"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep from another tree: $IP_OUT"
+      assert_eq unknown "$(ip_row "$(ip_manifest "$(ip_gen_current)")" source_commit)" "$ep: a record outside the kept source is ignored"
+    ) || exit 1
+  done
+}
+
 # The hardened base is built from the nice-dns tree's own copy of the
 # pi-hole-hardened inputs, with no checkout beside the tree (OD-6), on the
 # Alpine base the lock pins; the kept source carries the copy, so a

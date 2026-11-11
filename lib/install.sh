@@ -262,12 +262,18 @@ nd_install_begin() {
   # Source generation: the staged tree's commit and whether it has local
   # changes to tracked files (untracked files, such as locally built
   # bridge-eval binaries, do not count).
-  local c gens tries=0
+  local c gens tries=0 kept
   c="$(git -C "$ND_INST_SRC" rev-parse HEAD 2>/dev/null)" || c=""
   case "$c" in ''|*[!0-9a-f]*) c=unknown ;; esac
   [ "${#c}" -ge 12 ] || c=unknown
   ND_INST_COMMIT="$c"
-  if [ "$c" = unknown ]; then
+  # The kept source has no git: it carries the commit it was kept from.
+  kept=""
+  [ "$c" != unknown ] || kept="$(_nd_inst_kept_commit "$ND_INST_SRC")" || kept=""
+  if [ -n "$kept" ]; then
+    ND_INST_COMMIT="${kept%% *}"
+    ND_INST_DIRTY="${kept#* }"
+  elif [ "$c" = unknown ]; then
     ND_INST_DIRTY=unknown
   elif [ -n "$(git -C "$ND_INST_SRC" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
     ND_INST_DIRTY=1
@@ -543,6 +549,56 @@ ND_INST_SOURCE_ITEMS="deb mac lib health routes release pihole pihole-hardened u
 
 _nd_inst_source_dir() { printf '%s\n' "$HOME/.local/share/nice-dns/source"; }
 
+# _nd_inst_tree_hash <dir>: one sha256 over the source items in <dir>: each
+# regular file's sha256 and path, and each symlink's path and target, in
+# byte order. Changes when any kept file is edited, added or removed (not
+# on a mode change). Prints nothing when any step fails, which the reader
+# takes as a changed tree: a failed tool must never hash every tree alike.
+_nd_inst_tree_hash() {
+  (
+    set -o pipefail
+    cd "$1" || exit 1
+    set -- sha256sum
+    command -v sha256sum >/dev/null 2>&1 || set -- shasum -a 256
+    # shellcheck disable=SC2086 # the item list is words
+    files="$(find $ND_INST_SOURCE_ITEMS -type f -print0 | LC_ALL=C sort -z | xargs -0 "$@")" || exit 1
+    # shellcheck disable=SC2086 # the item list is words
+    links="$(find $ND_INST_SOURCE_ITEMS -type l -print | LC_ALL=C sort)" || exit 1
+    [ -n "$files" ] || exit 1
+    {
+      printf '%s\n' "$files"
+      printf '%s\n' "$links" | while IFS= read -r l; do [ -z "$l" ] || printf 'link %s %s\n' "$l" "$(readlink "$l")"; done
+    } | _nd_inst_sha_stdin
+  ) 2>/dev/null
+}
+
+# _nd_inst_sha_stdin: the sha256 of stdin, hex.
+_nd_inst_sha_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi
+}
+
+# _nd_inst_kept_commit <dir>: "<commit> <dirty>" when <dir> is the kept
+# source (physically) and its .source-commit, read as data (DEC-001), names a
+# 40-hex commit; dirty is 1 once the kept files no longer hash as recorded.
+# Prints nothing and returns 1 otherwise: any other tree stays unknown.
+_nd_inst_kept_commit() {
+  local d k f c dirty tree
+  d="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
+  k="$(cd "$(_nd_inst_source_dir)" 2>/dev/null && pwd -P)" || return 1
+  [ "$d" = "$k" ] || return 1
+  f="$d/.source-commit"
+  [ -f "$f" ] && [ ! -L "$f" ] || return 1
+  [ "$(head -n 1 "$f")" = "$(printf 'schema\tnice-dns-source-commit/1')" ] || return 1
+  c="$(awk -F '\t' '$1 == "commit" && NF == 2 { print $2; exit }' "$f")"
+  dirty="$(awk -F '\t' '$1 == "dirty" && NF == 2 { print $2; exit }' "$f")"
+  tree="$(awk -F '\t' '$1 == "tree" && NF == 2 { print $2; exit }' "$f")"
+  case "$c" in *[!0-9a-f]*|'') return 1 ;; esac
+  [ "${#c}" -eq 40 ] || return 1
+  case "$dirty" in 0|1) ;; *) dirty=1 ;; esac
+  [ -n "$tree" ] && [ "$tree" = "$(_nd_inst_tree_hash "$d")" ] || dirty=1
+  printf '%s %s\n' "$c" "$dirty"
+}
+
 _nd_inst_command_fallback_dir() {
   if [ "$ND_INST_PLATFORM" = linux ]; then
     printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-health/bin"
@@ -587,6 +643,10 @@ _nd_inst_publish_source() {
   for item in $ND_INST_SOURCE_ITEMS; do
     cp -Rp "$ND_INST_SRC/$item" "$new/" || { rm -rf "${new:?}"; return 1; }
   done
+  # The copy has no git: it records the commit it came from, its state and a
+  # hash of its files (_nd_inst_kept_commit reads them back).
+  printf 'schema\tnice-dns-source-commit/1\ncommit\t%s\ndirty\t%s\ntree\t%s\n' \
+    "$ND_INST_COMMIT" "$ND_INST_DIRTY" "$(_nd_inst_tree_hash "$new")" >"$new/.source-commit" || { rm -rf "${new:?}"; return 1; }
   # nice-dns-helper refuses a tree that its group or others can write (a clone
   # under umask 002), and a reinstall --local runs from this copy.
   chmod -R go-w "$new" || { rm -rf "${new:?}"; return 1; }
