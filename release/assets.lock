@@ -22,10 +22,10 @@ schema	nice-dns-assets-lock/1
 #
 # With no asset for a host, an install goes on without the helper or the GUI
 # and says so.
-release	v1.4.0
-asset	helper	linux	amd64	https://github.com/sureserverman/nice-dns/releases/download/v1.4.0/nice-dns-helper-linux-amd64	e905d418552554cc33354407a1d8502fff6636c162f470d0d08e22618efa4070
-asset	helper	linux	arm64	https://github.com/sureserverman/nice-dns/releases/download/v1.4.0/nice-dns-helper-linux-arm64	71cd68fb8b102e617701f903cd41a76e995a66e1632a1d6184d245adb1330164
-asset	helper	macos	arm64	https://github.com/sureserverman/nice-dns/releases/download/v1.4.0/nice-dns-helper-macos-arm64	a5c8a61da4cfce8a78152033aa29f2ed3d820175482c5d5cde78334efd27af99
-asset	gui	linux	amd64	https://github.com/sureserverman/nice-dns/releases/download/v1.4.0/nice-dns-gui-linux-amd64.tar.gz	8ec5f149580324db42bb1d26b98f028634fe9667bf0697e565375132b1353942
-asset	gui	linux	arm64	https://github.com/sureserverman/nice-dns/releases/download/v1.4.0/nice-dns-gui-linux-arm64.tar.gz	b7552bde6e4eea2ac593e6a3bfce2db99e171353c6dbf38c060c0b1e533d6552
-asset	gui	macos	arm64	https://github.com/sureserverman/nice-dns/releases/download/v1.4.0/nice-dns-gui-macos-arm64.zip	4b0225621e2dc9deecfef406de3ea823cc286264ca76a5acc0dd1ec06ec03169
+release	v1.4.1
+asset	helper	linux	amd64	https://github.com/sureserverman/nice-dns/releases/download/v1.4.1/nice-dns-helper-linux-amd64	e905d418552554cc33354407a1d8502fff6636c162f470d0d08e22618efa4070
+asset	helper	linux	arm64	https://github.com/sureserverman/nice-dns/releases/download/v1.4.1/nice-dns-helper-linux-arm64	71cd68fb8b102e617701f903cd41a76e995a66e1632a1d6184d245adb1330164
+asset	helper	macos	arm64	https://github.com/sureserverman/nice-dns/releases/download/v1.4.1/nice-dns-helper-macos-arm64	a5c8a61da4cfce8a78152033aa29f2ed3d820175482c5d5cde78334efd27af99
+asset	gui	linux	amd64	https://github.com/sureserverman/nice-dns/releases/download/v1.4.1/nice-dns-gui-linux-amd64.tar.gz	131b8705487e5780c3f027eb0ea378423332d0ceac1f29ef4897e3324d7eb466
+asset	gui	linux	arm64	https://github.com/sureserverman/nice-dns/releases/download/v1.4.1/nice-dns-gui-linux-arm64.tar.gz	ed35207198ce0a563bc331ffec05db4e1ca0bade14191dab78398d6822b86efc
+asset	gui	macos	arm64	https://github.com/sureserverman/nice-dns/releases/download/v1.4.1/nice-dns-gui-macos-arm64.zip	689d2a9098b7938a5b898f51cf4f0fddc9949257ac78c76e921445b55b6d796a
