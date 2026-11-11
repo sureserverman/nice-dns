@@ -1,5 +1,6 @@
-// The window: the stack's state from `nice-dns status --tsv`, a button per
-// action and the log pane. It shows and runs; it never changes the install
+// The window: the stack's state from `nice-dns status --tsv`, each action
+// where Placement puts it (a button, the bridges switch, a selector, the
+// update banner) and the log pane. It shows and runs; it never changes the install
 // itself (DEC-018).
 import AppKit
 import NiceDNSKit
@@ -108,6 +109,12 @@ struct StatusPage: View {
                 Label("\(u.group) cannot be read: \(u.reason)", systemImage: "exclamationmark.triangle")
                     .foregroundColor(.orange)
             }
+            Panel(title: "Installed") {
+                ForEach(StackChoice.all, id: \.kind) { c in
+                    ChoiceRow(model: model, choice: c)
+                }
+                Row("Update", updateRow(status.update, now: UInt64(max(0, Date().timeIntervalSince1970))))
+            }
             Group {
                 Panel(title: "Containers") {
                     ForEach(status.obs.filter { $0.name.hasPrefix("container:") }, id: \.name) { o in
@@ -184,8 +191,8 @@ struct StatusPage: View {
     private var actions: some View {
         Panel(title: "Actions") {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), alignment: .leading)], alignment: .leading) {
-                // Install belongs to the not-installed page; the bridges have their switch.
-                ForEach(Actions.all.filter { $0.program != nil && !$0.id.hasPrefix("bridges-") && !$0.id.hasPrefix("proxy-") && !$0.id.hasPrefix("pihole-") && $0.id != "install" }, id: \.id) { a in
+                // The plain buttons only: every other row has its own place (Placement).
+                ForEach(Placement.buttons(), id: \.id) { a in
                     Button(a.label + (a.needsConfirm ? "…" : "")) { model.request(a.id) }
                         .disabled(model.busy)
                 }
@@ -198,6 +205,30 @@ struct StatusPage: View {
         case true?: return "installed" + (status.helper.version.map { " (\($0))" } ?? "")
         case false?: return "not installed"
         case nil: return "unknown"
+        }
+    }
+}
+
+/// A selector: the proxy or the Pi-hole flavour, set to what the status
+/// says, or to the choice asked about or running. Unknown and disabled when
+/// the status names neither choice; disabled while any action runs.
+struct ChoiceRow: View {
+    @ObservedObject var model: AppModel
+    let choice: StackChoice
+
+    var body: some View {
+        let shown = model.shown(choice)
+        HStack {
+            Text(choice.title).foregroundColor(.secondary).frame(width: 150, alignment: .leading)
+            Picker(choice.title, selection: Binding(get: { shown ?? "unknown" }, set: { model.pick(choice, $0) })) {
+                ForEach(choice.choices, id: \.self) { Text($0).tag($0) }
+                if shown == nil { Text("unknown").tag("unknown") }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(width: 160)
+            .disabled(model.busy || shown == nil)
+            Spacer()
         }
     }
 }
@@ -289,7 +320,7 @@ struct LogPane: View {
     }
 }
 
-/// The questions asked before uninstall, reinstall and update.
+/// The questions asked before uninstall, reinstall, update and a switch.
 struct ConfirmSheet: View {
     @ObservedObject var model: AppModel
     let confirm: Confirm
@@ -326,6 +357,11 @@ struct ConfirmSheet: View {
                 Text("A different version is available" + (commit.map { ": " + String($0.prefix(12)) } ?? "") + ". The branch's current commit is installed like a reinstall.")
                     .fixedSize(horizontal: false, vertical: true)
                 buttons(go: "Install", enabled: true, cancel: "Not now") { model.run("update") }
+            case .switchTo(let id):
+                Text(Actions.lookup(id)?.label ?? id).font(.title3.bold())
+                Text(StackChoice.question(for: id) ?? id)
+                    .fixedSize(horizontal: false, vertical: true)
+                buttons(go: "Switch", enabled: true, cancel: "Not now") { model.run(id) }
             }
         }
         .padding(20)

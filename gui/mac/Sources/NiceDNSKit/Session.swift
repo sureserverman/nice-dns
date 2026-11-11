@@ -41,6 +41,35 @@ public func succeeded(id: String, end: CommandEvent) -> Bool {
     }
 }
 
+/// `epoch` said as a time before `now`: "just now", "5 min ago", "3 h ago".
+public func ago(_ epoch: UInt64, now: UInt64) -> String {
+    if epoch > now { return "in the future" }
+    let s = now - epoch
+    switch s {
+    case ..<60: return "just now"
+    case ..<3600: return "\(s / 60) min ago"
+    case ..<86_400: return "\(s / 3600) h ago"
+    default: return "\(s / 86_400) days ago"
+    }
+}
+
+/// The window's Update row: the last check's answer and when it ran. The
+/// status is read every 5 s and `checked_at` is written by every check, the
+/// controller's scheduled one too, so the row moves when the schedule ran.
+public func updateRow(_ u: Update, now: UInt64) -> String {
+    let line: String
+    if u.neverChecked {
+        line = "not checked yet"
+    } else {
+        switch u.result {
+        case .current?: line = "up to date"
+        case .available?: line = "available" + (u.remoteCommit.map { ": " + String($0.prefix(12)) } ?? "")
+        default: line = "unknown"
+        }
+    }
+    return line + (u.checkedAt.map { " (checked \(ago($0, now: now)))" } ?? "")
+}
+
 /// The menu-bar glyph's colour.
 public enum Glyph: String, Equatable {
     case grey, green, amber, red

@@ -312,6 +312,135 @@ if case .installed(var s) = view("status-installed.tsv", 0) {
     check("a missing stale row is not read as stale", Glyph.of(.installed(s)) == .green, "\(Glyph.of(.installed(s)))")
 }
 
+// --- The selectors and where each action is drawn (Task 2.2) ---------------
+
+// Every row of the WHOLE bundled table has exactly one place; a row added to
+// the table and to no place, or to two, fails here.
+do {
+    let table = try Actions.loadBundled()
+    for a in table {
+        let p = Placement.places(of: a.id)
+        check("action \(a.id) has exactly one place", p.count == 1,
+              p.isEmpty ? "no place draws it" : "drawn as \(p.map(\.description).joined(separator: " and "))")
+    }
+    check("every place names only rows of the table", Placement.undeclaredRows(in: table).isEmpty,
+          Placement.undeclaredRows(in: table).joined(separator: ", "))
+    let added = try Actions.parse(try Actions.bundledText() + "new-thing\tA new thing\tnice-dns new\tno\tyes\n")
+    let forgotten = Placement.misplaced(in: added)
+    check("a row added to the table and to no place is caught",
+          forgotten.count == 1 && forgotten[0].id == "new-thing" && forgotten[0].places.isEmpty, "\(forgotten)")
+    check("the bundled table has no misplaced row", Placement.misplaced(in: table).isEmpty, "\(Placement.misplaced(in: table))")
+} catch {
+    check("the bundled action table reads for the places", false, "\(error)")
+}
+
+let buttonIds = Placement.buttons().map(\.id)
+for id in ["proxy-haproxy", "proxy-socat", "pihole-standard", "pihole-hardened"] {
+    check("\(id) is not a plain button", !buttonIds.contains(id), buttonIds.joined(separator: " "))
+    check("\(id) is a selector's choice", Placement.place(of: id) == .selector)
+}
+check("the plain buttons are the table's plain rows, in table order",
+      buttonIds == ["reinstall", "restart", "uninstall", "update-check", "health-start", "health-stop", "health-run", "failures"],
+      buttonIds.joined(separator: " "))
+check("the update is the banner's, the bridges the switch's, install the not-installed page's",
+      Placement.place(of: "update") == .updateBanner && Placement.place(of: "bridges-on") == .bridgesSwitch
+      && Placement.place(of: "bridges-off") == .bridgesSwitch && Placement.place(of: "install") == .installView)
+
+let tail = " The stack is reinstalled from the kept source. This takes a few minutes and DNS stops briefly."
+for (id, head) in [("proxy-haproxy", "Switch the proxy to haproxy?"), ("proxy-socat", "Switch the proxy to socat?"),
+                   ("pihole-standard", "Switch Pi-hole to standard?"), ("pihole-hardened", "Switch Pi-hole to hardened?")] {
+    let q = StackChoice.question(for: id)
+    check("the question for \(id) is \"\(head)...\"", q == head + tail, q ?? "none")
+}
+check("no question for an action that is not a choice", StackChoice.question(for: "restart") == nil)
+
+// The pending choice of each selector: set when the switch runs, kept
+// through the run and its end, cleared by the first read after the end,
+// reverted at once on a failed exit, and a dismissed question goes back.
+if case .installed(let installedStatus) = view("status-installed.tsv", 0) {
+    for (sel, other) in [(StackChoice.proxy, "haproxy"), (StackChoice.pihole, "hardened")] {
+        let was = sel.installed(in: installedStatus)
+        check("\(sel.title) shows the status' value \(was ?? "none")",
+              was == (sel.kind == .proxy ? "socat" : "standard") && SwitchState().shown(sel, status: installedStatus) == was)
+        var s = SwitchState()
+        s.ask(sel.id(other))
+        check("\(sel.title) shows \(other) while the question is asked", s.shown(sel, status: installedStatus) == other)
+        s.dismiss()
+        check("\(sel.title) goes back to \(was ?? "none") on Not now", s.shown(sel, status: installedStatus) == was && s.pending.isEmpty)
+        s.ask(sel.id(other))
+        s.started(sel.id(other))
+        check("\(sel.title) pending is set to \(other) when the switch runs",
+              s.pending[sel.kind] == other && s.shown(sel, status: installedStatus) == other)
+        s.statusRead()
+        check("\(sel.title) keeps \(other) through a read while it runs", s.shown(sel, status: installedStatus) == other)
+        s.ended(sel.id(other), succeeded: true)
+        check("\(sel.title) keeps \(other) after it ended, before the read", s.shown(sel, status: installedStatus) == other)
+        var after = installedStatus
+        if sel.kind == .proxy { after.install.variant = other } else { after.install.pihole = other }
+        s.statusRead()
+        check("\(sel.title) pending is cleared by the first read after the end",
+              s.pending[sel.kind] == nil && s.shown(sel, status: after) == other && s.shown(sel, status: installedStatus) == was)
+        var f = SwitchState()
+        f.ask(sel.id(other))
+        f.started(sel.id(other))
+        f.ended(sel.id(other), succeeded: false)
+        check("\(sel.title) pending is reverted on a failed exit, before any read",
+              f.pending[sel.kind] == nil && f.shown(sel, status: installedStatus) == was)
+        var o = SwitchState()
+        o.started("restart")
+        o.ended("restart", succeeded: true)
+        o.statusRead()
+        check("\(sel.title) is untouched by another action", o.pending.isEmpty && o.shown(sel, status: installedStatus) == was)
+    }
+    for (sel, bad) in [(StackChoice.proxy, "tor"), (StackChoice.pihole, "extra")] {
+        var none = installedStatus
+        var odd = installedStatus
+        if sel.kind == .proxy { none.install.variant = nil; odd.install.variant = bad } else { none.install.pihole = nil; odd.install.pihole = bad }
+        check("\(sel.title) is unknown when the status names no value", SwitchState().shown(sel, status: none) == nil)
+        check("\(sel.title) is unknown when the status names \(bad)", SwitchState().shown(sel, status: odd) == nil)
+        let other = sel.kind == .proxy ? StackChoice.pihole : StackChoice.proxy
+        check("\(other.title) still shows its value then", SwitchState().shown(other, status: none) != nil)
+    }
+    check("no selector value without a status", SwitchState().shown(.proxy, status: nil) == nil)
+} else {
+    check("status-installed.tsv is an installed stack for the selectors", false)
+}
+
+// The four switches run their command; a failure keeps stderr and names the exit.
+for (id, words) in [("proxy-haproxy", "switch proxy haproxy"), ("proxy-socat", "switch proxy socat"),
+                    ("pihole-standard", "switch pihole standard"), ("pihole-hardened", "switch pihole hardened")] {
+    let (rec, run) = runFake(id)
+    check("action \(id) runs `nice-dns \(words)` and exits 0",
+          rec == words && run.exitStatus == 0 && run.paneText.contains("Switched: ") && succeeded(id: id, end: run.end!),
+          "recorded '\(rec)', exit \(run.exitStatus)")
+}
+let (_, sw3) = runFake("proxy-socat", exit: 3)
+check("a switch that exits 3 keeps stderr and says failed (exit 3)",
+      sw3.paneText.contains("a line on stderr") && sw3.said == "failed (exit 3)" && !succeeded(id: "proxy-socat", end: sw3.end!), sw3.paneText)
+check("its notice says the switch did not happen",
+      StackChoice.failedNotice(for: "proxy-socat", said: sw3.said ?? "") == "The switch did not happen: failed (exit 3); the proxy is unchanged")
+let (_, sw126) = runFake("pihole-hardened", exit: 126)
+check("a switch whose root step was not authorised says authorisation cancelled (exit 126)",
+      sw126.paneText.contains("a line on stderr") && sw126.said == "authorisation cancelled (exit 126)", sw126.paneText)
+check("its notice says the switch did not happen",
+      StackChoice.failedNotice(for: "pihole-hardened", said: sw126.said ?? "") == "The switch did not happen: authorisation cancelled (exit 126); Pi-hole is unchanged")
+check("no switch notice for another action", StackChoice.failedNotice(for: "restart", said: "failed (exit 1)") == nil)
+
+// The Update row says when the last check ran, whoever ran it.
+check("ago says just now, minutes, hours, days and the future",
+      ago(995, now: 1000) == "just now" && ago(700, now: 1000) == "5 min ago" && ago(0, now: 7200) == "2 h ago"
+      && ago(0, now: 3 * 86_400) == "3 days ago" && ago(1010, now: 1000) == "in the future")
+if case .installed(let u) = view("status-update-available.tsv", 0), case .installed(let n) = view("status-installed.tsv", 0) {
+    check("the Update row names the answer and when it was checked",
+          updateRow(u.update, now: 1794251900 + 600) == "available: 0f6a6e7c3d2b (checked 10 min ago)", updateRow(u.update, now: 1794251900 + 600))
+    var later = u.update
+    later.checkedAt = 1794251900 + 590
+    later.result = .current
+    check("the Update row moves when a later check (the schedule's) wrote checked_at",
+          updateRow(later, now: 1794251900 + 600) == "up to date (checked just now)", updateRow(later, now: 1794251900 + 600))
+    check("the Update row says not checked yet without a check", updateRow(n.update, now: 1794251900) == "not checked yet", updateRow(n.update, now: 1794251900))
+}
+
 try? FileManager.default.removeItem(atPath: emptyHome)
 
 print("KitCheck: \(passed) passed, \(failed) failed")
