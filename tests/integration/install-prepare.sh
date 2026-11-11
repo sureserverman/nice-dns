@@ -459,6 +459,15 @@ t_kept_source_keeps_the_commit() {
       assert_match '^[0-9]{8}T[0-9]{6}Z-0123456789ab$' "$(ip_gen_current)" "$ep: the kept source's generation names the commit"
       assert_eq "$c" "$(ip_row "$m" source_commit)" "$ep: an install from the kept source keeps the commit"
       assert_eq 0 "$(ip_row "$m" source_dirty)" "$ep: and its clean state"
+      # A git repository above the kept source (a dotfiles home) does not
+      # answer for it: git names another commit, the record still wins.
+      printf 'ffffffffffffffffffffffffffffffffffffffff\n' >"$FAKE/git_head"
+      ip_run "$k/$ep.sh"
+      assert_rc 0 "$IP_RC" "$ep under a home repository: $IP_OUT"
+      m="$(ip_manifest "$(ip_gen_current)")"
+      assert_eq "$c" "$(ip_row "$m" source_commit)" "$ep: git answering from above the kept source is ignored"
+      assert_eq 0 "$(ip_row "$m" source_dirty)" "$ep: and the record's clean state kept"
+      rm -f "$FAKE/git_head"
       # A kept file changed: the commit stays, the tree is dirty.
       printf '# local edit\n' >>"$k/unbound/etc/unbound.conf"
       ip_run "$k/$ep.sh"

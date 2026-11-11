@@ -32,9 +32,16 @@
 # gui session (launchctl asuser). mint: the app draws with GSK_RENDERER=cairo
 # (DEC-027).
 #
-# A failed step stops that platform's later steps, but sa_restore still runs.
-# No step starts past SA_RUN_MAX from the run's first step; every DNS wait is
-# bounded by SA_DNS_MAX. NICE_DNS_CELL_REUSE_RUNS names earlier run
+# A failed step stops that platform's later steps, but sa_restore still runs
+# (it alone takes no run budget, so a late failure is still put back), and on
+# Linux the polkit test rule is removed whatever the restore found. The
+# restore puts back the recorded proxy and Pi-hole choices, not the version:
+# the target keeps this checkout's HEAD and its apps (`nice-dns reinstall
+# --branch main` returns it to main). No other step starts past SA_RUN_MAX
+# from the run's first step; every DNS wait is bounded by SA_DNS_MAX. A
+# target that does not answer is not run: sa_before says it is offline and
+# asks for it to be woken, and the receipt names it. A failed cell's receipt
+# row names the first step it did not pass. NICE_DNS_CELL_REUSE_RUNS names earlier run
 # directories: a platform whose cell passed every step there, at a commit with
 # the same product files and the same scenario, is not run again (DEC-009).
 #
@@ -180,6 +187,11 @@ sa_before() {
   local plat="$1" a="$2" d proxy ph r
   d="$(il_dir "$a")"
   sa_budget sa_before
+  rm -f "$d/offline.tsv"
+  if ! il_t "$a" probe >"$d/probe.log" 2>&1; then
+    printf 'offline\t%s\t%s\n' "$plat" "$(grep -v 'level=warning' "$d/probe.log" | tail -n 1 | tr '\t' ' ')" >"$d/offline.tsv"
+    fail "OFFLINE: $a does not answer ($(cut -f3 "$d/offline.tsv")). The cell is not run. Ask the owner to wake $a (mint: its Wi-Fi after a suspend), then rerun only this platform: --platforms $plat"
+  fi
   cr_before "$@"
   proxy="$(il_cell "$a" proxy)"
   sa_status "$a" before
@@ -292,13 +304,19 @@ sa_update() {
   c1="$(sa_st "$a" update-after update checked_at)"
   assert_match '^[0-9]+$' "$c1" "the check left a checked_at"
   [ "$c1" -gt "${c0:-0}" ] 2>/dev/null || fail "checked_at did not move: ${c0:-none} before, $c1 after"
+  # An unreachable GitHub also moves checked_at (result unknown): the check
+  # must have got an answer.
+  assert_match '^(current|available)$' "$(sa_st "$a" update-after update result)" "the scheduled check reached GitHub (result current or available)"
   printf 'update_auto\tloaded\nchecked_at_before\t%s\nchecked_at_after\t%s\nresult_after\t%s\nschedule_done\tyes\nschedule_last_exit\t%s\nresult\tpass\n' \
     "${c0:--}" "$c1" "$(sa_st "$a" update-after update result)" "$(sa_kv "$r" schedule_last_exit)" >"$d/sa-update.tsv"
 }
 
-# Runs whatever came before it: the target ends on its recorded choices.
-sa_restore() {
-  local plat="$1" a="$2" d rp rh v h re=no r
+# Runs whatever came before it: the target ends on its recorded choices. The
+# choices are restored in a subshell, so that on Linux the polkit test rule is
+# removed after it on every path: a failed reinstall, DNS not coming back, or
+# sa_before stopping right after it added the rule.
+sa_restore_choices() {
+  local a="$1" d rp rh v h re=no
   d="$(il_dir "$a")"; rp="$(il_cell "$a" recorded_proxy)"; rh="$(il_cell "$a" recorded_pihole)"
   [ -n "$rp" ] && [ -n "$rh" ] || fail "no recorded choices (sa_before did not finish)"
   sa_status "$a" restore-before
@@ -312,14 +330,25 @@ sa_restore() {
   assert_eq "$rp" "$(sa_st "$a" restore install variant)" "the target is back on tor-$rp"
   assert_eq "$rh" "$(sa_st "$a" restore install pihole)" "and on the $rh Pi-hole"
   assert_eq "tor-$rp" "$(sa_running "$a" restore)" "tor-$rp is the proxy that runs"
-  if [ "$plat" = linux ]; then
+  printf 'reinstalled\t%s\nvariant\t%s\npihole\t%s\nresolves\t%s\n' "$re" "$rp" "$rh" "$(il_val "$d/after-restore.tsv" resolution resolves)" >"$d/restore-choices.tsv"
+}
+
+sa_restore() {
+  local plat="$1" a="$2" d rc=0 r gone=-
+  d="$(il_dir "$a")"
+  rm -f "$d/restore-choices.tsv"
+  ( sa_restore_choices "$a" ) || rc=1
+  # The rule exists only under this run's snapshot (sa_before adds it after
+  # taking one); remove it whatever the restore found.
+  if [ "$plat" = linux ] && [ -f "$ARTIFACT_DIR/targets/$a/snapshot.tsv" ]; then
     r="$d/polkit-remove.tsv"
-    il_t "$a" polkit-test-rule --mode remove >"$r" 2>>"$d/ops.log" || fail "polkit-test-rule remove: $(tail -n 5 "$d/ops.log")"
-    assert_eq absent "$(sa_kv "$r" polkit_test_rule)" "the polkit test rule is gone"
+    if il_t "$a" polkit-test-rule --mode remove >"$r" 2>>"$d/ops.log"; then gone="$(sa_kv "$r" polkit_test_rule)"; else gone=error; fi
   fi
+  [ "$plat" != linux ] || [ "$gone" = absent ] || [ "$gone" = - ] || fail "the polkit test rule may still be on $a ($gone): remove /etc/polkit-1/rules.d/90-nice-dns-test.rules by hand"
+  [ "$rc" = 0 ] || fail "$a is not back on its recorded choices (above); polkit test rule: $gone"
   {
-    printf 'reinstalled\t%s\nvariant\t%s\npihole\t%s\nresolves\t%s\n' "$re" "$rp" "$rh" "$(il_val "$d/after-restore.tsv" resolution resolves)"
-    [ "$plat" != linux ] || printf 'polkit_test_rule\tabsent\n'
+    cat "$d/restore-choices.tsv"
+    [ "$plat" != linux ] || printf 'polkit_test_rule\t%s\n' "$gone"
     printf 'result\tpass\n'
   } >"$d/sa-restore.tsv"
 }
@@ -341,7 +370,7 @@ sa_reuse_dir() {
       il_same_product "$(il_cell_of "$d" source_sha)" "$1" || continue
       # A cell proven under a looser scenario does not prove this one.
       git -C "$NICE_DNS_ROOT" diff --quiet "$(il_cell_of "$d" source_sha)" HEAD -- \
-        tests/live/switch-autocheck.sh tests/live/target.sh tests/manifests/switch-autocheck.tsv tests/reports/verify.sh 2>/dev/null || continue
+        tests/live/switch-autocheck.sh tests/live/command-recovery.sh tests/live/install-lifecycle.sh tests/live/target.sh tests/manifests/switch-autocheck.tsv tests/reports/verify.sh 2>/dev/null || continue
       printf '%s\n' "${d%/}"
       return 0
     done
@@ -353,7 +382,7 @@ SA_SCENARIOS='SA-BEFORE:sa-before.tsv SA-INSTALL:sa-install.tsv SA-PROXY:sa-prox
 SA_SECRETS='cert=[A-Za-z0-9+/]{20}|(^|[^0-9A-Fa-f])[0-9A-F]{40}([^0-9A-Fa-f]|$)|PRIVATE KEY|"sid":|pwhash|BRIDGE[0-9]+=|obfs4 [0-9]'
 
 sa_receipt() {
-  local root out r repo cd st d from cell key gen a f id n=0 v s ok p selected rd
+  local root out r repo cd st d from cell key gen a f id n=0 v s ok p selected rd off
   root="$(dirname "$(dirname "$ARTIFACT_DIR")")"
   out="$root/receipts/switch-autocheck/$RUN_ID"; r="$out/receipt.tsv"
   assert_no_path "$out" "this run has no switch-autocheck receipt yet"
@@ -393,7 +422,7 @@ sa_receipt() {
   while IFS="$(printf '\t')" read -r d from; do
     cell="$(il_cell_of "$d" cell)"; key="$(printf '%s' "$cell" | tr / -)"
     a="$(il_cell_of "$d" target)"
-    gen="generation=$(il_val "$d/after-install.tsv" generation current)"
+    gen="generation=$(il_val "$d/after-install.tsv" generation current 2>/dev/null)"
     mkdir -p "$out/cells/$key"
     cp "$d/cell.tsv" "$out/cells/$key/"
     ok=1
@@ -401,6 +430,13 @@ sa_receipt() {
     for id in $SA_SCENARIOS; do [ -f "$d/${id#*:}" ] || ok=0; done
     if [ "$ok" != 1 ]; then
       printf 'cell\t%s\t%s\t%s\t%s\t%s\tfailed\n' "${cell%%/*}" "$(printf '%s' "$cell" | cut -d/ -f2)" "${cell##*/}" "$a" "$gen" >>"$r"
+      # The first step this cell did not pass, as a failed scenario row:
+      # the verifier names the cell and the step.
+      for s in $SA_STEPS; do
+        grep -qx "$s" "$d/passed.tsv" 2>/dev/null && continue
+        printf 'scenario\t%s\t%s\tfail\t-\t-\t%s\n' "$(printf '%s' "$s" | tr '[:lower:]_' '[:upper:]-')" "$cell" "$gen" >>"$r"
+        break
+      done
       continue
     fi
     n=$((n + 1))
@@ -412,6 +448,10 @@ sa_receipt() {
       printf 'scenario\t%s\t%s\tpass\tcells/%s/%s\t%s\t%s\n' "${id%%:*}" "$cell" "$key" "$f" "$(sha256sum "$out/cells/$key/$f" | cut -d' ' -f1)" "$gen" >>"$r"
     done
   done <"$CASE_DIR/cell-dirs.tsv"
+  # A target that did not answer is named, with what to do.
+  off="$(cat "$ARTIFACT_DIR"/switch-autocheck/*/offline.tsv 2>/dev/null | cut -f2 | tr '\n' ' ')"
+  [ -z "$off" ] || printf 'offline\t%s\n' "$off" >"$CASE_DIR/offline.tsv"
+  assert_eq "" "$off" "every selected target answered (offline: ${off}ask the owner to wake it, then rerun only that platform)"
   assert_match '^[1-9]' "$n" "at least one fully passed cell"
   v="$(bash "$NICE_DNS_ROOT/tests/reports/verify.sh" check "$r" 2>&1)"
   assert_rc 0 "$?" "the switch-autocheck receipt verifies: $v"

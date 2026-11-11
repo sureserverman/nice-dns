@@ -25,6 +25,10 @@
 #   schedule-stale     the scheduled check leaves checked_at where it was
 #   restore-wrong      the restoring reinstall leaves the other proxy running
 #   polkit-left        polkit-test-rule remove leaves the rule
+#   polkit-unconfirmed polkit-test-rule add puts the rule in place but reports it absent
+#   restore-fails      the restoring reinstall exits 1
+#   schedule-unknown   the scheduled check moves checked_at but could not reach GitHub
+#   offline-lin1       lin1 does not answer (probe times out); mac1 does
 # Nothing here touches the host.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -33,7 +37,7 @@ alias_="${2:-}"
 F="${IL_FAKE_DIR:-${ARTIFACT_DIR:?}/il-fake}"
 case "$op" in
   validate) exec bash "$HERE/lifecycle-adapter.sh" "$@" ;;
-  snapshot) ;;
+  snapshot|probe) ;;
   *) mkdir -p "$F/$alias_"; printf '%s\n' "$op" >>"$F/$alias_/oplog" ;;
 esac
 args=("$@")
@@ -57,13 +61,13 @@ put() { printf '%s\n' "$2" >"$S/$1"; }
 identity() { printf 'machine_id\tfake-%s\nhostname\t%s\nplatform\t%s\n' "$alias_" "$alias_" "$plat"; }
 # As target.sh: anything but a read of the targets needs a snapshot.
 case "$op" in
-  snapshot) ;;
+  snapshot|probe) ;;
   *) [ -f "${ARTIFACT_DIR:?}/targets/$alias_/snapshot.tsv" ] || { echo "target.sh: no restore snapshot for $alias_ in this run" >&2; exit 2; } ;;
 esac
 # lif <op> [args]: the install state's own adapter.
 lif() { bash "$HERE/lifecycle-adapter.sh" "$@"; }
 # The lifecycle state is created on its first call.
-[ "$op" = snapshot ] || lif lifecycle-report "$alias_" --targets x >/dev/null
+case "$op" in snapshot|probe) ;; *) lif lifecycle-report "$alias_" --targets x >/dev/null ;; esac
 proxy() { get proxy; }
 pihole() { get pihole standard; }
 # reinstall <proxy> <pihole>: the install transaction with those choices.
@@ -80,7 +84,13 @@ cmd_wrap() {
 }
 
 case "$op" in
+  probe)
+    if [ "$brk" = offline-lin1 ] && [ "$alias_" = lin1 ]; then
+      echo "ssh: connect to host lin1-ssh port 22: Connection timed out" >&2; exit 1
+    fi
+    identity ;;
   snapshot|lifecycle-report)
+    if [ "$brk" = offline-lin1 ] && [ "$alias_" = lin1 ]; then echo "fake adapter: lin1 is offline" >&2; exit 1; fi
     if [ "$op" = lifecycle-report ] && [ "$brk" = servfail-hardened ] && [ "$(get pihole standard)" = hardened ]; then
       lif "${args[@]}" | sed 's/^resolves	yes$/resolves	no/'
     else
@@ -88,7 +98,8 @@ case "$op" in
     fi ;;
   polkit-test-rule)
     case "$mode" in
-      add) [ "$brk" = polkit-fails ] || put polkit present ;;
+      add) [ "$brk" = polkit-fails ] || put polkit present
+        [ "$brk" != polkit-unconfirmed ] || { printf 'polkit_test_rule\tabsent\n'; exit 0; } ;;
       remove) [ "$brk" = polkit-left ] || put polkit absent ;;
     esac
     printf 'polkit_test_rule\t%s\n' "$(get polkit absent)" ;;
@@ -111,6 +122,7 @@ case "$op" in
     printf 'schedule\tupdate\nstarted_utc\t%s\nschedule_loaded\tyes\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     [ "$brk" != schedule-fails ] || { printf 'start_exit\t1\n'; exit 1; }
     [ "$brk" = schedule-stale ] || put checked "$(date +%s)"
+    [ "$brk" != schedule-unknown ] || put upresult unknown
     printf 'start_exit\t0\nschedule_done\tyes\nschedule_last_exit\t0\nwaited_s\t0\nfinished_utc\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" ;;
   gui-report)
     if [ "$plat" = linux ]; then printf 'gui_bin\tpresent\ngui_bin_path\t%s/.local/bin/nice-dns-gui\ngui_version\tnice-dns-gui 0.2.0\n' "$home"
@@ -147,7 +159,7 @@ case "$op" in
         inst=yes; [ "$(get installed)" = 0 ] && inst=no
         cmd_wrap 0 "schema	nice-dns-status/1" "install	installed	$inst" "install	source_commit	$(get commit 671d95031d6b4e5475b2682aa600f204268aa854)" \
           "install	variant	$(proxy)" "install	pihole	$(pihole)" "install	platform	$plat" \
-          "update	result	current" "update	checked_at	$(get checked 1794345355)" "update	auto	$auto" "bridges	mode	on" ;;
+          "update	result	$(get upresult current)" "update	checked_at	$(get checked 1794345355)" "update	auto	$auto" "bridges	mode	on" ;;
       switch-pihole-hardened|switch-pihole-standard)
         want="${mode#switch-pihole-}"
         [ "$(pihole)" != "$want" ] || cmd_wrap 0 "Already $want; nothing changed."
@@ -157,6 +169,7 @@ case "$op" in
         if [ "$brk" = last-line-other ]; then cmd_wrap 0 "Switched."; fi
         cmd_wrap 0 "Switched: Pi-hole is now the $want one, and DNS is answering." ;;
       reinstall-cell)
+        [ "$brk" != restore-fails ] || cmd_wrap 1 "nice-dns: the install failed; the running stack was restored."
         if [ "$brk" = restore-wrong ]; then reinstall "$(proxy)" "${cell#*/}"; else reinstall "${cell%/*}" "${cell#*/}"; fi
         cmd_wrap 0 "nice-dns is reinstalled; DNS is answering." ;;
       *) echo "fake adapter: command mode $mode is not used here" >&2; exit 2 ;;

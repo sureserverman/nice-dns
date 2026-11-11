@@ -262,14 +262,15 @@ nd_install_begin() {
   # Source generation: the staged tree's commit and whether it has local
   # changes to tracked files (untracked files, such as locally built
   # bridge-eval binaries, do not count).
-  local c gens tries=0 kept
-  c="$(git -C "$ND_INST_SRC" rev-parse HEAD 2>/dev/null)" || c=""
+  local c="" gens tries=0 kept
+  # The kept source has no git of its own: it carries the commit it was kept
+  # from. Read first, so a git repository above it (a dotfiles $HOME) never
+  # answers for it.
+  kept="$(_nd_inst_kept_commit "$ND_INST_SRC")" || kept=""
+  [ -n "$kept" ] || c="$(git -C "$ND_INST_SRC" rev-parse HEAD 2>/dev/null)" || c=""
   case "$c" in ''|*[!0-9a-f]*) c=unknown ;; esac
   [ "${#c}" -ge 12 ] || c=unknown
   ND_INST_COMMIT="$c"
-  # The kept source has no git: it carries the commit it was kept from.
-  kept=""
-  [ "$c" != unknown ] || kept="$(_nd_inst_kept_commit "$ND_INST_SRC")" || kept=""
   if [ -n "$kept" ]; then
     ND_INST_COMMIT="${kept%% *}"
     ND_INST_DIRTY="${kept#* }"

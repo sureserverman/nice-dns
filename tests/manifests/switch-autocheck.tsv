@@ -35,6 +35,7 @@ content	SA-HARDENED	^resolves	yes$
 content	SA-UPDATE	^update_auto	loaded$
 content	SA-UPDATE	^checked_at_after	[0-9]+$
 content	SA-UPDATE	^schedule_done	yes$
+content	SA-UPDATE	^result_after	(current|available)$
 content	SA-RESTORE	^variant	(haproxy|socat)$
 content	SA-RESTORE	^pihole	standard$
 content	SA-RESTORE	^resolves	yes$

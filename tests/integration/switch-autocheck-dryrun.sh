@@ -183,6 +183,9 @@ t_each_seeded_defect_is_caught() {
     sad_catches schedule-stale $before sa_proxy sa_hardened sa_update
     sad_catches restore-wrong $before sa_proxy sa_hardened sa_update sa_restore
     sad_catches polkit-left $before sa_proxy sa_hardened sa_update sa_restore
+    sad_catches polkit-unconfirmed sa_before
+    sad_catches schedule-unknown $before sa_proxy sa_hardened sa_update
+    sad_catches restore-fails $before sa_proxy sa_hardened sa_update sa_restore
   }
 }
 
@@ -252,6 +255,7 @@ sa-hardened.tsv|s/^kept_base\tpresent$/kept_base\tabsent/
 sa-hardened.tsv|/^cli_last\t/d
 sa-update.tsv|/^checked_at_after\t/d
 sa-update.tsv|s/^schedule_done\tyes$/schedule_done\tno/
+sa-update.tsv|s/^result_after\t.*/result_after\tunknown/
 sa-restore.tsv|s/^pihole\tstandard$/pihole\thardened/
 sa-restore.tsv|s/^resolves\tyes$/resolves\tno/
 EOF
@@ -280,6 +284,66 @@ t_a_failed_step_stops_the_platform_and_the_restore_still_runs() {
     "$(cat "$CASE_DIR/stop/fake/lin1/proxy") $(cat "$CASE_DIR/stop/fake/lin1/pihole") $(cat "$CASE_DIR/stop/fake/mac1/proxy") $(cat "$CASE_DIR/stop/fake/mac1/pihole")" \
     "both targets end on their recorded choices"
   assert_eq absent "$(cat "$CASE_DIR/stop/fake/lin1/polkit")" "and the polkit test rule is gone"
+}
+
+# The polkit test rule never outlives the run on Linux: a restore that fails,
+# and a sa_before that stops right after adding the rule, still remove it.
+t_the_polkit_rule_is_removed_on_every_path() {
+  local brk out
+  for brk in restore-fails polkit-unconfirmed; do
+    out="$(
+      sad_world "$CASE_DIR/pk-$brk"
+      printf '%s\n' "$brk" >"$IL_FAKE_DIR/break"
+      for s in sa_before sa_install sa_proxy sa_hardened sa_update; do ( il_each "$s" ) >/dev/null 2>&1; done
+      ( il_each sa_restore ) >"$CASE_DIR/pk-$brk.log" 2>&1 && { echo restore-passed; exit 0; }
+      echo restore-failed
+    )"
+    assert_eq restore-failed "$out" "$brk: the restore step fails"
+    assert_eq absent "$(cat "$CASE_DIR/pk-$brk/fake/lin1/polkit")" "$brk: and the polkit test rule is gone from lin1"
+  done
+  assert_match 'restore|recorded choices' "$(cat "$CASE_DIR/pk-polkit-unconfirmed.log")" "the failure says why"
+}
+
+# A failed cell's receipt row names the first step it did not pass.
+t_a_failed_cell_names_its_step() {
+  local out r v
+  out="$(
+    sad_world "$CASE_DIR/named"
+    printf 'switch-fails\n' >"$IL_FAKE_DIR/break"
+    for s in $SA_STEPS; do ( il_each "$s" ) >/dev/null 2>&1; done
+    ( sa_receipt ) >"$CASE_DIR/named-receipt.log" 2>&1 && { echo receipt-passed; exit 0; }
+    echo receipt-failed
+  )"
+  assert_eq receipt-failed "$out" "a run with failed cells has no passing receipt"
+  r="$(for r in "$CASE_DIR"/named/receipts/switch-autocheck/*/receipt.tsv; do printf '%s\n' "$r"; done | tail -1)"
+  assert_file "$r" "the receipt is written all the same"
+  assert_match '^cell	linux	haproxy	standard	lin1	.*	failed$' "$(cat "$r")" "the Linux cell is recorded failed"
+  assert_match '^scenario	SA-HARDENED	linux/haproxy/standard	fail	' "$(cat "$r")" "and names the step it failed: sa_hardened"
+  assert_match '^scenario	SA-HARDENED	macos/socat/standard	fail	' "$(cat "$r")" "so does the macOS cell"
+  v="$(bash "$NICE_DNS_ROOT/tests/reports/verify.sh" check "$r" 2>&1)"
+  assert_match 'scenario SA-HARDENED \(linux/haproxy/standard\) is fail' "$v" "the verifier names the cell and the step"
+}
+
+# A target that does not answer is not run, is named, and the owner is asked
+# to wake it; the other platform runs.
+t_an_offline_target_is_named_and_not_run() {
+  local out
+  out="$(
+    sad_world "$CASE_DIR/off"
+    printf 'offline-lin1\n' >"$IL_FAKE_DIR/break"
+    ( il_each sa_before ) >"$CASE_DIR/off-before.log" 2>&1 && { echo before-passed; exit 0; }
+    for s in sa_install sa_proxy sa_hardened sa_update sa_restore; do ( il_each "$s" ) >/dev/null 2>&1; done
+    ( sa_receipt ) >"$CASE_DIR/off-receipt.log" 2>&1 && { echo receipt-passed; exit 0; }
+    echo stopped
+  )"
+  assert_eq stopped "$out" "the run stops on the offline target and has no passing receipt"
+  assert_match 'OFFLINE: lin1 does not answer \(.*timed out' "$(cat "$CASE_DIR/off-before.log")" "sa_before says lin1 is offline and why"
+  assert_match 'Ask the owner to wake lin1' "$(cat "$CASE_DIR/off-before.log")" "and asks for it to be woken"
+  assert_match -- '--platforms linux' "$(cat "$CASE_DIR/off-before.log")" "and says how to rerun only that platform"
+  assert_no_path "$CASE_DIR/off/runs/20260101T000100Z-0000000a/switch-autocheck/lin1/cell.tsv" "the offline cell is not run"
+  assert_eq "" "$(grep -E '^(command|gui-session|polkit-test-rule)$' "$CASE_DIR/off/fake/lin1/oplog" 2>/dev/null)" "nothing was done to lin1"
+  assert_file "$CASE_DIR/off/fake/mac1/commit" "mac1 still ran"
+  assert_match 'offline: linux' "$(cat "$CASE_DIR/off-receipt.log")" "the receipt step names the offline platform"
 }
 
 # A rerun of one platform carries the other's passed cell into the receipt.
