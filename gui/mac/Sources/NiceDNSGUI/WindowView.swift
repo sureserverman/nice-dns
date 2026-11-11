@@ -1,5 +1,6 @@
-// The window: the stack's state from `nice-dns status --tsv`, a button per
-// action and the log pane. It shows and runs; it never changes the install
+// The window: the stack's state from `nice-dns status --tsv`, each action
+// where Placement puts it (a button, the bridges switch, a selector, the
+// update banner) and the log pane. It shows and runs; it never changes the install
 // itself (DEC-018).
 import AppKit
 import NiceDNSKit
@@ -86,7 +87,7 @@ struct NotInstalledPage: View {
                 Text("\(u.group) cannot be read: \(u.reason)").foregroundColor(.orange)
             }
             if model.keptSource {
-                Button("Install") { model.request("install") }.disabled(model.busy)
+                Button("Install") { model.request(Placement.install) }.disabled(model.busy)
             }
         }
     }
@@ -107,6 +108,12 @@ struct StatusPage: View {
             ForEach(status.unreadable, id: \.group) { u in
                 Label("\(u.group) cannot be read: \(u.reason)", systemImage: "exclamationmark.triangle")
                     .foregroundColor(.orange)
+            }
+            Panel(title: "Installed") {
+                ForEach(StackChoice.all, id: \.kind) { c in
+                    ChoiceRow(model: model, choice: c)
+                }
+                Row("Update", updateRow(status.update, now: UInt64(max(0, Date().timeIntervalSince1970))))
             }
             Group {
                 Panel(title: "Containers") {
@@ -143,8 +150,8 @@ struct StatusPage: View {
             .opacity(stale ? 0.5 : 1)
             Panel(title: "Admin") {
                 HStack {
-                    Button("Open the admin page") { model.request("open-admin") }
-                    Button("Show where the password is") { model.request("show-password-path") }
+                    Button("Open the admin page") { model.request(Placement.openAdmin) }
+                    Button("Show where the password is") { model.request(Placement.showPasswordPath) }
                 }
             }
             actions
@@ -174,7 +181,7 @@ struct StatusPage: View {
             Image(systemName: "arrow.triangle.2.circlepath")
             Text("A different version is available" + (status.update.remoteCommit.map { ": " + String($0.prefix(12)) } ?? ""))
             Spacer()
-            Button("Install it…") { model.request("update") }.disabled(model.busy)
+            Button("Install it…") { model.request(Placement.updateBanner) }.disabled(model.busy)
         }
         .padding(8)
         .background(Color.accentColor.opacity(0.12))
@@ -184,8 +191,8 @@ struct StatusPage: View {
     private var actions: some View {
         Panel(title: "Actions") {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), alignment: .leading)], alignment: .leading) {
-                // Install belongs to the not-installed page; the bridges have their switch.
-                ForEach(Actions.all.filter { $0.program != nil && !$0.id.hasPrefix("bridges-") && $0.id != "install" }, id: \.id) { a in
+                // The plain buttons only: every other row has its own place (Placement).
+                ForEach(Placement.buttons(), id: \.id) { a in
                     Button(a.label + (a.needsConfirm ? "…" : "")) { model.request(a.id) }
                         .disabled(model.busy)
                 }
@@ -198,6 +205,30 @@ struct StatusPage: View {
         case true?: return "installed" + (status.helper.version.map { " (\($0))" } ?? "")
         case false?: return "not installed"
         case nil: return "unknown"
+        }
+    }
+}
+
+/// A selector: the proxy or the Pi-hole flavour, set to what the status
+/// says, or to the choice asked about or running. Unknown and disabled when
+/// the status names neither choice; disabled while any action runs.
+struct ChoiceRow: View {
+    @ObservedObject var model: AppModel
+    let choice: StackChoice
+
+    var body: some View {
+        let shown = model.shown(choice)
+        HStack {
+            Text(choice.title).foregroundColor(.secondary).frame(width: 150, alignment: .leading)
+            Picker(choice.title, selection: Binding(get: { shown ?? "unknown" }, set: { model.pick(choice, $0) })) {
+                ForEach(choice.choices, id: \.self) { Text($0).tag($0) }
+                if shown == nil { Text("unknown").tag("unknown") }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(width: 160)
+            .disabled(model.busy || shown == nil)
+            Spacer()
         }
     }
 }
@@ -289,7 +320,7 @@ struct LogPane: View {
     }
 }
 
-/// The questions asked before uninstall, reinstall and update.
+/// The questions asked before uninstall, reinstall, update and a switch.
 struct ConfirmSheet: View {
     @ObservedObject var model: AppModel
     let confirm: Confirm
@@ -325,7 +356,12 @@ struct ConfirmSheet: View {
                 Text("Install the update?").font(.title3.bold())
                 Text("A different version is available" + (commit.map { ": " + String($0.prefix(12)) } ?? "") + ". The branch's current commit is installed like a reinstall.")
                     .fixedSize(horizontal: false, vertical: true)
-                buttons(go: "Install", enabled: true, cancel: "Not now") { model.run("update") }
+                buttons(go: "Install", enabled: true, cancel: "Not now") { model.run(Placement.updateBanner) }
+            case .switchTo(let id):
+                Text(Actions.lookup(id)?.label ?? id).font(.title3.bold())
+                Text(StackChoice.question(for: id) ?? id)
+                    .fixedSize(horizontal: false, vertical: true)
+                buttons(go: "Switch", enabled: true, cancel: "Not now") { model.run(id) }
             }
         }
         .padding(20)

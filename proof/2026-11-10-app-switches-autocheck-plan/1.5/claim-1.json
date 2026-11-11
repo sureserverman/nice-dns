@@ -1,0 +1,35 @@
+{
+ "baseline": {
+  "elapsed_s": 137.8,
+  "exit": 0,
+  "tail": "PASS  t_status_epochs_are_plain_numbers_and_a_future_pass_is_stale\nPASS  t_status_flags_a_stale_or_missing_pass_and_still_prints_it\nPASS  t_status_helper_rows_read_the_file_and_the_generation\nPASS  t_status_hint_survives_an_unreadable_state\nPASS  t_status_is_in_the_help\nPASS  t_status_never_reads_an_unreadable_file_as_absent\nPASS  t_status_not_installed_names_the_curl_line_and_exits_1\nPASS  t_status_obs_rows_end_their_lines_with_a_bsd_cut\nPASS  t_status_route_absent_until_chosen_and_journal_fields_stay_aligned\nPASS  t_status_rows_cover_every_group_without_running_anything\nPASS  t_status_says_whether_the_update_check_is_scheduled\nPASS  t_status_unreadable_state_exits_2\nPASS  t_status_values_carry_no_control_characters\nPASS  t_switch_changes_one_choice_from_the_kept_source\nPASS  t_switch_to_the_installed_choice_changes_nothing\nPASS  t_switch_usage_errors_run_nothing\nPASS  t_switch_whose_install_fails_says_the_old_choice_runs\nPASS  t_switch_with_nothing_installed_or_no_kept_source\nPASS  t_the_readiness_wait_keeps_to_its_stated_limit\nPASS  t_unknown_commands_and_options_are_usage_errors\nPASS  t_unsupported_platform_is_refused\nPASS  t_update_a_failed_install_names_reinstall_local\nPASS  t_update_cache_names_no_commit_for_an_unclean_record\nPASS  t_update_check_bounds_its_wait_under_a_minute\nPASS  t_update_check_compares_the_recorded_commit_with_the_branch\nPASS  t_update_check_of_another_branch_keeps_no_cache\nPASS  t_update_check_reads_only_its_own_branch_line\nPASS  t_update_check_takes_only_branch\nPASS  t_update_check_unknown_changes_nothing_but_the_cache\nPASS  t_update_check_with_nothing_installed\nPASS  t_update_check_without_a_controller_keeps_no_cache_and_creates_nothing\nPASS  t_update_current_installs_nothing_unless_forced\nPASS  t_update_from_a_checkout_still_installs_the_branch\nPASS  t_update_installed_but_not_current_is_exit_11\nPASS  t_update_installs_the_recorded_choices_when_available\nPASS  t_update_refuses_local_and_widens_nothing\nPASS  t_update_unknown_installs_nothing\ngroup integration/nice-dns-cli: collected=73 passed=73 failed=0\ncollected=73 passed=73 failed=0\nresult=pass run_id=20261110T232948Z-ae505f48 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261110T232948Z-ae505f48"
+ },
+ "break_patch": "--- a/lib/status.sh\n+++ b/lib/status.sh\n@@ -250,7 +250,7 @@\n   # the timer's enable link on Linux, the agent's plist without the stop\n   # mark on macOS (`nice-dns-health stop` stops every schedule).\n   if [ -e \"$ND_ST_UPDATE_SCHEDULE\" ] && { [ -z \"$ND_ST_SCHEDULE_STOPPED\" ] || [ ! -e \"$ND_ST_SCHEDULE_STOPPED\" ]; }; then\n-    _nd_st_row update auto loaded\n+    _nd_st_row update auto stopped\n   else\n     _nd_st_row update auto stopped\n   fi\n",
+ "build": null,
+ "created": "2026-11-10T23:34:23+00:00",
+ "fingerprint": "8b07c2264da3befd55794010906c0a4c718a806f776ea297205340164fc7fd15",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "shell scripts, nothing to build",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-10-app-switches-autocheck-plan.md",
+ "red": {
+  "elapsed_s": 137.3,
+  "exit": 1,
+  "tail": "PASS  t_status_flags_a_stale_or_missing_pass_and_still_prints_it\nPASS  t_status_helper_rows_read_the_file_and_the_generation\nPASS  t_status_hint_survives_an_unreadable_state\nPASS  t_status_is_in_the_help\nPASS  t_status_never_reads_an_unreadable_file_as_absent\nPASS  t_status_not_installed_names_the_curl_line_and_exits_1\nPASS  t_status_obs_rows_end_their_lines_with_a_bsd_cut\nPASS  t_status_route_absent_until_chosen_and_journal_fields_stay_aligned\nPASS  t_status_rows_cover_every_group_without_running_anything\nFAIL  t_status_says_whether_the_update_check_is_scheduled (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261110T233206Z-c58167ba/cases/integration-nice-dns-cli/t_status_says_whether_the_update_check_is_scheduled/case.log)\n      ASSERT FAIL: Linux: the schedule file is there: expected [loaded] got [stopped]\nPASS  t_status_unreadable_state_exits_2\nPASS  t_status_values_carry_no_control_characters\nPASS  t_switch_changes_one_choice_from_the_kept_source\nPASS  t_switch_to_the_installed_choice_changes_nothing\nPASS  t_switch_usage_errors_run_nothing\nPASS  t_switch_whose_install_fails_says_the_old_choice_runs\nPASS  t_switch_with_nothing_installed_or_no_kept_source\nPASS  t_the_readiness_wait_keeps_to_its_stated_limit\nPASS  t_unknown_commands_and_options_are_usage_errors\nPASS  t_unsupported_platform_is_refused\nPASS  t_update_a_failed_install_names_reinstall_local\nPASS  t_update_cache_names_no_commit_for_an_unclean_record\nPASS  t_update_check_bounds_its_wait_under_a_minute\nPASS  t_update_check_compares_the_recorded_commit_with_the_branch\nPASS  t_update_check_of_another_branch_keeps_no_cache\nPASS  t_update_check_reads_only_its_own_branch_line\nPASS  t_update_check_takes_only_branch\nPASS  t_update_check_unknown_changes_nothing_but_the_cache\nPASS  t_update_check_with_nothing_installed\nPASS  t_update_check_without_a_controller_keeps_no_cache_and_creates_nothing\nPASS  t_update_current_installs_nothing_unless_forced\nPASS  t_update_from_a_checkout_still_installs_the_branch\nPASS  t_update_installed_but_not_current_is_exit_11\nPASS  t_update_installs_the_recorded_choices_when_available\nPASS  t_update_refuses_local_and_widens_nothing\nPASS  t_update_unknown_installs_nothing\ngroup integration/nice-dns-cli: collected=73 passed=72 failed=1\ncollected=73 passed=72 failed=1\nresult=fail run_id=20261110T233206Z-c58167ba artifacts=/home/user/.local/state/nice-dns-tests/runs/20261110T233206Z-c58167ba"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "1.5",
+ "test": "bash tests/run.sh integration nice-dns-cli",
+ "text": "`bash tests/run.sh integration nice-dns-cli` with new cases: the row is `loaded` with the schedule file present, `stopped` without it and, on macOS, with `schedule-stopped` present; the status command still starts no process but awk and reads no network (the existing files-only case covers the new row)",
+ "touched": [
+  "lib/status.sh"
+ ],
+ "touched_blobs": {
+  "lib/status.sh": "45ac5720144b335bbe53076359fb405b13b82fce"
+ },
+ "witness_blobs": {
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}

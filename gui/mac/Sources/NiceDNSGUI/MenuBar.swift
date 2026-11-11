@@ -1,5 +1,5 @@
 // The menu-bar item: a glyph coloured from the status, and a menu with the
-// actions, the bridges switch, Open window and Quit.
+// actions, the bridges switch, the two selectors, Open window and Quit.
 import AppKit
 import Combine
 import NiceDNSKit
@@ -83,21 +83,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         head.isEnabled = false
         menu.addItem(head)
         if model.status?.update.result == .available {
-            menu.addItem(entry("A different version is available…", "update"))
+            menu.addItem(entry("A different version is available…", Placement.updateBanner))
         }
         menu.addItem(.separator())
         if model.installed {
-            let b = entry("Tor bridges", model.bridgesOn ? "bridges-off" : "bridges-on")
+            let b = entry("Tor bridges", model.bridgesOn ? Placement.bridgesOff : Placement.bridgesOn)
             b.state = model.bridgesOn ? .on : .off
             menu.addItem(b)
+            for c in StackChoice.all {
+                menu.addItem(choiceItem(c))
+            }
         }
         if model.installed {
-            // A described stack: every action that runs a command but Install
-            // (the not-installed page's) and the update (offered above).
-            for a in Actions.all where a.program != nil && !a.id.hasPrefix("bridges-") && a.id != "update" && a.id != "install" {
+            // A described stack: the plain buttons; every other row has its
+            // own place (Placement).
+            for a in Placement.buttons() {
                 menu.addItem(entry(a.label + (a.needsConfirm ? "…" : ""), a.id))
             }
-        } else if model.notInstalled && model.keptSource, let a = Actions.lookup("install") {
+        } else if model.notInstalled && model.keptSource, let a = Actions.lookup(Placement.install) {
             menu.addItem(entry(a.label, a.id))
         }
         menu.addItem(.separator())
@@ -113,6 +116,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         m.target = self
         m.representedObject = id
         return m
+    }
+
+    /// A selector as a submenu of its two choices, the shown one checked.
+    /// Unknown when the status names neither: then a disabled item.
+    private func choiceItem(_ c: StackChoice) -> NSMenuItem {
+        guard let shown = model.shown(c) else {
+            return NSMenuItem(title: "\(c.title): unknown", action: nil, keyEquivalent: "")
+        }
+        let item = NSMenuItem(title: c.title, action: nil, keyEquivalent: "")
+        let sub = NSMenu(title: c.title)
+        for choice in c.choices {
+            let e = entry(choice, c.id(choice))
+            e.state = choice == shown ? .on : .off
+            sub.addItem(e)
+        }
+        item.submenu = sub
+        return item
     }
 
     @objc private func choose(_ sender: NSMenuItem) {

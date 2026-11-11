@@ -1,0 +1,11 @@
+{
+ "created": "2026-11-11T06:54:32+00:00",
+ "fingerprint": "1a3e9c84c782c85ea4f623888bcd0f1052fa988404a188ba36fc8c4517b080fd",
+ "index": 1,
+ "kind": "claim-deviation",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-10-app-switches-autocheck-plan.md",
+ "schema": 2,
+ "task": "2.2",
+ "text": "`rsync -a --delete --exclude .build --exclude build gui/ mac:nice-dns-gui-build/gui/ && ssh mac 'cd nice-dns-gui-build/gui/mac && make check && make'` with new KitCheck cases: the pending-choice state for each selector (set on run, cleared by the read after the command ends, reverted on a failed exit), the four ids absent from the plain action list, and the confirm text for each of the four; run while no install is in progress on the mac (`ssh mac 'pgrep -f install-mac'` finds nothing)",
+ "why": "KitCheck and XCTest run only on the mac (Swift, macOS SDK); no host-side test guards these lines. Proven by hand on the mac instead, 2026-11-11: at this tree make check gave KitCheck 141 passed, 0 failed, swift test 33 tests 0 failures, make signed build/nice-dns.app; with the break (Switches.swift StackChoice.installed: case .proxy: v = nil) in a separate copy, make check failed on 'Proxy shows the status value', 'pending is set ... when the switch runs', 'cleared by the first read after the end' and three more; the copy was then removed."
+}

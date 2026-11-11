@@ -32,6 +32,7 @@ bridges	mode	on
 bridges	count	7
 bridges	last_refresh	never
 update	result	unknown	never-checked
+update	auto	loaded
 helper	path	/usr/libexec/nice-dns-helper
 helper	installed	yes
 helper	version	0.1.1

@@ -1,0 +1,11 @@
+{
+ "created": "2026-11-11T08:03:22+00:00",
+ "fingerprint": "9e3d1bd5d5e2e7788865d71147b75fac16936e9e092f304ab0e50710b93d0b26",
+ "index": 1,
+ "kind": "claim-deviation",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-10-app-switches-autocheck-plan.md",
+ "schema": 2,
+ "task": "3.2",
+ "text": "`gh run watch` on the tag's release.yml run ends green, then `bash tests/run.sh integration release-inputs` passes with the new lock, and for every `asset` row the sha256 of the downloaded file equals the lock's (`gh release download v1.4.0 -D \"$T\" && (cd \"$T\" && sha256sum *)` compared row by row by the existing lock test)",
+ "why": "The claim (every asset row is a v1.4.0 asset whose bytes match) is decided by the Test field's download compare, not by release-inputs, which checks the lock's form and passes on v1.3.0 too. Shown by hand 2026-11-11: gh release download v1.4.0, then sha256 of each file against its row: all 6 ok with the new lock; against the v1.3.0 lock (HEAD 5ffc73b) the three GUI rows MISMATCH. release.yml run 42983279810 green; release-inputs 13/13 (run 20261111T080236Z-0324aac7); downloaded nice-dns-gui --version 0.2.0, nice-dns.app CFBundleShortVersionString 1.4.0."
+}

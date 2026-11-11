@@ -20,7 +20,7 @@ final class ActionsTests: XCTestCase {
         let rows = text.split(separator: "\n")
         XCTAssertTrue(rows.allSatisfy { $0.split(separator: "\t", omittingEmptySubsequences: false).count == 5 })
         XCTAssertEqual(Actions.all.count, rows.count)
-        XCTAssertEqual(Actions.all.count, 14)
+        XCTAssertEqual(Actions.all.count, 18)
     }
 
     func testIdsAreUnique() {
@@ -31,7 +31,7 @@ final class ActionsTests: XCTestCase {
         func reached(_ program: String, _ verb: String) -> Bool {
             Actions.all.contains { $0.program == program && $0.args.first == verb }
         }
-        for verb in ["install", "reinstall", "restart", "uninstall", "update", "bridges"] {
+        for verb in ["install", "reinstall", "restart", "uninstall", "update", "bridges", "switch"] {
             XCTAssertTrue(reached("nice-dns", verb), "nice-dns \(verb)")
         }
         for verb in ["start", "stop", "run"] {
@@ -48,10 +48,14 @@ final class ActionsTests: XCTestCase {
         XCTAssertEqual(words("update-check"), ["nice-dns", "update", "--check"])
         XCTAssertEqual(words("open-admin"), [])
         XCTAssertEqual(words("show-password-path"), [])
+        XCTAssertEqual(words("proxy-haproxy"), ["nice-dns", "switch", "proxy", "haproxy"])
+        XCTAssertEqual(words("proxy-socat"), ["nice-dns", "switch", "proxy", "socat"])
+        XCTAssertEqual(words("pihole-standard"), ["nice-dns", "switch", "pihole", "standard"])
+        XCTAssertEqual(words("pihole-hardened"), ["nice-dns", "switch", "pihole", "hardened"])
     }
 
     func testConfirmAndInstalledFlags() {
-        for id in ["reinstall", "uninstall", "update"] {
+        for id in ["reinstall", "uninstall", "update", "proxy-haproxy", "proxy-socat", "pihole-standard", "pihole-hardened"] {
             XCTAssertEqual(Actions.lookup(id)?.needsConfirm, true, id)
         }
         XCTAssertEqual(Actions.lookup("restart")?.needsConfirm, false)

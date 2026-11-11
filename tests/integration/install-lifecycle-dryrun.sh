@@ -181,10 +181,12 @@ t_x_reuse_rule_ignores_docs_not_product() {
   git -C "$c" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
   base="$(git -C "$c" rev-parse HEAD)"
   printf '\nnote\n' >>"$c/docs/workflows/dns-lifecycle.md"; printf 'note\n' >>"$c/README.md"; printf '# t\n' >>"$c/tests/run.sh"
+  # A plan's proof records are evidence, not product.
+  mkdir -p "$c/proof/x" && printf '{}\n' >"$c/proof/x/claim-1.json" && git -C "$c" add proof/x/claim-1.json
   git -C "$c" -c user.name=t -c user.email=t@t commit -qam docs
   docs="$(git -C "$c" rev-parse HEAD)"
   ( NICE_DNS_ROOT="$c"; il_same_product "$base" linux && il_same_product "$base" macos )
-  assert_rc 0 "$?" "a docs, Markdown and tests change keeps the product the same"
+  assert_rc 0 "$?" "a docs, Markdown, tests and proof change keeps the product the same"
   printf '# t\n' >>"$c/mac/start-container-root.sh"
   git -C "$c" -c user.name=t -c user.email=t@t commit -qam mac
   ( NICE_DNS_ROOT="$c"; il_same_product "$docs" linux )

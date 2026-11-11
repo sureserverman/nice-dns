@@ -57,7 +57,12 @@ for m in d.get("manifests", []):
     p = m.get("platform", {})
     if p.get("architecture") in (None, "unknown"):
         continue
-    out.append(p["os"] + "/" + p["architecture"] + ("/" + p["variant"] if p.get("variant") else ""))
+    v = p.get("variant")
+    # arm64 has one variant, v8; Docker Hub lists some images as arm64/v8.
+    # The lock and the install name it linux/arm64.
+    if p.get("architecture") == "arm64" and v == "v8":
+        v = None
+    out.append(p["os"] + "/" + p["architecture"] + ("/" + v if v else ""))
 print(",".join(out))'
 }
 

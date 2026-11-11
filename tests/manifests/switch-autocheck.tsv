@@ -1,0 +1,41 @@
+# Receipt manifest: switch-autocheck. Parsed as data by tests/reports/verify.sh (never sourced).
+# Rows (tab-separated):
+#   platforms all                            the receipt holds an observed cell on every platform
+#   scenario  <id>  per-cell|per-cell-linux|per-cell-macos|global  <meaning>
+#   content   <id>  <ERE>                    the scenario's artifact has a line matching ERE
+# One observed cell per platform (app-switches-autocheck plan, Task 3.1), one scenario per
+# step: the proxy switched from the app's own action, the hardened switch built from the
+# tree with no checkout on the host, the update schedule run by hand, the choices restored.
+platforms	all
+scenario	SA-BEFORE	per-cell	the recorded choices; no pi-hole-hardened checkout on the host
+scenario	SA-INSTALL	per-cell	nice-dns install from a clone of HEAD: the stack, the app, the update schedule loaded
+scenario	SA-PROXY	per-cell	the app's own proxy action: the other proxy runs, the old one does not, the same commit, DNS answers
+scenario	SA-HARDENED	per-cell	nice-dns switch pihole hardened: the hardened Pi-hole runs, built from the kept source with no checkout, the same commit, DNS answers
+scenario	SA-UPDATE	per-cell	the update schedule started by hand moves status's update checked_at
+scenario	SA-RESTORE	per-cell	the target ends on its recorded choices and DNS answers
+content	SA-BEFORE	^recorded_proxy	(haproxy|socat)$
+content	SA-BEFORE	^recorded_pihole	standard$
+content	SA-BEFORE	^hardened_checkout	/[^	]*pi-hole-hardened	absent$
+content	SA-BEFORE	^result	pass$
+content	SA-INSTALL	^source_commit	[0-9a-f]{40}$
+content	SA-INSTALL	^update_auto	loaded$
+content	SA-INSTALL	^gui	present$
+content	SA-INSTALL	^resolves	yes$
+content	SA-PROXY	^action	proxy-(haproxy|socat)$
+content	SA-PROXY	^gui_exit	0$
+content	SA-PROXY	^pane_last	.*finished \(exit 0\)$
+content	SA-PROXY	^running_proxy	tor-(haproxy|socat)$
+content	SA-PROXY	^resolves	yes$
+content	SA-HARDENED	^cli_exit	0$
+content	SA-HARDENED	^cli_last	Switched: Pi-hole is now the hardened one, and DNS is answering\.$
+content	SA-HARDENED	^pihole_running	hardened$
+content	SA-HARDENED	^kept_base	present$
+content	SA-HARDENED	^hardened_checkout	/[^	]*pi-hole-hardened	absent$
+content	SA-HARDENED	^resolves	yes$
+content	SA-UPDATE	^update_auto	loaded$
+content	SA-UPDATE	^checked_at_after	[0-9]+$
+content	SA-UPDATE	^schedule_done	yes$
+content	SA-UPDATE	^result_after	(current|available)$
+content	SA-RESTORE	^variant	(haproxy|socat)$
+content	SA-RESTORE	^pihole	standard$
+content	SA-RESTORE	^resolves	yes$

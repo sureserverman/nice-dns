@@ -21,6 +21,13 @@ Usage: nice-dns <command> [options]
       Install again with the recorded choices; options override them.
       A checkout uses itself. The installed command clones the branch;
       --local uses the source kept at the last install instead.
+  switch proxy haproxy|socat
+  switch pihole standard|hardened
+      Reinstall the source kept at the last install with that one choice
+      changed; the branch and the other choice stay as recorded. Asking
+      for the choice already installed changes nothing (exit 0). Exit 3
+      when the install fails: the installer restores the running stack,
+      so the old choice still runs.
   restart
       Restart the whole stack and wait for DNS to answer.
   update --check [--branch B]
@@ -66,7 +73,7 @@ ND_CLI_CMD="$1"
 shift
 
 case "$ND_CLI_CMD" in
-  install|reinstall|restart|uninstall|status|update|bridges) ;;
+  install|reinstall|restart|uninstall|status|update|bridges|switch) ;;
   -h|--help|help) usage; exit 0 ;;
   *) bad_usage "unknown command '$ND_CLI_CMD'" ;;
 esac
@@ -134,35 +141,10 @@ parse_choices() {
   done
 }
 
-# hardened_sibling: the pi-hole-hardened checkout for an install run from
-# anywhere but a checkout, whose own parent directory holds nothing useful: the
-# checkout's neighbour, else the one the last hardened install recorded, else a
-# stable place the installer's refusal can name.
-hardened_sibling() {
-  local m row
-  if [ "$ND_CLI_CHECKOUT" = 1 ]; then
-    printf '%s\n' "$(cd "$ND_CLI_HERE/.." && pwd)/pi-hole-hardened"
-    return 0
-  fi
-  if m="$(recorded_manifest)"; then
-    row="$(awk -F '\t' '$1 == "source" && $2 == "hardened-base" { print $3; exit }' "$m")"
-    row="${row%@*}"
-    if [ -n "$row" ] && [ -f "$row/Dockerfile" ]; then
-      printf '%s\n' "$row"
-      return 0
-    fi
-  fi
-  printf '%s\n' "$HOME/.local/share/nice-dns/pi-hole-hardened"
-}
-
 # run_installer <source root> <variant> <flavour> <branch>
 run_installer() {
   local script="install-$ND_CLI_OS"
   [ "$3" = hardened ] && script="$script-hardened"
-  if [ "$3" = hardened ] && { [ "$ND_CLI_CHECKOUT" = 0 ] || [ "$1" != "$ND_CLI_HERE" ]; }; then
-    ND_INST_HARDENED_SIBLING="$(hardened_sibling)"
-    export ND_INST_HARDENED_SIBLING
-  fi
   script="$1/$script.sh"
   if [ ! -f "$script" ]; then
     err "no installer at $script"
@@ -268,6 +250,54 @@ cmd_reinstall() {
     src="$ND_CLI_SRC"
   fi
   run_installer "$src" "$variant" "$flavour" "$branch"
+}
+
+# cmd_switch proxy haproxy|socat | pihole standard|hardened: `reinstall
+# --local` with that one choice changed (DEC-018: the install transaction,
+# from the kept source, on the recorded branch). The last line on stdout is
+# the answer (docs/cli-contract.md). Exit 0 switched or already that, 1
+# nothing installed or no kept source, 2 usage, 3 the install failed (the
+# installer kept or restored the stack).
+cmd_switch() {
+  local what="${1:-}" want="${2:-}" m variant flavour branch cur rc
+  [ $# -le 2 ] || bad_usage "switch takes two words: proxy haproxy|socat, or pihole standard|hardened"
+  case "$what" in
+    proxy) case "$want" in haproxy|socat) ;; *) bad_usage "switch proxy takes haproxy or socat" ;; esac ;;
+    pihole) case "$want" in standard|hardened) ;; *) bad_usage "switch pihole takes standard or hardened" ;; esac ;;
+    *) bad_usage "switch takes proxy or pihole" ;;
+  esac
+  if ! m="$(recorded_manifest)"; then
+    err "$ND_CLI_NOT_INSTALLED"
+    return 1
+  fi
+  variant="$(recorded_field "$m" variant)"
+  flavour="$(recorded_field "$m" pihole)"
+  branch="$(recorded_field "$m" branch)"
+  case "$variant" in haproxy|socat) ;; *) err "the record $m names no proxy variant; run \`nice-dns reinstall haproxy\` or \`socat\`"; return 1 ;; esac
+  case "$flavour" in standard|hardened) ;; *) err "the record $m names no Pi-hole flavour; run \`nice-dns reinstall --standard\` or \`--hardened\`"; return 1 ;; esac
+  [ -n "$branch" ] || branch=main
+  if [ "$what" = proxy ]; then cur="$variant"; else cur="$flavour"; fi
+  if [ "$cur" = "$want" ]; then
+    echo "Already $want; nothing changed."
+    return 0
+  fi
+  if [ ! -f "$ND_CLI_SNAPSHOT/lib/install.sh" ]; then
+    # shellcheck disable=SC2016  # the backticks are text for the reader
+    err "no kept source at $ND_CLI_SNAPSHOT (an install older than the kept source). "'Run `nice-dns reinstall` to install from the branch; the stack is untouched.'
+    return 1
+  fi
+  if [ "$what" = proxy ]; then variant="$want"; else flavour="$want"; fi
+  run_installer "$ND_CLI_SNAPSHOT" "$variant" "$flavour" "$branch"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    if [ "$what" = proxy ]; then cur="tor-$cur"; else cur="the $cur Pi-hole"; fi
+    err "the switch did not happen (installer exit $rc); the installer keeps or restores the running stack, so $cur still runs."
+    return 3
+  fi
+  if [ "$what" = proxy ]; then
+    echo "Switched: the proxy is now tor-$want, and DNS is answering."
+  else
+    echo "Switched: Pi-hole is now the $want one, and DNS is answering."
+  fi
 }
 
 # ─── restart ─────────────────────────────────────────────────────────────────
@@ -699,4 +729,5 @@ case "$ND_CLI_CMD" in
   status) cmd_status "$@" ;;
   update) cmd_update "$@" ;;
   bridges) cmd_bridges "$@" ;;
+  switch) cmd_switch "$@" ;;
 esac

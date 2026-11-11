@@ -1,0 +1,35 @@
+{
+ "baseline": {
+  "elapsed_s": 136.4,
+  "exit": 0,
+  "tail": "PASS  t_status_command_prints_rows_and_sections_with_its_exit_codes\nPASS  t_status_epochs_are_plain_numbers_and_a_future_pass_is_stale\nPASS  t_status_flags_a_stale_or_missing_pass_and_still_prints_it\nPASS  t_status_helper_rows_read_the_file_and_the_generation\nPASS  t_status_hint_survives_an_unreadable_state\nPASS  t_status_is_in_the_help\nPASS  t_status_never_reads_an_unreadable_file_as_absent\nPASS  t_status_not_installed_names_the_curl_line_and_exits_1\nPASS  t_status_obs_rows_end_their_lines_with_a_bsd_cut\nPASS  t_status_route_absent_until_chosen_and_journal_fields_stay_aligned\nPASS  t_status_rows_cover_every_group_without_running_anything\nPASS  t_status_unreadable_state_exits_2\nPASS  t_status_values_carry_no_control_characters\nPASS  t_switch_changes_one_choice_from_the_kept_source\nPASS  t_switch_to_the_installed_choice_changes_nothing\nPASS  t_switch_usage_errors_run_nothing\nPASS  t_switch_whose_install_fails_says_the_old_choice_runs\nPASS  t_switch_with_nothing_installed_or_no_kept_source\nPASS  t_the_readiness_wait_keeps_to_its_stated_limit\nPASS  t_unknown_commands_and_options_are_usage_errors\nPASS  t_unsupported_platform_is_refused\nPASS  t_update_a_failed_install_names_reinstall_local\nPASS  t_update_cache_names_no_commit_for_an_unclean_record\nPASS  t_update_check_bounds_its_wait_under_a_minute\nPASS  t_update_check_compares_the_recorded_commit_with_the_branch\nPASS  t_update_check_of_another_branch_keeps_no_cache\nPASS  t_update_check_reads_only_its_own_branch_line\nPASS  t_update_check_takes_only_branch\nPASS  t_update_check_unknown_changes_nothing_but_the_cache\nPASS  t_update_check_with_nothing_installed\nPASS  t_update_check_without_a_controller_keeps_no_cache_and_creates_nothing\nPASS  t_update_current_installs_nothing_unless_forced\nPASS  t_update_from_a_checkout_still_installs_the_branch\nPASS  t_update_installed_but_not_current_is_exit_11\nPASS  t_update_installs_the_recorded_choices_when_available\nPASS  t_update_refuses_local_and_widens_nothing\nPASS  t_update_unknown_installs_nothing\ngroup integration/nice-dns-cli: collected=72 passed=72 failed=0\ncollected=72 passed=72 failed=0\nresult=pass run_id=20261110T225802Z-c5d2baff artifacts=/home/user/.local/state/nice-dns-tests/runs/20261110T225802Z-c5d2baff"
+ },
+ "break_patch": "--- a/nice-dns\n+++ b/nice-dns\n@@ -286,7 +286,6 @@\n     err \"no kept source at $ND_CLI_SNAPSHOT (an install older than the kept source). \"'Run `nice-dns reinstall` to install from the branch; the stack is untouched.'\n     return 1\n   fi\n-  if [ \"$what\" = proxy ]; then variant=\"$want\"; else flavour=\"$want\"; fi\n   run_installer \"$ND_CLI_SNAPSHOT\" \"$variant\" \"$flavour\" \"$branch\"; rc=$?\n   if [ \"$rc\" -ne 0 ]; then\n     if [ \"$what\" = proxy ]; then cur=\"tor-$cur\"; else cur=\"the $cur Pi-hole\"; fi\n",
+ "build": null,
+ "created": "2026-11-10T23:02:35+00:00",
+ "fingerprint": "3967b8cf51572cab396ecf7952ad7751f0cbe69104017682ebf09fe05211fc8b",
+ "index": 1,
+ "kind": "claim",
+ "named_break": null,
+ "no_build_reason": "shell scripts, nothing to build",
+ "plan": "/mnt/vault/Portfolio/containers/nice-dns/plans/2026-11-10-app-switches-autocheck-plan.md",
+ "red": {
+  "elapsed_s": 136.0,
+  "exit": 1,
+  "tail": "PASS  t_status_flags_a_stale_or_missing_pass_and_still_prints_it\nPASS  t_status_helper_rows_read_the_file_and_the_generation\nPASS  t_status_hint_survives_an_unreadable_state\nPASS  t_status_is_in_the_help\nPASS  t_status_never_reads_an_unreadable_file_as_absent\nPASS  t_status_not_installed_names_the_curl_line_and_exits_1\nPASS  t_status_obs_rows_end_their_lines_with_a_bsd_cut\nPASS  t_status_route_absent_until_chosen_and_journal_fields_stay_aligned\nPASS  t_status_rows_cover_every_group_without_running_anything\nPASS  t_status_unreadable_state_exits_2\nPASS  t_status_values_carry_no_control_characters\nFAIL  t_switch_changes_one_choice_from_the_kept_source (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261110T230019Z-f1995404/cases/integration-nice-dns-cli/t_switch_changes_one_choice_from_the_kept_source/case.log)\n      ASSERT FAIL: Linux: the kept source's installer, the proxy changed, the branch recorded: expected [installer[snapshot] install-deb.sh socat dev] got [installer[snapshot] install-deb.sh haproxy dev]\nPASS  t_switch_to_the_installed_choice_changes_nothing\nPASS  t_switch_usage_errors_run_nothing\nFAIL  t_switch_whose_install_fails_says_the_old_choice_runs (exit 1; log /home/user/.local/state/nice-dns-tests/runs/20261110T230019Z-f1995404/cases/integration-nice-dns-cli/t_switch_whose_install_fails_says_the_old_choice_runs/case.log)\n      ASSERT FAIL: the install was tried once: expected [installer[snapshot] install-deb.sh socat main] got [installer[snapshot] install-deb.sh haproxy main]\nPASS  t_switch_with_nothing_installed_or_no_kept_source\nPASS  t_the_readiness_wait_keeps_to_its_stated_limit\nPASS  t_unknown_commands_and_options_are_usage_errors\nPASS  t_unsupported_platform_is_refused\nPASS  t_update_a_failed_install_names_reinstall_local\nPASS  t_update_cache_names_no_commit_for_an_unclean_record\nPASS  t_update_check_bounds_its_wait_under_a_minute\nPASS  t_update_check_compares_the_recorded_commit_with_the_branch\nPASS  t_update_check_of_another_branch_keeps_no_cache\nPASS  t_update_check_reads_only_its_own_branch_line\nPASS  t_update_check_takes_only_branch\nPASS  t_update_check_unknown_changes_nothing_but_the_cache\nPASS  t_update_check_with_nothing_installed\nPASS  t_update_check_without_a_controller_keeps_no_cache_and_creates_nothing\nPASS  t_update_current_installs_nothing_unless_forced\nPASS  t_update_from_a_checkout_still_installs_the_branch\nPASS  t_update_installed_but_not_current_is_exit_11\nPASS  t_update_installs_the_recorded_choices_when_available\nPASS  t_update_refuses_local_and_widens_nothing\nPASS  t_update_unknown_installs_nothing\ngroup integration/nice-dns-cli: collected=72 passed=70 failed=2\ncollected=72 passed=70 failed=2\nresult=fail run_id=20261110T230019Z-f1995404 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261110T230019Z-f1995404"
+ },
+ "schema": 2,
+ "shell": "bash",
+ "task": "1.2",
+ "test": "bash tests/run.sh integration nice-dns-cli",
+ "text": "`bash tests/run.sh integration nice-dns-cli` with new cases, one per Outcomes line of this stage that names `switch`: each of the four choices runs the fixture installer with exactly that choice changed, the recorded branch and the kept source, and never `git clone`; the same choice prints `Already ...; nothing changed.` and runs no installer; a failing fixture installer gives exit 3 and the stderr line; no kept source gives exit 1; `switch proxy nginx`, `switch pihole`, `switch` and a second word too many give exit 2 with nothing on stdout",
+ "touched": [
+  "nice-dns"
+ ],
+ "touched_blobs": {
+  "nice-dns": "13e96e3691629742c6de1b69219771172dc82a3d"
+ },
+ "witness_blobs": {
+  "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
+ }
+}

@@ -42,7 +42,7 @@ Rows of a group come together, in this order of groups.
 | `obs` | The last pass's records, one per observation: `obs<TAB><name><TAB><verdict><TAB><ms><TAB><reason>`, with `<name>` like `container:pi-hole` or `route:cloudflare-onion` and `<verdict>` `healthy\|unhealthy\|indeterminate`. Absent when no pass was recorded. |
 | `route` | `selected <route id> <state generation>`, from the controller's state. Absent before the controller has chosen a route. |
 | `bridges` | `mode on\|off` (`on` unless the bridges toggle wrote `TOR_BRIDGES=off`); `count <n>` (bridge lines in `bridges.env`); `last_refresh <epoch>\|never`. |
-| `update` | `result current\|available\|unknown`; with a cache, `checked_at <epoch>` and `remote_commit <sha>`; with none, `result unknown never-checked`. Only `nice-dns update --check` and `nice-dns update` write the cache. |
+| `update` | `result current\|available\|unknown`; with a cache, `checked_at <epoch>` and `remote_commit <sha>`; with none, `result unknown never-checked`. Only `nice-dns update --check` and `nice-dns update` write the cache, and the controller's twice-daily `nice-dns-health update-check`, which runs `nice-dns update --check` and keeps a check that did not finish as `unknown`. `auto loaded\|stopped` — `loaded` when that twice-daily check is scheduled (Linux: the `nice-dns-health-update.timer` enable link; macOS: the `org.nice-dns.health-update` plist with no `schedule-stopped` mark); `stopped` when it is not installed (shadow mode, or an install from before it) or `nice-dns-health stop` stopped it. |
 | `helper` | `path <where nice-dns-helper is installed>` (`/usr/libexec/nice-dns-helper` on Linux, `/usr/local/libexec/nice-dns-helper` on macOS); `installed yes\|no` (the file is there and executable; it is never run); `version <v>`, what the current generation recorded after it installed or found the helper (`absent`; `unknown` when there is no generation or it recorded none). The version is the installed file's, whether or not this tree can use it. Actions without a terminal (the GUIs) need it. |
 | `admin` | `url <Pi-hole admin URL>`; when installed, `password_path <file holding the admin password>` — the path, never the password. |
 | `recent` | The last five rows of the controller's journal, oldest first: `recent<TAB><epoch><TAB><target><TAB><result>`. |
@@ -117,6 +117,28 @@ The last line on stdout is the answer.
 | 1 | — | Nothing is installed (stderr: ``nice-dns is not installed; run `nice-dns install` ``); the mode file is not written. Or `on`/`off` would change the mode on an install whose proxy launcher does not pass `TOR_BRIDGES` (stderr: `predates the bridges switch` and ``Run `nice-dns update` first``): nothing is written or restarted. Or `on`/`off` could not write the mode file: stderr names its path, and the mode and everything else are unchanged. Or the controller stayed busy (stderr: `still busy`): the mode is unchanged. Or the restart failed (stderr: the mode is written and takes effect at the next proxy start; `nice-dns restart` applies it now, since asking for the same mode again restarts nothing) or DNS did not answer after it (stderr: `not answering yet`). |
 | 2 | — | A usage error (no subcommand, another word, or more than one), with nothing on stdout; or `status` found a file it reads there but unreadable (an `unreadable<TAB><reason>` line, as in `status`). |
 
+## `nice-dns switch proxy haproxy|socat` and `nice-dns switch pihole standard|hardened`
+
+A switch reinstalls the source kept at the last install
+(`~/.local/share/nice-dns/source`) with that one choice changed: the recorded
+branch and the other recorded choice stay. It runs what `reinstall --local`
+runs, through the install transaction and its rollback (DEC-018). It never
+clones, and the installed commit (`source_commit`) does not change. The
+GUIs' actions `proxy-haproxy`, `proxy-socat`, `pihole-standard` and
+`pihole-hardened` (gui/share/actions.tsv) run these four commands.
+
+### Exit codes and output
+
+The last line on stdout is the answer; the installer's own output comes before it.
+
+| Code | Last line on stdout | Meaning |
+|---|---|---|
+| 0 | `Switched: the proxy is now tor-<variant>, and DNS is answering.` or `Switched: Pi-hole is now the <flavour> one, and DNS is answering.` | The install with the new choice finished: the installer returns only after DNS answers through the new stack. `status` shows the new `variant` or `pihole`. |
+| 0 | `Already <choice>; nothing changed.` | The choice asked for is the one installed; no installer ran. |
+| 1 | — | Nothing is installed (stderr: ``nice-dns is not installed; run `nice-dns install` ``), or there is no kept source (stderr names the missing directory and ``nice-dns reinstall``), or the record names no variant or flavour. Nothing ran. |
+| 2 | — | A usage error (no word, an unknown word, or more than two), with nothing on stdout. Nothing ran. |
+| 3 | — | The install failed (stderr: `the switch did not happen`, and which proxy or Pi-hole still runs): the installer kept or restored the running stack. |
+
 ## Consumers: `nice-dns-gui` (Linux)
 
 `nice-dns-gui` (`gui/linux`, GTK 4 and libadwaita; installed by the Linux
@@ -135,8 +157,15 @@ and nothing else:
   tables above say: `update --check` 0 and 10 are answers, `update` 11 is an
   install whose re-check disagreed, and a root step a person dismissed or
   could not authorise shows `authorisation cancelled` or `not authorised`.
-- One action runs at a time; uninstall (typed), reinstall and update ask
-  first.
+- The Installed section's Proxy selector (haproxy, socat) and Pi-hole
+  selector (standard, hardened) are the rows `proxy-haproxy`, `proxy-socat`,
+  `pihole-standard` and `pihole-hardened` (`nice-dns switch ...`). Each shows
+  the `install variant` / `install pihole` row; a missing or other value
+  disables it and shows `unknown`. Picking the other value asks first; while
+  the switch runs the selector shows the new value, and a failed switch (or
+  Not now) puts it back on the installed one. No row is drawn in two places.
+- One action runs at a time (both selectors are disabled while one runs);
+  uninstall (typed), reinstall, update and a switch ask first.
 
 Its hooks are for tests and live proofs, not for people:
 
@@ -145,7 +174,7 @@ Its hooks are for tests and live proofs, not for people:
 | `--check` | Reads the status once with no display; prints one line; exit 0 installed, 1 not installed or no `nice-dns` (the line names the path looked for), 2 otherwise. |
 | `--screenshot <png>` | Shows the window for the status, renders it into `<png>` and exits (needs a display; Xvfb will do). |
 | `--run-action <id> --exit` | Runs one action of the table with no dialog, prints the log pane and exits with the action's status. |
-| `--probe <id>` | Clicks `id` as a person would and prints what the window shows before, during and after (the test suite's hook). |
+| `--probe <id>` | Clicks `id` as a person would and prints what the window shows before, during and after (the test suite's hook). For a selector id it prints the question with its dialog open, then answers Switch, so the switch really runs; with `NICE_DNS_GUI_PROBE_ANSWER=cancel` it answers Not now. |
 | `--version` | `nice-dns-gui <version>`. |
 
 `NICE_DNS_GUI_STATUS_CMD` replaces the status command for the fixture tests.
@@ -164,8 +193,11 @@ falls back to; the commands it runs get `~/.local/bin`, `/opt/homebrew/bin` and
 installed; red when the status cannot be shown, the controller's verdict is
 `FAIL` or an observation is `unhealthy`; amber when the controller is stale,
 its verdict is not `OK`, an observation is not `healthy` or a file status reads
-is unreadable; green otherwise (gui/mac/Sources/NiceDNSKit/Session.swift). One action runs at a time; uninstall (typed) and
-reinstall ask first.
+is unreadable; green otherwise (gui/mac/Sources/NiceDNSKit/Session.swift). The window's
+Proxy and Pi-hole pickers and the menu's two submenus (a check mark on the
+installed value) are the same four `switch` rows, set and reverted as on
+Linux. One action runs at a time; uninstall (typed), reinstall and a switch
+ask first.
 
 Its hooks are for tests and live proofs. The program is
 `~/Applications/nice-dns.app/Contents/MacOS/NiceDNSGUI`; over ssh, run it in

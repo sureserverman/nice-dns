@@ -703,8 +703,8 @@ t_controller_report_is_read_only_and_holds_no_secrets() {
 t_quiesce_stops_only_the_legacy_mutating_agents() {
   local script
   script="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG")"
-  assert_match 'org\.nice-dns\.health org\.nice-dns\.bridge-eval org\.nice-dns\.health-bridges' "$script" "macOS: the old controller and both bridge agents"
-  assert_match 'nice-dns-health\.timer nice-dns-health-bridges\.timer' "$script" "Linux: the controller and bridge timers"
+  assert_match 'org\.nice-dns\.health org\.nice-dns\.bridge-eval org\.nice-dns\.health-bridges org\.nice-dns\.health-update' "$script" "macOS: the old controller, both bridge agents and the update check"
+  assert_match 'nice-dns-health\.timer nice-dns-health-bridges\.timer nice-dns-health-update\.timer' "$script" "Linux: the controller, bridge and update timers"
   assert_not_match 'bootout[^;]*start-container|bootout[^;]*debug-monitor' "$script" "the stack's own starter and the read-only debug monitor keep running"
 }
 
@@ -957,9 +957,9 @@ t_resume_agents_is_guarded_and_starts_only_the_schedules() {
   assert_rc 0 "$TG_RC" "resume-agents after snapshot: $TG_OUT"
   assert_match 'NICE_DNS_OP=resume-agents ' "$(cat "$FAKE_LOG")" "sent"
   b="$(tg_branch resume-agents)"
-  assert_match 'org\.nice-dns\.health org\.nice-dns\.bridge-eval org\.nice-dns\.health-bridges' "$b" "macOS: the agents quiesce-agents stops"
+  assert_match 'org\.nice-dns\.health org\.nice-dns\.bridge-eval org\.nice-dns\.health-bridges org\.nice-dns\.health-update' "$b" "macOS: the agents quiesce-agents stops"
   assert_match 'launchctl bootstrap "gui/\$\(id -u\)" "\$p"' "$b" "macOS: loaded again from their installed plists"
-  assert_match 'nice-dns-health\.timer nice-dns-health-bridges\.timer' "$b" "Linux: the timers quiesce-agents stops"
+  assert_match 'nice-dns-health\.timer nice-dns-health-bridges\.timer nice-dns-health-update\.timer' "$b" "Linux: the timers quiesce-agents stops"
   assert_match 'systemctl --user start "\$u"' "$b" "Linux: started again"
   assert_not_match 'start-container|enable|daemon-reload|bootout|stop ' "$b" "nothing else is touched"
 }

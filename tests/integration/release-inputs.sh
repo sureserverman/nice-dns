@@ -27,7 +27,7 @@ t_lock_is_well_formed() {
   for p in linux/amd64 linux/arm64 linux/arm/v7 linux/riscv64; do
     assert_match "(^|,)$p(,|$)" "$sup" "the documented CPU support keeps $p"
   done
-  for role in proxy-haproxy proxy-socat unbound-base pihole-base; do
+  for role in proxy-haproxy proxy-socat unbound-base pihole-base hardened-os; do
     assert_match '^sha256:[0-9a-f]{64}$' "$(ri_field "$role" "$RI_LOCK" 5)" "$role: an index digest"
     missing=""
     for p in $(printf '%s' "$sup" | tr ',' ' '); do
@@ -41,7 +41,9 @@ t_lock_is_well_formed() {
     assert_match '^github\.com/sureserverman/[a-z-]+@[0-9a-f]{40}$' "$(ri_field "$role" "$RI_LOCK" 7)" "$role: source commit"
   done
   assert_eq none "$(ri_field pihole-base "$RI_LOCK" 9)" "pihole-base: upstream, no signer nice-dns can name"
+  assert_eq none "$(ri_field hardened-os "$RI_LOCK" 9)" "hardened-os: upstream Alpine, no signer nice-dns can name"
   assert_ne "" "$(ri_row unpublished hardened-base "$RI_LOCK")" "the hardened base is declared unpublished"
+  assert_match 'built from the nice-dns tree' "$(ri_row unpublished hardened-base "$RI_LOCK")" "and built from the tree"
   assert_eq "" "$(awk -F '\t' '/^#/ { next } $1 !~ /^(schema|supported|issuer|image|unpublished|provides|requires)$/ && NF' "$RI_LOCK")" "no unknown row kinds"
 }
 
@@ -130,11 +132,10 @@ t_every_public_resolver_literal_is_declared() {
   assert_match '^literal	' "$(cat "$root/release/bootstrap.tsv")" "the literals are declared as rows"
 }
 
-# ri_env <entrypoint>: the installer fixture with a hardened sibling.
+# ri_env <entrypoint>: the installer fixture (no checkout beside the tree:
+# the hardened base is built from pihole-hardened/base).
 ri_env() {
   ip_env "$1"
-  mkdir -p "$IP_W/src/pi-hole-hardened"
-  printf 'FROM alpine:3.21.3\n' >"$IP_W/src/pi-hole-hardened/Dockerfile"; : >"$IP_W/src/pi-hole-hardened/post-install.sh"
 }
 
 t_installers_use_the_locked_digests() {
@@ -149,7 +150,7 @@ t_installers_use_the_locked_digests() {
       assert_rc 0 "$IP_RC" "$ep: $IP_OUT"
       proxy="$(ri_pinned proxy-socat "$lock")"; ub="$(ri_pinned unbound-base "$lock")"
       assert_match "^(podman pull|container image pull) $proxy\$" "$(cat "$FAKE_LOG")" "$ep: the proxy is pulled by its locked digest"
-      assert_eq "" "$(grep -E '^(podman pull|container image pull) [^@ ]+$' "$FAKE_LOG" | grep -v 'alpine:3\.21\.3$')" "$ep: nothing is pulled by a floating tag (the sibling's own FROM aside)"
+      assert_eq "" "$(grep -E '^(podman pull|container image pull) [^@ ]+$' "$FAKE_LOG")" "$ep: nothing is pulled by a floating tag"
       if [ "$(ip_platform "$ep")" = linux ]; then
         assert_match "^podman build .*--build-arg BASE_IMAGE=$ub .*-t localhost/unbound:" "$(cat "$FAKE_LOG")" "$ep: unbound builds on the locked base"
         [ "$(ip_flavor "$ep")" = standard ] && assert_match "^podman build .*--build-arg BASE_IMAGE=$(ri_pinned pihole-base "$lock") .*-t localhost/pi-hole:" "$(cat "$FAKE_LOG")" "$ep: pi-hole builds on the locked base"
@@ -162,8 +163,8 @@ t_installers_use_the_locked_digests() {
       assert_match "$(printf 'locked\tproxy-socat\t')$proxy" "$(cat "$m")" "$ep: the manifest names the locked proxy"
       assert_match "$(printf 'lock\tsha256:')[0-9a-f]{64}" "$(cat "$m")" "$ep: and the lock it came from"
       assert_match "$(printf 'blocklist\tadlists\tsha256:')[0-9a-f]{64}" "$(cat "$m")" "$ep: the blocklist sources are recorded"
-      [ "$(ip_flavor "$ep")" = hardened ] && assert_match "$(printf 'source\thardened-base\t')" "$(cat "$m")" "$ep: the sibling's commit is recorded"
-      [ "$(ip_flavor "$ep")" = hardened ] && assert_match "$(printf 'image\tsibling-base\talpine:3\.21\.3\t')[0-9a-f]+" "$(cat "$m")" "$ep: and the local id of the base it names"
+      [ "$(ip_flavor "$ep")" = hardened ] && assert_match "$(printf 'source\thardened-base\tpihole-hardened/base@')" "$(cat "$m")" "$ep: the tree's commit is recorded for the base"
+      [ "$(ip_flavor "$ep")" = hardened ] && assert_match "^(podman pull|container image pull) $(ri_pinned hardened-os "$lock")\$" "$(cat "$FAKE_LOG")" "$ep: the base's Alpine is pulled by its locked digest"
       true
     ) || exit 1
   done
@@ -265,21 +266,63 @@ t_signatures_are_verified_when_cosign_is_present() {
   done
 }
 
-t_hardened_needs_its_sibling() {
+# The hardened base's Alpine is a lock row like every other base: a tree
+# whose lock lacks it, or whose pihole-hardened/base/Dockerfile names another
+# base than the one pinned, refuses a hardened install before any change.
+t_hardened_base_needs_its_locked_alpine() {
   local ep
   ip_select
-  # Why: the lock declares the hardened base unpublished (nothing to pull).
   assert_match '^unpublished'"$(printf '\t')"'hardened-base' "$(cat "$RI_LOCK")" "the lock declares the hardened base unpublished"
+  assert_eq "$(ri_field hardened-os "$RI_LOCK" 3 | sed -e 's|^docker\.io/||' -e 's|^library/||'):$(ri_field hardened-os "$RI_LOCK" 4)" \
+    "$(awk '/^FROM[ \t]/ { print $2; exit }' "$NICE_DNS_ROOT/pihole-hardened/base/Dockerfile")" "the pinned Alpine is the one pihole-hardened/base builds FROM"
   for ep in $IP_EPS; do
     [ "$(ip_flavor "$ep")" = hardened ] || continue
     (
-      IP_NO_SIBLING=1 ip_env "$ep"
+      ri_env "$ep"
+      awk -F '\t' '!($1 == "image" && $2 == "hardened-os")' "$IP_TREE/release/images.lock" >"$IP_W/lock" && cat "$IP_W/lock" >"$IP_TREE/release/images.lock"
       ip_install "$ep"
-      ri_refused "$ep" "a hardened install without the sibling checkout"
-      assert_match 'pi-hole-hardened' "$IP_OUT" "$ep: it says what is missing"
+      ri_refused "$ep" "a lock without the hardened-os row"
+      assert_match 'hardened-os' "$IP_OUT" "$ep: it names the missing row"
       assert_eq "" "$(grep -E 'pull .*pi-hole-hardened' "$FAKE_LOG")" "$ep: no unpublished image is pulled"
     ) || exit 1
+    (
+      ri_env "$ep"
+      sed -i 's/^FROM alpine:3\.21\.3$/FROM alpine:3.22.0/' "$IP_TREE/pihole-hardened/base/Dockerfile"
+      ip_install "$ep"
+      ri_refused "$ep" "a base Dockerfile that builds FROM another Alpine than the lock pins"
+      assert_match 'alpine:3\.22\.0' "$IP_OUT" "$ep: it names what the Dockerfile asks for"
+    ) || exit 1
   done
+}
+
+# scripts/sync-hardened-base.sh <checkout>: copies the four build inputs of a
+# committed pi-hole-hardened checkout into pihole-hardened/base and records
+# its commit in UPSTREAM; the copy in this tree is that of the commit UPSTREAM
+# names, so syncing the same commit changes nothing.
+t_sync_hardened_base_copies_a_committed_checkout() {
+  local w="$CASE_DIR/sync" up t out rc c f
+  up="$w/pi-hole-hardened" t="$w/tree"
+  mkdir -p "$up/checksums" "$t"
+  cp -R "$NICE_DNS_ROOT/scripts" "$NICE_DNS_ROOT/pihole-hardened" "$NICE_DNS_ROOT/release" "$t/"
+  for f in Dockerfile start.sh post-install.sh checksums/FTL-v6.6.1.sha256; do cp -p "$NICE_DNS_ROOT/pihole-hardened/base/$f" "$up/$f"; done
+  # The owner's own git templates and hooks stay out of the fixture.
+  ( HOME="$w/home" GIT_CONFIG_NOSYSTEM=1; export HOME GIT_CONFIG_NOSYSTEM; mkdir -p "$HOME"
+    git -C "$up" init -q --template= && git -C "$up" add -A && git -C "$up" -c user.name=t -c user.email=t@t commit -qm fixture ) || fail "fixture repo"
+  c="$(git -C "$up" rev-parse HEAD)"
+  out="$(bash "$t/scripts/sync-hardened-base.sh" "$up" 2>&1)"; rc=$?
+  assert_rc 0 "$rc" "a committed checkout syncs: $out"
+  for f in Dockerfile start.sh post-install.sh checksums/FTL-v6.6.1.sha256; do
+    assert_eq "$(cat "$NICE_DNS_ROOT/pihole-hardened/base/$f")" "$(cat "$t/pihole-hardened/base/$f")" "$f is the commit's"
+  done
+  assert_eq 1 "$([ -x "$t/pihole-hardened/base/start.sh" ] && [ -x "$t/pihole-hardened/base/post-install.sh" ] && echo 1)" "start.sh and post-install.sh stay executable"
+  assert_eq "$c" "$(awk -F '\t' '$1 == "commit" { print $2 }' "$t/pihole-hardened/base/UPSTREAM")" "UPSTREAM names the synced commit"
+  assert_match "$(printf '^commit\t')[0-9a-f]{40}$" "$(grep '^commit' "$NICE_DNS_ROOT/pihole-hardened/base/UPSTREAM")" "this tree's UPSTREAM names a full commit"
+  printf 'local edit\n' >>"$up/start.sh"
+  out="$(bash "$t/scripts/sync-hardened-base.sh" "$up" 2>&1)"; rc=$?
+  assert_nonzero "$rc" "a checkout with uncommitted changes is refused: $out"
+  assert_match 'uncommitted' "$out" "it says why"
+  out="$(bash "$t/scripts/sync-hardened-base.sh" 2>&1)"; rc=$?
+  assert_rc 2 "$rc" "no checkout named is a usage error: $out"
 }
 
 # The refresh script: registry digests and platforms, signatures, and a
@@ -307,6 +350,7 @@ STUB
 #!/bin/sh
 printf 'podman %s\n' "$*" >>"$FAKE_LOG"
 [ -f "$FAKE/podman_fail" ] && { echo 'Error: cannot set up namespace' >&2; exit 125; }
+[ -f "$FAKE/podman_v8" ] && { echo '{"manifests":[{"platform":{"os":"linux","architecture":"amd64"}},{"platform":{"os":"linux","architecture":"arm64","variant":"v8"}},{"platform":{"os":"linux","architecture":"arm","variant":"v7"}},{"platform":{"os":"linux","architecture":"riscv64"}}]}'; exit 0; }
 echo '{"manifests":[{"platform":{"os":"linux","architecture":"amd64"}},{"platform":{"os":"linux","architecture":"arm64"}},{"platform":{"os":"linux","architecture":"arm","variant":"v7"}},{"platform":{"os":"linux","architecture":"riscv64"}},{"platform":{"os":"unknown","architecture":"unknown"}}]}'
 STUB
   cat >"$b/cosign" <<'STUB'
@@ -340,6 +384,14 @@ STUB
   assert_match 'cannot list the platforms of docker.io/sureserver/tor-haproxy' "$out" "it says the listing failed"
   assert_eq "" "$(printf '%s\n' "$out" | grep -E 'Traceback|has no linux/')" "and does not report missing builds"
   assert_eq "$(cat "$RI_LOCK")" "$(cat "$w/images.lock")" "and leaves the lock as it was"
+  # Why: Docker Hub lists Alpine's arm64 as arm64/v8; v8 is arm64's only
+  # variant, and the lock and the install compare linux/arm64.
+  rm -f "$FAKE/podman_fail"; : >"$FAKE/podman_v8"
+  cp "$RI_LOCK" "$w/images.lock"
+  out="$(LOCK="$w/images.lock" PATH="$b:$PATH" bash "$NICE_DNS_ROOT/scripts/update-images-lock.sh" --lock "$w/images.lock" --write 2>&1)"; rc=$?
+  assert_rc 0 "$rc" "an arm64/v8 listing is linux/arm64: $out"
+  assert_eq "" "$(printf '%s\n' "$out" | grep -E 'has no linux/')" "no build is reported missing"
+  assert_not_match 'arm64/v8' "$(cat "$w/images.lock")" "and the lock never records the variant"
 }
 
 # The release assets lock (Sub-plan 5 Task 2.4): its grammar, under gawk and

@@ -7,8 +7,11 @@
 # (user decision 2026-09-28): each platform's hardened entrypoint runs once,
 # over the standard deployment the target runs now, with the proxy it runs:
 #
-#   install hardened   install-{deb,mac}-hardened.sh from this checkout's HEAD
-#                      and the pi-hole-hardened sibling's HEAD; the resolver
+#   install hardened   install-{deb,mac}-hardened.sh from this checkout's HEAD,
+#                      which builds the base from its pihole-hardened/base
+#                      (OD-6); the sibling's HEAD, still sent and recorded
+#                      as the receipt's hardened_sha, must be the commit
+#                      pihole-hardened/base/UPSTREAM names; the resolver
 #                      never leaves the stack; the deployment is checked as
 #                      in live/install-lifecycle, and it is the hardened one
 #   uninstall          with the same entrypoint: the recorded DNS state is
@@ -62,6 +65,8 @@ il_hardened() {
     assert_eq "" "$(GIT_OPTIONAL_LOCKS=0 git -C "$NICE_DNS_ROOT" status --porcelain --untracked-files=no)" "the checkout is committed (the archive is of HEAD)"
     assert_eq "" "$(GIT_OPTIONAL_LOCKS=0 git -C "$IH_SIB" status --porcelain --untracked-files=no)" "pi-hole-hardened is committed (its archive is of HEAD)"
   fi
+  assert_eq "$(awk -F '\t' '$1 == "commit" { print $2; exit }' "$NICE_DNS_ROOT/pihole-hardened/base/UPSTREAM")" "$(git -C "$IH_SIB" rev-parse HEAD)" \
+    "the recorded pi-hole-hardened commit is the one pihole-hardened/base was copied from"
   # target.sh changes a target only after a snapshot in this run.
   il_t "$a" snapshot >>"$d/ops.log" 2>&1 || fail "snapshot $a"
   il_report "$a" before || fail "lifecycle-report $a: $(tail -n 5 "$d/ops.log")"

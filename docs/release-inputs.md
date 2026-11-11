@@ -39,9 +39,31 @@ Each generation's manifest records the lock's sha256, every locked reference,
 each signature result, the gravity sources (`pihole/adlists-default.txt`,
 `pihole/custom-allowlist.txt`; the lists they name are downloaded at build
 time, so their contents are not pinned) and, for the hardened flavour, the
-sibling `pi-hole-hardened` commit and the local id of the base its Dockerfile
-names. The hardened base is not published, so a hardened
-install needs that sibling checkout next to nice-dns.
+base's source (`pihole-hardened/base@<this tree's commit>` and the
+pi-hole-hardened commit it was copied from) and the local id of the base.
+
+The hardened base is not published. Its four build inputs (`Dockerfile`,
+`start.sh`, `post-install.sh`, `checksums/FTL-v6.6.1.sha256`) are copied into
+this tree at `pihole-hardened/base/`, with an `UPSTREAM` file naming the
+pi-hole-hardened commit they came from, and a hardened install builds the base
+from them; no other checkout is needed. The Alpine image the Dockerfile
+builds FROM is the `hardened-os` row of `release/images.lock`, pulled by
+digest. `scripts/sync-hardened-base.sh <checkout>` refreshes the copy from a
+reviewed pi-hole-hardened commit; review its diff like any lock change.
+
+What the copied Dockerfile still fetches at build time, unpinned by any lock:
+the pihole-FTL binary is checked against `checksums/FTL-v6.6.1.sha256`, but
+FTL's default `pihole.toml` (wget from the FTL release), Pi-hole core and web
+(`git clone --branch v6.4.2` / `v6.5`, a tag, not a commit) and the Alpine
+packages (`apk upgrade`, `apk add`) are taken as the network serves them at
+that moment. A build months apart can differ there.
+
+The kept source (`~/.local/share/nice-dns/source`, what `nice-dns switch` and
+`reinstall --local` install from) has no git. When an install keeps it, it
+writes `.source-commit` beside it: the commit, whether the tree had local
+changes, and a sha256 over the kept files. An install from the kept source
+reads it as data and records that commit, marked as changed once the kept
+files no longer hash as recorded. No other tree is trusted that way.
 
 The previous generation's images stay on the host (lib/install.sh prunes only
 older ones), so a failed install rolls back to what ran before.

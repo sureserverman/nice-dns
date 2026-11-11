@@ -82,7 +82,7 @@ cmd_wrap() {
 case "$op" in
   quiesce-agents)
     put quiesced yes
-    if [ "$plat" = macos ]; then printf 'quiesced\torg.nice-dns.health\trc=0\nquiesced\torg.nice-dns.health-bridges\trc=0\n'
+    if [ "$plat" = macos ]; then printf 'quiesced\torg.nice-dns.health\trc=0\nquiesced\torg.nice-dns.health-bridges\trc=0\nquiesced\torg.nice-dns.health-update\trc=0\n'
     else printf 'quiesced\tnice-dns-health.timer\trc=0\n'; fi ;;
   resume-agents)
     [ "$brk" != resume-fails ] || { echo "fake resume failed"; exit 1; }

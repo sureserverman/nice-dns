@@ -279,35 +279,112 @@ t_a_named_branch_is_what_gets_installed_and_recorded() {
   assert_eq "" "$(cl_calls '^installer')" "and installs nothing"
 }
 
-t_hardened_off_a_clone_or_the_kept_source_finds_its_sibling() {
-  local sd
+# The hardened base is built from the source tree's own pihole-hardened/base
+# (OD-6): no run names a checkout beside it, whether from the kept source, a
+# clone or a checkout, and the library has no lookup left to honour one.
+t_hardened_runs_name_no_sibling_checkout() {
   cl_world Linux; cl_installed; cl_record haproxy standard main
   cl_run "$CL_CMD" reinstall --hardened --local
-  assert_eq "sibling $CL_HOME/.local/share/nice-dns/pi-hole-hardened" "$(cl_calls '^sibling')" "nothing recorded: a stable place the refusal can name"
-  sd="$CL_HOME/.local/state/nice-dns-install"
-  mkdir -p "$CL_W/mine/pi-hole-hardened"; : >"$CL_W/mine/pi-hole-hardened/Dockerfile"
-  printf 'source\thardened-base\t%s@abc\n' "$CL_W/mine/pi-hole-hardened" >>"$sd/generations/g1/prepare.tsv"
+  assert_rc 0 "$CL_RC" "a hardened reinstall from the kept source runs: $CL_OUT"
+  assert_eq "installer[snapshot] install-deb-hardened.sh haproxy main" "$(cl_calls '^installer')" "from the kept source, with the hardened entrypoint"
+  assert_eq "" "$(cl_calls '^sibling')" "the kept source: no checkout is named"
   : >"$CL_LOG"
   cl_run "$CL_CMD" reinstall --hardened
-  assert_eq "sibling $CL_W/mine/pi-hole-hardened" "$(cl_calls '^sibling')" "the recorded one"
+  assert_eq "" "$(cl_calls '^sibling')" "a clone: no checkout is named"
   cl_world Linux; cl_record haproxy standard main
   cl_run "$CL_TREE/nice-dns" install --hardened --branch dev
-  assert_eq "sibling $CL_W/pi-hole-hardened" "$(cl_calls '^sibling')" "a checkout's neighbour, for its clone"
+  assert_eq "" "$(cl_calls '^sibling')" "a checkout's clone: no checkout is named"
   : >"$CL_LOG"
   cl_run "$CL_TREE/nice-dns" install --hardened
-  assert_eq "" "$(cl_calls '^sibling')" "a checkout's own run is the installer's business"
-  (
-    # shellcheck disable=SC2034  # read by the sourced lib/install.sh
-    ND_INST_SRC="$CL_TREE" ND_INST_HARDENED_SIBLING="$CL_W/mine/pi-hole-hardened" ND_INST_PLATFORM=linux
-    # shellcheck source=lib/install.sh
-    . "$CL_TREE/lib/install.sh"
-    mkdir -p "$CL_W/mine/pi-hole-hardened"
-    : >"$CL_W/mine/pi-hole-hardened/Dockerfile"; : >"$CL_W/mine/pi-hole-hardened/post-install.sh"
-    # shellcheck disable=SC2034
-    ND_INST_MANIFEST=/dev/null
-    _nd_inst_manifest_row() { return 0; }
-    assert_eq "$CL_W/mine/pi-hole-hardened" "$(_nd_inst_hardened_sibling 2>/dev/null)" "the library honours the name it is given"
-  ) || exit 1
+  assert_eq "" "$(cl_calls '^sibling')" "a checkout: no checkout is named"
+  assert_eq "" "$(grep -nE 'hardened_sibling|HARDENED_SIBLING' "$CL_TREE/nice-dns" "$CL_TREE/lib/install.sh")" "neither the command nor the library looks for one"
+}
+
+# ─────────────── switch: one choice changed, from the kept source ───────────────
+
+# `nice-dns switch proxy|pihole <choice>` is `reinstall --local` with that one
+# choice changed (DEC-018): the kept source, the recorded branch and the other
+# recorded choice; never a clone, from anywhere it is run.
+t_switch_changes_one_choice_from_the_kept_source() {
+  local u os
+  for u in $(cl_platforms); do
+    os="$(cl_os "$u")"
+    cl_world "$u"; cl_installed; cl_record haproxy standard dev
+    cl_run "$CL_CMD" switch proxy socat
+    assert_rc 0 "$CL_RC" "$u: switch proxy socat: $CL_ERR"
+    assert_eq "installer[snapshot] install-$os.sh socat dev" "$(cl_calls '^installer')" "$u: the kept source's installer, the proxy changed, the branch recorded"
+    assert_eq "" "$(cl_calls '^git ')" "$u: nothing is cloned"
+    assert_match 'tor-socat' "$(printf '%s\n' "$CL_OUT" | tail -n 1)" "$u: the last line says what now runs"
+    assert_match 'DNS is answering' "$(printf '%s\n' "$CL_OUT" | tail -n 1)" "$u: and that DNS answers"
+    cl_world "$u"; cl_installed; cl_record socat standard dev
+    cl_run "$CL_CMD" switch proxy haproxy
+    assert_eq "installer[snapshot] install-$os.sh haproxy dev" "$(cl_calls '^installer')" "$u: switch proxy haproxy"
+    cl_world "$u"; cl_installed; cl_record socat standard main
+    cl_run "$CL_CMD" switch pihole hardened
+    assert_rc 0 "$CL_RC" "$u: switch pihole hardened: $CL_ERR"
+    assert_eq "installer[snapshot] install-$os-hardened.sh socat main" "$(cl_calls '^installer')" "$u: the hardened entrypoint, the proxy kept"
+    assert_match 'hardened' "$(printf '%s\n' "$CL_OUT" | tail -n 1)" "$u: the last line names the flavour"
+    cl_world "$u"; cl_installed; cl_record haproxy hardened main
+    cl_run "$CL_CMD" switch pihole standard
+    assert_eq "installer[snapshot] install-$os.sh haproxy main" "$(cl_calls '^installer')" "$u: switch pihole standard"
+    assert_eq "" "$(cl_calls '^git ')" "$u: nothing is cloned"
+  done
+  # Run from a checkout too, the kept source is what it reinstalls.
+  cl_world Linux; cl_installed; cl_record haproxy standard main
+  cl_run "$CL_TREE/nice-dns" switch proxy socat
+  assert_eq "installer[snapshot] install-deb.sh socat main" "$(cl_calls '^installer')" "from a checkout, the kept source still"
+}
+
+t_switch_to_the_installed_choice_changes_nothing() {
+  local w
+  for w in "proxy haproxy" "pihole standard"; do
+    cl_world Linux; cl_installed; cl_record haproxy standard main
+    # shellcheck disable=SC2086  # two words
+    cl_run "$CL_CMD" switch $w
+    assert_rc 0 "$CL_RC" "switch $w: $CL_ERR"
+    assert_eq "Already ${w#* }; nothing changed." "$CL_OUT" "switch $w: says so"
+    assert_eq "" "$(cl_calls '^installer')" "switch $w: no installer runs"
+  done
+}
+
+t_switch_with_nothing_installed_or_no_kept_source() {
+  cl_world Darwin
+  cl_run "$CL_TREE/nice-dns" switch proxy socat
+  assert_rc 1 "$CL_RC" "nothing installed: exit 1"
+  assert_match 'nice-dns is not installed; run `nice-dns install`' "$CL_ERR" "the message"
+  assert_eq "" "$(cl_calls .)" "nothing ran"
+  cl_world Linux; cl_installed; cl_record haproxy standard main
+  rm -rf "$CL_HOME/.local/share/nice-dns/source"
+  cl_run "$CL_CMD" switch pihole hardened
+  assert_rc 1 "$CL_RC" "no kept source: exit 1"
+  assert_match "$CL_HOME/\\.local/share/nice-dns/source" "$CL_ERR" "it names the missing directory"
+  assert_match 'nice-dns reinstall' "$CL_ERR" "and nice-dns reinstall"
+  assert_eq "" "$(cl_calls .)" "nothing ran"
+}
+
+t_switch_whose_install_fails_says_the_old_choice_runs() {
+  cl_world Linux; cl_installed; cl_record haproxy standard main
+  CL_INSTALLER_RC=7 cl_run "$CL_CMD" switch proxy socat
+  assert_rc 3 "$CL_RC" "a failed install: exit 3"
+  assert_match 'did not happen' "$CL_ERR" "the switch did not happen"
+  assert_match 'haproxy' "$CL_ERR" "the old choice still runs"
+  assert_eq "installer[snapshot] install-deb.sh socat main" "$(cl_calls '^installer')" "the install was tried once"
+}
+
+t_switch_usage_errors_run_nothing() {
+  local a
+  for a in "switch" "switch proxy" "switch pihole" "switch proxy nginx" "switch pihole fancy" "switch dns socat" "switch proxy socat extra"; do
+    cl_world Linux; cl_installed; cl_record haproxy standard main
+    # shellcheck disable=SC2086  # the words
+    cl_run "$CL_CMD" $a
+    assert_rc 2 "$CL_RC" "$a: exit 2"
+    assert_eq "" "$CL_OUT" "$a: nothing on stdout"
+    assert_match 'switch' "$CL_ERR" "$a: a usage line"
+    assert_eq "" "$(cl_calls .)" "$a: nothing ran"
+  done
+  cl_run "$CL_CMD" --help
+  assert_match 'switch proxy haproxy\|socat' "$CL_OUT" "--help lists switch proxy"
+  assert_match 'switch pihole standard\|hardened' "$CL_OUT" "and switch pihole"
 }
 
 t_reinstall_refuses_an_unreadable_record() {
@@ -322,7 +399,8 @@ t_reinstall_refuses_an_unreadable_record() {
 
 # ─────────────────────────── Task 2.4: restart ──────────────────────────────
 
-# cl_restart_world <uname>: an installed stack with the controller's schedules.
+# cl_restart_world <uname>: an installed stack with the controller's three
+# schedules (the minute pass, the bridge refresh, the update check).
 cl_restart_world() {
   cl_world "$1"; cl_record haproxy standard main
   CL_RESTART_PLAT=linux
@@ -331,6 +409,7 @@ cl_restart_world() {
     mkdir -p "$CL_HOME/Library/LaunchAgents"
     : >"$CL_HOME/Library/LaunchAgents/org.nice-dns.health.plist"
     : >"$CL_HOME/Library/LaunchAgents/org.nice-dns.health-bridges.plist"
+    : >"$CL_HOME/Library/LaunchAgents/org.nice-dns.health-update.plist"
   fi
 }
 
@@ -341,7 +420,7 @@ cl_release_pat() { if [ "$CL_RESTART_PLAT" = linux ]; then echo '^systemctl --us
 cl_line() { grep -nE "$1" "$CL_LOG" | "$2" -n 1 | cut -d: -f1; }
 
 cl_assert_released() {
-  assert_eq 2 "$(grep -cE "$(cl_release_pat)" "$CL_LOG")" "$1: both schedules are released"
+  assert_eq 3 "$(grep -cE "$(cl_release_pat)" "$CL_LOG")" "$1: all three schedules are released"
 }
 
 t_restart_runs_once_between_hold_and_release() {
@@ -371,8 +450,10 @@ t_restart_leaves_a_stopped_macos_schedule_stopped() {
   : >"$CL_HOME/Library/Application Support/nice-dns-health/schedule-stopped"
   cl_run "$CL_TREE/nice-dns" restart
   assert_rc 0 "$CL_RC" "macos: restart: $CL_ERR"
-  assert_eq "" "$(cl_calls '^launchctl (un)?load .*org\.nice-dns\.health\.plist')" "macos: the stopped schedule is neither held nor loaded"
-  assert_eq 1 "$(grep -cE '^launchctl load .*org\.nice-dns\.health-bridges\.plist' "$CL_LOG")" "macos: the bridges schedule is still held and released"
+  assert_eq "" "$(cl_calls '^launchctl load .*org\.nice-dns\.health(-bridges|-update)?\.plist')" "macos: no stopped schedule is loaded again (stop stops them all)"
+  # A stop from before the update check left the bridge refresh loaded: it
+  # is quiet during the restart all the same.
+  assert_match '^launchctl unload .*org\.nice-dns\.health-bridges\.plist' "$(cat "$CL_LOG")" "macos: the bridge refresh is unloaded for the restart"
 }
 
 t_restart_without_an_answer_says_so_and_releases() {
@@ -673,6 +754,30 @@ t_status_a_stopped_macos_schedule_reads_stopped() {
   st_rows
   assert_rc 0 "$ST_RC" "macos: rows: $(cat "$CL_W/st-err")"
   assert_eq stopped "$(st_val controller schedule)" "macos: the plist is kept, but nice-dns-health stop marked it stopped"
+}
+
+# `update auto loaded|stopped`: whether the twice-daily check (Task 1.4) is
+# scheduled, read from its files only, like `controller schedule`: on Linux
+# the timer's enable link, on macOS its plist without the stop mark.
+t_status_says_whether_the_update_check_is_scheduled() {
+  local u up
+  for u in $(cl_platforms); do
+    st_world "$u"
+    if [ "$u" = Linux ]; then up="$CL_HOME/.config/systemd/user/default.target.wants/nice-dns-health-update.timer"
+    else up="$CL_HOME/Library/LaunchAgents/org.nice-dns.health-update.plist"; fi
+    st_rows
+    assert_eq stopped "$(st_val update auto)" "$u: no update schedule installed reads stopped"
+    mkdir -p "${up%/*}"; : >"$up"
+    st_rows
+    assert_rc 0 "$ST_RC" "$u: rows: $(cat "$CL_W/st-err")"
+    assert_eq loaded "$(st_val update auto)" "$u: the schedule file is there"
+    assert_eq 1 "$(printf '%s\n' "$ST_OUT" | grep -c "$(printf '^update\tauto\t')")" "$u: one update auto row"
+    if [ "$u" = Darwin ]; then
+      : >"$CL_HOME/Library/Application Support/nice-dns-health/schedule-stopped"
+      st_rows
+      assert_eq stopped "$(st_val update auto)" "macos: the plist is kept, but nice-dns-health stop marked it stopped"
+    fi
+  done
 }
 
 t_status_not_installed_names_the_curl_line_and_exits_1() {
@@ -1167,6 +1272,7 @@ bt_restart_fakes() {
     mkdir -p "$CL_HOME/Library/LaunchAgents"
     : >"$CL_HOME/Library/LaunchAgents/org.nice-dns.health.plist"
     : >"$CL_HOME/Library/LaunchAgents/org.nice-dns.health-bridges.plist"
+    : >"$CL_HOME/Library/LaunchAgents/org.nice-dns.health-update.plist"
   fi
   echo 1 >"$CL_FAKE/gen"
   # The installed proxy launcher carries the mode, as an install of this

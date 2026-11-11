@@ -255,20 +255,26 @@ nd_install_begin() {
   case "${ND_INST_ORIGIN:-}" in checkout|clone) ;; *) _nd_inst_err "the source tree was not staged"; return 1 ;; esac
   [ -d "${ND_INST_SRC:-}" ] || { _nd_inst_err "no source tree at '${ND_INST_SRC:-}'"; return 1; }
   ND_INST_TREE="$ND_INST_SRC"
-  ND_INST_BASE_SIBLING=""
   # Before anything changes: a late refusal had already updated packages, begun
   # a generation and tagged images (live 2026-10-31).
-  if [ "$ND_INST_PIHOLE" = hardened ]; then _nd_inst_hardened_sibling_dir >/dev/null || return 1; fi
+  if [ "$ND_INST_PIHOLE" = hardened ]; then _nd_inst_hardened_base_dir >/dev/null || return 1; fi
 
   # Source generation: the staged tree's commit and whether it has local
   # changes to tracked files (untracked files, such as locally built
   # bridge-eval binaries, do not count).
-  local c gens tries=0
-  c="$(git -C "$ND_INST_SRC" rev-parse HEAD 2>/dev/null)" || c=""
+  local c="" gens tries=0 kept
+  # The kept source has no git of its own: it carries the commit it was kept
+  # from. Read first, so a git repository above it (a dotfiles $HOME) never
+  # answers for it.
+  kept="$(_nd_inst_kept_commit "$ND_INST_SRC")" || kept=""
+  [ -n "$kept" ] || c="$(git -C "$ND_INST_SRC" rev-parse HEAD 2>/dev/null)" || c=""
   case "$c" in ''|*[!0-9a-f]*) c=unknown ;; esac
   [ "${#c}" -ge 12 ] || c=unknown
   ND_INST_COMMIT="$c"
-  if [ "$c" = unknown ]; then
+  if [ -n "$kept" ]; then
+    ND_INST_COMMIT="${kept%% *}"
+    ND_INST_DIRTY="${kept#* }"
+  elif [ "$c" = unknown ]; then
     ND_INST_DIRTY=unknown
   elif [ -n "$(git -C "$ND_INST_SRC" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
     ND_INST_DIRTY=1
@@ -544,6 +550,56 @@ ND_INST_SOURCE_ITEMS="deb mac lib health routes release pihole pihole-hardened u
 
 _nd_inst_source_dir() { printf '%s\n' "$HOME/.local/share/nice-dns/source"; }
 
+# _nd_inst_tree_hash <dir>: one sha256 over the source items in <dir>: each
+# regular file's sha256 and path, and each symlink's path and target, in
+# byte order. Changes when any kept file is edited, added or removed (not
+# on a mode change). Prints nothing when any step fails, which the reader
+# takes as a changed tree: a failed tool must never hash every tree alike.
+_nd_inst_tree_hash() {
+  (
+    set -o pipefail
+    cd "$1" || exit 1
+    set -- sha256sum
+    command -v sha256sum >/dev/null 2>&1 || set -- shasum -a 256
+    # shellcheck disable=SC2086 # the item list is words
+    files="$(find $ND_INST_SOURCE_ITEMS -type f -print0 | LC_ALL=C sort -z | xargs -0 "$@")" || exit 1
+    # shellcheck disable=SC2086 # the item list is words
+    links="$(find $ND_INST_SOURCE_ITEMS -type l -print | LC_ALL=C sort)" || exit 1
+    [ -n "$files" ] || exit 1
+    {
+      printf '%s\n' "$files"
+      printf '%s\n' "$links" | while IFS= read -r l; do [ -z "$l" ] || printf 'link %s %s\n' "$l" "$(readlink "$l")"; done
+    } | _nd_inst_sha_stdin
+  ) 2>/dev/null
+}
+
+# _nd_inst_sha_stdin: the sha256 of stdin, hex.
+_nd_inst_sha_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi
+}
+
+# _nd_inst_kept_commit <dir>: "<commit> <dirty>" when <dir> is the kept
+# source (physically) and its .source-commit, read as data (DEC-001), names a
+# 40-hex commit; dirty is 1 once the kept files no longer hash as recorded.
+# Prints nothing and returns 1 otherwise: any other tree stays unknown.
+_nd_inst_kept_commit() {
+  local d k f c dirty tree
+  d="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
+  k="$(cd "$(_nd_inst_source_dir)" 2>/dev/null && pwd -P)" || return 1
+  [ "$d" = "$k" ] || return 1
+  f="$d/.source-commit"
+  [ -f "$f" ] && [ ! -L "$f" ] || return 1
+  [ "$(head -n 1 "$f")" = "$(printf 'schema\tnice-dns-source-commit/1')" ] || return 1
+  c="$(awk -F '\t' '$1 == "commit" && NF == 2 { print $2; exit }' "$f")"
+  dirty="$(awk -F '\t' '$1 == "dirty" && NF == 2 { print $2; exit }' "$f")"
+  tree="$(awk -F '\t' '$1 == "tree" && NF == 2 { print $2; exit }' "$f")"
+  case "$c" in *[!0-9a-f]*|'') return 1 ;; esac
+  [ "${#c}" -eq 40 ] || return 1
+  case "$dirty" in 0|1) ;; *) dirty=1 ;; esac
+  [ -n "$tree" ] && [ "$tree" = "$(_nd_inst_tree_hash "$d")" ] || dirty=1
+  printf '%s %s\n' "$c" "$dirty"
+}
+
 _nd_inst_command_fallback_dir() {
   if [ "$ND_INST_PLATFORM" = linux ]; then
     printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/nice-dns-health/bin"
@@ -588,6 +644,10 @@ _nd_inst_publish_source() {
   for item in $ND_INST_SOURCE_ITEMS; do
     cp -Rp "$ND_INST_SRC/$item" "$new/" || { rm -rf "${new:?}"; return 1; }
   done
+  # The copy has no git: it records the commit it came from, its state and a
+  # hash of its files (_nd_inst_kept_commit reads them back).
+  printf 'schema\tnice-dns-source-commit/1\ncommit\t%s\ndirty\t%s\ntree\t%s\n' \
+    "$ND_INST_COMMIT" "$ND_INST_DIRTY" "$(_nd_inst_tree_hash "$new")" >"$new/.source-commit" || { rm -rf "${new:?}"; return 1; }
   # nice-dns-helper refuses a tree that its group or others can write (a clone
   # under umask 002), and a reinstall --local runs from this copy.
   chmod -R go-w "$new" || { rm -rf "${new:?}"; return 1; }
@@ -829,7 +889,8 @@ _nd_inst_owned_paths() {
       printf 'f\t%s\t644\tuser\n' "$q/$f"
     done
     for f in nice-dns-fetch-bridges.service nice-dns-health.service nice-dns-health.timer \
-             nice-dns-health-bridges.service nice-dns-health-bridges.timer; do
+             nice-dns-health-bridges.service nice-dns-health-bridges.timer \
+             nice-dns-health-update.service nice-dns-health-update.timer; do
       printf 'f\t%s\t644\tuser\n' "$u/$f"
     done
     printf 'f\t%s\t644\tuser\n' "${XDG_CONFIG_HOME:-$HOME/.config}/containers/containers.conf.d/90-nice-dns-firewall.conf"
@@ -844,7 +905,7 @@ _nd_inst_owned_paths() {
       "$R/etc/sysctl.d/99-podman-privileged-ports.conf" \
       "$R/etc/systemd/system/NetworkManager-wait-online.service.d/10-wait-for-connectivity.conf"
   else
-    for f in start-container health health-bridges bridge-eval; do
+    for f in start-container health health-bridges health-update bridge-eval; do
       printf 'f\t%s\t644\tuser\n' "$HOME/Library/LaunchAgents/org.nice-dns.$f.plist"
     done
     printf 'f\t%s\t755\tuser\n' "$HOME/.local/bin/nice-dns-health" "$HOME/Library/Logs/nice-dns-health/bin/nice-dns-health"
@@ -991,17 +1052,23 @@ nd_install_hold_controller() {
   local u p
   ND_INST_HELD=""
   if [ "$ND_INST_PLATFORM" = linux ]; then
-    for u in nice-dns-health.timer nice-dns-health-bridges.timer; do
+    for u in nice-dns-health.timer nice-dns-health-bridges.timer nice-dns-health-update.timer; do
       if systemctl --user is-active --quiet "$u" 2>/dev/null; then
         systemctl --user stop "$u"
         ND_INST_HELD="$ND_INST_HELD $u"
       fi
     done
   else
-    for p in "$HOME/Library/LaunchAgents/org.nice-dns.health.plist" "$HOME/Library/LaunchAgents/org.nice-dns.health-bridges.plist"; do
-      # A schedule `nice-dns-health stop` unloaded keeps its plist; it is not
-      # held, so the release does not load it.
-      case "$p" in */org.nice-dns.health.plist) [ -e "$HOME/Library/Application Support/nice-dns-health/schedule-stopped" ] && continue ;; esac
+    for p in "$HOME/Library/LaunchAgents/org.nice-dns.health.plist" "$HOME/Library/LaunchAgents/org.nice-dns.health-bridges.plist" \
+             "$HOME/Library/LaunchAgents/org.nice-dns.health-update.plist"; do
+      # `nice-dns-health stop` unloads every schedule and keeps the plists; a
+      # stopped one is not held, so the release does not load it. It is still
+      # unloaded here: a stop from before the update check left the bridge
+      # refresh loaded, and nothing may act during the transaction.
+      if [ -e "$HOME/Library/Application Support/nice-dns-health/schedule-stopped" ]; then
+        [ -f "$p" ] && { launchctl unload "$p" 2>/dev/null || true; }
+        continue
+      fi
       if [ -f "$p" ]; then
         launchctl unload "$p" 2>/dev/null || true
         ND_INST_HELD="$ND_INST_HELD $p"
@@ -1235,8 +1302,7 @@ _nd_inst_host_platform() {
 # _nd_inst_lock_roles: the image roles this install uses.
 _nd_inst_lock_roles() {
   printf 'proxy-%s\nunbound-base\n' "$ND_INST_VARIANT"
-  [ "$ND_INST_PIHOLE" = standard ] && printf 'pihole-base\n'
-  return 0
+  if [ "$ND_INST_PIHOLE" = standard ]; then printf 'pihole-base\n'; else printf 'hardened-os\n'; fi
 }
 
 # nd_install_read_lock: validates the lock and this install's choices from it.
@@ -1244,7 +1310,7 @@ _nd_inst_lock_roles() {
 # lock and the locked references in the manifest. Refuses (returns 1) on any
 # problem; nothing has been interrupted yet.
 nd_install_read_lock() {
-  local lock="$ND_INST_TREE/release/images.lock" bad role plat sup ifc sha
+  local lock="$ND_INST_TREE/release/images.lock" bad role plat sup ifc sha from
   ND_INST_LOCK="$lock"
   if [ -L "$lock" ] || [ ! -f "$lock" ]; then _nd_inst_err "no release/images.lock in the source tree"; return 1; fi
   [ "$(head -n 1 "$lock")" = "schema$ND_INST_TAB$ND_INST_LOCK_SCHEMA" ] \
@@ -1286,6 +1352,21 @@ EOF
   ND_INST_PINNED_PROXY="$(_nd_inst_lock_image "proxy-$ND_INST_VARIANT" 3)@$(_nd_inst_lock_image "proxy-$ND_INST_VARIANT" 5)"
   ND_INST_PINNED_UNBOUND="$(_nd_inst_lock_image unbound-base 3)@$(_nd_inst_lock_image unbound-base 5)"
   ND_INST_PINNED_PIHOLE="$(_nd_inst_lock_image pihole-base 3)@$(_nd_inst_lock_image pihole-base 5)"
+  ND_INST_PINNED_HARDENED_OS="" ND_INST_HARDENED_OS_NAME=""
+  if [ "$ND_INST_PIHOLE" = hardened ]; then
+    # The base's Dockerfile builds FROM a floating tag (it is a verbatim copy
+    # of pi-hole-hardened's); the install builds it on the locked digest
+    # instead, so the tag and the locked row must name the same image.
+    ND_INST_PINNED_HARDENED_OS="$(_nd_inst_lock_image hardened-os 3)@$(_nd_inst_lock_image hardened-os 5)"
+    ND_INST_HARDENED_OS_NAME="$(_nd_inst_lock_image hardened-os 3)"
+    ND_INST_HARDENED_OS_NAME="${ND_INST_HARDENED_OS_NAME#docker.io/}"
+    ND_INST_HARDENED_OS_NAME="${ND_INST_HARDENED_OS_NAME#library/}:$(_nd_inst_lock_image hardened-os 4)"
+    from="$(_nd_inst_containerfile_base "$ND_INST_TREE/pihole-hardened/base/Dockerfile" 2>/dev/null)"
+    if [ "$from" != "$ND_INST_HARDENED_OS_NAME" ]; then
+      _nd_inst_err "pihole-hardened/base/Dockerfile builds FROM '${from:-nothing}', but release/images.lock pins hardened-os as $ND_INST_HARDENED_OS_NAME; refresh the row (scripts/update-images-lock.sh, docs/release-inputs.md)"
+      return 1
+    fi
+  fi
   sha="$(health_sha_file "$lock")" || return 1
   _nd_inst_manifest_row "$ND_INST_MANIFEST" lock "sha256:$sha" || return 1
   _nd_inst_manifest_row "$ND_INST_MANIFEST" platform-host "$plat" || return 1
@@ -1342,28 +1423,44 @@ _nd_inst_record_blocklist() {
   _nd_inst_manifest_row "$ND_INST_MANIFEST" blocklist allowlist "sha256:$sha"
 }
 
-# _nd_inst_hardened_sibling_dir: the sibling pi-hole-hardened checkout the
-# hardened base is built from (it is not published; see the lock). Refuses when
-# there is none.
-_nd_inst_hardened_sibling_dir() {
-  local sib
-  # The `nice-dns` command names it when it runs off a clone or the kept source.
-  sib="${ND_INST_HARDENED_SIBLING:-$(cd "$ND_INST_SRC/.." && pwd)/pi-hole-hardened}"
-  if [[ ! -f "$sib/Dockerfile" || ! -f "$sib/post-install.sh" ]]; then
-    _nd_inst_err "the hardened base is not published (release/images.lock); clone https://github.com/sureserverman/pi-hole-hardened next to nice-dns/ ($sib) and run again"
+# _nd_inst_hardened_base_dir: the tree's own copy of the pi-hole-hardened
+# build inputs, pihole-hardened/base (OD-6). The hardened base is not
+# published (release/images.lock), so every hardened install builds it from
+# this copy, which a clone and the kept source carry like any other file;
+# UPSTREAM names the pi-hole-hardened commit it was copied from
+# (scripts/sync-hardened-base.sh). Refuses a tree without it.
+_nd_inst_hardened_base_dir() {
+  local d="$ND_INST_TREE/pihole-hardened/base" f files
+  if [ -L "$d" ] || [ ! -f "$d/UPSTREAM" ] || [ -L "$d/UPSTREAM" ]; then
+    _nd_inst_err "this nice-dns tree cannot build the hardened Pi-hole: $d/UPSTREAM is missing"
     return 1
   fi
-  printf '%s\n' "$sib"
+  # Every file the copy holds, as UPSTREAM lists them (the FTL checksums the
+  # Dockerfile COPYs among them): a missing one would fail the macOS build
+  # only after the stack has stopped.
+  files="$(awk -F '\t' '$1 == "files" { print $2; exit }' "$d/UPSTREAM")"
+  for f in Dockerfile start.sh post-install.sh $files; do
+    case "$f" in /*|*..*) _nd_inst_err "$d/UPSTREAM names a path outside the copy: $f"; return 1 ;; esac
+    if [ -L "$d/$f" ] || [ ! -f "$d/$f" ] || [ -L "$(dirname "$d/$f")" ]; then
+      _nd_inst_err "this nice-dns tree cannot build the hardened Pi-hole: $d/$f is missing"
+      return 1
+    fi
+  done
+  case " $files " in *" checksums/FTL-"*".sha256 "*) ;; *)
+    _nd_inst_err "$d/UPSTREAM lists no FTL checksum file"; return 1 ;;
+  esac
+  printf '%s\n' "$d"
 }
 
-# _nd_inst_hardened_sibling: that checkout, with its commit recorded.
-_nd_inst_hardened_sibling() {
-  local sib c
-  sib="$(_nd_inst_hardened_sibling_dir)" || return 1
-  c="$(git -C "$sib" rev-parse HEAD 2>/dev/null)" || c=""
-  case "$c" in ''|*[!0-9a-f]*) c=unknown ;; esac
-  _nd_inst_manifest_row "$ND_INST_MANIFEST" source hardened-base "$sib@$c" || return 1
-  printf '%s\n' "$sib"
+# _nd_inst_hardened_base: that directory, relative to the tree (the builds
+# run in it), with the tree's commit and the upstream one recorded.
+_nd_inst_hardened_base() {
+  local d up
+  d="$(_nd_inst_hardened_base_dir)" || return 1
+  up="$(awk -F '\t' '$1 == "commit" && $2 ~ /^[0-9a-f]+$/ && length($2) == 40 { print $2; exit }' "$d/UPSTREAM")"
+  [ -n "$up" ] || { _nd_inst_err "$d/UPSTREAM names no pi-hole-hardened commit"; return 1; }
+  _nd_inst_manifest_row "$ND_INST_MANIFEST" source hardened-base "pihole-hardened/base@$ND_INST_COMMIT" "upstream=$up" || return 1
+  printf '%s\n' pihole-hardened/base
 }
 
 # ─────────────────────────── Linux ───────────────────────────────────────────
@@ -1935,10 +2032,10 @@ nd_install_linux_prepare_images() {
   #
   # The bases are the locked digests (release/images.lock), pulled here and
   # passed as BASE_IMAGE, so a build never floats to whatever :latest is today
-  # (Task 1.3). --pull=newer stays for any other FROM a recipe names (the
-  # hardened sibling's own base); a base that exists only locally, such as the
-  # hardened base, still builds: with --pull=newer podman suppresses pull
-  # errors when a local image exists.
+  # (Task 1.3); the hardened base's Alpine is its locked digest too, put in
+  # place of its Dockerfile's FROM with --from. A base that exists only
+  # locally, such as the hardened base, still builds: with --pull=newer
+  # podman suppresses pull errors when a local image exists.
   #
   # --no-cache because --pull only governs the FROM base, not the RUN layers.
   # Our RUN steps fetch from the network — pihole/Containerfile runs `pihole -g`
@@ -1990,21 +2087,17 @@ nd_install_linux_prepare_images() {
   _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled proxy "$ND_INST_PINNED_PROXY"
 }
 
-# Build (or pull-and-tag) the hardened Pi-hole base under its generation tag,
-# before the downstream pihole-hardened/Containerfile build.
+# Build the hardened Pi-hole base under its generation tag from the tree's
+# pihole-hardened/base, on the locked Alpine, before the downstream
+# pihole-hardened/Containerfile build.
 _nd_inst_linux_hardened_base() {
-  local base_img="localhost/pi-hole-hardened-base:$ND_INST_GEN" sibling_repo sib_base
-  echo "▸ Resolving hardened base image…"
-  sibling_repo="$(_nd_inst_hardened_sibling)" || return 1
-  echo "  • Sibling pi-hole-hardened repo found at $sibling_repo — building locally."
-  # Its FROM is the sibling's own pin (not in release/images.lock): pulled
-  # explicitly so its local id is recorded with the sibling commit.
-  sib_base="$(_nd_inst_containerfile_base "$sibling_repo/Dockerfile")"
-  [ -n "$sib_base" ] || { _nd_inst_err "cannot read the sibling's base image"; return 1; }
-  podman pull "$sib_base" || return 1
-  _nd_inst_record_image sibling-base "$sib_base" || return 1
-  _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled base "$sib_base" || return 1
-  podman build "${ND_INST_LINUX_BUILD_FLAGS[@]}" -t "$base_img" "$sibling_repo" || return 1
+  local base_img="localhost/pi-hole-hardened-base:$ND_INST_GEN" dir
+  echo "▸ Building the hardened base from the nice-dns tree…"
+  dir="$(_nd_inst_hardened_base)" || return 1
+  podman pull "$ND_INST_PINNED_HARDENED_OS" || return 1
+  _nd_inst_record_image hardened-os "$ND_INST_PINNED_HARDENED_OS" || return 1
+  _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled base "$ND_INST_PINNED_HARDENED_OS" || return 1
+  podman build "${ND_INST_LINUX_BUILD_FLAGS[@]}" --from "$ND_INST_PINNED_HARDENED_OS" -t "$base_img" "$dir" || return 1
   _nd_inst_record_image hardened-base "$base_img"
 }
 
@@ -2331,7 +2424,7 @@ nd_install_linux_uninstall() {
   systemctl --user daemon-reload 2>/dev/null || true
   # A unit that failed stays listed as "not-found failed" after its file is gone.
   for ref in nice-dns-pod nice-dns-network pi-hole unbound tor-haproxy tor-socat \
-             nice-dns-health nice-dns-health-bridges nice-dns-fetch-bridges; do
+             nice-dns-health nice-dns-health-bridges nice-dns-health-update nice-dns-fetch-bridges; do
     systemctl --user reset-failed "$ref.service" 2>/dev/null || true
   done
   # The locally built images (localhost/unbound, localhost/pi-hole and the
@@ -2579,8 +2672,8 @@ nd_install_macos_rewrite_tree() {
   # pi-hole container in nd_install_macos_run_stack).
 }
 
-# nd_install_macos_prepare_images: the pulls (proxy, and the hardened base
-# when there is no sibling checkout to build it from). Builds wait for the
+# nd_install_macos_prepare_images: the pulls (the proxy and the build bases,
+# the hardened base's Alpine among them). Builds wait for the
 # _nd_inst_containerfile_base <file>: the image its first FROM names (an
 # ARG-named base resolves to the ARG's default).
 _nd_inst_containerfile_base() {
@@ -2607,7 +2700,7 @@ _nd_inst_macos_pull_base() {
 
 # interruption window.
 nd_install_macos_prepare_images() {
-  local gen="$ND_INST_GEN" sibling_repo sib_base
+  local gen="$ND_INST_GEN"
   # The tor proxy is the one image we don't build — it's pulled from Docker Hub.
   # `container run` has no --pull flag and reuses any locally cached copy without
   # consulting the registry, so an install on a host that ever ran nice-dns would
@@ -2633,16 +2726,12 @@ nd_install_macos_prepare_images() {
   _nd_inst_record_blocklist || return 1
 
   [ "$ND_INST_PIHOLE" = hardened ] || return 0
-  # The sibling pi-hole-hardened checkout sits next to the tree this install
-  # was started from (never next to the private copy). The hardened base is
-  # not published, so there is no fallback.
-  echo "▸ Resolving hardened base image…"
-  sibling_repo="$(_nd_inst_hardened_sibling)" || return 1
-  echo "  • Sibling pi-hole-hardened repo found at $sibling_repo — building it after the stack stops."
-  ND_INST_BASE_SIBLING="$sibling_repo"
-  sib_base="$(_nd_inst_containerfile_base "$sibling_repo/Dockerfile")"
-  _nd_inst_macos_pull_base "$sib_base" || return 1
-  _nd_inst_record_image sibling-base "$sib_base"
+  # The hardened base is not published: it is built from the tree's
+  # pihole-hardened/base once the stack stops. Its Alpine is pulled now by
+  # the locked digest, under the plain name its Dockerfile builds FROM.
+  echo "▸ Preparing the hardened base (built from the nice-dns tree after the stack stops)…"
+  _nd_inst_hardened_base >/dev/null || return 1
+  _nd_inst_macos_pull_base "$ND_INST_PINNED_HARDENED_OS" "$ND_INST_HARDENED_OS_NAME"
 }
 
 # nd_install_macos_bridges: bridges.env, and the proxy's BRIDGEn arguments in
@@ -2776,7 +2865,7 @@ _nd_inst_macos_stop_new() {
   # buildkit up after the rollback). Stopping it does not heal a wedge that
   # already happened: the rollback also restarts the runtime.
   "$bin" builder stop >/dev/null 2>&1 || true
-  for p in start-container health health-bridges; do
+  for p in start-container health health-bridges health-update; do
     launchctl unload "$HOME/Library/LaunchAgents/org.nice-dns.$p.plist" 2>/dev/null || true
   done
   for c in pi-hole unbound tor-haproxy tor-socat; do
@@ -2875,9 +2964,9 @@ nd_install_macos_build_images() {
   #
   # The standard and hardened entrypoints build with the same flags.
   "$CONTAINER_BIN" builder start >/dev/null 2>&1 || true
-  if [ "$ND_INST_PIHOLE" = hardened ] && [ -n "${ND_INST_BASE_SIBLING:-}" ]; then
-    echo "  • Building the hardened base from $ND_INST_BASE_SIBLING."
-    "$CONTAINER_BIN" build "${ND_INST_MACOS_BUILD_FLAGS[@]}" -t "pi-hole-hardened-base:$gen" "$ND_INST_BASE_SIBLING" || return 1
+  if [ "$ND_INST_PIHOLE" = hardened ]; then
+    echo "  • Building the hardened base from pihole-hardened/base."
+    "$CONTAINER_BIN" build "${ND_INST_MACOS_BUILD_FLAGS[@]}" -t "pi-hole-hardened-base:$gen" pihole-hardened/base || return 1
     _nd_inst_record_image hardened-base "pi-hole-hardened-base:$gen" || return 1
   fi
   "$CONTAINER_BIN" build "${ND_INST_MACOS_BUILD_FLAGS[@]}" --build-arg "BASE_IMAGE=unbound-base:$gen" \

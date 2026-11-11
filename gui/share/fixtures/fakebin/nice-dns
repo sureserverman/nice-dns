@@ -15,5 +15,9 @@ echo "fake nice-dns: $*"
 echo "fake nice-dns: a line on stderr" >&2
 [ "$code" != 126 ] || echo "nice-dns: authorisation cancelled" >&2
 # update --check's answer is its last line (docs/cli-contract.md).
-if [ "$*" = "update --check" ] && [ "$code" = 10 ]; then echo "available 0123456789ab"; else echo "fake nice-dns: done"; fi
+if [ "$*" = "update --check" ] && [ "$code" = 10 ]; then echo "available 0123456789ab"
+elif [ "${1:-}" = switch ] && [ "$code" = 0 ]; then
+  # switch's answer (docs/cli-contract.md).
+  if [ "${2:-}" = proxy ]; then echo "Switched: the proxy is now tor-${3:-}, and DNS is answering."; else echo "Switched: Pi-hole is now the ${3:-} one, and DNS is answering."; fi
+else echo "fake nice-dns: done"; fi
 exit "$code"

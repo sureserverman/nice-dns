@@ -2,7 +2,8 @@
 
 Health controller for the nice-dns DNS chain. Runs every minute via a
 systemd-user timer (Linux) or a LaunchAgent (macOS), refreshes the Tor
-bridges once a day, and on failure dumps the diagnostic info needed to
+bridges once a day, checks for a nice-dns update twice a day, and on failure
+dumps the diagnostic info needed to
 pinpoint the culprit.
 
 ## Install / uninstall
@@ -43,7 +44,18 @@ nice-dns-health logs       # cat the rolling log
 nice-dns-health failures              # list recent failure dumps
 nice-dns-health failures --last       # print the most recent dump
 nice-dns-health bridges-refresh       # the daily bridge refresh, now
+nice-dns-health update-check          # the twice-daily update check, now
 ```
+
+`start`, `stop`, `install` and `uninstall` act on all three schedules
+(checks, bridge refresh, update check) together. Shadow mode installs only
+the minute checks.
+
+`update-check` runs the published `nice-dns update --check` under a 60 s
+bound. It only checks and never installs: the result lands in the cache
+`nice-dns status` reads (its `update` rows), and a failed or timed-out check
+is kept as `unknown`, with the time, until the next one. There is no switch
+to turn it off; `stop` stops it with the other schedules.
 
 ## Logs
 
@@ -181,9 +193,16 @@ log records the path so you can find it weeks later.
 ## Schedule semantics
 
 - **Linux**: `OnCalendar=minutely` (`AccuracySec=5s`, `Persistent=true`) for
-  the checks, `OnCalendar=daily` (`Persistent=true`) for the bridge refresh.
-  Calendar timers fire after a suspend, where `OnUnitActiveSec` would pause.
+  the checks, `OnCalendar=daily` (`Persistent=true`) for the bridge refresh,
+  `OnCalendar=*-*-* 00/12:00:00` (`RandomizedDelaySec=30m`,
+  `Persistent=true`) for the update check
+  (`nice-dns-health-update.timer`). Calendar timers fire after a suspend,
+  where `OnUnitActiveSec` would pause. The first update check comes at the
+  next 12-hour slot: systemd.timer(5) does not say whether `Persistent=true`
+  fires on a first activation, so nothing relies on it.
 - **macOS**: an empty `StartCalendarInterval` (every minute) plus
   `RunAtLoad=true` for the checks, `StartCalendarInterval` at 04:17 for the
-  bridge refresh. launchd starts a calendar job on wake; `StartInterval`
-  would miss the intervals spent asleep.
+  bridge refresh, an array of two `StartCalendarInterval` entries (04:47 and
+  16:47) for the update check (`org.nice-dns.health-update`). launchd starts
+  a calendar job on wake; `StartInterval` would miss the intervals spent
+  asleep.

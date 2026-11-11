@@ -83,6 +83,11 @@ SYSTEMD_BR_SVC="$SCRIPT_NAME-bridges.service"
 SYSTEMD_BR_TIMER="$SCRIPT_NAME-bridges.timer"
 LAUNCHD_BR_LABEL="org.nice-dns.health-bridges"
 LAUNCHD_BR_PLIST="$LAUNCHD_DIR/$LAUNCHD_BR_LABEL.plist"
+# The unattended update check, twice a day (OD-8).
+SYSTEMD_UP_SVC="$SCRIPT_NAME-update.service"
+SYSTEMD_UP_TIMER="$SCRIPT_NAME-update.timer"
+LAUNCHD_UP_LABEL="org.nice-dns.health-update"
+LAUNCHD_UP_PLIST="$LAUNCHD_DIR/$LAUNCHD_UP_LABEL.plist"
 
 # Libraries (lib/health.sh, lib/platform/*.sh, routes/providers.tsv). A
 # checkout reads them from ../ next to this script; install_self rewrites the
@@ -592,6 +597,9 @@ INSTALL_RECEIPT="$HEALTH_LIB_ROOT_INSTALLED/install.tsv"
 SCHEDULE_STOPPED="$HEALTH_LIB_ROOT_INSTALLED/schedule-stopped"
 # Kept within the state lock's 600 s lease (lib/state.sh).
 TICK_TIMEOUT_SECS=540
+# The bound on one unattended update check (`nice-dns update --check` keeps
+# its own 55 s bound on git where timeout(1) exists).
+UPDATE_CHECK_SECS=60
 
 health_sha() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi
@@ -709,8 +717,35 @@ Unit=$SYSTEMD_BR_SVC
 [Install]
 WantedBy=default.target
 EOF
+  cat >"$d/.$SYSTEMD_UP_SVC.new" <<EOF || return 1
+[Unit]
+Description=nice-dns update check (checks only; installs nothing)
+After=default.target
+
+[Service]
+Type=oneshot
+ExecStart=$interp $INSTALLED_BIN update-check
+# The check is bounded to ${UPDATE_CHECK_SECS} s inside; this is the backstop.
+TimeoutStartSec=120
+EOF
+  cat >"$d/.$SYSTEMD_UP_TIMER.new" <<EOF || return 1
+[Unit]
+Description=nice-dns update check twice a day
+
+[Timer]
+# 00:00 and 12:00, spread over half an hour; a slot missed asleep or
+# powered off runs once on resume or boot (systemd.timer(5)).
+OnCalendar=*-*-* 00/12:00:00
+RandomizedDelaySec=30m
+Persistent=true
+Unit=$SYSTEMD_UP_SVC
+
+[Install]
+WantedBy=default.target
+EOF
   mv -f "$d/.$SYSTEMD_SVC.new" "$d/$SYSTEMD_SVC" && mv -f "$d/.$SYSTEMD_TIMER.new" "$d/$SYSTEMD_TIMER" \
-    && mv -f "$d/.$SYSTEMD_BR_SVC.new" "$d/$SYSTEMD_BR_SVC" && mv -f "$d/.$SYSTEMD_BR_TIMER.new" "$d/$SYSTEMD_BR_TIMER"
+    && mv -f "$d/.$SYSTEMD_BR_SVC.new" "$d/$SYSTEMD_BR_SVC" && mv -f "$d/.$SYSTEMD_BR_TIMER.new" "$d/$SYSTEMD_BR_TIMER" \
+    && mv -f "$d/.$SYSTEMD_UP_SVC.new" "$d/$SYSTEMD_UP_SVC" && mv -f "$d/.$SYSTEMD_UP_TIMER.new" "$d/$SYSTEMD_UP_TIMER"
 }
 
 write_launchd_plist() {
@@ -785,7 +820,50 @@ EOF
   </dict>
 </plist>
 EOF
-  chmod 644 "$LAUNCHD_BR_PLIST.new" && mv -f "$LAUNCHD_BR_PLIST.new" "$LAUNCHD_BR_PLIST"
+  chmod 644 "$LAUNCHD_BR_PLIST.new" && mv -f "$LAUNCHD_BR_PLIST.new" "$LAUNCHD_BR_PLIST" || return 1
+  cat >"$LAUNCHD_UP_PLIST.new" <<EOF || return 1
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>$LAUNCHD_UP_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>$interp</string>
+      <string>$INSTALLED_BIN</string>
+      <string>update-check</string>
+    </array>
+    <!-- At 04:47 and 16:47; launchd starts a calendar job missed asleep
+         once on wake (launchd.plist(5)). It checks only. -->
+    <key>StartCalendarInterval</key>
+    <array>
+      <dict>
+        <key>Hour</key>
+        <integer>4</integer>
+        <key>Minute</key>
+        <integer>47</integer>
+      </dict>
+      <dict>
+        <key>Hour</key>
+        <integer>16</integer>
+        <key>Minute</key>
+        <integer>47</integer>
+      </dict>
+    </array>
+    <key>StandardOutPath</key>
+    <string>$LOG_DIR/update.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>$LOG_DIR/update.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+  </dict>
+</plist>
+EOF
+  chmod 644 "$LAUNCHD_UP_PLIST.new" && mv -f "$LAUNCHD_UP_PLIST.new" "$LAUNCHD_UP_PLIST"
 }
 
 cmd_install() {
@@ -820,17 +898,25 @@ cmd_install() {
     write_systemd_units "$interp" "$mode" || { echo "$SCRIPT_NAME: install failed writing the systemd units" >&2; return 1; }
     units="$SYSTEMD_UNIT_DIR/$SYSTEMD_SVC $SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER"
     if [ "$mode" = shadow ]; then
-      # Observation only: an earlier active install's bridge refresh goes.
+      # Observation only: an earlier active install's bridge refresh and
+      # update check go.
       if [ -e "$SYSTEMD_UNIT_DIR/$SYSTEMD_BR_TIMER" ]; then
         systemctl --user disable --now "$SYSTEMD_BR_TIMER" 2>/dev/null || true
         uninstall_owned "$SYSTEMD_UNIT_DIR/$SYSTEMD_BR_TIMER"; uninstall_owned "$SYSTEMD_UNIT_DIR/$SYSTEMD_BR_SVC"
       fi
+      if [ -e "$SYSTEMD_UNIT_DIR/$SYSTEMD_UP_TIMER" ]; then
+        systemctl --user disable --now "$SYSTEMD_UP_TIMER" 2>/dev/null || true
+        uninstall_owned "$SYSTEMD_UNIT_DIR/$SYSTEMD_UP_TIMER"; uninstall_owned "$SYSTEMD_UNIT_DIR/$SYSTEMD_UP_SVC"
+      fi
     else
-      units="$units $SYSTEMD_UNIT_DIR/$SYSTEMD_BR_SVC $SYSTEMD_UNIT_DIR/$SYSTEMD_BR_TIMER"
+      units="$units $SYSTEMD_UNIT_DIR/$SYSTEMD_BR_SVC $SYSTEMD_UNIT_DIR/$SYSTEMD_BR_TIMER $SYSTEMD_UNIT_DIR/$SYSTEMD_UP_SVC $SYSTEMD_UNIT_DIR/$SYSTEMD_UP_TIMER"
     fi
     systemctl --user daemon-reload
     systemctl --user enable --now "$SYSTEMD_TIMER"
-    [ "$mode" = shadow ] || systemctl --user enable --now "$SYSTEMD_BR_TIMER"
+    if [ "$mode" != shadow ]; then
+      systemctl --user enable --now "$SYSTEMD_BR_TIMER"
+      systemctl --user enable --now "$SYSTEMD_UP_TIMER"
+    fi
   else
     write_launchd_plist "$interp" "$mode" || { echo "$SCRIPT_NAME: install failed writing the LaunchAgent" >&2; return 1; }
     units="$LAUNCHD_PLIST"
@@ -839,14 +925,17 @@ cmd_install() {
     launchctl load -w "$LAUNCHD_PLIST"
     rm -f "${SCHEDULE_STOPPED:?}"
     if [ "$mode" = shadow ]; then
-      if [ -e "$LAUNCHD_BR_PLIST" ]; then
-        launchctl unload "$LAUNCHD_BR_PLIST" 2>/dev/null || true
-        uninstall_owned "$LAUNCHD_BR_PLIST"
-      fi
+      for f in "$LAUNCHD_BR_PLIST" "$LAUNCHD_UP_PLIST"; do
+        [ -e "$f" ] || continue
+        launchctl unload "$f" 2>/dev/null || true
+        uninstall_owned "$f"
+      done
     else
-      units="$units $LAUNCHD_BR_PLIST"
-      launchctl unload "$LAUNCHD_BR_PLIST" 2>/dev/null || true
-      launchctl load -w "$LAUNCHD_BR_PLIST"
+      units="$units $LAUNCHD_BR_PLIST $LAUNCHD_UP_PLIST"
+      for f in "$LAUNCHD_BR_PLIST" "$LAUNCHD_UP_PLIST"; do
+        launchctl unload "$f" 2>/dev/null || true
+        launchctl load -w "$f"
+      done
     fi
   fi
   { printf 'schema\tnice-dns-health-install/1\nbundle\t%s\nprevious\t%s\nentrypoint\t%s\ninterpreter\t%s\nmode\t%s\n' "$id" "$prev" "$INSTALLED_BIN" "$interp" "$mode"
@@ -862,7 +951,7 @@ cmd_install() {
   if [ "$mode" = shadow ]; then
     echo "  Schedule:   $units (every minute: $SCRIPT_NAME tick --shadow; records, never acts)"
   else
-    echo "  Schedule:   $units (every minute: $SCRIPT_NAME tick)"
+    echo "  Schedule:   $units (every minute: $SCRIPT_NAME tick; daily: bridges-refresh; twice a day: update-check)"
   fi
   echo "  Logs:       $LOG_DIR/"
   if [ "$INSTALLED_BIN" != "$INSTALLED_BIN_PRIMARY" ]; then
@@ -888,7 +977,8 @@ cmd_self_check() {
 uninstall_owned() {
   case "$1" in
     "${SYSTEMD_UNIT_DIR:?}/${SYSTEMD_SVC:?}"|"${SYSTEMD_UNIT_DIR:?}/${SYSTEMD_TIMER:?}"|"${LAUNCHD_PLIST:?}"|"${INSTALLED_BIN_PRIMARY:?}"|"${INSTALLED_BIN_FALLBACK:?}"|\
-    "${SYSTEMD_UNIT_DIR:?}/${SYSTEMD_BR_SVC:?}"|"${SYSTEMD_UNIT_DIR:?}/${SYSTEMD_BR_TIMER:?}"|"${LAUNCHD_BR_PLIST:?}")
+    "${SYSTEMD_UNIT_DIR:?}/${SYSTEMD_BR_SVC:?}"|"${SYSTEMD_UNIT_DIR:?}/${SYSTEMD_BR_TIMER:?}"|"${LAUNCHD_BR_PLIST:?}"|\
+    "${SYSTEMD_UNIT_DIR:?}/${SYSTEMD_UP_SVC:?}"|"${SYSTEMD_UNIT_DIR:?}/${SYSTEMD_UP_TIMER:?}"|"${LAUNCHD_UP_PLIST:?}")
       rm -f "${1:?}" ;;
   esac
 }
@@ -896,11 +986,10 @@ uninstall_owned() {
 cmd_uninstall() {
   local f own
   if [ "$IS_LINUX" -eq 1 ]; then
-    systemctl --user disable --now "$SYSTEMD_TIMER" "$SYSTEMD_BR_TIMER" 2>/dev/null || true
-    systemctl --user stop "$SYSTEMD_SVC" "$SYSTEMD_BR_SVC" 2>/dev/null || true
+    systemctl --user disable --now "$SYSTEMD_TIMER" "$SYSTEMD_BR_TIMER" "$SYSTEMD_UP_TIMER" 2>/dev/null || true
+    systemctl --user stop "$SYSTEMD_SVC" "$SYSTEMD_BR_SVC" "$SYSTEMD_UP_SVC" 2>/dev/null || true
   else
-    launchctl unload "$LAUNCHD_PLIST" 2>/dev/null || true
-    launchctl unload "$LAUNCHD_BR_PLIST" 2>/dev/null || true
+    for f in "$LAUNCHD_PLIST" "$LAUNCHD_BR_PLIST" "$LAUNCHD_UP_PLIST"; do launchctl unload "$f" 2>/dev/null || true; done
   fi
   if own="$(receipt_get schedule 2>/dev/null)" && [ -n "$own" ]; then
     # Exactly what the install recorded, nothing else in those directories.
@@ -908,7 +997,8 @@ cmd_uninstall() {
   else
     # An install from before the receipt: its fixed paths.
     for f in "$SYSTEMD_UNIT_DIR/$SYSTEMD_TIMER" "$SYSTEMD_UNIT_DIR/$SYSTEMD_SVC" "$LAUNCHD_PLIST" "$INSTALLED_BIN_PRIMARY" "$INSTALLED_BIN_FALLBACK" \
-             "$SYSTEMD_UNIT_DIR/$SYSTEMD_BR_TIMER" "$SYSTEMD_UNIT_DIR/$SYSTEMD_BR_SVC" "$LAUNCHD_BR_PLIST"; do
+             "$SYSTEMD_UNIT_DIR/$SYSTEMD_BR_TIMER" "$SYSTEMD_UNIT_DIR/$SYSTEMD_BR_SVC" "$LAUNCHD_BR_PLIST" \
+             "$SYSTEMD_UNIT_DIR/$SYSTEMD_UP_TIMER" "$SYSTEMD_UNIT_DIR/$SYSTEMD_UP_SVC" "$LAUNCHD_UP_PLIST"; do
       uninstall_owned "$f"
     done
   fi
@@ -918,27 +1008,48 @@ cmd_uninstall() {
   echo "Uninstalled."
 }
 
+# start / stop act on every schedule installed: the minute pass, and, on an
+# active install, the bridge refresh and the update check (a shadow install
+# has only the first, so only its unit file is there).
 cmd_start() {
+  local t f
   if [ "$IS_LINUX" -eq 1 ]; then
     systemctl --user start "$SYSTEMD_TIMER"
     systemctl --user enable "$SYSTEMD_TIMER" 2>/dev/null || true
-    echo "Timer started."
+    for t in "$SYSTEMD_BR_TIMER" "$SYSTEMD_UP_TIMER"; do
+      [ -e "$SYSTEMD_UNIT_DIR/$t" ] || continue
+      systemctl --user start "$t"
+      systemctl --user enable "$t" 2>/dev/null || true
+    done
+    echo "Timers started."
   else
     launchctl load -w "$LAUNCHD_PLIST"
+    for f in "$LAUNCHD_BR_PLIST" "$LAUNCHD_UP_PLIST"; do
+      [ -e "$f" ] && launchctl load -w "$f"
+    done
     rm -f "${SCHEDULE_STOPPED:?}"
-    echo "LaunchAgent loaded."
+    echo "LaunchAgents loaded."
   fi
 }
 
 cmd_stop() {
+  local t f
   if [ "$IS_LINUX" -eq 1 ]; then
     systemctl --user stop "$SYSTEMD_TIMER"
     systemctl --user disable "$SYSTEMD_TIMER" 2>/dev/null || true
-    echo "Timer stopped."
+    for t in "$SYSTEMD_BR_TIMER" "$SYSTEMD_UP_TIMER"; do
+      [ -e "$SYSTEMD_UNIT_DIR/$t" ] || continue
+      systemctl --user stop "$t"
+      systemctl --user disable "$t" 2>/dev/null || true
+    done
+    echo "Timers stopped."
   else
     launchctl unload "$LAUNCHD_PLIST"
+    for f in "$LAUNCHD_BR_PLIST" "$LAUNCHD_UP_PLIST"; do
+      [ -e "$f" ] && launchctl unload "$f"
+    done
     mkdir -p "$HEALTH_LIB_ROOT_INSTALLED" && : >"$SCHEDULE_STOPPED"
-    echo "LaunchAgent unloaded."
+    echo "LaunchAgents unloaded."
   fi
 }
 
@@ -1257,6 +1368,57 @@ cmd_bridges_refresh() {
   return "$rc"
 }
 
+# update-check: the unattended update check (OD-8, twice a day). It runs the
+# published `nice-dns update --check` once, bounded to UPDATE_CHECK_SECS (or
+# ND_UPDATE_CHECK_S), and only checks: it installs and restarts nothing
+# (DEC-018, DEC-022). The command keeps its answer for `nice-dns status`
+# (update-check.tsv); exits 0, 10 and 1 are answers. A check that does not
+# finish, or fails otherwise, is kept as `unknown` with the time, as a manual
+# check that could not reach the remote is, so `status` never shows an old
+# answer as this one. Exit 0 whatever the check found, 2 on usage.
+cmd_update_check() {
+  local bin="" c f t rc to="${ND_UPDATE_CHECK_S:-$UPDATE_CHECK_SECS}" sd prev
+  [ $# -eq 0 ] || { echo "$SCRIPT_NAME: update-check takes no arguments" >&2; return 2; }
+  if ! load_health_libs; then echo "$SCRIPT_NAME: not loading the health libraries: $HEALTH_LIB_ERROR" >&2; return 2; fi
+  mkdir -p "$LOG_DIR"
+  # Where the installer publishes the command (lib/install.sh _nd_inst_command_dir).
+  for c in "$HOME/.local/bin/nice-dns" "$LOG_DIR/bin/nice-dns"; do
+    if [ -f "$c" ] && [ -x "$c" ]; then bin="$c"; break; fi
+  done
+  if [ -z "$bin" ]; then
+    log_to_file "$(ts) UPDATE-CHECK no nice-dns at $HOME/.local/bin/nice-dns or $LOG_DIR/bin/nice-dns; nothing checked"
+    echo "$SCRIPT_NAME: no published nice-dns; nothing checked" >&2
+    return 0
+  fi
+  t="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-up.XXXXXX")" || return 0
+  nd_bounded "$to" "$t/out" "$t/err" "$bin" update --check; rc=$?
+  case "$rc" in
+    0|10|1) log_to_file "$(ts) UPDATE-CHECK rc=$rc $(tail -n 1 "$t/out" | tr -d '\000-\037' | cut -c1-200)" ;;
+    *)
+      if [ "$rc" = 124 ]; then
+        log_to_file "$(ts) UPDATE-CHECK timed out after $to s; kept as unknown"
+      else
+        log_to_file "$(ts) UPDATE-CHECK failed (exit $rc): $(head -n 1 "$t/err" | tr -d '\000-\037' | cut -c1-200); kept as unknown"
+      fi
+      # The cache in the controller's state directory, with the branch and
+      # commit the last check recorded (read as data).
+      # Written beside the cache and renamed over it, as nice-dns does
+      # (update_write_cache), so a `status` read never sees half a file.
+      sd="$(nd_platform_state_dir)"
+      if nd_state_init 2>/dev/null && [ -d "$sd" ] && [ ! -L "$sd" ] && c="$(mktemp "$sd/.update-check.XXXXXX")"; then
+        prev="$sd/update-check.tsv"
+        if { printf 'schema\tnice-dns-update-check/1\nchecked_at\t%s\n' "$(date +%s)"
+             for f in branch local_commit; do
+               printf '%s\t%s\n' "$f" "$(awk -F '\t' -v k="$f" 'NR > 1 && $1 == k && $2 ~ /^[A-Za-z0-9._\/-]+$/ { print $2; exit }' "$prev" 2>/dev/null | grep . || echo -)"
+             done
+             printf 'remote_commit\t-\nresult\tunknown\n'; } >"$c" && chmod 600 "$c" && mv -f "$c" "$prev"; then :
+        else rm -f "$c"; fi
+      fi ;;
+  esac
+  rm -rf "${t:?}"
+  return 0
+}
+
 # ─────────────────────────────── usage / dispatch ──────────────────────────────
 
 usage() {
@@ -1276,10 +1438,16 @@ Usage: $SCRIPT_NAME <command>
               adopt a changed set (daily schedule): at once, through a proxy
               restart, when the running proxy uses a bridge the set leaves out;
               otherwise when the proxy restarts for another reason.
+  update-check
+              Run the published \`nice-dns update --check\` once, bounded to
+              60 s (twice a day: 00:00/12:00 on Linux, 04:47/16:47 on macOS;
+              not in shadow mode). It checks only; the answer is kept for
+              \`nice-dns status\`, and one that does not come is kept as unknown.
   uninstall   Remove the schedule, bundle, entrypoint, logs and controller state
               that install recorded, and nothing else.
-  start       (Re)start the timer / LaunchAgent.
-  stop        Pause the timer / unload the LaunchAgent.
+  start       (Re)start the schedules (timers / LaunchAgents).
+  stop        Pause every schedule: the minute pass, the bridge refresh and
+              the update check.
   status      Show schedule state, the installed generation (Linux) and
               the last 5 log entries.
   drift       Compare the running deployment with the installed generation
@@ -1338,6 +1506,7 @@ main() {
     route-start) cmd_route_start "$@" ;;
     self-check) cmd_self_check "$@" ;;
     bridges-refresh) cmd_bridges_refresh "$@" ;;
+    update-check) cmd_update_check "$@" ;;
     logs)       cmd_logs "$@" ;;
     failures)   cmd_failures "$@" ;;
     -h|--help|help|"") usage ;;

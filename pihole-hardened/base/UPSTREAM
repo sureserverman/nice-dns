@@ -1,0 +1,4 @@
+schema	nice-dns-hardened-upstream/1
+repository	-
+commit	4574d52b4f712f3d0f51a33a05d3f735c485a33d
+files	Dockerfile start.sh post-install.sh checksums/FTL-v6.6.1.sha256

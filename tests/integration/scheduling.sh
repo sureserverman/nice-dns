@@ -238,7 +238,7 @@ t_uninstall_removes_only_what_install_owns() {
       assert_file "$d/someone-else.unit" "$plat: a neighbour's unit stays"
       assert_file "$HOME/.local/bin/other-tool" "$plat: a neighbour's tool stays"
       if [ "$plat" = linux ]; then
-        assert_match '^systemctl --user disable --now nice-dns-health.timer nice-dns-health-bridges.timer$' "$(cat "$FAKE_LOG")" "linux: both timers are stopped first"
+        assert_match '^systemctl --user disable --now nice-dns-health.timer nice-dns-health-bridges.timer nice-dns-health-update.timer$' "$(cat "$FAKE_LOG")" "linux: the three timers are stopped first"
         assert_no_path "$XDG_CONFIG_HOME/systemd/user/nice-dns-health.timer" "linux: the timer unit is removed"
       else
         assert_match "^launchctl unload $SC_UNIT\$" "$(cat "$FAKE_LOG")" "macos: the agent is unloaded first"
@@ -273,6 +273,153 @@ t_stop_marks_the_schedule_stopped_until_it_is_loaded_again() {
         assert_rc 0 "$SC_RC" "macos: reinstall: $SC_OUT"
         assert_no_path "$SC_ROOT/schedule-stopped" "macos: an install loads the agent, so it clears the mark"
       fi
+    ) || exit 1
+  done
+}
+
+# The unattended update check (OD-8): a third schedule, twice a day, beside
+# the minute pass and the daily bridge refresh. Not in shadow mode.
+t_update_check_is_scheduled_twice_a_day() {
+  local plat up
+  for plat in $(sc_platforms); do
+    (
+      sc_env "$plat"
+      if [ "$plat" = linux ]; then up="$XDG_CONFIG_HOME/systemd/user/nice-dns-health-update"
+      else up="$HOME/Library/LaunchAgents/org.nice-dns.health-update.plist"; fi
+      sc_cli "$SC_TREE/health/nice-dns-health" install
+      assert_rc 0 "$SC_RC" "$plat: install: $SC_OUT"
+      if [ "$plat" = linux ]; then
+        assert_match "^ExecStart=$(sc_receipt interpreter) $SC_BIN update-check\$" "$(cat "$up.service")" "linux: the service runs update-check through the installed entrypoint"
+        assert_match '^TimeoutStartSec=[0-9]+$' "$(cat "$up.service")" "linux: the service is bounded"
+        assert_match '^OnCalendar=\*-\*-\* 00/12:00:00$' "$(cat "$up.timer")" "linux: at 00:00 and 12:00"
+        assert_match '^RandomizedDelaySec=30m$' "$(cat "$up.timer")" "linux: spread over half an hour"
+        assert_match '^Persistent=true$' "$(cat "$up.timer")" "linux: a slot missed asleep runs on resume"
+        assert_match '^Unit=nice-dns-health-update\.service$' "$(cat "$up.timer")" "linux: the timer starts the check"
+        assert_match '^systemctl --user enable --now nice-dns-health-update\.timer$' "$(cat "$FAKE_LOG")" "linux: the timer is enabled"
+        assert_match "$(printf '^schedule\t')$up\\.timer\$" "$(cat "$SC_ROOT/install.tsv")" "linux: the receipt owns the timer"
+        assert_match "$(printf '^schedule\t')$up\\.service\$" "$(cat "$SC_ROOT/install.tsv")" "linux: and the service"
+      else
+        assert_eq "$(printf '%s\n' "/bin/bash|$SC_BIN|update-check" "[{'Hour': 4, 'Minute': 47}, {'Hour': 16, 'Minute': 47}]" False)" \
+          "$("$SC_PY" -c 'import plistlib,sys; d=plistlib.load(open(sys.argv[1],"rb")); print("|".join(d["ProgramArguments"])); print(d["StartCalendarInterval"]); print(d.get("RunAtLoad", False))' "$up")" \
+          "macos: update-check at 04:47 and 16:47 (two calendar intervals), not at load"
+        assert_match "^launchctl load -w $up\$" "$(cat "$FAKE_LOG")" "macos: the agent is loaded"
+        assert_match "$(printf '^schedule\t')$up\$" "$(cat "$SC_ROOT/install.tsv")" "macos: the receipt owns the agent"
+      fi
+      sc_cli "$SC_TREE/health/nice-dns-health" install --shadow
+      assert_rc 0 "$SC_RC" "$plat: install --shadow: $SC_OUT"
+      if [ "$plat" = linux ]; then
+        assert_no_path "$up.timer" "linux: shadow mode schedules no update check"
+        assert_no_path "$up.service" "linux: nor its service"
+      else
+        assert_no_path "$up" "macos: shadow mode schedules no update check"
+      fi
+      assert_not_match 'health-update' "$(awk -F '\t' '$1 == "schedule"' "$SC_ROOT/install.tsv")" "$plat: the shadow receipt owns no update schedule"
+      sc_cli "$SC_BIN" --help
+      assert_match 'update-check' "$SC_OUT" "$plat: the help names update-check"
+    ) || exit 1
+  done
+}
+
+# stop, start and uninstall act on every schedule the install owns: the minute
+# pass, the bridge refresh and the update check. One list, walked for each.
+t_stop_start_and_uninstall_act_on_every_schedule() {
+  local plat
+  for plat in $(sc_platforms); do
+    (
+      local n u p
+      sc_env "$plat"
+      sc_cli "$SC_TREE/health/nice-dns-health" install
+      assert_rc 0 "$SC_RC" "$plat: install: $SC_OUT"
+      : >"$FAKE_LOG"
+      sc_cli "$SC_BIN" stop
+      assert_rc 0 "$SC_RC" "$plat: stop: $SC_OUT"
+      for n in nice-dns-health nice-dns-health-bridges nice-dns-health-update; do
+        if [ "$plat" = linux ]; then
+          assert_match "^systemctl --user stop .*$n\\.timer" "$(cat "$FAKE_LOG")" "linux: stop stops $n.timer"
+          assert_match "^systemctl --user disable .*$n\\.timer" "$(cat "$FAKE_LOG")" "linux: and disables it"
+        else
+          u="org.nice-dns.${n#nice-dns-}"
+          assert_match "^launchctl unload $HOME/Library/LaunchAgents/$u\\.plist\$" "$(cat "$FAKE_LOG")" "macos: stop unloads $u"
+        fi
+      done
+      : >"$FAKE_LOG"
+      sc_cli "$SC_BIN" start
+      assert_rc 0 "$SC_RC" "$plat: start: $SC_OUT"
+      for n in nice-dns-health nice-dns-health-bridges nice-dns-health-update; do
+        if [ "$plat" = linux ]; then
+          assert_match "^systemctl --user start .*$n\\.timer" "$(cat "$FAKE_LOG")" "linux: start starts $n.timer"
+        else
+          u="org.nice-dns.${n#nice-dns-}"
+          assert_match "^launchctl load -w $HOME/Library/LaunchAgents/$u\\.plist\$" "$(cat "$FAKE_LOG")" "macos: start loads $u"
+        fi
+      done
+      sc_cli "$SC_BIN" uninstall
+      assert_rc 0 "$SC_RC" "$plat: uninstall: $SC_OUT"
+      for n in nice-dns-health nice-dns-health-bridges nice-dns-health-update; do
+        if [ "$plat" = linux ]; then
+          for p in "$XDG_CONFIG_HOME/systemd/user/$n.timer" "$XDG_CONFIG_HOME/systemd/user/$n.service"; do assert_no_path "$p" "linux: uninstall removes $p"; done
+        else
+          assert_no_path "$HOME/Library/LaunchAgents/org.nice-dns.${n#nice-dns-}.plist" "macos: uninstall removes the ${n#nice-dns-} agent"
+        fi
+      done
+    ) || exit 1
+  done
+  # A shadow install has only the minute pass: start loads nothing else.
+  for plat in $(sc_platforms); do
+    (
+      sc_env "$plat"
+      sc_cli "$SC_TREE/health/nice-dns-health" install --shadow
+      : >"$FAKE_LOG"
+      sc_cli "$SC_BIN" start
+      assert_rc 0 "$SC_RC" "$plat: shadow start: $SC_OUT"
+      assert_not_match 'health-bridges|health-update' "$(cat "$FAKE_LOG")" "$plat: a shadow start starts no other schedule"
+    ) || exit 1
+  done
+}
+
+# sc_fake_nice_dns <exit> [sleep]: a published `nice-dns` that records its
+# arguments and exits <exit>, after [sleep] seconds.
+sc_fake_nice_dns() {
+  mkdir -p "$HOME/.local/bin"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s"\n[ -z "%s" ] || sleep %s\necho "available 0123456789ab"\nexit %s\n' \
+    "$CASE_DIR/nd-args" "${2:-}" "${2:-0}" "$1" >"$HOME/.local/bin/nice-dns"
+  chmod 755 "$HOME/.local/bin/nice-dns"
+}
+
+# update-check runs the published `nice-dns update --check` once, bounded;
+# it only checks (exit 0 whatever the answer), and a check that cannot finish
+# is kept as `unknown`, with the time, for `nice-dns status`.
+t_update_check_runs_the_published_check_bounded() {
+  local plat
+  for plat in $(sc_platforms); do
+    (
+      local sd t0 el log
+      sc_env "$plat"
+      if [ "$plat" = linux ]; then log="$XDG_STATE_HOME/nice-dns-health/health.log"; else log="$HOME/Library/Logs/nice-dns-health/health.log"; fi
+      sc_cli "$SC_TREE/health/nice-dns-health" install
+      if [ "$plat" = linux ]; then sd="$XDG_STATE_HOME/nice-dns/controller"; else sd="$HOME/Library/Application Support/nice-dns/controller"; fi
+      sc_cli "$SC_BIN" update-check
+      assert_rc 0 "$SC_RC" "$plat: no published nice-dns is not a failure of the schedule: $SC_OUT"
+      assert_match "UPDATE-CHECK .*$HOME/\\.local/bin/nice-dns" "$(cat "$log" 2>/dev/null)" "$plat: the log names where it looked"
+      sc_fake_nice_dns 10
+      rm -f "$CASE_DIR/nd-args"
+      sc_cli "$SC_BIN" update-check
+      assert_rc 0 "$SC_RC" "$plat: an available update is an answer: $SC_OUT"
+      assert_eq "update --check" "$(cat "$CASE_DIR/nd-args")" "$plat: the published command ran update --check, once"
+      assert_no_path "$sd/update-check.tsv" "$plat: the controller wrote no cache of its own (the command keeps its answer)"
+      assert_not_match 'systemctl --user (restart|start) (pi-hole|unbound|tor-)|launchctl kickstart|container (stop|start|run)|podman (restart|stop)' "$(cat "$FAKE_LOG")" "$plat: nothing is restarted"
+      sc_fake_nice_dns 0 30
+      t0="$(date +%s)"
+      ND_UPDATE_CHECK_S=2 sc_cli "$SC_BIN" update-check
+      el=$(( $(date +%s) - t0 ))
+      assert_rc 0 "$SC_RC" "$plat: a check past its bound still exits 0: $SC_OUT"
+      assert_eq 1 "$([ "$el" -le 7 ] && echo 1)" "$plat: it ends within the bound plus 5 s (took $el s)"
+      assert_match 'UPDATE-CHECK .*timed out after 2 s' "$(cat "$log" 2>/dev/null)" "$plat: the timeout is logged"
+      assert_eq "schema	nice-dns-update-check/1" "$(head -n 1 "$sd/update-check.tsv" 2>/dev/null)" "$plat: the cache is kept"
+      assert_eq unknown "$(awk -F '\t' '$1 == "result" { print $2 }' "$sd/update-check.tsv" 2>/dev/null)" "$plat: as unknown"
+      assert_eq 1 "$(awk -F '\t' -v t="$t0" '$1 == "checked_at" && $2 >= t { print 1 }' "$sd/update-check.tsv" 2>/dev/null)" "$plat: with the time of this check"
+      sc_cli "$SC_BIN" update-check extra
+      assert_rc 2 "$SC_RC" "$plat: update-check takes no arguments"
     ) || exit 1
   done
 }

@@ -79,10 +79,12 @@
 #                    inline and unpacked next to the clone.
 #   quiesce-agents   stop the schedules that could mutate the stack beside the
 #                    controller under test: macOS org.nice-dns.health (the old
-#                    30-minute run), org.nice-dns.bridge-eval and
-#                    org.nice-dns.health-bridges (launchctl bootout; the
-#                    plists stay); Linux nice-dns-health.timer and
-#                    nice-dns-health-bridges.timer (stopped). The stack's own
+#                    30-minute run), org.nice-dns.bridge-eval,
+#                    org.nice-dns.health-bridges and org.nice-dns.health-update
+#                    (launchctl bootout; the plists stay); Linux
+#                    nice-dns-health.timer, nice-dns-health-bridges.timer and
+#                    nice-dns-health-update.timer (stopped; the update check
+#                    writes the controller's update cache). The stack's own
 #                    starter and the read-only debug monitor keep running.
 #   resume-agents    start those schedules again (the inverse): macOS loads
 #                    each agent whose plist is installed and that is not
@@ -233,7 +235,23 @@
 #                    an install from plain ssh leaves the runtime where the
 #                    start agent cannot see it). --mode bridges-on|bridges-off
 #                    runs `nice-dns bridges on|off`, --mode status runs
-#                    `nice-dns status --tsv` (bridges-toggle plan, Task 2.1)
+#                    `nice-dns status --tsv` (bridges-toggle plan, Task 2.1).
+#                    --mode switch-proxy-haproxy|switch-proxy-socat|
+#                    switch-pihole-standard|switch-pihole-hardened runs
+#                    `nice-dns switch proxy|pihole <choice>`, --mode
+#                    reinstall-cell --cell PROXY/PIHOLE runs `nice-dns
+#                    reinstall --local PROXY --PIHOLE` (app-switches-autocheck
+#                    plan, Task 3.1)
+#   switch-report    read-only (app-switches-autocheck Task 3.1): whether a
+#                    pi-hole-hardened checkout exists anywhere the old sibling
+#                    lookup or a person would put one, whether the kept source
+#                    carries pihole-hardened/base, and what the running
+#                    Pi-hole is (hardened: /pihole in the container)
+#   update-schedule  run the controller's update schedule once by hand, as its
+#                    timer would (Linux: start nice-dns-health-update.service,
+#                    a oneshot, so start waits for it; macOS: kickstart
+#                    gui/<uid>/org.nice-dns.health-update, then wait up to
+#                    120 s until the job is no longer running)
 #   command-report   read-only: each container's start, the command and its
 #                    kept source, the image names, quadlets, agents, units and
 #                    root scripts, and whether each list could be read
@@ -297,7 +315,7 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network freeze-unbound thaw-unbound stop-proxy fresh-name command command-report freeze-service thaw-service pause-container unpause-container stop-container start-container crash-container stop-crash crash-report proxy-supervisor-lines mac-runtime-ssh mac-runtime-gui helper-report polkit-test-rule gui-report gui-session'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network freeze-unbound thaw-unbound stop-proxy fresh-name command command-report freeze-service thaw-service pause-container unpause-container stop-container start-container crash-container stop-crash crash-report proxy-supervisor-lines mac-runtime-ssh mac-runtime-gui helper-report polkit-test-rule gui-report gui-session switch-report update-schedule'
 FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
@@ -354,7 +372,7 @@ case "$op" in install-cell|uninstall-cell|build-proxy|install-controller|install
 case "$op" in fault-route|heal-route|route-apply) ;; *) [ -z "$i_route" ] || die "--route is only valid for fault-route, heal-route and route-apply" ;; esac
 case "$op" in install-controller|set-tunables|arm-set|command|polkit-test-rule|gui-session) ;; *) [ -z "$i_mode" ] || die "--mode is only valid for install-controller, set-tunables, arm-set, command, polkit-test-rule and gui-session" ;; esac
 if [ "$op" = polkit-test-rule ]; then case "$i_mode" in add|remove) ;; *) die "polkit-test-rule needs --mode add|remove" ;; esac; fi
-if [ "$op" = gui-session ]; then case "$i_mode" in screenshot|restart|update-check|bridges-off|bridges-on|open|launch|running) ;; *) die "gui-session needs --mode screenshot|restart|update-check|bridges-off|bridges-on|open|launch|running" ;; esac; fi
+if [ "$op" = gui-session ]; then case "$i_mode" in screenshot|restart|update-check|bridges-off|bridges-on|proxy-haproxy|proxy-socat|open|launch|running) ;; *) die "gui-session needs --mode screenshot|restart|update-check|bridges-off|bridges-on|proxy-haproxy|proxy-socat|open|launch|running" ;; esac; fi
 case "$op" in arm-prepare) [[ "$i_ptag" =~ ^v[0-9]+(\.[0-9]+)*$ ]] || die "arm-prepare needs --proxy-tag vN[.N]" ;; *) [ -z "$i_ptag" ] || die "--proxy-tag is only valid for arm-prepare" ;; esac
 if [ "$op" = arm-set ]; then case "$i_mode" in baseline|candidate) ;; *) die "arm-set needs --mode baseline|candidate" ;; esac; fi
 if [ "$op" = arm-prepare ]; then
@@ -377,8 +395,11 @@ if [ "$op" = command ]; then
       # install-git (Sub-plan 6 Task 2.3) sends a git bundle of HEAD, so the
       # install records a clean commit: only HEAD can be bundled this way.
       [ "$i_mode" = install ] || [ "$(git -C "$ND_CHECKOUT" rev-parse HEAD)" = "$i_sha" ] || die "command --mode install-git needs --source-sha to be HEAD" ;;
-    restart|reinstall|uninstall|reinstall-helper|uninstall-helper|bridges-on|bridges-off|status) [ -z "$i_cell$i_sha" ] || die "--cell/--source-sha are only for command --mode install" ;;
-    *) die "command needs --mode install|install-git|restart|reinstall|uninstall|reinstall-helper|uninstall-helper|bridges-on|bridges-off|status" ;;
+    restart|reinstall|uninstall|reinstall-helper|uninstall-helper|bridges-on|bridges-off|status|switch-proxy-haproxy|switch-proxy-socat|switch-pihole-standard|switch-pihole-hardened) [ -z "$i_cell$i_sha" ] || die "--cell/--source-sha are only for command --mode install" ;;
+    reinstall-cell)
+      case "$i_cell" in haproxy/standard|haproxy/hardened|socat/standard|socat/hardened) ;; *) die "command --mode reinstall-cell needs --cell haproxy|socat/standard|hardened" ;; esac
+      [ -z "$i_sha" ] || die "--source-sha is not valid for command --mode reinstall-cell" ;;
+    *) die "command needs --mode install|install-git|restart|reinstall|reinstall-cell|uninstall|reinstall-helper|uninstall-helper|bridges-on|bridges-off|status|switch-proxy-haproxy|switch-proxy-socat|switch-pihole-standard|switch-pihole-hardened" ;;
   esac
 fi
 
@@ -1381,14 +1402,14 @@ case "$NICE_DNS_OP" in
     exit $rc ;;
   quiesce-agents)
     if [ "$plat" = macos ]; then
-      for l in org.nice-dns.health org.nice-dns.bridge-eval org.nice-dns.health-bridges; do
+      for l in org.nice-dns.health org.nice-dns.bridge-eval org.nice-dns.health-bridges org.nice-dns.health-update; do
         if launchctl list "$l" >/dev/null 2>&1; then
           launchctl bootout "gui/$(id -u)/$l"; printf 'quiesced\t%s\trc=%s\n' "$l" "$?"
         else printf 'absent\t%s\n' "$l"; fi
       done
       launchctl list | awk '$3 ~ /^org\.nice-dns\./ { printf "loaded\t%s\n", $3 }'
     else
-      for u in nice-dns-health.timer nice-dns-health-bridges.timer; do
+      for u in nice-dns-health.timer nice-dns-health-bridges.timer nice-dns-health-update.timer; do
         if systemctl --user is-active --quiet "$u"; then
           systemctl --user stop "$u"; printf 'quiesced\t%s\trc=%s\n' "$u" "$?"
         else printf 'absent\t%s\n' "$u"; fi
@@ -1397,14 +1418,14 @@ case "$NICE_DNS_OP" in
     fi ;;
   resume-agents)
     if [ "$plat" = macos ]; then
-      for l in org.nice-dns.health org.nice-dns.bridge-eval org.nice-dns.health-bridges; do
+      for l in org.nice-dns.health org.nice-dns.bridge-eval org.nice-dns.health-bridges org.nice-dns.health-update; do
         p="$HOME/Library/LaunchAgents/$l.plist"
         if [ ! -f "$p" ]; then printf 'absent\t%s\n' "$l"
         elif launchctl list "$l" </dev/null >/dev/null 2>&1; then printf 'loaded\t%s\n' "$l"
         else launchctl bootstrap "gui/$(id -u)" "$p" </dev/null; printf 'resumed\t%s\trc=%s\n' "$l" "$?"; fi
       done
     else
-      for u in nice-dns-health.timer nice-dns-health-bridges.timer; do
+      for u in nice-dns-health.timer nice-dns-health-bridges.timer nice-dns-health-update.timer; do
         if ! systemctl --user cat "$u" </dev/null >/dev/null 2>&1; then printf 'absent\t%s\n' "$u"
         elif systemctl --user is-active --quiet "$u" </dev/null; then printf 'active\t%s\n' "$u"
         else systemctl --user start "$u" </dev/null; printf 'resumed\t%s\trc=%s\n' "$u" "$?"; fi
@@ -1916,6 +1937,10 @@ case "$NICE_DNS_OP" in
         cli="$w/nice-dns/nice-dns"
         set -- install "$NICE_DNS_PROXY" ;;
       reinstall|reinstall-helper) mac_room || exit 2; set -- reinstall --local ;;
+      reinstall-cell) mac_room || exit 2; set -- reinstall --local "$NICE_DNS_PROXY" "--$NICE_DNS_PIHOLE" ;;
+      switch-proxy-haproxy|switch-proxy-socat|switch-pihole-standard|switch-pihole-hardened)
+        mac_room || exit 2
+        m="${NICE_DNS_MODE#switch-}"; set -- switch "${m%%-*}" "${m#*-}" ;;
       uninstall-helper) set -- uninstall ;;
       bridges-on|bridges-off) set -- bridges "${NICE_DNS_MODE#bridges-}" ;;
       status) set -- status --tsv ;;
@@ -2140,6 +2165,44 @@ case "$NICE_DNS_OP" in
       if [ -f /usr/share/polkit-1/actions/org.nice-dns.policy ]; then printf 'policy\tpresent\n'; else printf 'policy\tabsent\n'; fi
       if sudo -n test -f /etc/polkit-1/rules.d/90-nice-dns-test.rules </dev/null; then printf 'polkit_test_rule\tpresent\n'; else printf 'polkit_test_rule\tabsent\n'; fi
     fi ;;
+  switch-report)
+    [ "$plat" = macos ] && homebrew_path
+    identity
+    printf 'section\tcheckouts\n'
+    for c in "$HOME/.local/share/nice-dns/pi-hole-hardened" "$HOME/pi-hole-hardened" "$HOME/dev/pi-hole-hardened" "$HOME/nice-dns-gui-build/pi-hole-hardened"; do
+      if [ -e "$c" ]; then printf 'hardened_checkout\t%s\tpresent\n' "$c"; else printf 'hardened_checkout\t%s\tabsent\n' "$c"; fi
+    done
+    printf 'section\tsource\n'
+    if [ -f "$HOME/.local/share/nice-dns/source/pihole-hardened/base/Dockerfile" ]; then printf 'kept_base\tpresent\n'; else printf 'kept_base\tabsent\n'; fi
+    printf 'section\tpihole\n'
+    if running pi-hole; then
+      printf 'pihole_running\t%s\n' "$(ctl_exec pi-hole sh -c 'test -d /pihole && echo hardened || echo standard' 2>/dev/null)"
+    else
+      printf 'pihole_running\tnone\n'
+    fi ;;
+  update-schedule)
+    printf 'schedule\tupdate\nstarted_utc\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    t0=$(date +%s)
+    if [ "$plat" = macos ]; then
+      l="gui/$(id -u)/org.nice-dns.health-update"
+      launchctl print "$l" >/dev/null 2>&1 || { printf 'schedule_loaded\tno\n'; exit 1; }
+      printf 'schedule_loaded\tyes\n'
+      launchctl kickstart "$l" </dev/null; rc=$?
+      printf 'kickstart_exit\t%s\n' "$rc"
+      [ "$rc" -eq 0 ] || exit 1
+      sleep 2
+      n=0
+      while [ "$n" -lt 120 ] && launchctl print "$l" 2>/dev/null | grep -q 'state = running'; do sleep 1; n=$((n + 1)); done
+      if launchctl print "$l" 2>/dev/null | grep -q 'state = running'; then printf 'schedule_done\tno\n'; exit 1; fi
+      printf 'schedule_done\tyes\nschedule_last_exit\t%s\n' "$(launchctl print "$l" 2>/dev/null | awk -F '= ' '/last exit code/ { print $2; exit }')"
+    else
+      systemctl --user cat nice-dns-health-update.timer </dev/null >/dev/null 2>&1 || { printf 'schedule_loaded\tno\n'; exit 1; }
+      printf 'schedule_loaded\tyes\n'
+      systemctl --user start nice-dns-health-update.service </dev/null; rc=$?
+      printf 'start_exit\t%s\nschedule_done\tyes\nschedule_last_exit\t%s\n' "$rc" "$(systemctl --user show -p ExecMainStatus --value nice-dns-health-update.service </dev/null 2>/dev/null)"
+      [ "$rc" -eq 0 ] || exit 1
+    fi
+    printf 'waited_s\t%s\nfinished_utc\t%s\n' "$(( $(date +%s) - t0 ))" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" ;;
   gui-report)
     # The Linux GUI as an install leaves it (Sub-plan 6 Task 2.3): the
     # program, the launcher, the icon and the files, and its --check (no
@@ -2272,7 +2335,12 @@ case "$NICE_DNS_OP" in
     printf 'gui_session\t%s\nstarted_utc\t%s\n' "$NICE_DNS_MODE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     o=$(mktemp "${TMPDIR:-/tmp}/nd-gui-out.XXXXXX") || exit 1
     # --wait: systemd-run exits with the hook's own status.
-    systemd-run --user --wait --pipe --quiet --collect "$b" "$@" </dev/null >"$o" 2>&1
+    # The switch modes draw with GTK's cairo renderer (DEC-027; mint's GM965
+    # hangs under GL): set explicitly, so the run does not depend on the
+    # user manager's environment.
+    ge=""
+    case "$NICE_DNS_MODE" in proxy-*) ge="--setenv=GSK_RENDERER=cairo" ;; esac
+    systemd-run --user --wait --pipe --quiet --collect $ge "$b" "$@" </dev/null >"$o" 2>&1
     rc=$?
     sed 's/^/out\t/' "$o"; rm -f "$o"
     printf 'finished_utc\t%s\ngui_exit\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc"
@@ -2395,7 +2463,7 @@ case "$op" in
     } >"$STATE/receipt.tsv"
     log_op 0
     printf 'snapshot %s -> %s\n' "$alias_" "$STATE/snapshot.tsv" ;;
-  config|health|controller-report|lifecycle-report|route-report|command-report|fresh-name|crash-report|proxy-supervisor-lines|helper-report|gui-report)
+  config|health|controller-report|lifecycle-report|route-report|command-report|fresh-name|crash-report|proxy-supervisor-lines|helper-report|gui-report|switch-report)
     # Read-only; the output starts with the identity lines, which are checked.
     preconnect_guards
     probe_identity "$op"
@@ -2419,7 +2487,7 @@ case "$op" in
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network|freeze-unbound|thaw-unbound|stop-proxy|command|freeze-service|thaw-service|pause-container|unpause-container|stop-container|start-container|crash-container|stop-crash|mac-runtime-ssh|mac-runtime-gui|polkit-test-rule|gui-session)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network|freeze-unbound|thaw-unbound|stop-proxy|command|freeze-service|thaw-service|pause-container|unpause-container|stop-container|start-container|crash-container|stop-crash|mac-runtime-ssh|mac-runtime-gui|polkit-test-rule|gui-session|update-schedule)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"
@@ -2432,7 +2500,7 @@ case "$op" in
     elif [ "$op" = mark-state ]; then
       remote_run "NICE_DNS_OP=mark-state NICE_DNS_RUN_ID=$RUN_ID"; rc=$?
     elif [ "$op" = command ]; then
-      remote_run "NICE_DNS_OP=command NICE_DNS_MODE=$i_mode NICE_DNS_PROXY=${i_cell%/*} NICE_DNS_SOURCE_SHA=$i_sha"; rc=$?
+      remote_run "NICE_DNS_OP=command NICE_DNS_MODE=$i_mode NICE_DNS_PROXY=${i_cell%/*} NICE_DNS_PIHOLE=${i_cell#*/} NICE_DNS_SOURCE_SHA=$i_sha"; rc=$?
     elif [ "$op" = capture-dns ]; then
       remote_run "NICE_DNS_OP=capture-dns NICE_DNS_COUNT=$c_count"; rc=$?
     elif [ "$op" = restore ]; then
@@ -2447,5 +2515,8 @@ case "$op" in
     fi
     log_op "$rc"
     [ "$rc" -eq 0 ] || exit 1 ;;
+  # An operation in OPS with no route here would otherwise do nothing and
+  # exit 0 (live 2026-11-11: switch-report and update-schedule).
+  *) die "operation '$op' has no local route in target.sh" ;;
 esac
 exit 0

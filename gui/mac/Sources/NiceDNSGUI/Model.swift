@@ -20,6 +20,8 @@ enum Confirm: Equatable, Identifiable {
     /// keeps the recorded ones, nothing is guessed.
     case reinstallKeep
     case update(String?)
+    /// A switch of the proxy or the Pi-hole flavour: the choice's action id.
+    case switchTo(String)
 
     var id: String {
         switch self {
@@ -27,6 +29,7 @@ enum Confirm: Equatable, Identifiable {
         case .reinstall: return "reinstall"
         case .reinstallKeep: return "reinstall-keep"
         case .update: return "update"
+        case .switchTo: return "switch"
         }
     }
 }
@@ -41,7 +44,14 @@ final class AppModel: ObservableObject {
     /// The bridges switch as the user last set it, until the command ends;
     /// then the status decides again, so a switch that failed goes back.
     @Published private(set) var bridgesPending: Bool?
-    @Published var confirm: Confirm?
+    /// The two selectors' choice asked about or running (NiceDNSKit.SwitchState).
+    @Published private(set) var switches = SwitchState()
+    /// A switch question answered Not now or dismissed puts its selector back.
+    @Published var confirm: Confirm? {
+        didSet {
+            if confirm == nil, case .switchTo? = oldValue { switches.dismiss() }
+        }
+    }
     @Published var notice: String?
 
     let environment: [String: String]
@@ -100,6 +110,9 @@ final class AppModel: ObservableObject {
     /// the status says (absent or anything but `off` is on, as the command reads it).
     var bridgesOn: Bool { bridgesPending ?? (status?.bridges.mode != "off") }
 
+    /// What `selector` shows; nil (unknown) when the status names neither choice.
+    func shown(_ selector: StackChoice) -> String? { switches.shown(selector, status: status) }
+
     var keptSource: Bool { CommandPaths.keptSourceExists(home: environment["HOME"] ?? NSHomeDirectory()) }
 
     // MARK: Status
@@ -128,6 +141,7 @@ final class AppModel: ObservableObject {
                 self.reading = false
                 guard generation == self.readGeneration else { return }
                 self.page = page
+                self.switches.statusRead()
                 if self.clearPendingOnRead {
                     self.clearPendingOnRead = false
                     self.bridgesPending = nil
@@ -165,6 +179,16 @@ final class AppModel: ObservableObject {
         // Opening the admin page or showing a path runs no command: never refused.
         if let a = Actions.lookup(id), a.program == nil { return runInApp(id, label: a.label) }
         guard !busy else { say("Another action is running"); return }
+        if let p = StackChoice.choice(of: id) {
+            // Never guessed: a selector the status does not name is disabled.
+            guard let installed = p.selector.installed(in: status) else {
+                return say("The status does not say which \(p.selector.title) is installed")
+            }
+            guard p.choice != installed else { return }
+            switches.ask(id)
+            confirm = .switchTo(id)
+            return
+        }
         switch id {
         case "uninstall": confirm = .uninstall
         case "reinstall": confirm = defaultChoices().map(Confirm.reinstall) ?? .reinstallKeep
@@ -190,9 +214,15 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// A selector was set to `choice`: ask, then switch (DEC-018).
+    func pick(_ selector: StackChoice, _ choice: String) {
+        guard selector.choices.contains(choice) else { return }
+        request(selector.id(choice))
+    }
+
     func setBridges(_ on: Bool) {
         guard on != bridgesOn else { return }
-        run(on ? "bridges-on" : "bridges-off")
+        run(on ? Placement.bridgesOn : Placement.bridgesOff)
     }
 
     /// Run action `id` now, one at a time, its output streamed into the pane.
@@ -208,6 +238,7 @@ final class AppModel: ObservableObject {
         case "bridges-off": bridgesPending = false; clearPendingOnRead = false
         default: break
         }
+        switches.started(id)
         busy = true
         quitAsked = nil
         paneTitle = label
@@ -238,7 +269,9 @@ final class AppModel: ObservableObject {
         current = nil
         paneResult = r.said ?? ""
         paneOK = r.end.map { succeeded(id: r.id, end: $0) } ?? false
-        if !paneOK { say("\(paneTitle): \(paneResult)") }
+        // A failed switch puts its selector back now; one that worked waits for the read.
+        switches.ended(r.id, succeeded: paneOK)
+        if !paneOK { say(StackChoice.failedNotice(for: r.id, said: paneResult) ?? "\(paneTitle): \(paneResult)") }
         // Re-read everything: a switch the command did not turn goes back.
         readGeneration += 1
         reading = false

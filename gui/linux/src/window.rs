@@ -78,6 +78,56 @@ pub enum RowKind {
     Verdict(String),
     /// The bridges switch: on or off.
     BridgesSwitch(bool),
+    /// The Proxy or Pi-hole selector.
+    Selector(Selector),
+}
+
+/// A two-choice selector whose picks are rows of the action table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Selector {
+    /// `proxy` or `pihole`: the widget is named `selector-<kind>`.
+    pub kind: &'static str,
+    /// What the question calls it: "Switch {subject} to {choice}?".
+    pub subject: &'static str,
+    pub choices: [&'static str; 2],
+    /// The action ids (gui/share/actions.tsv) that pick each choice.
+    pub actions: [&'static str; 2],
+    /// Which choice `status` names; `None`: it names none, or one outside the
+    /// two, and the selector is disabled and says `unknown`.
+    pub installed: Option<usize>,
+}
+
+const PROXY: Selector = Selector {
+    kind: "proxy",
+    subject: "the proxy",
+    choices: ["haproxy", "socat"],
+    actions: ["proxy-haproxy", "proxy-socat"],
+    installed: None,
+};
+const PIHOLE: Selector = Selector {
+    kind: "pihole",
+    subject: "Pi-hole",
+    choices: ["standard", "hardened"],
+    actions: ["pihole-standard", "pihole-hardened"],
+    installed: None,
+};
+
+/// The bridges switch's two actions: on, off.
+const BRIDGES_ACTIONS: [&str; 2] = ["bridges-on", "bridges-off"];
+/// What the update banner's button runs (after asking).
+const BANNER_ACTION: &str = "update";
+/// What the not-installed page's button runs.
+const INSTALL_ACTION: &str = "install";
+
+fn selector(base: Selector, value: &Option<String>) -> Selector {
+    let installed = value.as_deref().and_then(|v| base.choices.iter().position(|c| *c == v));
+    Selector { installed, ..base }
+}
+
+/// The selector and the choice index that action `id` picks, if it is one of
+/// the four selector actions.
+pub fn selector_for(id: &str) -> Option<(Selector, usize)> {
+    [PROXY, PIHOLE].into_iter().find_map(|s| s.actions.iter().position(|a| *a == id).map(|i| (s, i)))
 }
 
 fn row(title: impl Into<String>, subtitle: impl Into<String>) -> Row {
@@ -165,8 +215,8 @@ fn body(s: &Status, now: u64) -> Body {
     let mut installed = vec![
         row("Generation", or_unknown(&i.generation)),
         row("Source commit", i.source_commit.as_deref().map(short).unwrap_or("unknown")),
-        row("Proxy", or_unknown(&i.variant)),
-        row("Pi-hole", or_unknown(&i.pihole)),
+        Row { title: "Proxy".into(), subtitle: String::new(), kind: RowKind::Selector(selector(PROXY, &i.variant)) },
+        Row { title: "Pi-hole".into(), subtitle: String::new(), kind: RowKind::Selector(selector(PIHOLE, &i.pihole)) },
         row("Update", format!("{update_line}{checked}")),
     ];
     installed.push(row(
@@ -336,6 +386,26 @@ pub struct Ui {
     /// The bridges mode a running bridges-on/off asked for: the switch shows
     /// it until the status says what came of it.
     bridges_pending: Cell<Option<bool>>,
+    /// The selector pick a running switch asked for (selector kind, choice
+    /// index): the selector shows it until the status says what came of it.
+    selector_pending: Cell<Option<(&'static str, usize)>>,
+    /// While a selector's list or the switch question is open, a redraw would
+    /// replace the selector under the person: `show` keeps the latest page in
+    /// `held` instead, and it is drawn when the last hold is released.
+    holds: Cell<u32>,
+    held: RefCell<Option<(Page, Option<Status>)>>,
+    /// The last toast's text (the probe hook reports it).
+    last_toast: RefCell<String>,
+}
+
+/// `w` and every widget under it.
+fn walk_widgets(w: &gtk::Widget, f: &mut dyn FnMut(&gtk::Widget)) {
+    f(w);
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        walk_widgets(&c, f);
+        child = c.next_sibling();
+    }
 }
 
 impl Ui {
@@ -384,11 +454,15 @@ impl Ui {
             headless: RefCell::new(None),
             close_asked: Cell::new(None),
             bridges_pending: Cell::new(None),
+            selector_pending: Cell::new(None),
+            holds: Cell::new(0),
+            held: RefCell::new(None),
+            last_toast: RefCell::new(String::new()),
         });
         let weak = Rc::downgrade(&ui);
         ui.banner.connect_button_clicked(move |_| {
             if let Some(ui) = weak.upgrade() {
-                ui.act("update");
+                ui.act(BANNER_ACTION);
             }
         });
         // Closing the window would end this process and leave the running
@@ -443,6 +517,9 @@ impl Ui {
         if self.busy.get() {
             return self.toast("Another action is running");
         }
+        if let Some((sel, idx)) = selector_for(id) {
+            return self.ask_switch(sel, idx, None);
+        }
         match id {
             "uninstall" => self.confirm_uninstall(),
             "reinstall" => self.choose_reinstall(),
@@ -478,6 +555,9 @@ impl Ui {
             "bridges-on" => self.bridges_pending.set(Some(true)),
             "bridges-off" => self.bridges_pending.set(Some(false)),
             _ => {}
+        }
+        if let Some((sel, idx)) = selector_for(id) {
+            self.selector_pending.set(Some((sel.kind, idx)));
         }
         self.set_busy(true);
         self.pane.start(&label, &argv);
@@ -522,6 +602,11 @@ impl Ui {
         }
         let said = self.pane.finish(id, &end);
         self.bridges_pending.set(None);
+        // A switch that did not happen goes back at once; one that did stays
+        // on the new value until the next status read says so.
+        if !log_pane::succeeded(id, &end) {
+            self.selector_pending.set(None);
+        }
         self.close_asked.set(None);
         self.set_busy(false);
         let done = self.headless.borrow_mut().take();
@@ -533,7 +618,11 @@ impl Ui {
             });
         }
         if !log_pane::succeeded(id, &end) {
-            self.toast(&format!("{}: {said}", actions::lookup(id).map_or(id, |a| a.label)));
+            if selector_for(id).is_some() {
+                self.toast(&format!("The switch did not happen: {said}"));
+            } else {
+                self.toast(&format!("{}: {said}", actions::lookup(id).map_or(id, |a| a.label)));
+            }
         }
         // Re-read and redraw everything: a switch the command did not turn
         // goes back to what the status says. A read already under way is
@@ -550,11 +639,85 @@ impl Ui {
 
     fn set_busy(self: &Rc<Self>, busy: bool) {
         self.busy.set(busy);
+        if self.holds.get() > 0 {
+            // Redrawn on release; a later page already held is the one drawn.
+            if self.held.borrow().is_none() {
+                if let Some(page) = self.shown.borrow_mut().take() {
+                    *self.held.borrow_mut() = Some((page, self.status.borrow().clone()));
+                }
+            }
+            return;
+        }
         let page = self.shown.borrow_mut().take();
         if let Some(page) = page {
             let status = self.status.borrow().clone();
             self.show(page, status);
         }
+    }
+
+    /// Hold redraws (see `holds`).
+    fn hold(&self) {
+        self.holds.set(self.holds.get() + 1);
+    }
+
+    /// Release a hold; the last one draws the latest held page: at once, or,
+    /// from inside a signal of a widget the redraw would replace
+    /// (`later`), on the main loop's next turn.
+    fn release(self: &Rc<Self>, later: bool) {
+        let n = self.holds.get().saturating_sub(1);
+        self.holds.set(n);
+        if n > 0 {
+            return;
+        }
+        let ui = Rc::clone(self);
+        let draw = move || {
+            if ui.holds.get() == 0 {
+                let held = ui.held.borrow_mut().take();
+                if let Some((page, status)) = held {
+                    ui.shown.borrow_mut().take();
+                    ui.show(page, status);
+                }
+            }
+        };
+        if later {
+            glib::idle_add_local_once(draw);
+        } else {
+            draw();
+        }
+    }
+
+    /// Ask before a switch to `sel.choices[idx]`. `combo` is the selector the
+    /// person used (none when the pick came from `act`): anything but Switch
+    /// puts it back on the installed value and runs nothing.
+    fn ask_switch(self: &Rc<Self>, sel: Selector, idx: usize, combo: Option<adw::ComboRow>) {
+        let back = move || {
+            if let (Some(c), Some(i)) = (&combo, sel.installed) {
+                c.set_selected(i as u32);
+            }
+        };
+        if self.busy.get() {
+            back();
+            return self.toast("Another action is running");
+        }
+        let d = adw::AlertDialog::new(
+            Some(&format!("Switch {} to {}?", sel.subject, sel.choices[idx])),
+            Some("The stack is reinstalled from the kept source. This takes a few minutes and DNS stops briefly."),
+        );
+        d.add_responses(&[("cancel", "Not now"), ("switch", "Switch")]);
+        d.set_response_appearance("switch", adw::ResponseAppearance::Suggested);
+        d.set_close_response("cancel");
+        let ui = Rc::clone(self);
+        d.connect_response(None, move |_, r| {
+            if r == "switch" {
+                ui.run(sel.actions[idx], None);
+            } else {
+                back();
+            }
+            ui.release(false);
+        });
+        // The selector behind the question stays the one the person used.
+        self.hold();
+        d.present(Some(&self.window));
     }
 
     fn confirm_uninstall(self: &Rc<Self>) {
@@ -700,12 +863,17 @@ impl Ui {
         let t = adw::Toast::new(text);
         t.set_use_markup(false);
         t.set_timeout(8);
+        *self.last_toast.borrow_mut() = text.to_string();
         self.toasts.add_toast(t);
     }
 
     /// Show a page; a page equal to the one shown changes nothing, so the
     /// scroll position stays.
     pub fn show(self: &Rc<Self>, page: Page, status: Option<Status>) {
+        if self.holds.get() > 0 {
+            *self.held.borrow_mut() = Some((page, status));
+            return;
+        }
         *self.status.borrow_mut() = status;
         if self.shown.borrow().as_ref() == Some(&page) {
             return;
@@ -744,7 +912,7 @@ impl Ui {
                     column.append(&l);
                 }
                 if *can_install {
-                    column.append(&self.button("install"));
+                    column.append(&self.button(INSTALL_ACTION));
                 }
                 page.set_child(Some(&column));
                 self.scroller.set_child(Some(&page));
@@ -777,6 +945,58 @@ impl Ui {
         });
         b.set_sensitive(!self.busy.get());
         b
+    }
+
+    /// The Proxy or Pi-hole selector: a combo row, disabled while an action
+    /// runs or when `status` names no usable value (it then says `unknown`).
+    fn selector_row(self: &Rc<Self>, r: &Row, sel: Selector) -> gtk::Widget {
+        let names: &[&str] = if sel.installed.is_some() { &sel.choices } else { &["unknown"] };
+        let shown = match self.selector_pending.get() {
+            Some((kind, idx)) if kind == sel.kind => Some(idx),
+            _ => sel.installed,
+        };
+        let combo = adw::ComboRow::builder()
+            .title(r.title.as_str())
+            .use_markup(false)
+            .model(&gtk::StringList::new(names))
+            .selected(shown.unwrap_or(0) as u32)
+            .sensitive(!self.busy.get() && sel.installed.is_some())
+            .build();
+        combo.set_widget_name(&format!("selector-{}", sel.kind));
+        // A redraw while the list is open would close it under the pointer.
+        let mut popover = None;
+        walk_widgets(combo.upcast_ref(), &mut |w| {
+            if popover.is_none() {
+                popover = w.downcast_ref::<gtk::Popover>().cloned();
+            }
+        });
+        if let Some(p) = popover {
+            let holding = Rc::new(Cell::new(false));
+            let weak = Rc::downgrade(self);
+            p.connect_visible_notify(move |p| {
+                let Some(ui) = weak.upgrade() else { return };
+                if p.is_visible() && !holding.replace(true) {
+                    ui.hold();
+                } else if !p.is_visible() && holding.replace(false) {
+                    ui.release(true);
+                }
+            });
+        }
+        // Connected after the value is set: only a person's pick asks.
+        let weak = Rc::downgrade(self);
+        combo.connect_selected_notify(move |c| {
+            let (Some(ui), Some(installed)) = (weak.upgrade(), sel.installed) else { return };
+            let idx = c.selected() as usize;
+            if idx != installed && idx < sel.choices.len() && !ui.busy.get() {
+                ui.ask_switch(sel, idx, Some(c.clone()));
+            }
+        });
+        combo.upcast()
+    }
+
+    /// The last toast's text.
+    pub fn last_toast(&self) -> String {
+        self.last_toast.borrow().clone()
     }
 
     fn render_body(self: &Rc<Self>, b: &Body) -> gtk::Widget {
@@ -825,11 +1045,12 @@ impl Ui {
                         let weak = Rc::downgrade(self);
                         sw.connect_active_notify(move |sw| {
                             if let Some(ui) = weak.upgrade() {
-                                ui.act(if sw.is_active() { "bridges-on" } else { "bridges-off" });
+                                ui.act(BRIDGES_ACTIONS[usize::from(!sw.is_active())]);
                             }
                         });
                         sw.upcast()
                     }
+                    RowKind::Selector(sel) => self.selector_row(r, *sel),
                     kind => {
                         let ar = adw::ActionRow::builder()
                             .title(r.title.as_str())
@@ -899,6 +1120,11 @@ impl Ui {
                 // An action ended while this read ran: what it read may be
                 // from before; read again rather than paint it.
                 return ui.refresh();
+            }
+            // The status has the say now (not while an action runs: a read
+            // then is one of the timer's, and the pick is still under way).
+            if !ui.busy.get() {
+                ui.selector_pending.set(None);
             }
             ui.show(page, status);
         });
@@ -1054,6 +1280,107 @@ mod tests {
                 assert!(actions::lookup(id).is_some(), "{id} is not in actions.tsv");
             }
         }
+    }
+
+    fn selectors_of(b: &Body) -> Vec<Selector> {
+        section(b, "installed")
+            .rows
+            .iter()
+            .filter_map(|r| match r.kind {
+                RowKind::Selector(s) => Some(s),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn window_installed_section_has_the_proxy_and_pihole_selectors_set_from_status() {
+        let sel = selectors_of(&body_of(page(INSTALLED, 0)));
+        assert_eq!(sel.iter().map(|s| (s.kind, s.installed)).collect::<Vec<_>>(), [("proxy", Some(1)), ("pihole", Some(0))]);
+        assert_eq!(sel[0].choices, ["haproxy", "socat"]);
+        assert_eq!(sel[1].choices, ["standard", "hardened"]);
+    }
+
+    #[test]
+    fn window_a_selector_the_status_cannot_fill_is_unknown() {
+        let no_variant: String = INSTALLED.lines().filter(|l| !l.starts_with("install\tvariant")).map(|l| format!("{l}\n")).collect();
+        let sel = selectors_of(&body_of(page(&no_variant, 0)));
+        assert_eq!((sel[0].installed, sel[1].installed), (None, Some(0)));
+        let odd = INSTALLED.replacen("install\tpihole\tstandard", "install\tpihole\tparanoid", 1);
+        let sel = selectors_of(&body_of(page(&odd, 0)));
+        assert_eq!((sel[0].installed, sel[1].installed), (Some(1), None));
+    }
+
+    #[test]
+    fn window_the_four_selector_actions_are_in_no_button_list() {
+        let b = body_of(page(INSTALLED, 0));
+        for s in &b.sections {
+            for id in &s.buttons {
+                assert!(selector_for(id).is_none(), "{id} is a button in {}", s.id);
+            }
+        }
+        for id in ["proxy-haproxy", "proxy-socat", "pihole-standard", "pihole-hardened"] {
+            assert!(selector_for(id).is_some(), "{id} is not a selector action");
+        }
+    }
+
+    #[test]
+    fn window_the_update_row_says_when_the_check_ran_whoever_ran_it() {
+        // A scheduled check writes the same `checked_at` a manual one does.
+        let scheduled = INSTALLED.replacen(
+            "update\tresult\tunknown\tnever-checked\n",
+            &format!("update\tresult\tcurrent\nupdate\tchecked_at\t{}\n", NOW - 7200),
+            1,
+        );
+        let b = body_of(page(&scheduled, 0));
+        let row = section(&b, "installed").rows.iter().find(|r| r.title == "Update").unwrap();
+        assert_eq!(row.subtitle, "up to date (checked 2 h ago)");
+    }
+
+    /// The places an action can be offered, derived from what the window
+    /// builds: each is (place, action id).
+    fn places() -> Vec<(String, &'static str)> {
+        let mut out: Vec<(String, &'static str)> = Vec::new();
+        let b = body_of(page(INSTALLED, 0));
+        for s in &b.sections {
+            for id in &s.buttons {
+                out.push((format!("buttons of {}", s.id), id));
+            }
+            for r in &s.rows {
+                match r.kind {
+                    RowKind::BridgesSwitch(_) => out.extend(BRIDGES_ACTIONS.iter().map(|id| ("the bridges switch".to_string(), *id))),
+                    RowKind::Selector(sel) => out.extend(sel.actions.iter().map(|id| (format!("the {} selector", sel.kind), *id))),
+                    _ => {}
+                }
+            }
+        }
+        // The banner shows when a check found a different version.
+        if body_of(page(UPDATE, 0)).update_available.is_some() {
+            out.push(("the update banner".into(), BANNER_ACTION));
+        }
+        // The not-installed page offers Install when the source is kept.
+        if matches!(describe(&model::classify(Some(1), NOT_INSTALLED), NOW, true), Page::NotInstalled { can_install: true, .. }) {
+            out.push(("the not-installed page".into(), INSTALL_ACTION));
+        }
+        out
+    }
+
+    #[test]
+    fn every_action_has_one_place() {
+        let places = places();
+        let mut bad = Vec::new();
+        for a in actions::all() {
+            let at: Vec<&str> = places.iter().filter(|(_, id)| *id == a.id).map(|(p, _)| p.as_str()).collect();
+            if at.len() != 1 {
+                bad.push(format!("{}: {} place(s) {:?}", a.id, at.len(), at));
+            }
+        }
+        for (place, id) in &places {
+            if actions::lookup(id).is_none() {
+                bad.push(format!("{place} offers {id}, which is not in actions.tsv"));
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
     #[test]
