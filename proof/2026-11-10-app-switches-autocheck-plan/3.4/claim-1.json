@@ -1,13 +1,13 @@
 {
  "baseline": {
-  "elapsed_s": 93.1,
+  "elapsed_s": 93.7,
   "exit": 0,
-  "tail": "PASS  t_relative_targets_path_reaches_live_cases\nPASS  t_req_a01_scenario_row_deleted\nPASS  t_req_a02_require_row_deleted\nPASS  t_req_a03_both_rows_deleted_count_kept\nPASS  t_req_a04_case_repointed\nPASS  t_req_a05_group_repointed_same_case_name\nPASS  t_req_a06_group_file_swapped\nPASS  t_req_a07_scenario_deferred\nPASS  t_req_a08_group_dropped_from_stage\nPASS  t_req_a09_manifest_missing\nPASS  t_req_a10_manifest_emptied\nPASS  t_req_a11_crlf_rows\nPASS  t_req_a12_leading_tab_scenario\nPASS  t_req_a13_duplicate_require_row\nPASS  t_req_a14_misspelt_row_type\nPASS  t_req_a15_stage_key_renamed\nPASS  t_req_a16_count_row_missing\nPASS  t_req_b1_delimiter_in_group_path_refused\nPASS  t_req_b2_escape_in_group_path_refused\nPASS  t_req_m1_empty_scenarios_refused\nPASS  t_req_m1b_relative_manifests_with_equals_sign\nPASS  t_req_m2a_case_hidden_at_run_time_fails\nPASS  t_req_m2b_exported_case_function_ignored\nPASS  t_req_owner_rows_must_all_run\nPASS  t_req_positive_control\nPASS  t_run_receipt_records_manifest_override\nPASS  t_slow_tier_refused_without_include_slow\nPASS  t_stage_and_plan_refuse_narrowed_variants\nPASS  t_stage_runs_listed_groups\nPASS  t_stage_with_one_empty_group_fails\nPASS  t_stage_with_unregistered_group_rejected\nPASS  t_two_runs_get_distinct_run_ids\nPASS  t_unknown_group_rejected\nPASS  t_unknown_kind_rejected\nPASS  t_unknown_option_rejected\nPASS  t_unknown_stage_rejected\nPASS  t_zero_case_group_rejected\ngroup unit/harness-contracts: collected=68 passed=68 failed=0\ncollected=68 passed=68 failed=0\nresult=pass run_id=20261111T091646Z-7d670e50 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261111T091646Z-7d670e50"
+  "tail": "PASS  t_relative_targets_path_reaches_live_cases\nPASS  t_req_a01_scenario_row_deleted\nPASS  t_req_a02_require_row_deleted\nPASS  t_req_a03_both_rows_deleted_count_kept\nPASS  t_req_a04_case_repointed\nPASS  t_req_a05_group_repointed_same_case_name\nPASS  t_req_a06_group_file_swapped\nPASS  t_req_a07_scenario_deferred\nPASS  t_req_a08_group_dropped_from_stage\nPASS  t_req_a09_manifest_missing\nPASS  t_req_a10_manifest_emptied\nPASS  t_req_a11_crlf_rows\nPASS  t_req_a12_leading_tab_scenario\nPASS  t_req_a13_duplicate_require_row\nPASS  t_req_a14_misspelt_row_type\nPASS  t_req_a15_stage_key_renamed\nPASS  t_req_a16_count_row_missing\nPASS  t_req_b1_delimiter_in_group_path_refused\nPASS  t_req_b2_escape_in_group_path_refused\nPASS  t_req_m1_empty_scenarios_refused\nPASS  t_req_m1b_relative_manifests_with_equals_sign\nPASS  t_req_m2a_case_hidden_at_run_time_fails\nPASS  t_req_m2b_exported_case_function_ignored\nPASS  t_req_owner_rows_must_all_run\nPASS  t_req_positive_control\nPASS  t_run_receipt_records_manifest_override\nPASS  t_slow_tier_refused_without_include_slow\nPASS  t_stage_and_plan_refuse_narrowed_variants\nPASS  t_stage_runs_listed_groups\nPASS  t_stage_with_one_empty_group_fails\nPASS  t_stage_with_unregistered_group_rejected\nPASS  t_two_runs_get_distinct_run_ids\nPASS  t_unknown_group_rejected\nPASS  t_unknown_kind_rejected\nPASS  t_unknown_option_rejected\nPASS  t_unknown_stage_rejected\nPASS  t_zero_case_group_rejected\ngroup unit/harness-contracts: collected=68 passed=68 failed=0\ncollected=68 passed=68 failed=0\nresult=pass run_id=20261111T113142Z-43ab2425 artifacts=/home/user/.local/state/nice-dns-tests/runs/20261111T113142Z-43ab2425"
  },
- "break_patch": "--- a/docs/workflows/dns-lifecycle.md\t2026-11-11 09:16:35.547277520 +0000\n+++ b/docs/workflows/dns-lifecycle.md\t2026-11-11 09:16:35.549152953 +0000\n@@ -6,7 +6,7 @@\n - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)\n   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.\n - Baseline source: this repository at commit\n-  `d2e455fee4fe541101b6e9ced36076ee0502c65c`. Citations are `path:line` at that commit.\n+  `734931a4638e961d46f6f624e9e64be6444f0516`. Citations are `path:line` at that commit.\n   The eight-cell baseline receipt measured b85bc9b. The document was first\n   written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,\n   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02\n",
+ "break_patch": "--- a/docs/workflows/dns-lifecycle.md\t2026-11-11 11:31:39.542344363 +0000\n+++ b/docs/workflows/dns-lifecycle.md\t2026-11-11 11:31:39.543712065 +0000\n@@ -6,7 +6,7 @@\n - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)\n   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.\n - Baseline source: this repository at commit\n-  `53f3e8724ea7af53d56855090425b44ad1b4d745`. Citations are `path:line` at that commit.\n+  `734931a4638e961d46f6f624e9e64be6444f0516`. Citations are `path:line` at that commit.\n   The eight-cell baseline receipt measured b85bc9b. The document was first\n   written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,\n   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02\n",
  "build": null,
- "created": "2026-11-11T09:18:19+00:00",
- "fingerprint": "9d0e6dd5a069c29dc661cf17d8adf5575c6ac3e58e8b64d31cc28fd800de2ecf",
+ "created": "2026-11-11T11:33:15+00:00",
+ "fingerprint": "8f4fedd8422829338a6f8cd1382d38128f0587396d799a3747865e320a3fbd35",
  "index": 1,
  "kind": "claim",
  "named_break": null,
@@ -16,7 +16,7 @@
  "red": {
   "elapsed_s": 2.4,
   "exit": 1,
-  "tail": "check-contracts: cited lib/install.sh:3041 is past the end of lib/install.sh (3012 lines) at 734931a4638e\ncheck-contracts: cited lib/install.sh:3044 is past the end of lib/install.sh (3012 lines) at 734931a4638e\ncheck-contracts: cited lib/install.sh:3046 is past the end of lib/install.sh (3012 lines) at 734931a4638e\ncheck-contracts: cited lib/install.sh:3051 is past the end of lib/install.sh (3012 lines) at 734931a4638e\ncheck-contracts: cited lib/install.sh:3058 is past the end of lib/install.sh (3012 lines) at 734931a4638e\ncheck-contracts: cited lib/install.sh:3063 is past the end of lib/install.sh (3012 lines) at 734931a4638e\ncheck-contracts: cited lib/install.sh:3064 is past the end of lib/install.sh (3012 lines) at 734931a4638e\ncheck-contracts: cited lib/install.sh:3069 is past the end of lib/install.sh (3012 lines) at 734931a4638e\ncheck-contracts: cited lib/install.sh changed since the pinned commit 734931a4638e; re-derive its citations and re-pin"
+  "tail": "check-contracts: cited lib/install.sh:3042 is past the end of lib/install.sh (3012 lines) at 734931a4638e\ncheck-contracts: cited lib/install.sh:3045 is past the end of lib/install.sh (3012 lines) at 734931a4638e\ncheck-contracts: cited lib/install.sh:3047 is past the end of lib/install.sh (3012 lines) at 734931a4638e\ncheck-contracts: cited lib/install.sh:3052 is past the end of lib/install.sh (3012 lines) at 734931a4638e\ncheck-contracts: cited lib/install.sh:3059 is past the end of lib/install.sh (3012 lines) at 734931a4638e\ncheck-contracts: cited lib/install.sh:3064 is past the end of lib/install.sh (3012 lines) at 734931a4638e\ncheck-contracts: cited lib/install.sh:3065 is past the end of lib/install.sh (3012 lines) at 734931a4638e\ncheck-contracts: cited lib/install.sh:3070 is past the end of lib/install.sh (3012 lines) at 734931a4638e\ncheck-contracts: cited lib/install.sh changed since the pinned commit 734931a4638e; re-derive its citations and re-pin"
  },
  "schema": 2,
  "shell": "bash",
@@ -27,13 +27,13 @@
   "docs/workflows/dns-lifecycle.md"
  ],
  "touched_blobs": {
-  "docs/workflows/dns-lifecycle.md": "11bda940a586a3b6425e18ead792c5271ff2042f"
+  "docs/workflows/dns-lifecycle.md": "804fb69e90f251d4132785bfd2512139ab635b55"
  },
  "witness_blobs": {
   "README.md": "8b2a30d2acc3bcc2d0d36724af53ab6c5b132d18",
   "docs/cli-contract.md": "535dbf965aadaeb92f55612582c5d506dcb7a4c2",
   "docs/release-inputs.md": "fc3d1261128e6633a7f8f54f93ebf94c9df40b17",
-  "docs/workflows/dns-lifecycle.md": "11bda940a586a3b6425e18ead792c5271ff2042f",
+  "docs/workflows/dns-lifecycle.md": "804fb69e90f251d4132785bfd2512139ab635b55",
   "health/README.md": "f7356c977cd24590da4a47e7551570c87783f8c7",
   "pihole-hardened/README.md": "5cb68d6fd728ef00673bc3aa7b2ff9c86661a5ea",
   "tests/run.sh": "242ea2bcf473768a28dd1ac6d329e0f18e2a6a99"
