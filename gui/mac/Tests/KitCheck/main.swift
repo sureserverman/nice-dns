@@ -334,6 +334,26 @@ do {
     check("the bundled action table reads for the places", false, "\(error)")
 }
 
+// The views draw an action only through Placement (its button list and its
+// named ids) or StackChoice, never through a string literal at a drawing
+// call: a literal there would draw a place `declared` does not know, and the
+// every-row check above would pass over it.
+do {
+    let gui = share.deletingLastPathComponent().appendingPathComponent("mac/Sources/NiceDNSGUI", isDirectory: true)
+    let drawing = try NSRegularExpression(pattern: #"(request\("|entry\([^\n]*, "[a-z-]+"\)|lookup\(")"#)
+    var found: [String] = []
+    for f in ["WindowView.swift", "MenuBar.swift"] {
+        let text = try String(contentsOf: gui.appendingPathComponent(f), encoding: .utf8)
+        for (n, line) in text.components(separatedBy: "\n").enumerated() {
+            let r = NSRange(line.startIndex..., in: line)
+            if drawing.firstMatch(in: line, range: r) != nil { found.append("\(f):\(n + 1)") }
+        }
+    }
+    check("the views name no action id as a literal at a drawing call", found.isEmpty, found.joined(separator: ", "))
+} catch {
+    check("the view sources read for the drawing calls", false, "\(error)")
+}
+
 let buttonIds = Placement.buttons().map(\.id)
 for id in ["proxy-haproxy", "proxy-socat", "pihole-standard", "pihole-hardened"] {
     check("\(id) is not a plain button", !buttonIds.contains(id), buttonIds.joined(separator: " "))

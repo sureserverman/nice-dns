@@ -87,7 +87,7 @@ struct NotInstalledPage: View {
                 Text("\(u.group) cannot be read: \(u.reason)").foregroundColor(.orange)
             }
             if model.keptSource {
-                Button("Install") { model.request("install") }.disabled(model.busy)
+                Button("Install") { model.request(Placement.install) }.disabled(model.busy)
             }
         }
     }
@@ -150,8 +150,8 @@ struct StatusPage: View {
             .opacity(stale ? 0.5 : 1)
             Panel(title: "Admin") {
                 HStack {
-                    Button("Open the admin page") { model.request("open-admin") }
-                    Button("Show where the password is") { model.request("show-password-path") }
+                    Button("Open the admin page") { model.request(Placement.openAdmin) }
+                    Button("Show where the password is") { model.request(Placement.showPasswordPath) }
                 }
             }
             actions
@@ -181,7 +181,7 @@ struct StatusPage: View {
             Image(systemName: "arrow.triangle.2.circlepath")
             Text("A different version is available" + (status.update.remoteCommit.map { ": " + String($0.prefix(12)) } ?? ""))
             Spacer()
-            Button("Install it…") { model.request("update") }.disabled(model.busy)
+            Button("Install it…") { model.request(Placement.updateBanner) }.disabled(model.busy)
         }
         .padding(8)
         .background(Color.accentColor.opacity(0.12))
@@ -356,7 +356,7 @@ struct ConfirmSheet: View {
                 Text("Install the update?").font(.title3.bold())
                 Text("A different version is available" + (commit.map { ": " + String($0.prefix(12)) } ?? "") + ". The branch's current commit is installed like a reinstall.")
                     .fixedSize(horizontal: false, vertical: true)
-                buttons(go: "Install", enabled: true, cancel: "Not now") { model.run("update") }
+                buttons(go: "Install", enabled: true, cancel: "Not now") { model.run(Placement.updateBanner) }
             case .switchTo(let id):
                 Text(Actions.lookup(id)?.label ?? id).font(.title3.bold())
                 Text(StackChoice.question(for: id) ?? id)

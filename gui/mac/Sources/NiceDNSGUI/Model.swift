@@ -222,7 +222,7 @@ final class AppModel: ObservableObject {
 
     func setBridges(_ on: Bool) {
         guard on != bridgesOn else { return }
-        run(on ? "bridges-on" : "bridges-off")
+        run(on ? Placement.bridgesOn : Placement.bridgesOff)
     }
 
     /// Run action `id` now, one at a time, its output streamed into the pane.

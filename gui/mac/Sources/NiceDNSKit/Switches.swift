@@ -23,17 +23,31 @@ public enum Place: String, CaseIterable, CustomStringConvertible {
 }
 
 public enum Placement {
+    // The ids the views draw outside the plain-button lists. The views name
+    // them only through these constants, never as string literals (KitCheck
+    // reads the view sources for that), so `declared` is what they draw.
+    /// The bridges switch: on, off.
+    public static let bridgesOn = "bridges-on"
+    public static let bridgesOff = "bridges-off"
+    /// The update banner's action.
+    public static let updateBanner = "update"
+    /// The not-installed page's action.
+    public static let install = "install"
+    /// The Admin panel's two buttons.
+    public static let openAdmin = "open-admin"
+    public static let showPasswordPath = "show-password-path"
+
     /// The ids each place draws, declared one place at a time. A row of the
     /// table no place names is drawn nowhere; one two places name is drawn
     /// twice. KitCheck and the tests refuse both.
     public static let declared: [(place: Place, ids: [String])] = [
         (.button, ["reinstall", "restart", "uninstall", "update-check",
                    "health-start", "health-stop", "health-run", "failures"]),
-        (.bridgesSwitch, ["bridges-on", "bridges-off"]),
+        (.bridgesSwitch, [bridgesOn, bridgesOff]),
         (.selector, StackChoice.all.flatMap(\.ids)),
-        (.updateBanner, ["update"]),
-        (.installView, ["install"]),
-        (.adminPanel, ["open-admin", "show-password-path"]),
+        (.updateBanner, [updateBanner]),
+        (.installView, [install]),
+        (.adminPanel, [openAdmin, showPasswordPath]),
     ]
 
     /// Every place that names `id`, in declaration order.

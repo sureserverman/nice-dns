@@ -83,11 +83,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         head.isEnabled = false
         menu.addItem(head)
         if model.status?.update.result == .available {
-            menu.addItem(entry("A different version is available…", "update"))
+            menu.addItem(entry("A different version is available…", Placement.updateBanner))
         }
         menu.addItem(.separator())
         if model.installed {
-            let b = entry("Tor bridges", model.bridgesOn ? "bridges-off" : "bridges-on")
+            let b = entry("Tor bridges", model.bridgesOn ? Placement.bridgesOff : Placement.bridgesOn)
             b.state = model.bridgesOn ? .on : .off
             menu.addItem(b)
             for c in StackChoice.all {
@@ -100,7 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             for a in Placement.buttons() {
                 menu.addItem(entry(a.label + (a.needsConfirm ? "…" : ""), a.id))
             }
-        } else if model.notInstalled && model.keptSource, let a = Actions.lookup("install") {
+        } else if model.notInstalled && model.keptSource, let a = Actions.lookup(Placement.install) {
             menu.addItem(entry(a.label, a.id))
         }
         menu.addItem(.separator())
