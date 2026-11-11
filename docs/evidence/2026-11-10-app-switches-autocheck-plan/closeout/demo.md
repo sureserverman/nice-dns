@@ -133,7 +133,8 @@ Evidence:
 
 ## Outcome 1
 > Works: the Installed section shows a Proxy selector (haproxy, socat) and a Pi-hole selector (standard, hardened) set to what `status` says; on macOS the menu has the same two choices as submenus with a check mark
-Verdict: holds on Linux and in the macOS window; the macOS menu's submenus with a check mark: cannot reach by the user's route
+Verdict: holds (the macOS menu clause on the owner's own check at the mac — owner, 2026-11-11: "1 yes", answering: open the nice-dns menu-bar item and confirm Proxy and Pi-hole show as submenus with a check mark on socat and standard)
+Evaluator verdict, before the owner's check: holds on Linux and in the macOS window; the macOS menu's submenus with a check mark: cannot reach by the user's route
 Evidence:
 - mint, a person's view (real window, real clicks):
   - The Installed section shows Generation, Source commit, Proxy [socat ▾], Pi-hole [standard ▾], Update and Helper (`shots/mint-x-1-open.png`).
@@ -275,7 +276,7 @@ Evidence:
 # Findings
 
 Blocking:
-- B1 (Stage 2 Outcome 1, macOS menu clause): this clause could not be checked by the user's route. Nobody was at the mac, osascript has no assistive access, screencapture is refused, and no hook draws the menu. Nothing seen says it is broken. The owner can clear it by opening the menu once at the mac and checking the two submenus and the check mark.
+- B1 (Stage 2 Outcome 1, macOS menu clause): this clause could not be checked by the user's route. Nobody was at the mac, osascript has no assistive access, screencapture is refused, and no hook draws the menu. Nothing seen says it is broken. The owner can clear it by opening the menu once at the mac and checking the two submenus and the check mark. Cleared: owner, 2026-11-11: "1 yes" (the menu shows both submenus with the check mark on socat and standard).
 
 Material:
 - M1 (Linux app, selectors): an open selector list closes by itself when the window refreshes its status. Measured: closed after 1.5 s once and after 23 s once. A person picking slowly loses the list, and their click lands on the row underneath (it opened the Pi-hole list once). Also, while the "Switch the proxy to …?" question is open, a refresh puts the selector back to the installed value behind the dialog. The dialog still names the picked value and Switch still switches. Screens: `mint-x-13-dialog-selector-reverts-on-refresh.png`. The goal is met: picking quickly works every time.

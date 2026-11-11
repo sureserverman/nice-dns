@@ -389,8 +389,23 @@ pub struct Ui {
     /// The selector pick a running switch asked for (selector kind, choice
     /// index): the selector shows it until the status says what came of it.
     selector_pending: Cell<Option<(&'static str, usize)>>,
+    /// While a selector's list or the switch question is open, a redraw would
+    /// replace the selector under the person: `show` keeps the newest page in
+    /// `held` instead, and it is drawn when the last hold is released.
+    holds: Cell<u32>,
+    held: RefCell<Option<(Page, Option<Status>)>>,
     /// The last toast's text (the probe hook reports it).
     last_toast: RefCell<String>,
+}
+
+/// `w` and every widget under it.
+fn walk_widgets(w: &gtk::Widget, f: &mut dyn FnMut(&gtk::Widget)) {
+    f(w);
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        walk_widgets(&c, f);
+        child = c.next_sibling();
+    }
 }
 
 impl Ui {
@@ -440,6 +455,8 @@ impl Ui {
             close_asked: Cell::new(None),
             bridges_pending: Cell::new(None),
             selector_pending: Cell::new(None),
+            holds: Cell::new(0),
+            held: RefCell::new(None),
             last_toast: RefCell::new(String::new()),
         });
         let weak = Rc::downgrade(&ui);
@@ -622,10 +639,50 @@ impl Ui {
 
     fn set_busy(self: &Rc<Self>, busy: bool) {
         self.busy.set(busy);
+        if self.holds.get() > 0 {
+            // Redrawn on release; a newer page already held is the one drawn.
+            if self.held.borrow().is_none() {
+                if let Some(page) = self.shown.borrow_mut().take() {
+                    *self.held.borrow_mut() = Some((page, self.status.borrow().clone()));
+                }
+            }
+            return;
+        }
         let page = self.shown.borrow_mut().take();
         if let Some(page) = page {
             let status = self.status.borrow().clone();
             self.show(page, status);
+        }
+    }
+
+    /// Hold redraws (see `holds`).
+    fn hold(&self) {
+        self.holds.set(self.holds.get() + 1);
+    }
+
+    /// Release a hold; the last one draws the newest held page: at once, or,
+    /// from inside a signal of a widget the redraw would replace
+    /// (`later`), on the main loop's next turn.
+    fn release(self: &Rc<Self>, later: bool) {
+        let n = self.holds.get().saturating_sub(1);
+        self.holds.set(n);
+        if n > 0 {
+            return;
+        }
+        let ui = Rc::clone(self);
+        let draw = move || {
+            if ui.holds.get() == 0 {
+                let held = ui.held.borrow_mut().take();
+                if let Some((page, status)) = held {
+                    ui.shown.borrow_mut().take();
+                    ui.show(page, status);
+                }
+            }
+        };
+        if later {
+            glib::idle_add_local_once(draw);
+        } else {
+            draw();
         }
     }
 
@@ -656,7 +713,10 @@ impl Ui {
             } else {
                 back();
             }
+            ui.release(false);
         });
+        // The selector behind the question stays the one the person used.
+        self.hold();
         d.present(Some(&self.window));
     }
 
@@ -810,6 +870,10 @@ impl Ui {
     /// Show a page; a page equal to the one shown changes nothing, so the
     /// scroll position stays.
     pub fn show(self: &Rc<Self>, page: Page, status: Option<Status>) {
+        if self.holds.get() > 0 {
+            *self.held.borrow_mut() = Some((page, status));
+            return;
+        }
         *self.status.borrow_mut() = status;
         if self.shown.borrow().as_ref() == Some(&page) {
             return;
@@ -899,6 +963,25 @@ impl Ui {
             .sensitive(!self.busy.get() && sel.installed.is_some())
             .build();
         combo.set_widget_name(&format!("selector-{}", sel.kind));
+        // A redraw while the list is open would close it under the pointer.
+        let mut popover = None;
+        walk_widgets(combo.upcast_ref(), &mut |w| {
+            if popover.is_none() {
+                popover = w.downcast_ref::<gtk::Popover>().cloned();
+            }
+        });
+        if let Some(p) = popover {
+            let holding = Rc::new(Cell::new(false));
+            let weak = Rc::downgrade(self);
+            p.connect_visible_notify(move |p| {
+                let Some(ui) = weak.upgrade() else { return };
+                if p.is_visible() && !holding.replace(true) {
+                    ui.hold();
+                } else if !p.is_visible() && holding.replace(false) {
+                    ui.release(true);
+                }
+            });
+        }
         // Connected after the value is set: only a person's pick asks.
         let weak = Rc::downgrade(self);
         combo.connect_selected_notify(move |c| {

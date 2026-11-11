@@ -161,6 +161,147 @@ fn run_screenshot(png: PathBuf) -> ExitCode {
     ExitCode::from(code.get())
 }
 
+/// The rest of `--probe <id>` once the `before` report is out: the click,
+/// the reports while it runs, and the last report when the window settles.
+fn probe_pick(ui: Rc<window::Ui>, app: adw::Application, c: Rc<Cell<i32>>, id: String) {
+    if id == "bridges-on" || id == "bridges-off" {
+        walk(ui.window.upcast_ref(), &mut |w| {
+            if let Some(sw) = w.downcast_ref::<adw::SwitchRow>() {
+                sw.set_active(id == "bridges-on");
+            }
+        });
+    } else if let Some((sel, idx)) = window::selector_for(&id) {
+        let want = format!("selector-{}", sel.kind);
+        walk(ui.window.upcast_ref(), &mut |w| {
+            if let Some(c) = w.downcast_ref::<adw::ComboRow>() {
+                if c.widget_name() == want {
+                    c.set_selected(idx as u32);
+                }
+            }
+        });
+        println!("{}", probe_report(&ui, "question"));
+        let cancel = std::env::var("NICE_DNS_GUI_PROBE_ANSWER").is_ok_and(|a| a == "cancel");
+        click_in_dialog(&ui, if cancel { "Not now" } else { "Switch" });
+    } else {
+        ui.act(&id);
+    }
+    println!("{}", probe_report(&ui, "during"));
+    if ui.is_busy() {
+        // A second click while it runs: one that would open a dialog.
+        ui.act("uninstall");
+        println!("{}", probe_report(&ui, "second"));
+        // Closing while it runs is refused.
+        ui.window.close();
+        println!("close-while-busy: {}", if ui.window.is_visible() { "refused" } else { "closed" });
+    }
+    let started = std::time::Instant::now();
+    glib::timeout_add_local(Duration::from_millis(100), move || {
+        if !ui.settled() && started.elapsed() < Duration::from_secs(60) {
+            return glib::ControlFlow::Continue;
+        }
+        if ui.settled() {
+            println!("{}", probe_report(&ui, "after"));
+            println!("pane: {}", ui.pane.text().lines().last().unwrap_or(""));
+            println!("log: {}", ui.pane.text().replace('\n', "|"));
+            println!("toast: {}", ui.last_toast());
+            c.set(0);
+        } else {
+            eprintln!("nice-dns-gui: the window did not settle within 60 s");
+            c.set(3);
+        }
+        if let Some(d) = ui.window.visible_dialog() {
+            d.force_close();
+        }
+        ui.window.destroy();
+        app.quit();
+        glib::ControlFlow::Break
+    });
+}
+
+/// `NICE_DNS_GUI_PROBE_REDRAW=1` with a selector id: before the pick, a status
+/// read that changes the page must leave the person's selector alone. First
+/// with its list open (`popup: opened=<yes|no> same=<yes|no> open=<yes|no>`;
+/// `opened` is whether the list opened before the read), then with the
+/// switch question open (`redraw: same=<yes|no> <kind>=<value> dialog=<heading>`),
+/// which it then answers Not now. `same` is whether the selector is still the
+/// widget the person was using.
+fn probe_redraws(ui: Rc<window::Ui>, kind: &'static str, idx: usize, then: impl FnOnce() + 'static) {
+    glib::spawn_future_local(async move {
+        let settle = || glib::timeout_future(Duration::from_millis(1500));
+        let id_of = |ui: &window::Ui| find_combo(ui, kind).map(|c| c.as_ptr() as usize);
+        let popover_of = |ui: &window::Ui| {
+            find_combo(ui, kind).and_then(|c| {
+                let mut p = None;
+                walk(c.upcast_ref(), &mut |w| {
+                    if p.is_none() {
+                        p = w.downcast_ref::<gtk4::Popover>().cloned();
+                    }
+                });
+                p
+            })
+        };
+        let popover = popover_of(&ui);
+        let before = id_of(&ui);
+        // Wait until the list is really open (a loaded host maps it late).
+        for _ in 0..20 {
+            match &popover {
+                Some(p) if !p.is_visible() => p.popup(),
+                _ => break,
+            }
+            glib::timeout_future(Duration::from_millis(150)).await;
+        }
+        let opened = popover.as_ref().is_some_and(|p| p.is_visible());
+        settle().await;
+        ui.refresh();
+        settle().await;
+        // The list the person sees: the one under the selector drawn now.
+        let open = popover_of(&ui).is_some_and(|p| p.is_visible());
+        println!("popup: opened={} same={} open={}", yes(opened), yes(before.is_some() && id_of(&ui) == before), yes(open));
+        if let Some(p) = popover_of(&ui) {
+            p.popdown();
+        }
+        settle().await;
+        if let Some(c) = find_combo(&ui, kind) {
+            c.set_selected(idx as u32);
+        }
+        let before = id_of(&ui);
+        ui.refresh();
+        settle().await;
+        let dialog = ui.window.visible_dialog().and_then(|d| d.downcast::<adw::AlertDialog>().ok()).and_then(|d| d.heading());
+        println!(
+            "redraw: same={} {kind}={} dialog={}",
+            yes(before.is_some() && id_of(&ui) == before),
+            selector_value(&ui, kind),
+            dialog.map_or("none".to_string(), |h| h.replace(' ', "_"))
+        );
+        click_in_dialog(&ui, "Not now");
+        settle().await;
+        then();
+    });
+}
+
+fn yes(b: bool) -> &'static str {
+    if b {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+/// The Proxy or Pi-hole selector (`kind`) on the window, if it is drawn.
+fn find_combo(ui: &window::Ui, kind: &str) -> Option<adw::ComboRow> {
+    let want = format!("selector-{kind}");
+    let mut found = None;
+    walk(ui.window.upcast_ref(), &mut |w| {
+        if let Some(c) = w.downcast_ref::<adw::ComboRow>() {
+            if c.widget_name() == want {
+                found = Some(c.clone());
+            }
+        }
+    });
+    found
+}
+
 /// `--run-action <id> --exit`: show the window, run action `id` with no
 /// dialog, print the log pane's text on stdout and exit with the action's
 /// status. A hook for tests and proofs; it needs a display (Xvfb will do).
@@ -305,58 +446,14 @@ fn run_probe(id: String) -> ExitCode {
         let (app, c, id) = (app.clone(), Rc::clone(&c), id.clone());
         glib::timeout_add_local_once(Duration::from_millis(500), move || {
             println!("{}", probe_report(&ui, "before"));
-            if id == "bridges-on" || id == "bridges-off" {
-                walk(ui.window.upcast_ref(), &mut |w| {
-                    if let Some(sw) = w.downcast_ref::<adw::SwitchRow>() {
-                        sw.set_active(id == "bridges-on");
-                    }
-                });
-            } else if let Some((sel, idx)) = window::selector_for(&id) {
-                let want = format!("selector-{}", sel.kind);
-                walk(ui.window.upcast_ref(), &mut |w| {
-                    if let Some(c) = w.downcast_ref::<adw::ComboRow>() {
-                        if c.widget_name() == want {
-                            c.set_selected(idx as u32);
-                        }
-                    }
-                });
-                println!("{}", probe_report(&ui, "question"));
-                let cancel = std::env::var("NICE_DNS_GUI_PROBE_ANSWER").is_ok_and(|a| a == "cancel");
-                click_in_dialog(&ui, if cancel { "Not now" } else { "Switch" });
-            } else {
-                ui.act(&id);
+            let redraw = std::env::var("NICE_DNS_GUI_PROBE_REDRAW").is_ok_and(|v| v == "1");
+            match window::selector_for(&id) {
+                Some((sel, idx)) if redraw => {
+                    let u = Rc::clone(&ui);
+                    probe_redraws(u, sel.kind, idx, move || probe_pick(ui, app, c, id));
+                }
+                _ => probe_pick(ui, app, c, id),
             }
-            println!("{}", probe_report(&ui, "during"));
-            if ui.is_busy() {
-                // A second click while it runs: one that would open a dialog.
-                ui.act("uninstall");
-                println!("{}", probe_report(&ui, "second"));
-                // Closing while it runs is refused.
-                ui.window.close();
-                println!("close-while-busy: {}", if ui.window.is_visible() { "refused" } else { "closed" });
-            }
-            let started = std::time::Instant::now();
-            glib::timeout_add_local(Duration::from_millis(100), move || {
-                if !ui.settled() && started.elapsed() < Duration::from_secs(60) {
-                    return glib::ControlFlow::Continue;
-                }
-                if ui.settled() {
-                    println!("{}", probe_report(&ui, "after"));
-                    println!("pane: {}", ui.pane.text().lines().last().unwrap_or(""));
-                    println!("log: {}", ui.pane.text().replace('\n', "|"));
-                    println!("toast: {}", ui.last_toast());
-                    c.set(0);
-                } else {
-                    eprintln!("nice-dns-gui: the window did not settle within 60 s");
-                    c.set(3);
-                }
-                if let Some(d) = ui.window.visible_dialog() {
-                    d.force_close();
-                }
-                ui.window.destroy();
-                app.quit();
-                glib::ControlFlow::Break
-            });
         });
     });
     app.run_with_args::<&str>(&[]);

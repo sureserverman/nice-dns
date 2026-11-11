@@ -254,3 +254,67 @@ fn selectors_a_status_that_does_not_name_the_choice_disables_that_selector() {
     assert_eq!(field(b, "proxy"), "socat", "{b}");
     assert_eq!(field(b, "disabled"), "1", "{b}");
 }
+
+/// `--probe <id>` with `NICE_DNS_GUI_PROBE_REDRAW=1`: every status read says
+/// a different last controller pass, so every read changes the page, as the
+/// clock and each controller pass do on a running machine.
+fn probe_redraw(tag: &str, id: &str) -> Probe {
+    let home = std::env::temp_dir().join(format!("nice-dns-gui-redraw-{}-{tag}", std::process::id()));
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("status.tsv"), INSTALLED).unwrap();
+    let status = home.join("status.sh");
+    std::fs::write(
+        &status,
+        format!(
+            "#!/bin/sh\nn=$(cat {n} 2>/dev/null || echo 0); n=$((n + 1)); echo $n > {n}\n\
+             sed \"s/^controller\tlast_pass\t.*/controller\tlast_pass\t$(( $(date +%s) - 3600 * n ))/\" {s}\n",
+            n = home.join("reads").display(),
+            s = home.join("status.tsv").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&status, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let out = Command::new("xvfb-run")
+        .args(["-a", env!("CARGO_BIN_EXE_nice-dns-gui"), "--probe", id])
+        .env("PATH", format!("{}:/usr/bin:/bin", fakebin().display()))
+        .env("HOME", &home)
+        .env("XDG_STATE_HOME", home.join("state"))
+        .env("NICE_DNS_GUI_STATUS_CMD", status.to_string_lossy().as_ref())
+        .env("NICE_DNS_GUI_PROBE_REDRAW", "1")
+        .env("NICE_DNS_GUI_PROBE_ANSWER", "cancel")
+        .env("NICE_DNS_FAKE_RECORD", home.join("record"))
+        .env("NICE_DNS_FAKE_EXIT", "0")
+        .env("GSK_RENDERER", "cairo")
+        .output()
+        .expect("xvfb-run is not installed (apt-get install xvfb)");
+    let record = std::fs::read_to_string(home.join("record")).unwrap_or_default();
+    let reads: u32 = std::fs::read_to_string(home.join("reads")).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+    let _ = std::fs::remove_dir_all(&home);
+    Probe {
+        code: out.status.code(),
+        out: format!("{}{}reads={reads}\n", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)),
+        record,
+    }
+}
+
+#[test]
+fn selectors_a_status_read_leaves_an_open_list_and_the_question_alone() {
+    for (tag, id, kind, pick) in [("proxy", "proxy-haproxy", "proxy", "haproxy"), ("pihole", "pihole-hardened", "pihole", "hardened")] {
+        let p = probe_redraw(tag, id);
+        assert_eq!(p.code, Some(0), "{}", p.out);
+        // The reads really happened, so the page really changed under it.
+        assert!(p.out.contains("reads=") && !p.out.contains("reads=0") && !p.out.contains("reads=1\n"), "{}", p.out);
+        let popup = p.at("popup");
+        assert_eq!(field(popup, "opened"), "yes", "the probe could not open the {kind} list, so this run proves nothing: {popup}");
+        assert_eq!(field(popup, "same"), "yes", "a read replaced the {kind} selector while its list was open: {popup}");
+        assert_eq!(field(popup, "open"), "yes", "a read closed the {kind} list: {popup}");
+        let redraw = p.at("redraw");
+        assert_eq!(field(redraw, "same"), "yes", "a read replaced the {kind} selector behind the question: {redraw}");
+        assert_eq!(field(redraw, kind), pick, "a read snapped the {kind} selector back behind the question: {redraw}");
+        assert!(field(redraw, "dialog").starts_with("Switch_"), "{redraw}");
+        // Not now put the selector back on the installed value and ran nothing.
+        let after = p.at("after");
+        assert_eq!(field(after, kind), if kind == "proxy" { "socat" } else { "standard" }, "{after}");
+        assert_eq!(p.record.lines().filter(|l| l.starts_with("switch ")).count(), 0, "Not now ran a switch: {}", p.record);
+    }
+}
