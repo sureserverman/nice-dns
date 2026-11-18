@@ -32,8 +32,11 @@ else
   ND_INST_CLEANUP="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-install.XXXXXXXX")"
   # A failed name lookup is tried again, 3 tries in all, 20 s apart (BL-044;
   # lib/install.sh _nd_inst_retry_lookup, which is not here yet).
-  nd_clone_tries=1
-  until git clone -b "$BRANCH" https://github.com/sureserverman/nice-dns.git "$ND_INST_CLEANUP/nice-dns" 2>"$ND_INST_CLEANUP/clone.err"; do
+  nd_clone_tries=1 nd_clone_ok=0
+  while :; do
+    if git clone -b "$BRANCH" https://github.com/sureserverman/nice-dns.git "$ND_INST_CLEANUP/nice-dns" 2>"$ND_INST_CLEANUP/clone.err"; then
+      nd_clone_ok=1; break
+    fi
     cat "$ND_INST_CLEANUP/clone.err" >&2
     grep -Eq 'Could not resolve host|Temporary failure in name resolution' "$ND_INST_CLEANUP/clone.err" && [ "$nd_clone_tries" -lt 3 ] || break
     nd_clone_tries=$((nd_clone_tries + 1))
@@ -41,7 +44,7 @@ else
     echo "  the name lookup failed; trying again in 20 s ($nd_clone_tries of 3)" >&2
     sleep 20
   done
-  if [ ! -f "$ND_INST_CLEANUP/nice-dns/lib/install.sh" ]; then
+  if [ "$nd_clone_ok" != 1 ]; then
     # Before the source is staged nothing handles Mullvad yet (lib/install.sh,
     # "Mullvad's DNS setting"): custom DNS at 127.0.0.1 with no stack answers nothing.
     command -v mullvad >/dev/null 2>&1 && echo "If Mullvad's custom DNS is 127.0.0.1 and nice-dns is not running, the host has no DNS: run 'mullvad dns set default', then this installer again." >&2

@@ -103,7 +103,13 @@ pull_trouble() {
     fi
     return 1
   fi
-  if [ -f "$FAKE/pull_manifest_unknown" ]; then echo "Error: reading manifest $1 in $reg: manifest unknown" >&2; return 1; fi
+  if [ -f "$FAKE/pull_manifest_unknown" ]; then
+    # Apple's runtime says "failed to resolve" for a missing reference too:
+    # not a lookup, and not to be retried.
+    if [ "$2" = podman ]; then echo "Error: reading manifest $1 in $reg: manifest unknown" >&2
+    else echo "Error: failed to resolve reference \"$1\": not found" >&2; fi
+    return 1
+  fi
   return 0
 }
 # unbound_start <how>: the route include Unbound reads when it starts
@@ -276,7 +282,14 @@ case "$me" in
     o=""; u=""; w=""
     while [ $# -gt 0 ]; do case "$1" in -o) o="$2"; shift ;; -w) w="$2"; shift ;; https://*) u="$1" ;; esac; shift; done
     case "$u" in
-      */mac/check-runtime.sh) cp "$FAKE/upstream/mac/check-runtime.sh" "$o" ;;
+      # The macOS gate: each attempt takes the next exit status from
+      # $FAKE/gate_rcs (0, 6 or 7) when there is one.
+      */mac/check-runtime.sh)
+        if [ -s "$FAKE/gate_rcs" ]; then
+          r="$(head -n 1 "$FAKE/gate_rcs")"; sed -i 1d "$FAKE/gate_rcs"
+          [ "$r" = 0 ] || { echo "curl: ($r) Failed to connect to raw.githubusercontent.com port 443 after 1783 ms: Couldn't connect to server" >&2; exit "$r"; }
+        fi
+        cp "$FAKE/upstream/mac/check-runtime.sh" "$o" ;;
       # A release asset (Sub-plan 5 Task 2.4): each attempt takes the next
       # exit status from $FAKE/asset_rcs (0, 6 for a failed lookup, 7 for a
       # failed connect), then gets $FAKE/assets/<file>'s bytes when there is

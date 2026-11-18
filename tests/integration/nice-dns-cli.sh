@@ -1486,6 +1486,8 @@ t_missing_branch_is_named_not_blamed_on_dns_BL_044() {
   assert_not_match 'DNS' "$CL_ERR" "BL-044 and does not ask about DNS"
   assert_match 'running stack is untouched' "$CL_ERR" "BL-044 it says the stack is untouched"
   assert_eq "" "$(cl_calls '^installer')" "BL-044 no installer ran"
+  # A bare name also matches refs/heads/feature/<name>: the full ref is asked.
+  assert_match '^git .*ls-remote --exit-code --heads [^ ]+ refs/heads/nosuch$' "$(cl_calls '^git ')" "BL-044 the check asks for the full ref"
 
   cl_world Linux; cl_installed; cl_record haproxy standard main
   : >"$CL_FAKE/clone_lookup_once"

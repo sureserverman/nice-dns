@@ -73,8 +73,10 @@ _nd_inst_err() { printf 'nice-dns install: %s\n' "$*" >&2; }
 # ND_INST_LOOKUP_ERE: what a failed name lookup prints: podman (`lookup
 # <name>: no such host`, BL-044), curl and git (`Could not resolve host`),
 # glibc (`Temporary failure in name resolution`) and Apple's container
-# (`failed to resolve either repository hostname`, 2026-11-18).
-ND_INST_LOOKUP_ERE='no such host|Could not resolve host|Temporary failure in name resolution|failed to resolve'
+# (`failed to resolve either repository hostname`, 2026-11-18). Anchored:
+# a bare `failed to resolve` also starts runtimes' messages for a missing
+# tag or digest, which a retry cannot mend.
+ND_INST_LOOKUP_ERE='no such host|Could not resolve host|Temporary failure in name resolution|failed to resolve either repository hostname'
 
 # _nd_inst_retry_lookup <command...>: runs a pull; when it fails and what it
 # printed names a failed name lookup, runs it again, 3 tries in all, 20 s

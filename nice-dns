@@ -181,7 +181,8 @@ fetch_branch() {
       sleep 20
       continue
     fi
-    git ls-remote --exit-code --heads "$ND_CLI_REPO" "$1" >/dev/null 2>&1 || rc=$?
+    # The full ref: a bare name also matches as a suffix (feature/<name>).
+    git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 ls-remote --exit-code --heads "$ND_CLI_REPO" "refs/heads/$1" >/dev/null 2>&1 || rc=$?
     if [ "$rc" = 2 ]; then
       err "branch '$1' was not found at $ND_CLI_REPO. The running stack is untouched."
     else

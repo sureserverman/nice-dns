@@ -52,8 +52,18 @@ if [[ -f "$HERE/mac/check-runtime.sh" ]]; then
   source "$HERE/mac/check-runtime.sh" || exit 1
 else
   _gate="$(mktemp)"
-  curl -fsSL "https://raw.githubusercontent.com/sureserverman/nice-dns/${BRANCH}/mac/check-runtime.sh" -o "$_gate" \
-    || { echo "failed to download compatibility gate" >&2; rm -f "$_gate"; exit 1; }
+  # A failed name lookup or connect (curl 6, 7) is tried again, 3 tries in
+  # all, 20 s apart: the first network call of an install (BL-044, BL-067).
+  nd_gate_tries=1
+  while :; do
+    nd_gate_rc=0
+    curl -fsSL "https://raw.githubusercontent.com/sureserverman/nice-dns/${BRANCH}/mac/check-runtime.sh" -o "$_gate" || nd_gate_rc=$?
+    { [ "$nd_gate_rc" = 6 ] || [ "$nd_gate_rc" = 7 ]; } && [ "$nd_gate_tries" -lt 3 ] || break
+    nd_gate_tries=$((nd_gate_tries + 1))
+    echo "  the download failed (curl exit $nd_gate_rc); trying again in 20 s ($nd_gate_tries of 3)" >&2
+    sleep 20
+  done
+  [ "$nd_gate_rc" = 0 ] || { echo "failed to download compatibility gate" >&2; rm -f "$_gate"; exit 1; }
   _gate_sha="$(shasum -a 256 "$_gate" | awk '{print $1}')"
   if [[ "$_gate_sha" != "$CHECK_RUNTIME_SHA256" ]]; then
     echo "ERROR: compatibility gate SHA-256 mismatch." >&2
@@ -88,7 +98,21 @@ else
   fi
   brew list --formula git >/dev/null 2>&1 || brew install --formula git
   ND_INST_CLEANUP="$(mktemp -d "$HOME/.nice-dns-install.XXXXXXXX")"
-  git clone -q -b "$BRANCH" https://github.com/sureserverman/nice-dns.git "$ND_INST_CLEANUP/nice-dns"
+  # A failed name lookup is tried again, 3 tries in all, 20 s apart (BL-044;
+  # lib/install.sh _nd_inst_retry_lookup, which is not here yet).
+  nd_clone_tries=1 nd_clone_ok=0
+  while :; do
+    if git clone -q -b "$BRANCH" https://github.com/sureserverman/nice-dns.git "$ND_INST_CLEANUP/nice-dns" 2>"$ND_INST_CLEANUP/clone.err"; then
+      nd_clone_ok=1; break
+    fi
+    cat "$ND_INST_CLEANUP/clone.err" >&2
+    grep -Eq 'Could not resolve host|Temporary failure in name resolution' "$ND_INST_CLEANUP/clone.err" && [ "$nd_clone_tries" -lt 3 ] || break
+    nd_clone_tries=$((nd_clone_tries + 1))
+    rm -rf "${ND_INST_CLEANUP:?}/nice-dns"
+    echo "  the name lookup failed; trying again in 20 s ($nd_clone_tries of 3)" >&2
+    sleep 20
+  done
+  [ "$nd_clone_ok" = 1 ] || exit 1
   ND_INST_SRC="$ND_INST_CLEANUP/nice-dns" ND_INST_ORIGIN=clone
 fi
 # shellcheck source=lib/install.sh

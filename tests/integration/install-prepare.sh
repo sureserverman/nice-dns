@@ -617,6 +617,16 @@ nd_install_read_current "$s" >/dev/null 2>&1; echo "badcurrent=$?"
 printf 'schema\tsomething-else/1\nbranch\tx\n' >/tmp/other.tsv
 nd_install_manifest_get /tmp/other.tsv branch >/dev/null 2>&1; echo "badschema=$?"
 [ -e /tmp/pwned ] && echo pwned || echo clean
+# _nd_inst_retry_lookup under 3.2 (${*: -1}, PIPESTATUS in a brace group).
+sleep() { :; }
+f=/tmp/calls
+lookup_fail() { echo x >>"$f"; echo "dial tcp: lookup registry-1.docker.io: no such host" >&2; return 125; }
+: >"$f"; _nd_inst_retry_lookup lookup_fail docker.io/x/y@sha256:1 >/tmp/rl.out 2>&1; echo "retry_rc=$? retry_calls=$(wc -l <"$f" | tr -d ' ')"
+grep -q 'could not pull docker.io/x/y@sha256:1' /tmp/rl.out && echo retry_names=1
+other_fail() { echo y >>"$f"; echo "manifest unknown" >&2; return 3; }
+: >"$f"; _nd_inst_retry_lookup other_fail ref >/dev/null 2>&1; echo "other_rc=$? other_calls=$(wc -l <"$f" | tr -d ' ')"
+ok_cmd() { echo out-line; }
+o="$(_nd_inst_retry_lookup ok_cmd 2>/dev/null)"; echo "ok_rc=$? ok_out=$o"
 INNER
   out="$(podman run --rm --network none --pull=never -v "$NICE_DNS_ROOT:/src:ro" -v "$w:/work:ro" "$img" bash /work/inner.sh 2>&1)"
   assert_match '^source=0$' "$out" "bash 3.2 loads lib/install.sh: $out"
@@ -634,6 +644,10 @@ INNER
   assert_match '^badcurrent=[1-9]' "$out" "a malformed current is refused"
   assert_match '^badschema=[1-9]' "$out" "a manifest with another schema is refused"
   assert_match '^clean$' "$out" "nothing in the data was executed"
+  assert_match '^retry_rc=125 retry_calls=3$' "$out" "BL-044 bash 3.2: a failed lookup is tried 3 times and keeps the command's status"
+  assert_match '^retry_names=1$' "$out" "BL-044 bash 3.2: the last error names the image"
+  assert_match '^other_rc=3 other_calls=1$' "$out" "BL-044 bash 3.2: another failure is not retried"
+  assert_match '^ok_rc=0 ok_out=out-line$' "$out" "BL-044 bash 3.2: a pull's stdout passes through"
 }
 
 t_bash32_runs_the_mac_entrypoints() {
@@ -1232,7 +1246,7 @@ t_pulls_retry_a_failed_lookup_BL_044() {
 
 t_clone_retries_a_failed_lookup_BL_044() {
   local ep
-  for ep in install-deb install-mac; do
+  for ep in install-deb install-deb-hardened install-mac install-mac-hardened; do
     ip_env "$ep"
     : >"$FAKE/instant_retry"; : >"$FAKE/clone_lookup_once"
     mkdir -p "$IP_W/solo" && cp "$IP_TREE/$ep.sh" "$IP_W/solo/"
@@ -1276,5 +1290,28 @@ t_old_generation_directories_are_removed_BL_061() {
     for i in 1 2; do assert_no_path "$gens/2099010${i}T000000Z-aaaaaaaaaaaa" "BL-061 $ep: an older one goes ($i)"; done
     [ -L "$gens/20990109T000000Z-bbbbbbbbbbbb" ] || fail "BL-061 $ep: a symlink is left alone"
     [ -d "$IP_W/elsewhere" ] || fail "BL-061 $ep: and so is what it points at"
+  done
+}
+
+# BL-044, BL-067: the macOS gate is the first network call of an install
+# without a checkout. A failed lookup or connect is tried again; any other
+# failure, or three, stop the install before anything changes.
+t_mac_gate_fetch_retries_a_failed_connect_BL_067() {
+  local ep
+  for ep in install-mac install-mac-hardened; do
+    ip_env "$ep"
+    : >"$FAKE/instant_retry"; printf '7\n0\n' >"$FAKE/gate_rcs"
+    mkdir -p "$IP_W/solo" && cp "$IP_TREE/$ep.sh" "$IP_W/solo/"
+    ip_run "$IP_W/solo/$ep.sh" haproxy dev
+    assert_rc 0 "$IP_RC" "BL-067 $ep: one failed connect: $IP_OUT"
+    assert_eq 2 "$(grep -c '^curl -fsSL https://raw\.githubusercontent\.com/.*/mac/check-runtime\.sh' "$FAKE_LOG")" "BL-067 $ep: the gate is fetched again"
+    ip_env "$ep"
+    : >"$FAKE/instant_retry"; printf '7\n7\n7\n' >"$FAKE/gate_rcs"
+    mkdir -p "$IP_W/solo" && cp "$IP_TREE/$ep.sh" "$IP_W/solo/"
+    ip_run "$IP_W/solo/$ep.sh" haproxy dev
+    assert_rc 1 "$IP_RC" "BL-067 $ep: three failed connects stop the install: $IP_OUT"
+    assert_eq 3 "$(grep -c '^curl -fsSL https://raw\.githubusercontent\.com/.*/mac/check-runtime\.sh' "$FAKE_LOG")" "BL-067 $ep: three tries, no more"
+    assert_match 'failed to download compatibility gate' "$IP_OUT" "BL-067 $ep: says why"
+    assert_eq "" "$(grep '^git clone' "$FAKE_LOG")" "BL-067 $ep: nothing after the gate ran"
   done
 }
