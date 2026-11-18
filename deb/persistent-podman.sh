@@ -13,7 +13,7 @@ PIHOLE="${2:-standard}"
 # Ensure we are not running as root. The script relies on rootless Podman and
 # user-mode systemd. Running it via sudo will cause `systemctl --user` failures.
 if [ "$(id -u)" -eq 0 ]; then
-  echo "ERROR: Run this script as your regular user (without sudo)." >&2
+  echo "Please run ${0##*/} as a regular user, not with sudo." >&2
   exit 1
 fi
 

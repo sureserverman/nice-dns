@@ -29,7 +29,7 @@ ACTION="${1:-haproxy}"
 BRANCH="${2:-main}"
 
 if [[ $EUID -eq 0 ]]; then
-  echo "Run ${0##*/} as a regular user, not sudo." >&2
+  echo "Please run ${0##*/} as a regular user, not with sudo." >&2
   exit 1
 fi
 

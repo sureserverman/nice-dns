@@ -974,3 +974,17 @@ t_helper_test_seams_need_the_fixture_root() {
   HOME="$CASE_DIR/home" ND_INST_TREE="$CASE_DIR/home/tree" ND_INST_ROOT='' bash -c '. "$1/lib/root.sh"; _nd_root_tree_ok' x "$NICE_DNS_ROOT"
   assert_rc 1 "$?" "a HOME that is not the password database's is refused"
 }
+
+# BL-055: every entrypoint a person can run refuses root with the same words;
+# only the script's own name differs. Read from the scripts (root is not
+# available to the suite), the line that follows each root check.
+t_every_root_refusal_has_the_same_words_BL_055() {
+  local f line want="Please run NAME as a regular user, not with sudo."
+  for f in install-deb.sh install-mac.sh install-deb-hardened.sh install-mac-hardened.sh nice-dns deb/persistent-podman.sh; do
+    line="$(grep -A3 -E 'EUID -eq 0|id -u\)" -eq 0' "$NICE_DNS_ROOT/$f" | grep -m 1 'echo ')"
+    assert_ne "" "$line" "BL-055 $f: a root refusal message"
+    line="$(printf '%s\n' "$line" | sed -e 's/^[[:space:]]*echo "//' -e 's/" >&2$//' -e 's/\${0##\*\/}/NAME/' -e 's/ nice-dns / NAME /')"
+    assert_eq "$want" "$line" "BL-055 $f: the same words as the others"
+  done
+}
+

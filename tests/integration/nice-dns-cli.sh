@@ -489,6 +489,22 @@ t_macos_restart_waits_for_the_rebuild_before_checking_dns() {
   cl_assert_released Darwin
 }
 
+# BL-055: a macOS restart waiting on a slow rebuild says so every 30 s
+# (ND_WAIT_NOTE_S here), and ND_INST_READY_TRIES shortens that wait as it
+# does the DNS wait after it.
+t_macos_restart_says_it_is_still_waiting_BL_055() {
+  local t0 took
+  cl_restart_world Darwin
+  : >"$CL_FAKE/agent_stuck"
+  t0="$(date +%s)"
+  ND_WAIT_NOTE_S=1 ND_INST_READY_TRIES=2 cl_run "$CL_TREE/nice-dns" restart
+  took=$(( $(date +%s) - t0 ))
+  assert_rc 1 "$CL_RC" "BL-055 a rebuild that never ends is a failure: $CL_OUT"
+  [ "$(printf '%s\n' "$CL_OUT" | grep -cE '^still waiting for the stack \([0-9]+ s\)$')" -ge 2 ] || fail "BL-055 at least two waiting lines: $CL_OUT"
+  [ "$took" -le 20 ] || fail "BL-055 the wait keeps to the tries set (10 s): it took $took s"
+  cl_assert_released Darwin
+}
+
 t_restart_failure_is_reported_and_releases() {
   cl_restart_world Linux
   echo 5 >"$CL_FAKE/restart_rc"

@@ -266,11 +266,18 @@ nd_platform_restart_stack() { nd_platform_restart_proxy "" "$1" "$2"; }
 # nd_platform_wait_restarted <deadline>: kickstart returns as soon as the agent
 # is started, and the old stack can still answer until the agent tears it down.
 # Done when the agent has taken the request and finished. 124 at the deadline.
+# A rebuild waiting on a slow Tor says so every ND_WAIT_NOTE_S (30) s (BL-055).
 nd_platform_wait_restarted() {
   local d="${XDG_STATE_HOME:-${HOME:?HOME is unset}/.local/state}/nice-dns/restart-requested"
-  local end=$(( $(date +%s) + $1 ))
+  local t0 now end next note="${ND_WAIT_NOTE_S:-30}"
+  t0="$(date +%s)"; end=$((t0 + $1)); next=$((t0 + note))
   while [ -e "$d" ] || launchctl print "gui/$(id -u)/$_ND_MAC_AGENT" 2>/dev/null | grep -q '^[[:space:]]*state = running$'; do
-    [ "$(date +%s)" -lt "$end" ] || return 124
+    now="$(date +%s)"
+    [ "$now" -lt "$end" ] || return 124
+    if [ "$now" -ge "$next" ]; then
+      echo "still waiting for the stack ($((now - t0)) s)"
+      next=$((now + note))
+    fi
     sleep 2
   done
 }
