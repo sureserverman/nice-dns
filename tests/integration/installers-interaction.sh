@@ -624,6 +624,40 @@ t_root_ops_maps_a_steps_126_and_127_to_125() {
   assert_rc 2 "$?" "mac: a refused call is still 2"
 }
 
+# BL-064: every temporary file a root-ops verb makes is gone when it exits,
+# whether its root step failed or passed. TMPDIR is honoured for a non-root
+# run only, so it points each call at an empty directory of its own. The
+# verbs are every mktemp site (grep -n mktemp deb/root-ops mac/root-ops):
+# restore on both, persist and install-helper on macOS.
+t_root_ops_removes_its_temp_files() {
+  local w="$CASE_DIR/tmpclean" os call step d n=0 rc
+  mkdir -p "$w/bin" "$w/r/usr/bin" "$w/r/usr/local/sbin" "$w/r/etc/sudoers.d"
+  chmod 755 "$w/r/usr/local" "$w/r/usr/local/sbin"
+  printf '#!/bin/sh\nexit 1\n' >"$w/bin/fail"; chmod 755 "$w/bin/fail"
+  printf '#!/bin/sh\nexit 0\n' >"$w/bin/pass"; chmod 755 "$w/bin/pass"
+  : >"$w/asset"
+  for step in fail pass; do
+    for call in "deb restore $w/r/usr/bin/custom-dns-deb -" \
+                "mac restore $w/r/usr/local/sbin/start-container.sh -" \
+                "mac restore $w/r/etc/sudoers.d/start-container -" \
+                "mac persist socat" \
+                "mac install-helper $w/asset"; do
+      n=$((n + 1)); d="$w/tmp$n"; mkdir "$d"
+      os="${call%% *}"
+      rc=0
+      # shellcheck disable=SC2086  # the words are the call
+      printf 'x\n' | ND_ROOT_TEST_SUDO="$w/bin/$step" ND_INST_ROOT="$w/r" TMPDIR="$d" bash "$NICE_DNS_ROOT/$os/root-ops" ${call#* } >/dev/null 2>&1 || rc=$?
+      if [ "$step" = fail ]; then assert_ne 0 "$rc" "BL-064 $call: the failing step fails the verb"; fi
+      assert_eq "" "$(ls -A "$d")" "BL-064 $call, step $step (rc $rc): no temporary file is left"
+    done
+  done
+  # Every mktemp of root-ops is registered for _nd_exit on the next line.
+  for os in deb mac; do
+    assert_eq "" "$(awk '/="\$\(mktemp\)"/ { want = NR + 1; line = $0; next } want == NR { if ($0 !~ /_nd_tmp="\$_nd_tmp /) print FILENAME ":" NR - 1 ": " line; want = 0 }' "$NICE_DNS_ROOT/$os/root-ops")" "BL-064 $os: every mktemp is registered in _nd_tmp"
+    assert_ne 0 "$(grep -c '="$(mktemp)"' "$NICE_DNS_ROOT/$os/root-ops")" "BL-064 $os: the mktemp sites are found"
+  done
+}
+
 t_root_ops_install_helper_refuses_before_running_anything() {
   local s ro="$NICE_DNS_ROOT/deb/root-ops" pol="$NICE_DNS_ROOT/deb/org.nice-dns.policy" f out
   s="$CASE_DIR/sudo"; printf '#!/bin/sh\necho "$*" >>"%s/ran"\n' "$CASE_DIR" >"$s"; chmod 755 "$s"
