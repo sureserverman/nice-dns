@@ -307,6 +307,9 @@ for cand in /usr/libexec/podman/quadlet /usr/lib/podman/quadlet /usr/lib/systemd
   fi
 done
 
+# lib/platform/linux.sh sets XDG_RUNTIME_DIR only inside the ROUTE_DIR
+# subshell above; this shell falls back to the same path itself.
+# shellcheck disable=SC2031
 GEN_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/systemd/generator"
 if [ ! -e "$GEN_DIR/nice-dns-pod.service" ]; then
   echo "   ✗ daemon-reload did not generate nice-dns-pod.service." >&2
@@ -333,7 +336,13 @@ fi
 # proxy keeps whatever bridges.env already exists.
 echo "   • Selecting reachable bridges (host-side bridge-eval; ~2-3 min)..."
 if systemctl --user restart nice-dns-fetch-bridges.service 2>/dev/null; then
-  echo "   ✓ Bridges selected → ~/.config/nice-dns/bridges.env"
+  # A restart the unit's ExecCondition skipped (a usable set kept, or bridges
+  # off) also returns 0; its Result then reads exec-condition (BL-028).
+  if [ "$(systemctl --user show -p Result --value nice-dns-fetch-bridges.service 2>/dev/null)" = exec-condition ]; then
+    echo "   ✓ No selection needed: kept the existing bridges (~/.config/nice-dns/bridges.env)"
+  else
+    echo "   ✓ Bridges selected → ~/.config/nice-dns/bridges.env"
+  fi
 else
   echo "   ! bridge-eval manage run failed; proxy will use existing bridges.env (if any)." >&2
 fi

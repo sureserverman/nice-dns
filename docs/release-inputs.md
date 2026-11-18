@@ -164,7 +164,8 @@ each. During preparation an install:
    changes anything);
 2. downloads this host's asset with `curl -fsSL` into the new generation
    (declared in `release/bootstrap.tsv` as `assets`), trying a failed name
-   lookup three times, 20 s apart (BL-044);
+   lookup or connect three times, 20 s apart (BL-044, BL-067); a last
+   failure's note carries curl's own error line;
 3. keeps the file only when its sha256 is the lock's, and installs it
    through root-ops `install-helper` when the installed helper is missing,
    another version, runs another root-ops or (macOS) serves another user.

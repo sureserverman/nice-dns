@@ -337,6 +337,13 @@ case "$me" in
       esac
       # The pod runs while the stack is up.
       case "$2 $*" in "is-active "*nice-dns-pod.service*) [ -f "$FAKE/dns_up" ] || exit 3 ;; esac
+      # The bridge unit's last result ($FAKE/bridge_result; default success):
+      # exec-condition when its ExecCondition skipped it (BL-028).
+      case "$2 $*" in "show "*"-p Result"*nice-dns-fetch-bridges.service*)
+        r="$(cat "$FAKE/bridge_result" 2>/dev/null || echo success)"
+        case " $* " in *" --value "*) echo "$r" ;; *) echo "Result=$r" ;; esac
+        exit 0 ;;
+      esac
       [ -f "$FAKE/fail_user_$2" ] && exit 1
       exit 0
     fi

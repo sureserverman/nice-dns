@@ -169,3 +169,27 @@ t_proxy_units_read_the_optional_bridges_mode() {
     assert_not_match '^ExecStart=.*--env-file [^ ]*bridges-mode' "$unit" "$u: the mode file is never a required podman env file"
   done
 }
+
+# BL-028: `systemctl restart` of the bridge unit returns 0 also when its
+# ExecCondition skipped it (3 or more bridges kept, or bridges off), so the
+# install said "Bridges selected" when none were. The unit's Result tells.
+t_bridge_line_says_what_happened_BL_028() {
+  local r
+  for r in exec-condition success; do
+    (
+      dt_world install-deb resolved
+      ps_tree "$IP_W/real"
+      mkdir -p "$IP_W/run/systemd/generator" && : >"$IP_W/run/systemd/generator/nice-dns-pod.service"
+      printf '%s\n' "$r" >"$FAKE/bridge_result"
+      ip_run "$IP_W/real/deb/persistent-podman.sh" haproxy
+      assert_rc 0 "$IP_RC" "BL-028 $r: $IP_OUT"
+      if [ "$r" = exec-condition ]; then
+        assert_match 'kept the existing bridges' "$IP_OUT" "BL-028 skipped: it says the bridges were kept"
+        assert_not_match 'Bridges selected' "$IP_OUT" "BL-028 skipped: and not that they were selected"
+      else
+        assert_match 'Bridges selected' "$IP_OUT" "BL-028 ran: it says they were selected"
+        assert_not_match 'kept the existing bridges' "$IP_OUT" "BL-028 ran: and not that they were kept"
+      fi
+    ) || exit 1
+  done
+}
