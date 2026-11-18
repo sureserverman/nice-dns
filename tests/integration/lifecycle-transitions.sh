@@ -515,6 +515,59 @@ t_macos_install_honours_the_bridges_mode() {
   ) || exit 1
 }
 
+# BL-060: the macOS install reads a two-line bridges-mode.env as its last
+# line; an uninstall that gave host DNS back removes the mode file, so a later
+# install starts with bridges on, and the config directory once it is empty.
+t_bridges_mode_last_line_and_uninstall_BL_060() {
+  local ep line cfg
+  (
+    dt_world install-mac fresh
+    printf 'TOR_BRIDGES=on\nTOR_BRIDGES=off\n' >"$IP_HOME/.config/nice-dns/bridges-mode.env"
+    : >"$FAKE_LOG"
+    ip_install install-mac socat
+    assert_rc 0 "$IP_RC" "BL-060 two lines: install: $IP_OUT"
+    line="$(grep -E '^container run -d --name tor-socat ' "$FAKE_LOG" | tail -n 1)"
+    assert_match ' -e TOR_BRIDGES=off ' "$line" "BL-060 on then off: the proxy starts direct"
+  ) || exit 1
+  for ep in install-deb install-mac; do
+    (
+      dt_world "$ep" "$(dt_fresh_state "$ep")"
+      ip_install "$ep" haproxy
+      assert_rc 0 "$IP_RC" "BL-060 $ep install: $IP_OUT"
+      cfg="$IP_HOME/.config/nice-dns"
+      printf 'TOR_BRIDGES=off\n' >"$cfg/bridges-mode.env"
+      find "$cfg" -mindepth 1 ! -name bridges-mode.env -exec rm -rf {} +
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "BL-060 $ep uninstall: $IP_OUT"
+      assert_no_path "$cfg/bridges-mode.env" "BL-060 $ep: no bridges mode is left"
+      assert_no_path "$cfg" "BL-060 $ep: nor the empty config directory"
+    ) || exit 1
+    (
+      dt_world "$ep" "$(dt_fresh_state "$ep")"
+      ip_install "$ep" haproxy
+      assert_rc 0 "$IP_RC" "BL-060 $ep keep: install: $IP_OUT"
+      cfg="$IP_HOME/.config/nice-dns"
+      printf 'TOR_BRIDGES=off\n' >"$cfg/bridges-mode.env"
+      printf 'mine\n' >"$cfg/owner-notes.txt"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "BL-060 $ep keep: uninstall: $IP_OUT"
+      assert_no_path "$cfg/bridges-mode.env" "BL-060 $ep keep: the mode file goes"
+      assert_eq mine "$(cat "$cfg/owner-notes.txt" 2>/dev/null)" "BL-060 $ep keep: the owner's file and its directory stay"
+    ) || exit 1
+  done
+  (
+    ep=install-deb
+    dt_world "$ep" "$(dt_fresh_state "$ep")"
+    ip_install "$ep" haproxy
+    assert_rc 0 "$IP_RC" "BL-060 failed restore: install: $IP_OUT"
+    printf 'TOR_BRIDGES=off\n' >"$IP_HOME/.config/nice-dns/bridges-mode.env"
+    printf '%s\n' 'custom-dns-deb restore' >"$FAKE/fail"
+    ip_install "$ep" uninstall
+    assert_nonzero "$IP_RC" "BL-060 failed restore: the uninstall fails: $IP_OUT"
+    assert_file "$IP_HOME/.config/nice-dns/bridges-mode.env" "BL-060 failed restore: the mode file is kept with the rest"
+  ) || exit 1
+}
+
 # BL-061: an uninstall that gave host DNS back removes the generation records
 # and then the state directory once it is empty; one whose DNS restore failed
 # keeps every record, as it keeps the rest of the state for the retry.

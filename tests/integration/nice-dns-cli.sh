@@ -1240,6 +1240,24 @@ t_bridges_not_installed_exits_1_and_writes_nothing() {
   done
 }
 
+# BL-060: a hand edit that left two lines reads as its last line, as
+# systemd's EnvironmentFile= reads it, in the status row and bridges status.
+t_bridges_status_reads_the_last_line_BL_060() {
+  local u
+  for u in $(cl_platforms); do
+    st_world "$u"; bt_restart_fakes
+    mkdir -p "$(dirname "$(bt_mode_file)")"
+    printf 'TOR_BRIDGES=on\nTOR_BRIDGES=off\n' >"$(bt_mode_file)"
+    ND_STATUS_NOW="$ST_NOW" cl_run "$CL_TREE/nice-dns" status --tsv
+    assert_match "^bridges	mode	off$" "$CL_OUT" "BL-060 $u: on then off: status --tsv reads off"
+    cl_run "$CL_TREE/nice-dns" bridges status
+    assert_match "^mode	off$" "$CL_OUT" "BL-060 $u: and bridges status reads off"
+    printf 'TOR_BRIDGES=off\nTOR_BRIDGES=on\n' >"$(bt_mode_file)"
+    ND_STATUS_NOW="$ST_NOW" cl_run "$CL_TREE/nice-dns" status --tsv
+    assert_match "^bridges	mode	on$" "$CL_OUT" "BL-060 $u: off then on: status --tsv reads on"
+  done
+}
+
 t_bridges_an_unwritable_mode_file_names_the_path() {
   local u d
   for u in $(cl_platforms); do

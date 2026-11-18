@@ -266,7 +266,7 @@ t_boot_selection_is_skipped_when_a_usable_set_exists() {
   # The rendered ExecCondition of the Linux boot unit: \$\$ in the installer
   # heredoc is $$ in the unit, which systemd passes to sh as $.
   cond="$(grep '^ExecCondition=' "$NICE_DNS_ROOT/deb/persistent-podman.sh" | sed -e 's/^ExecCondition=\/usr\/bin\/sh -c //' -e 's/\\\$\\\$/$/g' -e "s/^'//" -e "s/'\$//")"
-  assert_match '^! grep -qx "TOR_BRIDGES=off" %h/\.config/nice-dns/bridges-mode\.env 2>/dev/null \|\| exit 2; n=\$\(grep' "$cond" "the condition renders"
+  assert_match '^\[ "\$\(grep "\^TOR_BRIDGES=" %h/\.config/nice-dns/bridges-mode\.env 2>/dev/null \| tail -n 1 \| cut -d= -f2\)" != off \] \|\| exit 2; n=\$\(grep' "$cond" "the condition renders"
   h="$CASE_DIR/home-cond"; mkdir -p "$h/.config/nice-dns"
   sh -c "$(printf '%s' "$cond" | sed "s#%h#$h#g")"; rc=$?
   assert_rc 0 "$rc" "no bridges.env: the boot selection runs"
@@ -757,4 +757,41 @@ t_an_evaluated_refresh_stamps_the_last_refresh() {
       [ "$v" -ge "$t0" ] 2>/dev/null || fail "$plat: bridges.last holds this run's epoch, got [$v]"
     ) || exit 1
   done
+}
+
+# BL-060: a hand edit that left two TOR_BRIDGES lines means what systemd's
+# EnvironmentFile= reads, the last line, to every reader: the Linux boot
+# unit's condition, the macOS agent, the controller (nd_bridges_mode, which
+# `nice-dns bridges on|off` also asks) and the macOS bridge evaluation.
+t_every_bridge_reader_takes_the_last_line_BL_060() {
+  local cond h rc cfg out
+  cond="$(grep '^ExecCondition=' "$NICE_DNS_ROOT/deb/persistent-podman.sh" | sed -e 's/^ExecCondition=\/usr\/bin\/sh -c //' -e 's/\\\$\\\$/$/g' -e "s/^'//" -e "s/'\$//")"
+  h="$CASE_DIR/home-cond-060"; mkdir -p "$h/.config/nice-dns"
+  printf 'TOR_BRIDGES=on\nTOR_BRIDGES=off\n' >"$h/.config/nice-dns/bridges-mode.env"
+  sh -c "$(printf '%s' "$cond" | sed "s#%h#$h#g")"; rc=$?
+  assert_rc 2 "$rc" "BL-060 unit: on then off reads off, so the boot selection is skipped"
+  printf 'TOR_BRIDGES=off\nTOR_BRIDGES=on\n' >"$h/.config/nice-dns/bridges-mode.env"
+  sh -c "$(printf '%s' "$cond" | sed "s#%h#$h#g")"; rc=$?
+  assert_rc 0 "$rc" "BL-060 unit: off then on reads on, so the boot selection runs"
+  bl_agent
+  cfg="$CASE_DIR/ahome/.config/nice-dns"; mkdir -p "$cfg"
+  bl_set "$cfg/bridges.env" 5
+  printf 'TOR_BRIDGES=on\nTOR_BRIDGES=off\n' >"$cfg/bridges-mode.env"
+  out="$(bl_agent_run run)"
+  assert_match '^container run .* -e TOR_BRIDGES=off ' "$out" "BL-060 agent: on then off starts the proxy direct"
+  printf 'TOR_BRIDGES=off\nTOR_BRIDGES=on\n' >"$cfg/bridges-mode.env"
+  out="$(bl_agent_run run)"
+  assert_match '^container run .* -e TOR_BRIDGES=on ' "$out" "BL-060 agent: off then on starts it with bridges"
+  (
+    bl_env macos
+    printf 'TOR_BRIDGES=on\nTOR_BRIDGES=off\n' >"$ND_BRIDGE_CONFIG_DIR/bridges-mode.env"
+    assert_eq off "$(nd_bridges_mode)" "BL-060 controller: on then off reads off"
+    bl_set "$BL_LIVE" 5; bl_set "$CASE_DIR/cand" 7 9
+    printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+    : >"$FAKE_LOG"
+    nd_platform_bridge_eval haproxy .cand 30 "$TMPDIR"
+    assert_rc 3 $? "BL-060 macOS evaluation: on then off is refused as bridges off"
+    printf 'TOR_BRIDGES=off\nTOR_BRIDGES=on\n' >"$ND_BRIDGE_CONFIG_DIR/bridges-mode.env"
+    assert_eq on "$(nd_bridges_mode)" "BL-060 controller: off then on reads on"
+  ) || exit 1
 }

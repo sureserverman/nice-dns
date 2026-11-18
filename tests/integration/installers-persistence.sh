@@ -19,6 +19,31 @@ ps_tree() {
   for f in deb mac scripts health lib routes; do cp -R "$NICE_DNS_ROOT/$f" "$d/"; done
 }
 
+# BL-060: with two lines in bridges-mode.env the last one decides whether the
+# proxy's empty bridges.env is made (bridges off) or not (bridges on).
+t_the_empty_set_follows_the_last_mode_line_BL_060() {
+  local first last
+  for first in on off; do
+    (
+      [ "$first" = on ] && last=off || last=on
+      dt_world install-deb resolved
+      ps_tree "$IP_W/real"
+      mkdir -p "$IP_HOME/.config/nice-dns"
+      printf 'TOR_BRIDGES=%s\nTOR_BRIDGES=%s\n' "$first" "$last" >"$IP_HOME/.config/nice-dns/bridges-mode.env"
+      rm -f "$IP_HOME/.config/nice-dns/bridges.env"
+      mkdir -p "$IP_W/run/systemd/generator" && : >"$IP_W/run/systemd/generator/nice-dns-pod.service"
+      : >"$FAKE_ROOT/.systemd/NetworkManager-wait-online.unit"
+      ip_run "$IP_W/real/deb/persistent-podman.sh" haproxy
+      assert_rc 0 "$IP_RC" "BL-060 $first then $last: persistent-podman.sh: $IP_OUT"
+      if [ "$last" = off ]; then
+        assert_file "$IP_HOME/.config/nice-dns/bridges.env" "BL-060 $first then $last: bridges off, the empty set is made"
+      else
+        assert_no_path "$IP_HOME/.config/nice-dns/bridges.env" "BL-060 $first then $last: bridges on, no empty set is made"
+      fi
+    ) || exit 1
+  done
+}
+
 t_real_persistent_podman_renders_its_units() {
   local v
   for v in haproxy socat; do
@@ -42,7 +67,7 @@ t_real_persistent_podman_renders_its_units() {
       unit="$u/nice-dns-fetch-bridges.service"
       assert_file "$unit" "$v: the bridge unit"
       # systemd sees $$ as a literal $ (systemd.service(5), Command lines).
-      assert_match "^ExecCondition=/usr/bin/sh -c '! grep -qx \"TOR_BRIDGES=off\" %h/\\.config/nice-dns/bridges-mode\\.env 2>/dev/null \\|\\| exit 2; n=\\\$\\\$\\(grep -cE \"\\^BRIDGE\\[0-9\\]\\+=obfs4 \" %h/\\.config/nice-dns/bridges\\.env 2>/dev/null\\); \\[ \"\\\$\\\$\\{n:-0\\}\" -lt 3 \\] \\|\\| exit 2'\$" "$(cat "$unit")" "$v: ExecCondition keeps its escaping and skips with exit 2"
+      assert_match "^ExecCondition=/usr/bin/sh -c '\\[ \"\\\$\\\$\\(grep \"\\^TOR_BRIDGES=\" %h/\\.config/nice-dns/bridges-mode\\.env 2>/dev/null \\| tail -n 1 \\| cut -d= -f2\\)\" != off \\] \\|\\| exit 2; n=\\\$\\\$\\(grep -cE \"\\^BRIDGE\\[0-9\\]\\+=obfs4 \" %h/\\.config/nice-dns/bridges\\.env 2>/dev/null\\); \\[ \"\\\$\\\$\\{n:-0\\}\" -lt 3 \\] \\|\\| exit 2'\$" "$(cat "$unit")" "$v: ExecCondition keeps its escaping and skips with exit 2"
       assert_match "docker\\.io/sureserver/tor-$v:latest" "$(cat "$unit")" "$v: the bridge unit runs this proxy's image"
       assert_match '^ExecStart=/usr/bin/podman run --rm --user 0:0 ' "$(cat "$unit")" "$v: the bridge unit runs bridge-eval as the container's root"
       assert_eq "" "$(grep -v '^#' "$unit" | grep -- '--userns=keep-id')" "$v: the bridge unit does not use keep-id (podman 5.8 exit 125)"

@@ -200,8 +200,9 @@ Type=oneshot
 # ExecCondition, and a status it lists counts as a pass, so exit 1 ran the
 # selection at every install and boot over the controller's set (live on
 # mint, 2026-10-05). \$\$ is a literal \$ for systemd. With bridges off
-# (TOR_BRIDGES=off in bridges-mode.env) the selection is skipped too.
-ExecCondition=/usr/bin/sh -c '! grep -qx "TOR_BRIDGES=off" %h/.config/nice-dns/bridges-mode.env 2>/dev/null || exit 2; n=\$\$(grep -cE "^BRIDGE[0-9]+=obfs4 " %h/.config/nice-dns/bridges.env 2>/dev/null); [ "\$\${n:-0}" -lt 3 ] || exit 2'
+# (TOR_BRIDGES=off in bridges-mode.env) the selection is skipped too; the
+# last TOR_BRIDGES line decides, as systemd's EnvironmentFile= reads it (BL-060).
+ExecCondition=/usr/bin/sh -c '[ "\$\$(grep "^TOR_BRIDGES=" %h/.config/nice-dns/bridges-mode.env 2>/dev/null | tail -n 1 | cut -d= -f2)" != off ] || exit 2; n=\$\$(grep -cE "^BRIDGE[0-9]+=obfs4 " %h/.config/nice-dns/bridges.env 2>/dev/null); [ "\$\${n:-0}" -lt 3 ] || exit 2'
 # RemainAfterExit: run once per boot before the proxy (Wants=/After= from the
 # tor quadlets); a container restart won't re-trigger the ~150s manage cycle.
 RemainAfterExit=yes
@@ -352,7 +353,7 @@ fi
 # created: a missing set stops the proxy unit, as before the mode existed.
 # The same paths the quadlets read (%h/.config/nice-dns/...).
 BRIDGES_ENV="$HOME/.config/nice-dns/bridges.env"
-if grep -qx "TOR_BRIDGES=off" "$HOME/.config/nice-dns/bridges-mode.env" 2>/dev/null && [ ! -e "$BRIDGES_ENV" ]; then
+if [ "$(awk -F '=' '$1 == "TOR_BRIDGES" { v = $2 } END { print v }' "$HOME/.config/nice-dns/bridges-mode.env" 2>/dev/null)" = off ] && [ ! -e "$BRIDGES_ENV" ]; then
   (umask 077 && : >"$BRIDGES_ENV")
 fi
 

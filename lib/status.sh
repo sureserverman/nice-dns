@@ -97,7 +97,7 @@ _nd_st_bridges() {
   local cfg="$1" sd="$2" rc=0 bmode=on n=0 refresh=never
   _nd_st_reach "$cfg/bridges-mode.env" f
   case $? in
-    0) case "$(awk -F '=' '$1 == "TOR_BRIDGES" { print $2; exit }' "$cfg/bridges-mode.env")" in off) bmode=off ;; esac ;;
+    0) case "$(awk -F '=' '$1 == "TOR_BRIDGES" { v = $2 } END { print v }' "$cfg/bridges-mode.env")" in off) bmode=off ;; esac ;;
     2) _nd_st_row bridges unreadable "cannot read $(_nd_st_short "$cfg/bridges-mode.env")"; rc=2 ;;
   esac
   _nd_st_row bridges mode "$bmode"

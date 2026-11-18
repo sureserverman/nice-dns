@@ -2642,6 +2642,10 @@ _nd_inst_uninstall_state() {
     fi
     rmdir "$sd" 2>/dev/null || true
   fi
+  # The bridges mode goes too, so a later install starts with bridges on
+  # (BL-060), and the config directory once nothing else is left in it.
+  rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges-mode.env"
+  rmdir "${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns" 2>/dev/null || true
   _nd_inst_command_remove
 }
 
@@ -2982,7 +2986,7 @@ nd_install_macos_bridges() {
   local _bridges_file _nbridges=0 _bline _mode=on
   # The bridges mode (nice-dns bridges on|off), read as data: with
   # TOR_BRIDGES=off Tor runs direct, so no set is fetched or required.
-  if [ "$(awk -F '=' '$1 == "TOR_BRIDGES" { print $2; exit }' "${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges-mode.env" 2>/dev/null)" = off ]; then
+  if [ "$(awk -F '=' '$1 == "TOR_BRIDGES" { v = $2 } END { print v }' "${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges-mode.env" 2>/dev/null)" = off ]; then
     _mode=off
   fi
   # Fetch default obfs4 bridges from the Tor Project on first install, then
