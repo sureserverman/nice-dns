@@ -2580,17 +2580,17 @@ nd_install_linux_uninstall() {
   # WF-DNS-003), with the controller held so nothing restarts or pins it
   # meanwhile: the DNS state before nice-dns (resolv.conf, systemd-resolved,
   # the ipv6 sysctls and the NetworkManager/systemd files the pin installed),
-  # then Mullvad's DNS setting from before nice-dns in the same step (BL-048,
-  # DEC-019). A failed restore keeps its record and stops nothing.
-  nd_install_hold_controller
+  # then, only once that is back, Mullvad's DNS setting from before nice-dns
+  # (BL-048, DEC-019). A failed restore keeps its record and stops nothing;
+  # the exit trap releases the controller.
+  _nd_inst_uninstall_hold
   _nd_inst_dns_helper restore || dns_ok=0
-  _nd_inst_linux_mullvad_uninstall || dns_ok=0
+  if [ "$dns_ok" = 1 ]; then _nd_inst_linux_mullvad_uninstall || dns_ok=0; fi
   if [ "$dns_ok" = 0 ]; then
-    _nd_inst_release_controller || true
-    nd_root_runner_stop
     _nd_inst_uninstall_kept
     return 1
   fi
+  _nd_inst_uninstall_go
   nd_install_linux_stop_stack
   systemctl --user disable --now nice-dns-fetch-bridges.service 2>/dev/null || true
   rm -f "$HOME/.config/systemd/user/nice-dns-fetch-bridges.service" "$HOME/.local/bin/nice-dns-fetch-bridges"
@@ -2646,10 +2646,69 @@ _nd_inst_uninstall_state() {
 }
 
 # _nd_inst_uninstall_kept: an uninstall whose DNS restore failed, before it
-# stopped anything (BL-043 item 6).
+# stopped anything (BL-043 item 6). The restore may have changed part of the
+# host's DNS before it failed; its own message says which.
 _nd_inst_uninstall_kept() {
-  _nd_inst_err "host DNS was NOT given back (see the helper's message above), so nothing was stopped or removed: nice-dns keeps running and answering, with its Tor state, root anchor, Pi-hole lists and admin password, and Unbound's route."
-  _nd_inst_err "Fix the cause and run 'nice-dns uninstall' again: the record of the state before nice-dns is kept."
+  _nd_inst_err "host DNS was NOT given back in full (the message above says what the restore did and did not change), so the stack was not stopped or removed: nice-dns keeps running and answering, with its Tor state, root anchor, Pi-hole lists and admin password, and Unbound's route."
+  _nd_inst_err "Fix the cause and run 'nice-dns uninstall' again."
+}
+
+# _nd_inst_uninstall_hold: before an uninstall gives host DNS back, the
+# controller's schedules are held and, as `nice-dns restart` does
+# (restart_take_lock), its state lock is taken: stopping a schedule does not
+# end a pass already running, and a macOS rebuild would pin again. Up to
+# ND_INST_LOCK_TRIES (125) tries, 5 s apart (the lock's lease is 600 s); a
+# state directory that cannot be locked has no controller to wait for. From
+# here the exit trap releases both on any exit, a signal included, until
+# _nd_inst_uninstall_go.
+_nd_inst_uninstall_hold() {
+  local i=0 rc max="${ND_INST_LOCK_TRIES:-125}"
+  ND_INST_HELD="" ND_INST_UNINSTALL_RELEASE=1 ND_INST_UNINSTALL_LOCK=""
+  trap '_nd_inst_uninstall_exit' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM HUP
+  nd_install_hold_controller
+  ND_PLATFORM="$ND_INST_PLATFORM"; export ND_PLATFORM
+  # shellcheck source=lib/recovery.sh
+  . "$ND_INST_SRC/lib/recovery.sh" || return 1
+  while :; do
+    # || keeps errexit (the entrypoints' set -e) from ending here on 2 or 3.
+    rc=0; ND_INST_UNINSTALL_LOCK="$(nd_state_lock 2>/dev/null)" || rc=$?
+    case "$rc" in
+      0) return 0 ;;
+      3) ;;
+      *) ND_INST_UNINSTALL_LOCK=""; return 0 ;;
+    esac
+    ND_INST_UNINSTALL_LOCK=""
+    i=$((i + 1))
+    if [ "$i" -ge "$max" ]; then
+      _nd_inst_err "a controller pass still holds its state lock; nothing was changed. Run 'nice-dns uninstall' again."
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+# _nd_inst_uninstall_go: host DNS is back; from here the uninstall removes
+# the controller and the stack, so nothing is released again.
+_nd_inst_uninstall_go() {
+  [ -z "${ND_INST_UNINSTALL_LOCK:-}" ] || nd_state_unlock "$ND_INST_UNINSTALL_LOCK" >/dev/null 2>&1 || true
+  ND_INST_UNINSTALL_LOCK="" ND_INST_UNINSTALL_RELEASE=0
+}
+
+# _nd_inst_uninstall_exit: the uninstall's EXIT trap (it replaces the
+# entrypoint's, whose cleanup it repeats).
+_nd_inst_uninstall_exit() {
+  local rc=$?
+  trap - EXIT
+  trap '' INT TERM HUP
+  set +e
+  [ -z "${ND_INST_UNINSTALL_LOCK:-}" ] || nd_state_unlock "$ND_INST_UNINSTALL_LOCK" >/dev/null 2>&1
+  [ "${ND_INST_UNINSTALL_RELEASE:-0}" = 1 ] && _nd_inst_release_controller
+  nd_root_runner_stop
+  [ -z "${ND_INST_CLEANUP:-}" ] || rm -rf "${ND_INST_CLEANUP:?}"
+  [ -z "${ND_INST_WORK:-}" ] || rm -rf "${ND_INST_WORK:?}"
+  exit "$rc"
 }
 
 # _nd_inst_uninstall_verdict <dns_ok>: fails the uninstall when host DNS was
@@ -3096,14 +3155,15 @@ nd_install_macos_uninstall() {
   ND_INST_TREE="$ND_INST_SRC"
   # Host DNS goes back first, while the stack still answers (BL-043 item 6),
   # with the controller held: a rebuild it started would pin again. A failed
-  # restore keeps its record and stops nothing.
-  nd_install_hold_controller
+  # restore keeps its record and stops nothing; the exit trap releases the
+  # controller.
+  _nd_inst_uninstall_hold
   _nd_inst_dns_helper restore || dns_ok=0
   if [ "$dns_ok" = 0 ]; then
-    _nd_inst_release_controller || true
     _nd_inst_uninstall_kept
     return 1
   fi
+  _nd_inst_uninstall_go
   nd_install_macos_teardown uninstall
   ep="$(_nd_inst_controller_entry)"
   if [ -n "$ep" ] && [ -f "$ep" ]; then bash "$ep" uninstall || true; fi

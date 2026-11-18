@@ -485,7 +485,8 @@ seed_route() {
 # controller's: it is checked and kept (result kept). An include without a
 # readable desired.tsv (a seed cut off between its two writes, BL-020) is
 # not: its route marker, parsed as data (DEC-001), is recorded (result
-# recorded); with no usable marker the include is replaced by the seed.
+# recorded, when its route, generation and forwarder are the route table's);
+# with no usable marker the include is replaced by the seed.
 # Otherwise ND_ROUTE_SEED is seeded at generation 1: an identity-bound exit,
 # usable while the onion is cold (ARCH-04; the controller promotes the onion
 # once it is sustained), never `compat` (DEC-005). The detail of both
@@ -505,7 +506,9 @@ seed_default_route() {
       _ND_DES_ROUTE="" _ND_DES_GEN=""
       info="$(_nd_route_file_info "$dir/forward-route.conf")" || info=""
       r="$(printf '%s\n' "$info" | cut -f1)" g="$(printf '%s\n' "$info" | cut -f2)"
-      if [ -n "$info" ] && _nd_route_gen_ok "$g" && _nd_route_resolve "$r" >/dev/null 2>&1; then
+      # The route, its generation and its forwarder must all be the table's.
+      if [ -n "$info" ] && _nd_route_gen_ok "$g" && _nd_route_resolve "$r" >/dev/null 2>&1 \
+         && [ "$(printf '%s\n' "$info" | cut -f3)" = "$_ND_FWD" ]; then
         _nd_route_write_desired "$dir" "$r" "$g" || { _nd_route_out refused - - - "cannot write $dir/desired.tsv"; return 2; }
         _ND_DES_ROUTE="$r" _ND_DES_GEN="$g"
         _nd_route_out recorded "$r" "$g" "$(printf '%s\n' "$info" | cut -f3)" "the route record was incomplete: recorded route $r generation $g from $dir/forward-route.conf"
