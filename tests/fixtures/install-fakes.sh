@@ -457,7 +457,17 @@ case "$me" in
   sleep)
     # A command deadline (nd_bounded's watchdog) must really wait, or it kills
     # the command it guards at once. The installer's own polls are 5 s or less.
-    case "${1:-0}" in *[!0-9]*) ;; *) [ "$1" -lt 15 ] || exec /bin/sleep "$1" ;; esac
+    # A new generation id that is taken waits 1 s for the next second's id
+    # (nd_install_begin): returning at once would try the same id three
+    # times, so two installs in one second failed (`generation … already
+    # exists`, 2026-11-18). That wait is real; it costs about 2 s a group.
+    # A retry's 20 s wait returns at once in a world with $FAKE/instant_retry.
+    case "${1:-0}" in
+      1) /bin/sleep 1 ;;
+      20) [ -f "$FAKE/instant_retry" ] || exec /bin/sleep 20 ;;
+      *[!0-9]*) ;;
+      *) [ "$1" -lt 15 ] || exec /bin/sleep "$1" ;;
+    esac
     if [ -s "$FAKE/mullvad_pending" ]; then
       n=$(($(cat "$FAKE/mullvad_pending") - 1))
       if [ "$n" -le 0 ]; then rm -f "$FAKE/mullvad_pending" "$FAKE_ROOT/etc/resolv.conf"; printf 'nameserver 127.0.0.1\n' >"$FAKE_ROOT/etc/resolv.conf"
