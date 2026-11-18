@@ -539,6 +539,33 @@ t_restart_waits_for_a_running_pass_and_gives_up_cleanly() {
   assert_eq "" "$(readlink "$d/lock" 2>/dev/null)" "the lock is given back"
 }
 
+# BL-059: a manual restart tells the controller, under the lock it holds, so
+# the next pass counts its cooldown from it: last_action, its time and the
+# cooldown's start in the state, one journal row. A failed restart records
+# nothing.
+t_restart_records_itself_for_the_controller_BL_059() {
+  local u d at
+  for u in $(cl_platforms); do
+    cl_restart_world "$u"
+    d="$CASE_DIR/state-059-$u"; rm -rf "$d"; mkdir -p "$d"; chmod 700 "$d"
+    ND_STATE_DIR="$d" cl_run "$CL_TREE/nice-dns" restart
+    assert_rc 0 "$CL_RC" "BL-059 $u: restart: $CL_ERR"
+    assert_eq restart-component "$(awk -F '\t' '$1 == "last_action" { print $2 }' "$d/state.tsv" 2>/dev/null)" "BL-059 $u: the state holds the action"
+    at="$(awk -F '\t' '$1 == "last_action_at" { print $2 }' "$d/state.tsv" 2>/dev/null)"
+    assert_match '^[0-9]+$' "$at" "BL-059 $u: and its time"
+    assert_eq "$at" "$(awk -F '\t' '$1 == "recovery_at" { print $2 }' "$d/state.tsv" 2>/dev/null)" "BL-059 $u: the cooldown starts at it"
+    assert_eq 1 "$(awk -F '\t' 'NR > 1 && $1 ~ /^[0-9]+$/' "$d/recovery.tsv" 2>/dev/null | wc -l | tr -d ' ')" "BL-059 $u: one journal row"
+    assert_match "^[0-9]+	[^	]*	stack	manual	" "$(cat "$d/recovery.tsv" 2>/dev/null)" "BL-059 $u: the row names the stack and a manual restart"
+    assert_eq "" "$(readlink "$d/lock" 2>/dev/null)" "BL-059 $u: the lock is given back"
+  done
+  cl_restart_world Linux
+  d="$CASE_DIR/state-059-failed"; mkdir -p "$d"; chmod 700 "$d"
+  echo 5 >"$CL_FAKE/restart_rc"
+  ND_STATE_DIR="$d" cl_run "$CL_TREE/nice-dns" restart
+  assert_rc 1 "$CL_RC" "BL-059 a failed restart fails"
+  assert_no_path "$d/state.tsv" "BL-059 a failed restart records nothing"
+}
+
 # Live 2026-10-31: 120 tries of 5 s took 935 s, each with its dig on top, while
 # the error said 600 s and `restart` held the controller throughout.
 t_the_readiness_wait_keeps_to_its_stated_limit() {
@@ -1382,6 +1409,25 @@ $(cat "$CL_LOG")"
       assert_match '^dig ' "$(cat "$CL_LOG")" "$u $m: DNS is checked after the restart"
       assert_eq "Bridges are $m; the proxy restarted and DNS is answering." "$(printf '%s\n' "$CL_OUT" | tail -n 1)" "$u $m: the last line"
     done
+  done
+}
+
+# BL-059 (class sweep): `nice-dns bridges on|off` restarts the proxy under the
+# same lock as `restart`, so it tells the controller too: the cooldown counts
+# from the proxy restart.
+t_bridges_a_mode_change_records_its_restart_BL_059() {
+  local u at
+  for u in $(cl_platforms); do
+    st_world "$u"; bt_restart_fakes
+    # A whole state (the status fixture's is a partial one the writer refuses).
+    printf 'schema\tnice-dns-controller-state/1\ngeneration\t42\nboot_id\tboot-a\nupdated\t%s\nstarted\t%s\nroute\tcloudflare-onion\noutage_since\t-\noutage_restarts\t0\nlast_action\tescalate\nlast_action_at\t%s\nrecovery_at\t-\n' \
+      "$ST_NOW" "$((ST_NOW - 7200))" "$((ST_NOW - 60))" >"$ST_SD/state.tsv"
+    cl_run "$CL_TREE/nice-dns" bridges off
+    assert_rc 0 "$CL_RC" "BL-059 $u bridges off: $CL_ERR"
+    assert_eq 43 "$(awk -F '\t' '$1 == "generation" { print $2 }' "$ST_SD/state.tsv" 2>/dev/null)" "BL-059 $u bridges: one commit"
+    assert_eq restart-component "$(awk -F '\t' '$1 == "last_action" { print $2 }' "$ST_SD/state.tsv" 2>/dev/null)" "BL-059 $u bridges: the state holds the restart"
+    at="$(awk -F '\t' '$1 == "recovery_at" { print $2 }' "$ST_SD/state.tsv" 2>/dev/null)"
+    assert_match '^[0-9]+$' "$at" "BL-059 $u bridges: the cooldown starts at it"
   done
 }
 

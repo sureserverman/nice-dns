@@ -367,6 +367,23 @@ restart_load_libs() {
   ND_INST_TREE="$ND_CLI_ROOT"
 }
 
+# restart_record_state <what>: under the lock this command holds, tell the
+# controller (the one restart owner, DEC-022) that <what> was restarted, so
+# its next pass counts the cooldown from now and does not restart it again
+# (BL-059), through the controller's own state writer. A record that fails is
+# reported; the restart itself stands.
+restart_record_state() {
+  if ! nd_state_record_action "$ND_CLI_LOCK" restart-component "$(date +%s)" >/dev/null 2>"$ND_CLI_TMP/record.err"; then
+    err "the controller was not told of this restart, so its next pass may restart the $1 again: $(head -n 1 "$ND_CLI_TMP/record.err" 2>/dev/null)"
+  fi
+}
+
+# restart_record: the stack restart's record, and its one journal row.
+restart_record() {
+  restart_record_state stack
+  nd_recovery_journal "nd-cli-$(date +%s)-$$" stack manual "nice-dns restart restarted the stack" || true
+}
+
 cmd_restart() {
   [ $# -eq 0 ] || bad_usage "unknown option '$1' for restart"
   local rc=0
@@ -398,6 +415,7 @@ cmd_restart() {
     err 'Check `nice-dns-health status`.'
     return 1
   fi
+  [ -z "$ND_CLI_LOCK" ] || restart_record
   # The schedules stay held until exit, so the lock has done its work; a long
   # readiness wait must not outlast its 600 s lease.
   nd_state_unlock "$ND_CLI_LOCK" >/dev/null 2>&1
@@ -727,6 +745,7 @@ cmd_bridges() {
     err 'Run `nice-dns restart` to apply it now, or check `nice-dns-health status`.'
     return 1
   fi
+  [ -z "$ND_CLI_LOCK" ] || restart_record_state proxy
   nd_state_unlock "$ND_CLI_LOCK" >/dev/null 2>&1
   ND_CLI_LOCK=""
   nd_platform_wait_restarted "${ND_CLI_REBUILD_S:-300}" || rc=$?

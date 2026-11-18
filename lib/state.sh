@@ -15,6 +15,13 @@
 #                                         state or dir; 4 conflict: the stored
 #                                         generation is not <expected>; 5 the
 #                                         token does not hold the lock)
+#   nd_state_record_action <token> <action> <epoch>
+#                                         an action carried out outside a pass
+#                                         (`nice-dns restart`): last_action,
+#                                         last_action_at and recovery_at (the
+#                                         cooldown) set, committed; print the
+#                                         new generation (nd_state_commit's
+#                                         status; 2 a bad argument)
 #   nd_state_stage <name> <cmd...>        run cmd WITHOUT the lock, then publish
 #                                         its stdout as staged/<name> under a
 #                                         short lock (cmd's status; 3 busy)
@@ -284,6 +291,26 @@ nd_state_commit() {
     awk -F '\t' 'NR > 1 && $1 != "generation"' "$f"; } | (umask 077 && cat >"$t") || { rm -f "$t"; return 2; }
   mv -f "$t" "$d/state.tsv" || { rm -f "$t"; return 2; }
   printf '%s\n' $((exp + 1))
+}
+
+# nd_state_record_action <token> <action> <epoch>: see the header. The rest
+# of the state is kept as loaded, so the outage clock and the restart count
+# stay the controller's (BL-059, DEC-022).
+nd_state_record_action() {
+  local tok="${1:-}" act="${2:-}" at="${3:-}" t gen rc
+  case "$act" in restart-component|repair-runtime) ;; *) printf 'bad action %s\n' "$act" >&2; return 2 ;; esac
+  case "$at" in ''|*[!0-9]*) printf 'bad epoch %s\n' "$at" >&2; return 2 ;; esac
+  nd_state_lock_held "$tok" || { printf 'record refused: token %s does not hold the state lock\n' "$tok" >&2; return 5; }
+  t="$(mktemp "${TMPDIR:-/tmp}/nd-state-record.XXXXXX")" || return 2
+  if ! nd_state_load >"$t"; then rm -f "$t"; return 2; fi
+  gen="$(awk -F '\t' '$1 == "generation" { print $2; exit }' "$t")"
+  if ! awk -F '\t' -v a="$act" -v at="$at" 'BEGIN { OFS = "\t" }
+      $1 == "last_action" { $2 = a } $1 == "last_action_at" || $1 == "recovery_at" { $2 = at } { print }' "$t" >"$t.next"; then
+    rm -f "$t" "$t.next"; return 2
+  fi
+  nd_state_commit "$tok" "$gen" "$t.next"; rc=$?
+  rm -f "$t" "$t.next"
+  return "$rc"
 }
 
 nd_state_stage() {
