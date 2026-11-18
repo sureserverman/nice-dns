@@ -169,10 +169,26 @@ fetch_branch() {
   mkdir -p "$base" && chmod go-w "$base" || return 1
   ND_CLI_TMP="$(mktemp -d "$base/fetch.XXXXXXXX")" || return 1
   trap cleanup_tmp EXIT
-  if ! git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 clone -q --depth 1 -b "$1" "$ND_CLI_REPO" "$ND_CLI_TMP/nice-dns"; then
-    err "could not fetch branch '$1' (is DNS down?). The running stack is untouched."
+  # A failed name lookup is tried again, 3 tries in all, 20 s apart (BL-044).
+  # A branch the remote does not have is named as that, not as a DNS fault.
+  local tries=1 rc=0
+  until git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 clone -q --depth 1 -b "$1" "$ND_CLI_REPO" "$ND_CLI_TMP/nice-dns" 2>"$ND_CLI_TMP/clone.err"; do
+    cat "$ND_CLI_TMP/clone.err" >&2
+    if grep -Eq 'Could not resolve host|Temporary failure in name resolution' "$ND_CLI_TMP/clone.err" && [ "$tries" -lt 3 ]; then
+      tries=$((tries + 1))
+      rm -rf "${ND_CLI_TMP:?}/nice-dns"
+      echo "  the name lookup failed; trying again in 20 s ($tries of 3)" >&2
+      sleep 20
+      continue
+    fi
+    git ls-remote --exit-code --heads "$ND_CLI_REPO" "$1" >/dev/null 2>&1 || rc=$?
+    if [ "$rc" = 2 ]; then
+      err "branch '$1' was not found at $ND_CLI_REPO. The running stack is untouched."
+    else
+      err "could not fetch branch '$1' (is DNS down?). The running stack is untouched."
+    fi
     return 1
-  fi
+  done
   chmod -R go-w "$ND_CLI_TMP" || return 1
   ND_CLI_SRC="$ND_CLI_TMP/nice-dns"
 }

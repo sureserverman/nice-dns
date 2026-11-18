@@ -47,10 +47,18 @@ case "$s" in
     [ -f "\$FAKE/clone_fails" ] && exit 128
     case "\$*" in
       *ls-remote*)
+        # A branch the remote does not have (BL-044): --exit-code exits 2.
+        [ -f "\$FAKE/no_such_branch" ] && exit 2
         [ -f "\$FAKE/ls_remote_fails" ] && { echo "fatal: unable to access the remote" >&2; exit 128; }
         [ -f "\$FAKE/ls_remote" ] && cat "\$FAKE/ls_remote" ;;
       *rev-parse*) [ -f "\$FAKE/git_branch" ] && cat "\$FAKE/git_branch" ;;
       *clone*)
+        [ -f "\$FAKE/no_such_branch" ] && { echo "fatal: Remote branch not found in upstream origin" >&2; exit 128; }
+        if [ -f "\$FAKE/clone_lookup_once" ]; then
+          rm -f "\$FAKE/clone_lookup_once"
+          echo "fatal: unable to access 'https://github.com/sureserverman/nice-dns.git/': Could not resolve host: github.com" >&2
+          exit 128
+        fi
         for last; do :; done
         mkdir -p "\$last"
         cp "\$FAKE"/../tree/install-*.sh "\$last/"
@@ -1465,4 +1473,24 @@ t_bridges_an_install_older_than_the_switch_is_refused() {
     assert_rc 1 "$CL_RC" "$u: no launcher at all refuses too"
     unset ND_INST_ROOT
   done
+}
+
+# BL-044: a branch the remote does not have is named as such; it is not a
+# DNS problem. A failed lookup is tried again, and then the clone works.
+t_missing_branch_is_named_not_blamed_on_dns_BL_044() {
+  cl_world Linux; cl_installed; cl_record haproxy standard main
+  : >"$CL_FAKE/no_such_branch"
+  cl_run "$CL_CMD" reinstall --branch nosuch
+  assert_rc 1 "$CL_RC" "BL-044 a missing branch fails"
+  assert_match "branch 'nosuch' was not found" "$CL_ERR" "BL-044 it names the missing branch"
+  assert_not_match 'DNS' "$CL_ERR" "BL-044 and does not ask about DNS"
+  assert_match 'running stack is untouched' "$CL_ERR" "BL-044 it says the stack is untouched"
+  assert_eq "" "$(cl_calls '^installer')" "BL-044 no installer ran"
+
+  cl_world Linux; cl_installed; cl_record haproxy standard main
+  : >"$CL_FAKE/clone_lookup_once"
+  cl_run "$CL_CMD" reinstall --branch dev
+  assert_rc 0 "$CL_RC" "BL-044 a failed lookup then a clone: $CL_ERR"
+  assert_eq 2 "$(cl_calls '^git .*clone' | grep -c .)" "BL-044 the clone is tried again"
+  assert_eq "installer[clone] install-deb.sh haproxy dev" "$(cl_calls '^installer')" "BL-044 and the branch installs"
 }

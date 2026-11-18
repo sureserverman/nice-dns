@@ -1190,3 +1190,55 @@ t_source_a_set_aside_copy_that_cannot_go_back_is_kept() {
   assert_file "$IP_HOME/.local/share/nice-dns/.source.cut.old/lib/install.sh" "the set-aside source is kept: $IP_OUT"
   assert_match 'set aside at .*\.source\.cut\.old could not be put back' "$IP_OUT" "and the install says where it is"
 }
+
+# ─────────── a failed name lookup in a pull or the clone (BL-044) ───────────
+
+# BL-044: an upgrade over a legacy stack pulls through the stack it replaces,
+# whose first lookup of a new name often fails; podman pull does not retry a
+# failed lookup. Each pull, and the clone, is tried again on one, 3 tries in
+# all, 20 s apart; any other failure is not retried. Nothing running is
+# touched (DEC-018: still preparation).
+ip_pulls() { grep -cE '^(podman pull|container image pull) ' "$FAKE_LOG"; }
+ip_pulled_refs() { grep -E '^(podman pull|container image pull) ' "$FAKE_LOG" | awk '{ print $NF }' | LC_ALL=C sort -u | grep -c .; }
+
+t_pulls_retry_a_failed_lookup_BL_044() {
+  local ep n
+  for ep in install-deb install-mac; do
+    ip_env "$ep"
+    : >"$FAKE/instant_retry"; : >"$FAKE/pull_lookup_once"
+    ip_install "$ep" haproxy
+    assert_rc 0 "$IP_RC" "BL-044 $ep: each name's first lookup fails: $IP_OUT"
+    n="$(ip_pulled_refs)"
+    assert_ne 0 "$n" "BL-044 $ep: images were pulled"
+    assert_eq "$((2 * n))" "$(ip_pulls)" "BL-044 $ep: two calls per image"
+    assert_match 'the name lookup failed; trying again in 20 s \(2 of 3\)' "$IP_OUT" "BL-044 $ep: says it tries again"
+
+    ip_env "$ep"
+    : >"$FAKE/instant_retry"; : >"$FAKE/pull_lookup_always"
+    ip_install "$ep" haproxy
+    assert_nonzero "$IP_RC" "BL-044 $ep: every lookup fails: the install stops: $IP_OUT"
+    assert_eq 3 "$(ip_pulls)" "BL-044 $ep: every lookup fails: three calls, then it stops"
+    assert_match 'could not pull docker\.io/[^ ]+: its registry name did not resolve in 3 tries' "$IP_OUT" "BL-044 $ep: the message names the registry"
+    ip_assert_untouched "BL-044 $ep every lookup fails"
+    assert_no_path "$IP_STATE/current" "BL-044 $ep: nothing is marked current"
+
+    ip_env "$ep"
+    : >"$FAKE/instant_retry"; : >"$FAKE/pull_manifest_unknown"
+    ip_install "$ep" haproxy
+    assert_nonzero "$IP_RC" "BL-044 $ep: manifest unknown: the install stops: $IP_OUT"
+    assert_eq 1 "$(ip_pulls)" "BL-044 $ep: manifest unknown is not retried"
+  done
+}
+
+t_clone_retries_a_failed_lookup_BL_044() {
+  local ep
+  for ep in install-deb install-mac; do
+    ip_env "$ep"
+    : >"$FAKE/instant_retry"; : >"$FAKE/clone_lookup_once"
+    mkdir -p "$IP_W/solo" && cp "$IP_TREE/$ep.sh" "$IP_W/solo/"
+    ip_run "$IP_W/solo/$ep.sh" haproxy dev
+    assert_rc 0 "$IP_RC" "BL-044 $ep: the clone's first lookup fails: $IP_OUT"
+    assert_eq 2 "$(grep -c '^git clone' "$FAKE_LOG")" "BL-044 $ep: the clone is tried again"
+    assert_eq clone "$(ip_row "$(ip_manifest "$(ip_gen_current)")" source_origin)" "BL-044 $ep: and installs from it"
+  done
+}

@@ -73,7 +73,18 @@ else
   fi
   brew list --formula git >/dev/null 2>&1 || brew install --formula git
   ND_INST_CLEANUP="$(mktemp -d "$HOME/.nice-dns-install.XXXXXXXX")"
-  git clone -q -b "$BRANCH" https://github.com/sureserverman/nice-dns.git "$ND_INST_CLEANUP/nice-dns"
+  # A failed name lookup is tried again, 3 tries in all, 20 s apart (BL-044;
+  # lib/install.sh _nd_inst_retry_lookup, which is not here yet).
+  nd_clone_tries=1
+  until git clone -q -b "$BRANCH" https://github.com/sureserverman/nice-dns.git "$ND_INST_CLEANUP/nice-dns" 2>"$ND_INST_CLEANUP/clone.err"; do
+    cat "$ND_INST_CLEANUP/clone.err" >&2
+    grep -Eq 'Could not resolve host|Temporary failure in name resolution' "$ND_INST_CLEANUP/clone.err" && [ "$nd_clone_tries" -lt 3 ] || break
+    nd_clone_tries=$((nd_clone_tries + 1))
+    rm -rf "${ND_INST_CLEANUP:?}/nice-dns"
+    echo "  the name lookup failed; trying again in 20 s ($nd_clone_tries of 3)" >&2
+    sleep 20
+  done
+  [ -f "$ND_INST_CLEANUP/nice-dns/lib/install.sh" ] || exit 1
   ND_INST_SRC="$ND_INST_CLEANUP/nice-dns" ND_INST_ORIGIN=clone
 fi
 # shellcheck source=lib/install.sh

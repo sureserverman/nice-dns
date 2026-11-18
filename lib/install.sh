@@ -70,6 +70,38 @@ ND_INST_NL='
 
 _nd_inst_err() { printf 'nice-dns install: %s\n' "$*" >&2; }
 
+# ND_INST_LOOKUP_ERE: what a failed name lookup prints: podman (`lookup
+# <name>: no such host`, BL-044), curl and git (`Could not resolve host`),
+# glibc (`Temporary failure in name resolution`) and Apple's container
+# (`failed to resolve either repository hostname`, 2026-11-18).
+ND_INST_LOOKUP_ERE='no such host|Could not resolve host|Temporary failure in name resolution|failed to resolve'
+
+# _nd_inst_retry_lookup <command...>: runs a pull; when it fails and what it
+# printed names a failed name lookup, runs it again, 3 tries in all, 20 s
+# apart. Any other failure returns at once with the command's status. An
+# upgrade over a legacy stack pulls through the stack it replaces, whose
+# first lookup of a new name often fails, and podman does not retry one
+# (BL-044). Still preparation: nothing running is touched (DEC-018). The
+# command's stderr is shown as it comes and kept to be read.
+_nd_inst_retry_lookup() {
+  local tries=1 rc err
+  err="$(mktemp "${TMPDIR:-/tmp}/nice-dns-pull.XXXXXXXX")" || return 1
+  while :; do
+    { "$@" 2>&1 1>&3 3>&- | tee "$err" >&2; rc=${PIPESTATUS[0]}; } 3>&1
+    [ "$rc" != 0 ] || break
+    grep -Eq "$ND_INST_LOOKUP_ERE" "$err" || break
+    if [ "$tries" -ge 3 ]; then
+      _nd_inst_err "could not pull ${*: -1}: its registry name did not resolve in 3 tries. Nothing was changed; run the install again once DNS answers."
+      break
+    fi
+    tries=$((tries + 1))
+    echo "  the name lookup failed; trying again in 20 s ($tries of 3)" >&2
+    sleep 20
+  done
+  rm -f "$err"
+  return "$rc"
+}
+
 # ─────────────────────────── generation ids and manifests (pure) ─────────────
 
 # nd_install_generation_id <commit|unknown> [YYYYMMDDTHHMMSSZ]: prints the id.
@@ -2081,10 +2113,10 @@ nd_install_linux_prepare_images() {
   if [ "$ND_INST_PIHOLE" = hardened ]; then
     _nd_inst_linux_hardened_base || return 1
   else
-    podman pull "$ND_INST_PINNED_PIHOLE" || return 1
+    _nd_inst_retry_lookup podman pull "$ND_INST_PINNED_PIHOLE" || return 1
     _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled base "$ND_INST_PINNED_PIHOLE" || return 1
   fi
-  podman pull "$ND_INST_PINNED_UNBOUND" || return 1
+  _nd_inst_retry_lookup podman pull "$ND_INST_PINNED_UNBOUND" || return 1
   _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled base "$ND_INST_PINNED_UNBOUND" || return 1
   _nd_inst_record_blocklist || return 1
   podman build "${ND_INST_LINUX_BUILD_FLAGS[@]}" --build-arg "BASE_IMAGE=$ND_INST_PINNED_UNBOUND" \
@@ -2104,7 +2136,7 @@ nd_install_linux_prepare_images() {
   # The proxy is pulled by its locked digest, not built. Its generation tag
   # keeps the image this generation ran for rollback; :latest (the name the
   # quadlet runs) moves to it only at activation.
-  podman pull "$ND_INST_PINNED_PROXY" || return 1
+  _nd_inst_retry_lookup podman pull "$ND_INST_PINNED_PROXY" || return 1
   podman tag "$ND_INST_PINNED_PROXY" "localhost/tor-${ND_INST_VARIANT}:$gen" || return 1
   _nd_inst_record_image proxy "localhost/tor-${ND_INST_VARIANT}:$gen" || return 1
   _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled proxy "$ND_INST_PINNED_PROXY"
@@ -2117,7 +2149,7 @@ _nd_inst_linux_hardened_base() {
   local base_img="localhost/pi-hole-hardened-base:$ND_INST_GEN" dir
   echo "▸ Building the hardened base from the nice-dns tree…"
   dir="$(_nd_inst_hardened_base)" || return 1
-  podman pull "$ND_INST_PINNED_HARDENED_OS" || return 1
+  _nd_inst_retry_lookup podman pull "$ND_INST_PINNED_HARDENED_OS" || return 1
   _nd_inst_record_image hardened-os "$ND_INST_PINNED_HARDENED_OS" || return 1
   _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled base "$ND_INST_PINNED_HARDENED_OS" || return 1
   podman build "${ND_INST_LINUX_BUILD_FLAGS[@]}" --from "$ND_INST_PINNED_HARDENED_OS" -t "$base_img" "$dir" || return 1
@@ -2713,7 +2745,7 @@ _nd_inst_containerfile_base() {
 # preparation (and given a plain local name for the builder).
 _nd_inst_macos_pull_base() {
   [ -n "$1" ] || { _nd_inst_err "cannot read a build base"; return 1; }
-  "$CONTAINER_BIN" image pull "$1" || return 1
+  _nd_inst_retry_lookup "$CONTAINER_BIN" image pull "$1" || return 1
   if [ -n "${2:-}" ]; then
     "$CONTAINER_BIN" image tag "$1" "$2" || return 1
     _nd_inst_record_image base "$2" || return 1
@@ -2733,7 +2765,7 @@ nd_install_macos_prepare_images() {
   # second cold DNS latency with nothing wrong in this repo. Pull explicitly, by
   # the reviewed digest in release/images.lock (Task 1.3); :latest moves to it
   # only at activation.
-  "$CONTAINER_BIN" image pull "$ND_INST_PINNED_PROXY" || return 1
+  _nd_inst_retry_lookup "$CONTAINER_BIN" image pull "$ND_INST_PINNED_PROXY" || return 1
   "$CONTAINER_BIN" image tag "$ND_INST_PINNED_PROXY" "tor-${ND_INST_VARIANT}:$gen" || return 1
   _nd_inst_record_image proxy "tor-${ND_INST_VARIANT}:$gen" || return 1
   _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled proxy "$ND_INST_PINNED_PROXY" || return 1

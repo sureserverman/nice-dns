@@ -84,6 +84,28 @@ if [ -s "$FAKE/sigint_group" ] && printf '%s\n' "$l" | grep -Eq -f "$FAKE/sigint
   echo "$me: injected group interrupt" >&2; kill -INT "$PPID"; trap - INT; kill -INT $$; exit 1
 fi
 store="$FAKE/images"; touch "$store"
+# pull_trouble <ref> <podman|container>: a pull that fails as $FAKE says
+# (BL-044). pull_lookup_once fails each ref's first pull on its registry's
+# name, pull_lookup_always every pull, pull_manifest_unknown fails with the
+# registry's own answer. Prints that runtime's message and returns 1.
+pull_trouble() {
+  reg="${1%%/*}"; [ "$reg" = docker.io ] && reg=registry-1.docker.io
+  lookup=0
+  if [ -f "$FAKE/pull_lookup_always" ]; then lookup=1
+  elif [ -f "$FAKE/pull_lookup_once" ] && ! grep -qxF -- "$1" "$FAKE/pull_seen" 2>/dev/null; then
+    printf '%s\n' "$1" >>"$FAKE/pull_seen"; lookup=1
+  fi
+  if [ "$lookup" = 1 ]; then
+    if [ "$2" = podman ]; then
+      echo "Error: initializing source docker://$1: pinging container registry $reg: Get \"https://$reg/v2/\": dial tcp: lookup $reg: no such host" >&2
+    else
+      echo "Error: failed to resolve either repository hostname $reg" >&2
+    fi
+    return 1
+  fi
+  if [ -f "$FAKE/pull_manifest_unknown" ]; then echo "Error: reading manifest $1 in $reg: manifest unknown" >&2; return 1; fi
+  return 0
+}
 # unbound_start <how>: the route include Unbound reads when it starts
 # ($FAKE/unbound-starts; Sub-plan 5 Task 1.2): its marker, or route-absent.
 unbound_start() {
@@ -186,7 +208,7 @@ case "$me" in
       --version) echo "podman version 5.8.1" ;;
       info) echo "1.14.0" ;;
       build) shift; do_build "$@" ;;
-      pull) img_has "$2" || img_add "$2" "$(new_id)" ;;
+      pull) pull_trouble "$2" podman || exit 125; img_has "$2" || img_add "$2" "$(new_id)" ;;
       tag) img_has "$2" || exit 125; img_add "$3" "$(img_id "$2")" ;;
       image)
         case "$2" in
@@ -219,7 +241,7 @@ case "$me" in
       build) shift; do_build "$@" ;;
       image)
         case "$2" in
-          pull) img_has "$3" || img_add "$3" "$(new_id)" ;;
+          pull) pull_trouble "$3" container || exit 1; img_has "$3" || img_add "$3" "$(new_id)" ;;
           tag) img_has "$3" || exit 1; img_add "$4" "$(img_id "$3")" ;;
           inspect) img_has "$3" || { echo "Error: image not found" >&2; exit 1; }
                    printf '[{"name":"%s","index":{"digest":"sha256:%s","mediaType":"x"}}]\n' "$3" "$(img_id "$3")" ;;
@@ -229,7 +251,14 @@ case "$me" in
     exit 0 ;;
   git)
     case "$1" in
-      clone) for a in "$@"; do d="$a"; done; mkdir -p "$d" && cp -R "$FAKE/upstream/." "$d" ;;
+      # $FAKE/clone_lookup_once: the first clone fails on the name (BL-044).
+      clone)
+        if [ -f "$FAKE/clone_lookup_once" ]; then
+          rm -f "$FAKE/clone_lookup_once"
+          echo "fatal: unable to access 'https://github.com/sureserverman/nice-dns.git/': Could not resolve host: github.com" >&2
+          exit 128
+        fi
+        for a in "$@"; do d="$a"; done; mkdir -p "$d" && cp -R "$FAKE/upstream/." "$d" ;;
       -C)
         case "$3 $4" in
           "rev-parse HEAD") [ -f "$FAKE/git_head" ] || exit 128; cat "$FAKE/git_head" ;;
@@ -271,7 +300,7 @@ case "$me" in
         fi
         [ -z "$w" ] || printf '140.82.121.4 0.412000'
         if [ -f "$FAKE/assets/${u##*/}" ]; then cp "$FAKE/assets/${u##*/}" "$o"; exit 0; fi
-        [ -f "$FAKE/asset" ] || exit 22
+        [ -f "$FAKE/asset" ] || { echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; }
         cp "$FAKE/asset" "$o" ;;
       *) exit 22 ;;
     esac
