@@ -654,6 +654,7 @@ t_root_ops_removes_its_temp_files() {
   # Every mktemp of root-ops is registered for _nd_exit on the next line.
   for os in deb mac; do
     assert_eq "" "$(awk '/="\$\(mktemp\)"/ { want = NR + 1; line = $0; next } want == NR { if ($0 !~ /_nd_tmp="\$_nd_tmp /) print FILENAME ":" NR - 1 ": " line; want = 0 }' "$NICE_DNS_ROOT/$os/root-ops")" "BL-064 $os: every mktemp is registered in _nd_tmp"
+    # shellcheck disable=SC2016  # a literal pattern
     assert_ne 0 "$(grep -c '="$(mktemp)"' "$NICE_DNS_ROOT/$os/root-ops")" "BL-064 $os: the mktemp sites are found"
   done
 }
@@ -808,6 +809,137 @@ t_helper_macos_uninstall_removes_it() {
   assert_match "nice-dns-helper, a setuid root program, was NOT removed. Run nice-dns uninstall again" "$IP_OUT" "helper not removed: says so, and how to retry"
   assert_file "$IP_STATE/current" "helper not removed: the install record is kept for the retry"
   rm -f "$FAKE/fail"
+}
+
+# BL-063: an install that fails after install-helper put its own helper and
+# root-held root-ops in place gives the earlier ones back, so the helper runs
+# the kept source's root-ops again (_nd_root_held_is_tree holds for it); an
+# install that found no helper leaves none. Both ways a failed install ends:
+# in the preparation (every pull fails, nothing rolls back) and inside the
+# interruption (the stack never answers, rolled back). Linux and macOS.
+ii_held_is_tree() {   # <os> <tree>
+  ND_INST_ROOT="$FAKE_ROOT" ND_INST_TREE="$2" bash -c '. "$1/lib/root.sh"; _nd_root_held_is_tree "$2"' _ "$NICE_DNS_ROOT" "$1"
+}
+# ii_undo_checks <label> <how>: the failure took the path it names (a
+# rollback only for `ready`), and the helper was given back after every
+# other root step: no root-ops verb runs after the undo.
+ii_undo_checks() {
+  local n
+  if [ "$2" = ready ]; then assert_match 'rolling back' "$IP_OUT" "$1: inside the interruption (rolled back)"
+  else assert_not_match 'rolling back' "$IP_OUT" "$1: in the preparation (no rollback)"; fi
+  n="$(grep -nE 'install-helper .*/previous-helper( |$)|remove-helper$' "$FAKE_LOG" | tail -n 1 | cut -d: -f1)"
+  assert_ne "" "$n" "$1: the helper was given back"
+  assert_eq "" "$(tail -n +"$((n + 1))" "$FAKE_LOG" | grep -E '(/root-ops|--tree [^ ]+) [a-z][a-z-]*( |$)')" "$1: no root step after it"
+}
+ii_bl063() {   # <linux|macos>
+  local plat="$1" os ep held kept b how n=20 install_helper_b
+  if [ "$plat" = linux ]; then os=deb ep=install-deb; ii_helper_world; held="$FAKE_ROOT/usr/libexec/nice-dns"
+  else os=mac ep=install-mac; ii_mac_helper_world; held="$FAKE_ROOT/usr/local/libexec/nice-dns"; fi
+  kept="$IP_HOME/.local/share/nice-dns/source"
+  # A first install that fails: the helper it added is gone again.
+  for how in pull ready; do
+    if [ "$how" = pull ]; then printf '^(podman pull|container image pull) \n' >"$FAKE/fail"; else : >"$FAKE/never_ready"; fi
+    : >"$FAKE_LOG"; n=$((n + 1)); ii_next_head "$n"
+    ND_INST_HELPER_STAGED="$II_ASSET" ip_install "$ep" haproxy
+    rm -f "$FAKE/fail" "$FAKE/never_ready"
+    assert_nonzero "$IP_RC" "BL-063 $plat first install, $how fails: the install fails"
+    assert_match "root-ops install-helper $II_ASSET" "$(cat "$FAKE_LOG")" "BL-063 $plat first install, $how: the helper was installed"
+    assert_no_path "$II_HELPER" "BL-063 $plat first install, $how: no helper is left: $IP_OUT"
+    assert_no_path "$held/root-ops" "BL-063 $plat first install, $how: no root-held root-ops is left"
+    assert_eq "" "$(find "$IP_HOME" -maxdepth 1 -name '.nice-dns-install.*')" "BL-063 $plat first install, $how: no build copy is left"
+    ii_undo_checks "BL-063 $plat first install, $how" "$how"
+  done
+  if [ "$plat" = linux ]; then
+    assert_match "^sudo bash $IP_TREE/deb/root-ops remove-helper$" "$(cat "$FAKE_LOG")" "BL-063 linux: remove-helper goes through sudo"
+  fi
+  # A completed install at tree A, with its helper.
+  : >"$FAKE_LOG"; n=$((n + 1)); ii_next_head "$n"
+  ND_INST_HELPER_STAGED="$II_ASSET" ip_install "$ep" haproxy
+  assert_rc 0 "$IP_RC" "BL-063 $plat: the install at tree A: $IP_OUT"
+  cp "$II_HELPER" "$IP_W/helper-a"
+  ii_held_is_tree "$os" "$kept" || fail "BL-063 $plat: after tree A the helper runs the kept source's root-ops"
+  # Tree B: another root-ops and another helper.
+  printf '# tree B\n' >>"$IP_TREE/$os/root-ops"
+  b="$IP_HOME/staged/helper-b"; ip_fake_helper "$b" "" "$os"; printf '# helper B\n' >>"$b"
+  for how in pull ready; do
+    if [ "$how" = pull ]; then printf '^(podman pull|container image pull) \n' >"$FAKE/fail"; else : >"$FAKE/never_ready"; fi
+    : >"$FAKE_LOG"; n=$((n + 1)); ii_next_head "$n"
+    ND_INST_HELPER_STAGED="$b" ip_install "$ep" haproxy
+    rm -f "$FAKE/fail" "$FAKE/never_ready"
+    assert_nonzero "$IP_RC" "BL-063 $plat tree B, $how fails: the install fails"
+    assert_match "install-helper $b" "$(cat "$FAKE_LOG")" "BL-063 $plat tree B, $how: helper B was installed"
+    cmp -s "$kept/$os/root-ops" "$held/root-ops" || fail "BL-063 $plat tree B, $how: the root-held root-ops is tree A's again: $IP_OUT"
+    cmp -s "$IP_W/helper-a" "$II_HELPER" || fail "BL-063 $plat tree B, $how: the helper is A's again"
+    ii_held_is_tree "$os" "$kept" || fail "BL-063 $plat tree B, $how: _nd_root_held_is_tree holds for the kept source"
+    if [ "$plat" = macos ]; then
+      assert_eq 4755 "$(stat -c %a "$II_HELPER")" "BL-063 macos tree B, $how: the helper is setuid again"
+      assert_eq "$(id -u)" "$(cat "$held/owner")" "BL-063 macos tree B, $how: its owner file"
+    fi
+    assert_eq "" "$(find "$IP_HOME" -maxdepth 1 -name '.nice-dns-install.*')" "BL-063 $plat tree B, $how: no build copy is left"
+    ii_undo_checks "BL-063 $plat tree B, $how" "$how"
+  done
+  # install-helper itself fails after it wrote the held copy (the binary
+  # step), and an interrupt in the preparation after it: both give A back.
+  for how in install-helper interrupt; do
+    if [ "$how" = install-helper ]; then printf '^sudo install -m 755 [^ ]*/staged/helper-b \n' >"$FAKE/fail"
+    elif [ "$plat" = linux ]; then printf '^podman build \n' >"$FAKE/sigint"
+    else printf '^brew update$\n' >"$FAKE/sigint"; fi
+    : >"$FAKE_LOG"; n=$((n + 1)); ii_next_head "$n"
+    ND_INST_HELPER_STAGED="$b" ip_install "$ep" haproxy
+    rm -f "$FAKE/fail" "$FAKE/sigint"
+    assert_nonzero "$IP_RC" "BL-063 $plat tree B, $how: the install fails"
+    if [ "$how" = interrupt ]; then assert_eq 130 "$IP_RC" "BL-063 $plat tree B, interrupt: it ended by the interrupt: $IP_OUT"; fi
+    cmp -s "$kept/$os/root-ops" "$held/root-ops" || fail "BL-063 $plat tree B, $how: the root-held root-ops is tree A's again: $IP_OUT"
+    cmp -s "$IP_W/helper-a" "$II_HELPER" || fail "BL-063 $plat tree B, $how: the helper is A's again"
+    ii_held_is_tree "$os" "$kept" || fail "BL-063 $plat tree B, $how: _nd_root_held_is_tree holds for the kept source"
+    ii_undo_checks "BL-063 $plat tree B, $how" "$how"
+  done  # After the interruption: the kept source cannot be published (the
+  # install stands, the helper goes back with the old source), or the
+  # install record cannot be written (no rollback; the exit trap gives it back).
+  for how in publish record; do
+    # _nd_inst_write_file refuses a symlinked temporary file: only the
+    # install record's write fails.
+    if [ "$how" = publish ]; then chmod 555 "$IP_HOME/.local/share/nice-dns"; else ln -s /nonexistent "$IP_STATE/current.tmp"; fi
+    : >"$FAKE_LOG"; n=$((n + 1)); ii_next_head "$n"
+    ND_INST_HELPER_STAGED="$b" ip_install "$ep" haproxy
+    chmod 755 "$IP_HOME/.local/share/nice-dns"; rm -f "$IP_STATE/current.tmp"
+    if [ "$how" = publish ]; then
+      assert_rc 0 "$IP_RC" "BL-063 $plat tree B, publish fails: the install stands: $IP_OUT"
+      assert_match 'Could not keep the source' "$IP_OUT" "BL-063 $plat tree B, publish fails: says so"
+    else
+      assert_nonzero "$IP_RC" "BL-063 $plat tree B, record fails: the install fails: $IP_OUT"
+      assert_match "refusing symlink $IP_STATE/current" "$IP_OUT" "BL-063 $plat tree B, record fails: at the install record"
+      assert_file "$IP_STATE/generations/$(cd "$IP_STATE/generations" && printf '%s\n' * | LC_ALL=C sort | tail -n 1)/activated" "BL-063 $plat tree B, record fails: it got to the finish"
+    fi
+    install_helper_b="$(grep -c "install-helper $b" "$FAKE_LOG")"
+    assert_ne 0 "$install_helper_b" "BL-063 $plat tree B, $how: helper B was installed"
+    cmp -s "$kept/$os/root-ops" "$held/root-ops" || fail "BL-063 $plat tree B, $how: the root-held root-ops is the kept source's: $IP_OUT"
+    cmp -s "$IP_W/helper-a" "$II_HELPER" || fail "BL-063 $plat tree B, $how: the helper is A's again"
+    ii_undo_checks "BL-063 $plat tree B, $how" "$how"
+  done
+}
+t_helper_failed_install_puts_the_held_root_ops_back() { ii_bl063 linux; }
+t_helper_macos_failed_install_puts_the_held_root_ops_back() { ii_bl063 macos; }
+
+# BL-063, DEC-025: the root-held copy is written only by install-helper, from
+# a tree; restore and save-previous refuse both its paths (exit 2, nothing
+# run), with or without the fixture root in front.
+t_root_ops_never_restores_the_held_copy() {
+  local w="$CASE_DIR/held" os p rc v
+  mkdir -p "$w/bin" "$w/r"
+  printf '#!/bin/sh\nprintf "sudo %%s\\n" "$*" >>"%s/log"\n' "$w" >"$w/bin/sudo"; chmod 755 "$w/bin/sudo"
+  for os in deb mac; do
+    if [ "$os" = deb ]; then p=/usr/libexec/nice-dns/root-ops; else p=/usr/local/libexec/nice-dns/root-ops; fi
+    for v in "$p" "$w/r$p"; do
+      : >"$w/log"
+      rc=0; printf 'x\n' | ND_ROOT_TEST_SUDO="$w/bin/sudo" ND_INST_ROOT="$w/r" TMPDIR="$w" bash "$NICE_DNS_ROOT/$os/root-ops" restore "$v" - >/dev/null 2>&1 || rc=$?
+      assert_eq 2 "$rc" "BL-063 $os: restore $v is refused"
+      rc=0; ND_ROOT_TEST_SUDO="$w/bin/sudo" ND_INST_ROOT="$w/r" bash "$NICE_DNS_ROOT/$os/root-ops" save-previous "$v" >/dev/null 2>&1 || rc=$?
+      assert_eq 2 "$rc" "BL-063 $os: save-previous $v is refused"
+      assert_eq "" "$(cat "$w/log")" "BL-063 $os $v: nothing ran"
+      assert_no_path "$w/r$p" "BL-063 $os $v: nothing was written"
+    done
+  done
 }
 
 t_helper_linux_no_pkexec_installs_no_helper() {

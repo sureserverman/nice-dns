@@ -563,10 +563,18 @@ _nd_inst_state_remove() {
 # prunes generations older than the previous one. Only after a fully
 # successful install.
 nd_install_finish() {
-  local d="$ND_INST_STATE/generations/$ND_INST_GEN"
+  local d="$ND_INST_STATE/generations/$ND_INST_GEN" os
   _nd_inst_write_file "$d/activated" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
   _nd_inst_write_file "$ND_INST_STATE/current" "$ND_INST_GEN" || return 1
   _nd_inst_publish_command
+  # The helper runs the kept source's root-ops (BL-063): when the source
+  # could not be published, the helper from before goes back with it.
+  if [ "$ND_INST_PLATFORM" = linux ]; then os=deb; else os=mac; fi
+  if [ "$ND_INST_HELPER_REPLACED" = 1 ] && ! ND_INST_TREE="$(_nd_inst_source_dir)" _nd_root_held_is_tree "$os"; then
+    _nd_inst_helper_undo || true
+  fi
+  ND_INST_HELPER_REPLACED=0
+  rm -f "$d/previous-helper"
   _nd_inst_publish_gui
   _nd_inst_prune
   _nd_inst_sudo_keepalive_stop
@@ -1231,6 +1239,9 @@ _nd_inst_exit_trap() {
   if [ "$rc" -ne 0 ] && [ "${ND_INST_PHASE:-}" = interrupted ]; then
     echo "✗ The install failed after the stack was interrupted (exit $rc); rolling back." >&2
     _nd_inst_rollback
+  elif [ "$rc" -ne 0 ]; then
+    # After the interruption ended (the rollback does this inside it).
+    _nd_inst_helper_undo
   fi
   _nd_inst_sudo_keepalive_stop
   nd_root_runner_stop
@@ -1281,6 +1292,8 @@ _nd_inst_rollback() {
   if [ "$ND_INST_PLATFORM" = linux ] && systemctl is-active --quiet NetworkManager 2>/dev/null; then
     nd_root_deb nm-reload
   fi
+  # The helper last of the root steps: each one above ran through it.
+  _nd_inst_helper_undo || true
   if [ "$ND_INST_HAD_DEPLOY" = 1 ]; then
     if [ "$ND_INST_PLATFORM" = linux ]; then
       systemctl --user daemon-reload
@@ -1654,6 +1667,9 @@ _nd_inst_helper_current() {
 # The release assets (release/assets.lock, Sub-plan 5 Task 2.4).
 ND_INST_ASSETS_SCHEMA=nice-dns-assets-lock/1
 ND_INST_HELPER_MISSING="GUI actions needing root will not work until a reinstall with network"
+# Set by _nd_inst_helper_keep_previous once install-helper is about to run:
+# what a failed install gives back (_nd_inst_helper_undo, BL-063).
+ND_INST_HELPER_REPLACED=0 ND_INST_HELPER_PREV="" ND_INST_HELPER_PREV_SHA=""
 
 # _nd_inst_assets_check <lock>: 0 when every row has the lock's grammar
 # (lengths are counted, not matched with {n}: mawk 1.3.4 has no intervals).
@@ -1760,6 +1776,71 @@ _nd_inst_stage_helper() {
   chmod 755 "$dst.part" && mv -f "$dst.part" "$dst"
 }
 
+# _nd_inst_helper_keep_previous <deb|mac>: before install-helper replaces the
+# helper and its root-held root-ops, a copy of the helper installed now goes
+# into this generation (OD-7), or none is kept when there is none; and from
+# here a failure in the preparation gives them back (the preparation's EXIT
+# trap; inside the interruption, the rollback). Its sha256 is checked again
+# before root installs it. BL-063.
+_nd_inst_helper_keep_previous() {
+  local h keep="$ND_INST_STATE/generations/$ND_INST_GEN/previous-helper"
+  if [ "$1" = deb ]; then h="${ND_INST_ROOT:-}$ND_ROOT_HELPER_DEB"; else h="${ND_INST_ROOT:-}$ND_ROOT_HELPER_MAC"; fi
+  ND_INST_HELPER_PREV=""
+  rm -f "$keep"
+  if [ -f "$h" ] && [ ! -L "$h" ]; then
+    if ! { cp "$h" "$keep" && chmod 600 "$keep" && ND_INST_HELPER_PREV_SHA="$(health_sha_file "$keep")" && [ -n "$ND_INST_HELPER_PREV_SHA" ]; }; then
+      _nd_inst_err "could not keep a copy of the installed nice-dns-helper ($h); it was not replaced"
+      return 1
+    fi
+    ND_INST_HELPER_PREV="$keep"
+  fi
+  ND_INST_HELPER_REPLACED=1
+  trap '_nd_inst_linux_prep_exit' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM HUP
+}
+
+# _nd_inst_helper_undo: after a failed install that ran install-helper, the
+# helper the host had before: the kept copy installed again with the kept
+# source's root-ops (the tree the deployment that stays runs), so the helper
+# path works again (_nd_root_held_is_tree); or, when there was none, the
+# helper removed. Nothing when the host already has exactly that. 1 when it
+# could not be given back, which the install's message says.
+_nd_inst_helper_undo() {
+  local os src h
+  [ "${ND_INST_HELPER_REPLACED:-0}" = 1 ] || return 0
+  ND_INST_HELPER_REPLACED=0
+  if [ "$ND_INST_PLATFORM" = linux ]; then os=deb h="${ND_INST_ROOT:-}$ND_ROOT_HELPER_DEB"; else os=mac h="${ND_INST_ROOT:-}$ND_ROOT_HELPER_MAC"; fi
+  src="$(_nd_inst_source_dir)"
+  if [ -z "$ND_INST_HELPER_PREV" ]; then
+    if "nd_root_$os" remove-helper; then
+      echo "  • nice-dns-helper, which this install added, is removed again." >&2
+      return 0
+    fi
+    echo "! nice-dns-helper, which this install added, could not be removed (see above); 'nice-dns uninstall' removes it." >&2
+    return 1
+  fi
+  if [ -f "$src/$os/root-ops" ] && cmp -s "$ND_INST_HELPER_PREV" "$h" && ND_INST_TREE="$src" _nd_root_held_is_tree "$os"; then
+    return 0
+  fi
+  if [ "$(health_sha_file "$ND_INST_HELPER_PREV" 2>/dev/null)" != "$ND_INST_HELPER_PREV_SHA" ]; then
+    echo "! The copy of the earlier nice-dns-helper ($ND_INST_HELPER_PREV) changed after this install kept it; it was not installed: GUI actions needing root use sudo until the next install." >&2
+    return 1
+  fi
+  if [ -f "$src/$os/root-ops" ]; then
+    if [ "$os" = deb ]; then
+      ND_INST_TREE="$src" nd_root_deb install-helper "$ND_INST_HELPER_PREV" "$src/deb/org.nice-dns.policy"
+    else
+      ND_INST_TREE="$src" nd_root_mac install-helper "$ND_INST_HELPER_PREV"
+    fi && ND_INST_TREE="$src" _nd_root_held_is_tree "$os" && {
+      echo "  • nice-dns-helper is the one from before this install again." >&2
+      return 0
+    }
+  fi
+  echo "! nice-dns-helper could not be given back with the kept source's root-ops ($src): GUI actions needing root use sudo until the next install." >&2
+  return 1
+}
+
 # nd_install_helper <deb|mac>: installs or replaces the helper through
 # root-ops install-helper when this install staged one and the installed one
 # is missing, another version or runs another root-ops (Linux: with the
@@ -1780,6 +1861,7 @@ nd_install_helper() {
   s="$(_nd_inst_helper_staged)"
   if [ -f "$s" ] && ! _nd_inst_helper_current "$os"; then
     echo "▸ Installing nice-dns-helper (for actions without a terminal)"
+    _nd_inst_helper_keep_previous "$os" || return 1
     if [ "$os" = deb ]; then
       nd_root_deb install-helper "$s" "$ND_INST_TREE/deb/org.nice-dns.policy" || return 1
     else
@@ -1789,7 +1871,7 @@ nd_install_helper() {
       _nd_inst_err "the nice-dns-helper just installed is not the version this tree's root-ops expects, or does not run it"
       return 1
     fi
-    echo "  nice-dns-helper is installed at $("_nd_root_helper_file_$os"); it stays if this install fails, and an uninstall removes it."
+    echo "  nice-dns-helper is installed at $("_nd_root_helper_file_$os"); a failed install puts back the one from before (or removes it, when there was none), and an uninstall removes it."
     # Then the helper path end to end before anything relies on it: its
     # root-held root-ops answers with the version this tree expects. A tree
     # the helper does not take (a clone in /tmp) keeps to sudo; the next
@@ -2318,8 +2400,9 @@ _nd_inst_mullvad_restore() {
 }
 
 # _nd_inst_linux_prep_exit: the EXIT trap of the preparation once Mullvad's
-# setting may have changed: a failure or a signal puts it back (the
-# interruption's own trap, _nd_inst_exit_trap, replaces this one).
+# setting may have changed, or (Linux and macOS) once install-helper ran: a
+# failure or a signal puts them back (the interruption's own trap,
+# _nd_inst_exit_trap, replaces this one).
 _nd_inst_linux_prep_exit() {
   local rc=$?
   trap - EXIT
@@ -2329,9 +2412,11 @@ _nd_inst_linux_prep_exit() {
   if [ "$rc" -ne 0 ] && [ "$ND_INST_MULLVAD_CHANGED" = 1 ]; then
     _nd_inst_mullvad_restore "$ND_INST_STATE/generations/$ND_INST_GEN/mullvad-dns.tsv" before_install
   fi
+  [ "$rc" -eq 0 ] || _nd_inst_helper_undo
   _nd_inst_sudo_keepalive_stop
   nd_root_runner_stop
   [ -z "${ND_INST_CLEANUP:-}" ] || rm -rf "${ND_INST_CLEANUP:?}"
+  [ -z "${ND_INST_WORK:-}" ] || rm -rf "${ND_INST_WORK:?}"
   exit "$rc"
 }
 

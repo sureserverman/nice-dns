@@ -157,7 +157,7 @@ ND_HELPER_POLICY="$R/usr/share/polkit-1/actions/org.nice-dns.policy"
 # Validate the verb and its arguments before anything runs.
 _check() {
   case "$VERB" in
-    host-packages|podman-upgrade|crun-upgrade|host-setup|host-linger|interrupt-prereqs|pin-setup|pin|profiles-done|profiles-undo|nm-reload|uninstall|fix-bin-owner|nm-wait-dropin|version) _args 0 ;;
+    host-packages|podman-upgrade|crun-upgrade|host-setup|host-linger|interrupt-prereqs|pin-setup|pin|profiles-done|profiles-undo|nm-reload|uninstall|fix-bin-owner|nm-wait-dropin|version|remove-helper) _args 0 ;;
     install-helper) _args 2; _file_arg "$1" || _die 2 "verb 'install-helper': '$1' is not a plain absolute file path"
       _file_arg "$2" || _die 2 "verb 'install-helper': '$2' is not a plain absolute file path" ;;
     dns) _args 1; _dns_verb "$1" || _die 2 "verb 'dns': unknown helper verb '$1'" ;;
@@ -590,6 +590,16 @@ NMOEOF
 # version: the helper version this root-ops expects.
 v_version() { printf '%s\n' "$ND_HELPER_VERSION"; }
 
+# remove-helper: the helper, its root-held root-ops and its polkit action
+# (install-helper), as uninstall removes them: what a failed install that
+# found no helper takes away again (lib/install.sh _nd_inst_helper_undo,
+# BL-063). The helper does not run this verb (gui/helper verbs.rs), so it
+# comes through sudo (lib/root.sh nd_root_deb; OD-6).
+v_remove_helper() {
+  _r rm -f "$ND_HELPER_BIN" "$ND_HELPER_DIR/root-ops" "$ND_HELPER_DIR/.root-ops.new" "$ND_HELPER_POLICY"
+  if _r test -d "$ND_HELPER_DIR" </dev/null; then _r rmdir "$ND_HELPER_DIR" 2>/dev/null || true; fi
+}
+
 # install-helper <binary> <policy>: the helper a program without a terminal
 # runs through pkexec (gui/helper), a root-held copy of this root-ops for it to
 # run, and the polkit action that binds pkexec to it. The policy argument
@@ -629,5 +639,6 @@ case "$VERB" in
   fix-bin-owner) v_fix_bin_owner ;;
   nm-wait-dropin) v_nm_wait_dropin ;;
   install-helper) v_install_helper "$1" "$2" ;;
+  remove-helper) v_remove_helper ;;
   version) v_version ;;
 esac

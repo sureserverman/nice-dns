@@ -205,7 +205,8 @@ _nd_root_via_runner() {
 nd_root_deb() {
   local h rc=0 any="" want_in=0 in=""
   case "${1:-}" in install-helper|dns) any=any ;; esac
-  if h="$(_nd_root_helper_deb $any)"; then
+  # The helper does not run remove-helper (gui/helper verbs.rs): sudo (OD-6).
+  if [ "${1:-}" != remove-helper ] && h="$(_nd_root_helper_deb $any)"; then
     # restore's bytes come on stdin; kept, so a sudo fallback can send them too.
     if [ "${1:-}" = restore ] && [ "${3:-}" = - ]; then
       want_in=1; in="$(mktemp)" || return 1; cat >"$in"
