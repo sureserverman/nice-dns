@@ -519,8 +519,35 @@ t_restore_is_all_or_nothing() {
   ) || exit 1
 }
 
+# BL-043 item 6 (WF-DNS-003): an uninstall gives host DNS back first and
+# stops the stack after; a restore that fails stops nothing, so the host
+# keeps a resolver that answers. The stack's stops: its units (Linux), its
+# agent and containers (macOS); the controller's own hold is not one.
+DT_STACK_STOP='^systemctl --user disable --now (pi-hole|unbound|tor-[a-z]+|nice-dns-pod)\.service$|^container stop |^launchctl unload [^ ]*/org\.nice-dns\.start-container\.plist$'
+DT_RESTORE='^sudo bash [^ ]*/(custom-dns-deb|start-container-root\.sh) restore$'
+t_uninstall_gives_dns_back_before_it_stops_the_stack() {
+  local ep
+  ip_select
+  for ep in $IP_EPS; do
+    (
+      local r st
+      dt_world "$ep" "$(dt_fresh_state "$ep")"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "$ep: install: $IP_OUT"
+      : >"$FAKE_LOG"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "BL-043 $ep: uninstall: $IP_OUT"
+      r="$(ip_first "$FAKE_LOG" "$DT_RESTORE")"; st="$(ip_first "$FAKE_LOG" "$DT_STACK_STOP")"
+      assert_ne "" "$r" "BL-043 $ep: the DNS restore ran"
+      assert_ne "" "$st" "BL-043 $ep: the stack was stopped"
+      assert_eq 1 "$(( r < st ))" "BL-043 $ep: the restore (line $r) comes before the first stop (line $st)"
+    ) || exit 1
+  done
+}
+
 # An install or uninstall whose DNS restore failed says so and fails; it never
-# reports host DNS as given back. The uninstall still removes the rest.
+# reports host DNS as given back. The uninstall then stops and removes
+# nothing (BL-043 item 6): the stack keeps answering until the retry.
 t_incomplete_dns_restore_is_reported() {
   local ep
   ip_select
@@ -534,11 +561,14 @@ t_incomplete_dns_restore_is_reported() {
       assert_rc 0 "$IP_RC" "$ep: $IP_OUT"
       if [ "$plat" = linux ]; then rm -f "$(dirname "$(dt_receipt linux)")/resolv.conf.orig"
       else printf '^networksetup -setdnsservers Ethernet\n' >"$FAKE/fail"; fi
+      : >"$FAKE_LOG"
       ip_install "$ep" uninstall
       assert_nonzero "$IP_RC" "$ep: the uninstall fails: $IP_OUT"
       assert_match 'NOT given back' "$IP_OUT" "$ep: and says host DNS was not given back"
       assert_not_match 'nice-dns uninstalled' "$IP_OUT" "$ep: it does not claim success"
-      assert_no_path "$IP_HOME/.local/bin/nice-dns-health" "$ep: the rest of the uninstall still ran"
+      assert_eq "" "$(ip_lines "$FAKE_LOG" "$DT_STACK_STOP")" "BL-043 $ep: nothing of the stack was stopped"
+      assert_file "$IP_HOME/.local/bin/nice-dns-health" "BL-043 $ep: the controller stays"
+      assert_match "run 'nice-dns uninstall' again" "$IP_OUT" "BL-043 $ep: and says to run the uninstall again"
       assert_file "$(dt_receipt "$plat")" "$ep: the record stays for the retry"
       # The instance state and the password stay until DNS is given back.
       assert_eq "" "$(grep -E '^(podman|container) volume rm ' "$FAKE_LOG" || true)" "$ep: no state volume was removed"

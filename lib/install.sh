@@ -2576,6 +2576,21 @@ nd_install_linux_uninstall() {
   local ref ep sd dns_ok=1
   ND_INST_TREE="$ND_INST_SRC"
   nd_root_runner_start || true
+  # Host DNS goes back first, while the stack still answers (BL-043 item 6,
+  # WF-DNS-003), with the controller held so nothing restarts or pins it
+  # meanwhile: the DNS state before nice-dns (resolv.conf, systemd-resolved,
+  # the ipv6 sysctls and the NetworkManager/systemd files the pin installed),
+  # then Mullvad's DNS setting from before nice-dns in the same step (BL-048,
+  # DEC-019). A failed restore keeps its record and stops nothing.
+  nd_install_hold_controller
+  _nd_inst_dns_helper restore || dns_ok=0
+  _nd_inst_linux_mullvad_uninstall || dns_ok=0
+  if [ "$dns_ok" = 0 ]; then
+    _nd_inst_release_controller || true
+    nd_root_runner_stop
+    _nd_inst_uninstall_kept
+    return 1
+  fi
   nd_install_linux_stop_stack
   systemctl --user disable --now nice-dns-fetch-bridges.service 2>/dev/null || true
   rm -f "$HOME/.config/systemd/user/nice-dns-fetch-bridges.service" "$HOME/.local/bin/nice-dns-fetch-bridges"
@@ -2598,13 +2613,6 @@ nd_install_linux_uninstall() {
              $(ND_INST_PLATFORM=linux _nd_inst_generation_refs); do
     podman image rm -f "$ref" 2>/dev/null || true
   done
-  # The DNS state before nice-dns: resolv.conf, systemd-resolved, the ipv6
-  # sysctls and the NetworkManager/systemd files the pin installed. A failed
-  # restore keeps its record; the rest of the uninstall still runs, and the
-  # uninstall then fails so the operator retries it.
-  _nd_inst_dns_helper restore || dns_ok=0
-  # Mullvad's DNS setting from before nice-dns (BL-048).
-  _nd_inst_linux_mullvad_uninstall || dns_ok=0
   _nd_inst_linux_mullvad_resolves
   # The pin helper and the legacy grub drop-in go.
   nd_root_deb uninstall
@@ -2635,6 +2643,13 @@ _nd_inst_uninstall_state() {
     rmdir "$sd" 2>/dev/null || true
   fi
   _nd_inst_command_remove
+}
+
+# _nd_inst_uninstall_kept: an uninstall whose DNS restore failed, before it
+# stopped anything (BL-043 item 6).
+_nd_inst_uninstall_kept() {
+  _nd_inst_err "host DNS was NOT given back (see the helper's message above), so nothing was stopped or removed: nice-dns keeps running and answering, with its Tor state, root anchor, Pi-hole lists and admin password, and Unbound's route."
+  _nd_inst_err "Fix the cause and run 'nice-dns uninstall' again: the record of the state before nice-dns is kept."
 }
 
 # _nd_inst_uninstall_verdict <dns_ok>: fails the uninstall when host DNS was
@@ -3079,10 +3094,19 @@ nd_install_macos_activate() {
 nd_install_macos_uninstall() {
   local ep sd dns_ok=1 helper_ok=1
   ND_INST_TREE="$ND_INST_SRC"
+  # Host DNS goes back first, while the stack still answers (BL-043 item 6),
+  # with the controller held: a rebuild it started would pin again. A failed
+  # restore keeps its record and stops nothing.
+  nd_install_hold_controller
+  _nd_inst_dns_helper restore || dns_ok=0
+  if [ "$dns_ok" = 0 ]; then
+    _nd_inst_release_controller || true
+    _nd_inst_uninstall_kept
+    return 1
+  fi
   nd_install_macos_teardown uninstall
   ep="$(_nd_inst_controller_entry)"
   if [ -n "$ep" ] && [ -f "$ep" ]; then bash "$ep" uninstall || true; fi
-  _nd_inst_dns_helper restore || dns_ok=0
   # The helper goes last, so every root step above could use it. Left
   # behind it is passwordless root for its owner, so the uninstall fails.
   nd_root_mac remove-helper || helper_ok=0
