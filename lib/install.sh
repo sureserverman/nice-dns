@@ -1631,16 +1631,55 @@ _nd_inst_asset_arch() {
   case "$(uname -m)" in x86_64|amd64) echo amd64 ;; aarch64|arm64) echo arm64 ;; esac
 }
 
+# _nd_inst_fetch_asset <url> <dest>: one release asset, https only and
+# bounded. A failed name lookup (curl exit 6) or a failed connect (exit 7)
+# is tried again, 3 tries in all, 20 s apart: twice on mint a connect to
+# github.com failed once and worked a minute later (BL-067). Any other
+# failure is not retried. On failure it returns curl's exit status and sets
+# ND_INST_FETCH_WHY to curl's own error line (after a failed connect it names
+# the host, port and connect time; curl 8.5 leaves %{remote_ip} empty then),
+# the address curl reached when it reached one, and the try's time.
+_nd_inst_fetch_asset() {
+  local url="$1" dst="$2" tries=1 rc err out line
+  ND_INST_FETCH_WHY=""
+  err="$(mktemp "${TMPDIR:-/tmp}/nice-dns-fetch.XXXXXXXX")" || return 1
+  while :; do
+    rc=0
+    out="$(curl -fsSL "$url" -o "$dst" --proto =https --proto-redir =https --connect-timeout 30 --max-time 600 -w '%{remote_ip} %{time_total}' 2>"$err")" || rc=$?
+    [ "$rc" != 0 ] || break
+    rm -f "$dst"
+    cat "$err" >&2
+    if { [ "$rc" = 6 ] || [ "$rc" = 7 ]; } && [ "$tries" -lt 3 ]; then
+      tries=$((tries + 1))
+      if [ "$rc" = 6 ]; then
+        echo "  the name lookup failed; trying again in 20 s ($tries of 3)" >&2
+      else
+        echo "  the connect failed; trying again in 20 s ($tries of 3)" >&2
+      fi
+      sleep 20
+      continue
+    fi
+    line="$(sed -n 's/^curl: ([0-9]*) //p' "$err" | tail -n 1)"
+    ND_INST_FETCH_WHY="${line:-curl printed no error}; address ${out%% *}, ${out##* } s"
+    case "$out" in " "*|"") ND_INST_FETCH_WHY="${line:-curl printed no error}; no address reached, ${out##* } s" ;; esac
+    rm -f "$err"
+    return "$rc"
+  done
+  rm -f "$err"
+  return 0
+}
+
 # _nd_inst_stage_helper: downloads this host's helper asset into the
 # generation (preparation; release/bootstrap.tsv `assets`) and keeps it only
-# when its sha256 is the lock's. A name lookup that fails (cold DNS, BL-044)
-# is tried three times, 20 s apart. Without an asset, a download or a
+# when its sha256 is the lock's. A name lookup or a connect that fails (cold
+# DNS, BL-044; BL-067) is tried three times, 20 s apart
+# (_nd_inst_fetch_asset). Without an asset, a download or a
 # matching file, the install goes on without the helper and says so, now and
 # in its last lines (ND_INST_HELPER_NOTE). A malformed lock fails the
 # install. With ND_INST_HELPER_STAGED set (the fixture tests), nothing is
 # fetched.
 _nd_inst_stage_helper() {
-  local lock="$ND_INST_TREE/release/assets.lock" plat arch row url sha dst tries=1 rc got os
+  local lock="$ND_INST_TREE/release/assets.lock" plat arch row url sha dst rc got os
   if [ -n "${ND_INST_ROOT:-}" ] && [ -n "${ND_INST_HELPER_STAGED:-}" ]; then return 0; fi
   _nd_inst_assets_check "$lock" || return 1
   if [ "$ND_INST_PLATFORM" = linux ]; then plat=linux os=deb; else plat=macos os=mac; fi
@@ -1657,21 +1696,13 @@ _nd_inst_stage_helper() {
   dst="$(_nd_inst_helper_staged)"
   rm -f "$dst" "$dst.part"
   echo "▸ Fetching nice-dns-helper ($plat/$arch)"
-  while :; do
-    rc=0
-    curl -fsSL "$url" -o "$dst.part" --proto =https --proto-redir =https --connect-timeout 30 --max-time 600 || rc=$?
-    [ "$rc" != 0 ] || break
-    rm -f "$dst.part"
-    if [ "$rc" = 6 ] && [ "$tries" -lt 3 ]; then
-      tries=$((tries + 1))
-      echo "  the name lookup failed; trying again in 20 s ($tries of 3)" >&2
-      sleep 20
-      continue
-    fi
-    ND_INST_HELPER_NOTE="! The nice-dns-helper download failed (curl exit $rc): $ND_INST_HELPER_MISSING."
+  rc=0
+  _nd_inst_fetch_asset "$url" "$dst.part" || rc=$?
+  if [ "$rc" != 0 ]; then
+    ND_INST_HELPER_NOTE="! The nice-dns-helper download failed (curl exit $rc): $ND_INST_HELPER_MISSING.${ND_INST_FETCH_WHY:+ Last try: $ND_INST_FETCH_WHY.}"
     echo "$ND_INST_HELPER_NOTE" >&2
     return 0
-  done
+  fi
   got="$(health_sha_file "$dst.part")" || got=""
   if [ "$got" != "$sha" ]; then
     rm -f "$dst.part"
@@ -1784,7 +1815,7 @@ _nd_inst_gui_note() {
 # _nd_inst_stage_gui: preparation (release/bootstrap.tsv `gui-asset`,
 # `gui-asset-macos`), on both platforms.
 _nd_inst_stage_gui() {
-  local lock="$ND_INST_TREE/release/assets.lock" plat arch row url sha dst tries=1 rc got
+  local lock="$ND_INST_TREE/release/assets.lock" plat arch row url sha dst rc got
   if [ "$ND_INST_PLATFORM" = linux ]; then plat=linux; else plat=macos; fi
   ND_INST_GUI_NOTE=""
   _nd_inst_assets_check "$lock" || return 1
@@ -1798,20 +1829,12 @@ _nd_inst_stage_gui() {
   dst="$(_nd_inst_gui_staged)"
   rm -f "$dst" "$dst.part"
   echo "▸ Fetching nice-dns-gui ($plat/$arch)"
-  while :; do
-    rc=0
-    curl -fsSL "$url" -o "$dst.part" --proto =https --proto-redir =https --connect-timeout 30 --max-time 600 || rc=$?
-    [ "$rc" != 0 ] || break
-    rm -f "$dst.part"
-    if [ "$rc" = 6 ] && [ "$tries" -lt 3 ]; then
-      tries=$((tries + 1))
-      echo "  the name lookup failed; trying again in 20 s ($tries of 3)" >&2
-      sleep 20
-      continue
-    fi
-    _nd_inst_gui_note "The nice-dns-gui download failed (curl exit $rc)"
+  rc=0
+  _nd_inst_fetch_asset "$url" "$dst.part" || rc=$?
+  if [ "$rc" != 0 ]; then
+    _nd_inst_gui_note "The nice-dns-gui download failed (curl exit $rc)" "$ND_INST_GUI_MISSING${ND_INST_FETCH_WHY:+. Last try: $ND_INST_FETCH_WHY}"
     return 0
-  done
+  fi
   got="$(health_sha_file "$dst.part")" || got=""
   if [ "$got" != "$sha" ]; then
     rm -f "$dst.part"

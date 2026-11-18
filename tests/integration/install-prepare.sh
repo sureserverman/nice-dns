@@ -709,7 +709,7 @@ t_helper_asset_good_sha_is_staged_and_installed() {
     if [ "$ep" = install-deb ]; then os=deb; else os=mac; fi
     assert_match "^sudo bash $IP_TREE/$os/root-ops install-helper $(ip_staged_helper)( |$)" "$(cat "$FAKE_LOG")" "$ep: and installs it"
     assert_not_match 'GUI actions needing root will not work' "$IP_OUT" "$ep: nothing to report"
-    assert_match '^curl -fsSL https://github\.com/[^ ]+ -o .+\.part --proto =https --proto-redir =https --connect-timeout 30 --max-time 600$' "$(cat "$FAKE_LOG")" "$ep: https only, and it cannot hang"
+    assert_match '^curl -fsSL https://github\.com/[^ ]+ -o .+\.part --proto =https --proto-redir =https --connect-timeout 30 --max-time 600 -w %\{remote_ip\} %\{time_total\}$' "$(cat "$FAKE_LOG")" "$ep: https only, and it cannot hang"
     # A reinstall with that helper in place fetches nothing.
     : >"$FAKE_LOG"; printf '%040d\n' 5 >"$FAKE/git_head"
     ip_install "$ep" haproxy
@@ -754,6 +754,20 @@ t_helper_asset_lookup_failures_are_retried_three_times() {
   ip_install install-deb haproxy
   assert_rc 0 "$IP_RC" "not found: the install goes on: $IP_OUT"
   assert_eq 1 "$(grep -c '^curl -fsSL https://github\.com/' "$FAKE_LOG")" "not found: one attempt"
+}
+
+# BL-067: a connect that fails once (curl exit 7, twice on mint) is tried
+# again like a failed lookup, and the helper is staged.
+t_helper_asset_connect_failure_is_retried_BL_067() {
+  ip_asset_world install-deb
+  : >"$FAKE/instant_retry"
+  printf '7\n0\n' >"$FAKE/asset_rcs"
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "BL-067 helper, one connect fails: $IP_OUT"
+  assert_eq 2 "$(grep -c '^curl -fsSL https://github\.com/' "$FAKE_LOG")" "BL-067 helper: two attempts"
+  assert_eq 1 "$(grep -c '^sleep 20$' "$FAKE_LOG")" "BL-067 helper: 20 s apart"
+  cmp -s "$FAKE/asset" "$(ip_staged_helper)" || fail "BL-067 helper: then the helper is staged: $IP_OUT"
+  assert_not_match 'GUI actions needing root will not work' "$IP_OUT" "BL-067 helper: nothing to report"
 }
 
 # ─────────── the GUI's release asset (Sub-plan 6 Task 2.1) ───────────
@@ -808,7 +822,7 @@ t_gui_asset_good_sha_is_published_and_uninstall_removes_it() {
   ip_gui_world
   ip_install install-deb haproxy
   assert_rc 0 "$IP_RC" "the install: $IP_OUT"
-  assert_match "^curl -fsSL ${IP_GUI_URL//./\\.} -o .+\\.part --proto =https --proto-redir =https --connect-timeout 30 --max-time 600$" "$(cat "$FAKE_LOG")" "the asset is fetched, https only, bounded"
+  assert_match "^curl -fsSL ${IP_GUI_URL//./\\.} -o .+\\.part --proto =https --proto-redir =https --connect-timeout 30 --max-time 600 -w %\\{remote_ip\\} %\\{time_total\\}$" "$(cat "$FAKE_LOG")" "the asset is fetched, https only, bounded"
   ip_gui_paths
   [ -x "$IP_GUI_BIN" ] || fail "the program is published: $IP_OUT"
   cmp -s "$FAKE/gui-src/nice-dns-gui" "$IP_GUI_BIN" || fail "the program is the asset's"
@@ -851,6 +865,45 @@ t_gui_asset_download_failure_and_no_asset_say_so() {
   assert_rc 0 "$IP_RC" "no asset: the install goes on: $IP_OUT"
   ip_gui_absent "no asset"
   assert_match 'No nice-dns-gui release asset for linux/amd64 in release/assets.lock: GUI not installed' "$IP_OUT" "no asset says so"
+}
+
+# BL-067: the GUI fetch failed twice on mint with curl exit 7 (a failed
+# connect, github.com resolved). One failed connect is tried again and the
+# GUI is installed; three leave the install green without it, and the note
+# carries curl's own line: the address it tried and how long the connect
+# took. curl 8.5 prints no %{remote_ip} after a failed connect, so the
+# address comes from that line. Another failure (22) is not retried.
+t_gui_asset_connect_failure_is_retried_and_named_BL_067() {
+  local last
+  ip_gui_world
+  : >"$FAKE/instant_retry"
+  printf '7\n0\n' >"$FAKE/asset_rcs"
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "BL-067 one connect fails: $IP_OUT"
+  assert_eq 2 "$(grep -c "^curl -fsSL ${IP_GUI_URL//./\\.} " "$FAKE_LOG")" "BL-067 one connect fails: two attempts"
+  assert_eq 1 "$(grep -c '^sleep 20$' "$FAKE_LOG")" "BL-067 one connect fails: 20 s apart"
+  ip_gui_paths
+  [ -x "$IP_GUI_BIN" ] || fail "BL-067 one connect fails: the GUI is installed: $IP_OUT"
+  assert_not_match 'GUI not installed' "$IP_OUT" "BL-067 one connect fails: nothing missing"
+
+  ip_gui_world
+  : >"$FAKE/instant_retry"
+  printf '7\n7\n7\n' >"$FAKE/asset_rcs"
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "BL-067 every connect fails: the install goes on: $IP_OUT"
+  assert_eq 3 "$(grep -c "^curl -fsSL ${IP_GUI_URL//./\\.} " "$FAKE_LOG")" "BL-067 every connect fails: three attempts, no more"
+  ip_gui_absent "BL-067 every connect fails"
+  last="$(printf '%s\n' "$IP_OUT" | tail -n 3)"
+  assert_match 'nice-dns-gui download failed \(curl exit 7\): GUI not installed; reinstall with network to add it' "$last" "BL-067 every connect fails: the last lines say so"
+  assert_match 'Failed to connect to github\.com port 443 after [0-9]+ ms' "$last" "BL-067 every connect fails: the note names the address tried and the connect time"
+  assert_match 'Last try: .*[0-9]+\.[0-9]+ s' "$last" "BL-067 every connect fails: and how long the try took"
+
+  ip_gui_world
+  : >"$FAKE/instant_retry"
+  printf '22\n' >"$FAKE/asset_rcs"
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "BL-067 not found: the install goes on: $IP_OUT"
+  assert_eq 1 "$(grep -c "^curl -fsSL ${IP_GUI_URL//./\\.} " "$FAKE_LOG")" "BL-067 not found: one attempt"
 }
 
 t_gui_asset_that_does_not_start_or_holds_more_is_not_published() {
@@ -1001,7 +1054,7 @@ t_gui_mac_asset_good_sha_lands_the_app_and_uninstall_removes_it() {
   ip_gui_mac_world
   ip_install install-mac haproxy
   assert_rc 0 "$IP_RC" "the install: $IP_OUT"
-  assert_match "^curl -fsSL ${IP_GUI_MAC_URL//./\\.} -o .+\\.part --proto =https --proto-redir =https --connect-timeout 30 --max-time 600$" "$(cat "$FAKE_LOG")" "the zip is fetched, https only, bounded"
+  assert_match "^curl -fsSL ${IP_GUI_MAC_URL//./\\.} -o .+\\.part --proto =https --proto-redir =https --connect-timeout 30 --max-time 600 -w %\\{remote_ip\\} %\\{time_total\\}$" "$(cat "$FAKE_LOG")" "the zip is fetched, https only, bounded"
   cmp -s "$FAKE/gui-mac-src/nice-dns.app/Contents/MacOS/NiceDNSGUI" "$IP_GUI_APP/Contents/MacOS/NiceDNSGUI" || fail "the app is in ~/Applications: $IP_OUT"
   assert_file "$IP_GUI_APP/Contents/Resources/NiceDNS_NiceDNSKit.bundle/actions.tsv" "with its action table"
   assert_match '^ditto -x -k .+/nice-dns-gui\.zip .+$' "$(cat "$FAKE_LOG")" "the zip is unpacked with ditto"

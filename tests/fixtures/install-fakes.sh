@@ -244,20 +244,32 @@ case "$me" in
     esac
     exit 0 ;;
   curl)
-    o=""; u=""
-    while [ $# -gt 0 ]; do case "$1" in -o) o="$2"; shift ;; https://*) u="$1" ;; esac; shift; done
+    o=""; u=""; w=""
+    while [ $# -gt 0 ]; do case "$1" in -o) o="$2"; shift ;; -w) w="$2"; shift ;; https://*) u="$1" ;; esac; shift; done
     case "$u" in
       */mac/check-runtime.sh) cp "$FAKE/upstream/mac/check-runtime.sh" "$o" ;;
       # A release asset (Sub-plan 5 Task 2.4): each attempt takes the next
-      # exit status from $FAKE/asset_rcs (0, or 6 for a failed lookup), then
-      # gets $FAKE/assets/<file>'s bytes when there is one (Sub-plan 6 Task
-      # 2.1: the GUI's tarball), else $FAKE/asset's; with neither it is not
-      # found (22).
+      # exit status from $FAKE/asset_rcs (0, 6 for a failed lookup, 7 for a
+      # failed connect), then gets $FAKE/assets/<file>'s bytes when there is
+      # one (Sub-plan 6 Task 2.1: the GUI's tarball), else $FAKE/asset's;
+      # with neither it is not found (22). A failure prints curl's own error
+      # line; -w prints what curl 8.5 prints: after a failed connect no
+      # address and the time taken (BL-067).
       https://github.com/sureserverman/nice-dns/releases/download/*)
         if [ -s "$FAKE/asset_rcs" ]; then
           r="$(head -n 1 "$FAKE/asset_rcs")"; sed -i 1d "$FAKE/asset_rcs"
-          [ "$r" = 0 ] || exit "$r"
+          if [ "$r" != 0 ]; then
+            h="${u#https://}"; h="${h%%/*}"
+            case "$r" in
+              6) echo "curl: (6) Could not resolve host: $h" >&2 ;;
+              7) echo "curl: (7) Failed to connect to $h port 443 after 1783 ms: Couldn't connect to server" >&2 ;;
+              *) echo "curl: ($r) The requested URL returned error: 404" >&2 ;;
+            esac
+            [ -z "$w" ] || printf ' 1.784000'
+            exit "$r"
+          fi
         fi
+        [ -z "$w" ] || printf '140.82.121.4 0.412000'
         if [ -f "$FAKE/assets/${u##*/}" ]; then cp "$FAKE/assets/${u##*/}" "$o"; exit 0; fi
         [ -f "$FAKE/asset" ] || exit 22
         cp "$FAKE/asset" "$o" ;;
