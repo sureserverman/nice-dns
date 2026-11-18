@@ -1242,3 +1242,39 @@ t_clone_retries_a_failed_lookup_BL_044() {
     assert_eq clone "$(ip_row "$(ip_manifest "$(ip_gen_current)")" source_origin)" "BL-044 $ep: and installs from it"
   done
 }
+
+# ─────────── old generation records (BL-061) ───────────
+
+# BL-061: mint held 191 generation directories; the prune removed their
+# images and kept the directories for ever. A finish now keeps the running
+# generation, its rollback and the 5 newest others; older pruned ones go.
+# The two kept for the stack stay even when they are the oldest; a symlink
+# in the directory is not a generation of ours and is left alone.
+t_old_generation_directories_are_removed_BL_061() {
+  local ep g1 g2 i gens d
+  for ep in install-deb install-mac; do
+    ip_env "$ep"
+    ip_install "$ep" haproxy
+    assert_rc 0 "$IP_RC" "BL-061 $ep 1: $IP_OUT"
+    g1="$(ip_gen_current)"
+    gens="$IP_STATE/generations"
+    # Seven older installs whose images were pruned long ago, dated after
+    # the two the stack keeps, so those two are the oldest.
+    for i in 1 2 3 4 5 6 7; do
+      d="$gens/2099010${i}T000000Z-aaaaaaaaaaaa"
+      mkdir -p "$d" && cp "$gens/$g1/prepare.tsv" "$d/" && : >"$d/pruned"
+    done
+    mkdir -p "$IP_W/elsewhere"; ln -s "$IP_W/elsewhere" "$gens/20990109T000000Z-bbbbbbbbbbbb"
+    printf 'aaaaaaaaaaaabbbbbbbbbbbbccccccccccccdddd\n' >"$FAKE/git_head"
+    ip_install "$ep" haproxy
+    assert_rc 0 "$IP_RC" "BL-061 $ep 2: $IP_OUT"
+    g2="$(ip_gen_current)"
+    assert_eq 7 "$(find "$gens" -mindepth 1 -maxdepth 1 -type d | grep -c .)" "BL-061 $ep: 9 generations leave 7"
+    assert_file "$gens/$g2/prepare.tsv" "BL-061 $ep: the running generation stays"
+    assert_file "$gens/$g1/prepare.tsv" "BL-061 $ep: its rollback stays, though older"
+    for i in 3 4 5 6 7; do assert_file "$gens/2099010${i}T000000Z-aaaaaaaaaaaa/pruned" "BL-061 $ep: one of the 5 newest others stays ($i)"; done
+    for i in 1 2; do assert_no_path "$gens/2099010${i}T000000Z-aaaaaaaaaaaa" "BL-061 $ep: an older one goes ($i)"; done
+    [ -L "$gens/20990109T000000Z-bbbbbbbbbbbb" ] || fail "BL-061 $ep: a symlink is left alone"
+    [ -d "$IP_W/elsewhere" ] || fail "BL-061 $ep: and so is what it points at"
+  done
+}

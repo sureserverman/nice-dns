@@ -751,9 +751,11 @@ _nd_inst_command_remove() {
 
 # _nd_inst_prune: removes the generation-tagged images of every generation
 # except the current and the previous one (ARCH-08: prior generations are kept
-# for rollback). The manifests stay, marked pruned.
+# for rollback), and marks them pruned. Of the pruned ones the 5 newest
+# records stay; older directories go (BL-061: mint held 191). A symlink, or a
+# name that is not a generation id, is not ours and is left alone.
 _nd_inst_prune() {
-  local d g keep="" rows ref
+  local d g keep="" rows ref old
   for g in "$ND_INST_GEN" "$ND_INST_PREV"; do
     [ "$g" != none ] || continue
     rows="$(nd_install_manifest_images "$ND_INST_STATE/generations/$g/prepare.tsv" 2>/dev/null)" || continue
@@ -774,6 +776,17 @@ _nd_inst_prune() {
 $rows
 EOF
     _nd_inst_write_file "$d/pruned" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || true
+  done
+  # Generation ids sort in install order (YYYYMMDDTHHMMSSZ-...).
+  old="$(for d in "$ND_INST_STATE/generations"/*; do
+      [ -d "$d" ] && [ ! -L "$d" ] && [ -e "$d/pruned" ] || continue
+      g="${d##*/}"
+      nd_install_valid_generation "$g" || continue
+      [ "$g" != "$ND_INST_GEN" ] && [ "$g" != "$ND_INST_PREV" ] || continue
+      printf '%s\n' "$g"
+    done | LC_ALL=C sort -r | sed 1,5d)"
+  for g in $old; do
+    rm -rf "${ND_INST_STATE:?}/generations/${g:?}"
   done
 }
 
@@ -2520,7 +2533,15 @@ _nd_inst_uninstall_state() {
   [ "$1" = 1 ] || return 0
   _nd_inst_state_remove
   _nd_inst_pihole_credential_remove
-  sd="$(nd_install_state_dir)" && rm -f "${sd:?}/current"
+  # The generation records go with the marker (BL-061), and the state
+  # directory once nothing else is left in it.
+  if sd="$(nd_install_state_dir)"; then
+    rm -f "${sd:?}/current"
+    if [ -d "$sd/generations" ] && [ ! -L "$sd" ] && [ ! -L "$sd/generations" ]; then
+      rm -rf "${sd:?}/generations"
+    fi
+    rmdir "$sd" 2>/dev/null || true
+  fi
   _nd_inst_command_remove
 }
 
