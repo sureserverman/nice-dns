@@ -526,7 +526,12 @@ nd_install_seed_route() {
   fi
   case "$(printf '%s\n' "$out" | awk -F '\t' '$1 == "result" { print $2 }')" in
     kept) echo "  • Unbound keeps its route ($(_nd_inst_route_dir))." ;;
+    recorded) echo "  • Unbound keeps its route: $(printf '%s\n' "$out" | awk -F '\t' '$1 == "route" { print $2 }') ($(_nd_inst_route_dir))." ;;
     *) echo "  • Unbound's route is seeded: $(printf '%s\n' "$out" | awk -F '\t' '$1 == "route" { print $2 }') ($(_nd_inst_route_dir))." ;;
+  esac
+  # An include without its record (BL-020): the detail says what was done.
+  case "$(printf '%s\n' "$out" | awk -F '\t' '$1 == "detail" { print $2 }')" in
+    "the route record was incomplete"*) echo "    $(printf '%s\n' "$out" | awk -F '\t' '$1 == "detail" { print $2 }')" ;;
   esac
 }
 

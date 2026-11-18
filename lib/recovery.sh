@@ -481,20 +481,40 @@ seed_route() {
 }
 
 # seed_default_route: the installers' seed (Sub-plan 5 Task 1.2, DEC-010).
-# A directory that already holds an include is the controller's: it is
-# checked and kept (result kept). Otherwise ND_ROUTE_SEED is seeded at
-# generation 1: an identity-bound exit, usable while the onion is cold (ARCH-04;
-# the controller promotes the onion once it is sustained), never `compat`
-# (DEC-005). Exit 0 seeded or kept; 2 refused.
+# A directory that already holds an include and its desired.tsv is the
+# controller's: it is checked and kept (result kept). An include without a
+# readable desired.tsv (a seed cut off between its two writes, BL-020) is
+# not: its route marker, parsed as data (DEC-001), is recorded (result
+# recorded); with no usable marker the include is replaced by the seed.
+# Otherwise ND_ROUTE_SEED is seeded at generation 1: an identity-bound exit,
+# usable while the onion is cold (ARCH-04; the controller promotes the onion
+# once it is sustained), never `compat` (DEC-005). The detail of both
+# incomplete cases begins "the route record was incomplete". Exit 0 seeded,
+# recorded or kept; 2 refused.
 ND_ROUTE_SEED=cloudflare-exit
 seed_default_route() {
-  local dir msg
+  local dir msg info r g out rc=0
   dir="$(nd_platform_route_dir)"
   if [ -e "$dir" ] || [ -L "$dir" ]; then
     msg="$(_nd_route_dir_ok "$dir")" || { _nd_route_out refused - - - "$msg"; return 2; }
     if [ -f "$dir/forward-route.conf" ]; then
-      _nd_route_out kept - - - "$dir/forward-route.conf exists; the controller owns it"
-      return 0
+      if _nd_route_read_desired "$dir" && [ -n "$_ND_DES_ROUTE" ]; then
+        _nd_route_out kept - - - "$dir/forward-route.conf exists; the controller owns it"
+        return 0
+      fi
+      _ND_DES_ROUTE="" _ND_DES_GEN=""
+      info="$(_nd_route_file_info "$dir/forward-route.conf")" || info=""
+      r="$(printf '%s\n' "$info" | cut -f1)" g="$(printf '%s\n' "$info" | cut -f2)"
+      if [ -n "$info" ] && _nd_route_gen_ok "$g" && _nd_route_resolve "$r" >/dev/null 2>&1; then
+        _nd_route_write_desired "$dir" "$r" "$g" || { _nd_route_out refused - - - "cannot write $dir/desired.tsv"; return 2; }
+        _ND_DES_ROUTE="$r" _ND_DES_GEN="$g"
+        _nd_route_out recorded "$r" "$g" "$(printf '%s\n' "$info" | cut -f3)" "the route record was incomplete: recorded route $r generation $g from $dir/forward-route.conf"
+        return 0
+      fi
+      rm -f "$dir/forward-route.conf" || { _nd_route_out refused - - - "cannot remove $dir/forward-route.conf, which has no route marker"; return 2; }
+      out="$(seed_route "$ND_ROUTE_SEED" 1)" || rc=$?
+      printf '%s\n' "$out" | sed 's/^detail\t/detail\tthe route record was incomplete and the include had no route marker: /'
+      return "$rc"
     fi
   fi
   seed_route "$ND_ROUTE_SEED" 1

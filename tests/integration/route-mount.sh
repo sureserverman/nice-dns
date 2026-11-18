@@ -191,6 +191,47 @@ t_reinstall_switch_and_upgrade_keep_the_controllers_route() {
   done
 }
 
+# BL-020: an include with no readable desired.tsv (a seed cut off between
+# its two writes, e.g. by a full disk; or a record left malformed) is not
+# yet the controller's. The next install says the record was incomplete:
+# with the include's route marker it records that route; without one it
+# seeds the default route again.
+t_route_include_without_record_is_incomplete() {
+  local ep
+  rm_eps
+  for ep in $RM_EPS; do
+    (
+      local d plat rec
+      dt_world "$ep" "$(dt_fresh_state "$ep")"
+      plat="$(ip_platform "$ep")"
+      rm_install "$ep" socat
+      assert_rc 0 "$IP_RC" "$ep: install: $IP_OUT"
+      d="$(rm_dir)"
+      for rec in missing malformed; do
+        ND_PLATFORM="$plat" bash -c '. "$1/lib/recovery.sh"; _nd_route_resolve quad9-exit >/dev/null; _nd_route_render quad9-exit 7 "$_ND_FWD"' _ "$NICE_DNS_ROOT" >"$d/forward-route.conf"
+        if [ "$rec" = missing ]; then rm -f "$d/desired.tsv"; else printf 'half\n' >"$d/desired.tsv"; fi
+        : >"$FAKE/unbound-starts"
+        rm_install "$ep" socat
+        assert_rc 0 "$IP_RC" "BL-020 $ep, record $rec: reinstall: $IP_OUT"
+        assert_match 'route record was incomplete' "$IP_OUT" "BL-020 $ep, record $rec: says so"
+        assert_eq "$(printf 'schema\tnice-dns-route-desired/1\nroute\tquad9-exit\ngeneration\t7')" "$(cat "$d/desired.tsv" 2>/dev/null)" "BL-020 $ep, record $rec: recorded from the include"
+        assert_eq 'route=quad9-exit generation=7' "$(rm_marker)" "BL-020 $ep, record $rec: the include is kept"
+        rm_starts_ok "BL-020 $ep, record $rec" 'route=quad9-exit generation=7'
+      done
+      # An include with no route marker: not the controller's; seeded again.
+      printf 'forward-zone:\n    name: "."\n' >"$d/forward-route.conf"
+      rm -f "$d/desired.tsv"
+      : >"$FAKE/unbound-starts"
+      rm_install "$ep" socat
+      assert_rc 0 "$IP_RC" "BL-020 $ep, no marker: reinstall: $IP_OUT"
+      assert_match 'route record was incomplete' "$IP_OUT" "BL-020 $ep, no marker: says so"
+      assert_eq "$RM_SEED" "$(rm_marker)" "BL-020 $ep, no marker: the default route is seeded again"
+      assert_eq "$(printf 'schema\tnice-dns-route-desired/1\nroute\tcloudflare-exit\ngeneration\t1')" "$(cat "$d/desired.tsv" 2>/dev/null)" "BL-020 $ep, no marker: and recorded"
+      rm_starts_ok "BL-020 $ep, no marker"
+    ) || exit 1
+  done
+}
+
 # A deployment from before the mount (Sub-plan 4 and earlier) has no route
 # directory: its upgrade seeds one.
 t_upgrade_of_a_deployment_without_the_directory_seeds_it() {
