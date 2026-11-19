@@ -84,6 +84,34 @@ if [ -s "$FAKE/sigint_group" ] && printf '%s\n' "$l" | grep -Eq -f "$FAKE/sigint
   echo "$me: injected group interrupt" >&2; kill -INT "$PPID"; trap - INT; kill -INT $$; exit 1
 fi
 store="$FAKE/images"; touch "$store"
+# pull_trouble <ref> <podman|container>: a pull that fails as $FAKE says
+# (BL-044). pull_lookup_once fails each ref's first pull on its registry's
+# name, pull_lookup_always every pull, pull_manifest_unknown fails with the
+# registry's own answer. Prints that runtime's message and returns 1.
+pull_trouble() {
+  reg="${1%%/*}"; [ "$reg" = docker.io ] && reg=registry-1.docker.io
+  lookup=0
+  if [ -f "$FAKE/pull_lookup_always" ]; then lookup=1
+  elif [ -f "$FAKE/pull_lookup_once" ] && ! grep -qxF -- "$1" "$FAKE/pull_seen" 2>/dev/null; then
+    printf '%s\n' "$1" >>"$FAKE/pull_seen"; lookup=1
+  fi
+  if [ "$lookup" = 1 ]; then
+    if [ "$2" = podman ]; then
+      echo "Error: initializing source docker://$1: pinging container registry $reg: Get \"https://$reg/v2/\": dial tcp: lookup $reg: no such host" >&2
+    else
+      echo "Error: failed to resolve either repository hostname $reg" >&2
+    fi
+    return 1
+  fi
+  if [ -f "$FAKE/pull_manifest_unknown" ]; then
+    # Apple's runtime says "failed to resolve" for a missing reference too:
+    # not a lookup, and not to be retried.
+    if [ "$2" = podman ]; then echo "Error: reading manifest $1 in $reg: manifest unknown" >&2
+    else echo "Error: failed to resolve reference \"$1\": not found" >&2; fi
+    return 1
+  fi
+  return 0
+}
 # unbound_start <how>: the route include Unbound reads when it starts
 # ($FAKE/unbound-starts; Sub-plan 5 Task 1.2): its marker, or route-absent.
 unbound_start() {
@@ -186,7 +214,7 @@ case "$me" in
       --version) echo "podman version 5.8.1" ;;
       info) echo "1.14.0" ;;
       build) shift; do_build "$@" ;;
-      pull) img_has "$2" || img_add "$2" "$(new_id)" ;;
+      pull) pull_trouble "$2" podman || exit 125; img_has "$2" || img_add "$2" "$(new_id)" ;;
       tag) img_has "$2" || exit 125; img_add "$3" "$(img_id "$2")" ;;
       image)
         case "$2" in
@@ -219,7 +247,7 @@ case "$me" in
       build) shift; do_build "$@" ;;
       image)
         case "$2" in
-          pull) img_has "$3" || img_add "$3" "$(new_id)" ;;
+          pull) pull_trouble "$3" container || exit 1; img_has "$3" || img_add "$3" "$(new_id)" ;;
           tag) img_has "$3" || exit 1; img_add "$4" "$(img_id "$3")" ;;
           inspect) img_has "$3" || { echo "Error: image not found" >&2; exit 1; }
                    printf '[{"name":"%s","index":{"digest":"sha256:%s","mediaType":"x"}}]\n' "$3" "$(img_id "$3")" ;;
@@ -229,7 +257,14 @@ case "$me" in
     exit 0 ;;
   git)
     case "$1" in
-      clone) for a in "$@"; do d="$a"; done; mkdir -p "$d" && cp -R "$FAKE/upstream/." "$d" ;;
+      # $FAKE/clone_lookup_once: the first clone fails on the name (BL-044).
+      clone)
+        if [ -f "$FAKE/clone_lookup_once" ]; then
+          rm -f "$FAKE/clone_lookup_once"
+          echo "fatal: unable to access 'https://github.com/sureserverman/nice-dns.git/': Could not resolve host: github.com" >&2
+          exit 128
+        fi
+        for a in "$@"; do d="$a"; done; mkdir -p "$d" && cp -R "$FAKE/upstream/." "$d" ;;
       -C)
         case "$3 $4" in
           "rev-parse HEAD") [ -f "$FAKE/git_head" ] || exit 128; cat "$FAKE/git_head" ;;
@@ -244,22 +279,41 @@ case "$me" in
     esac
     exit 0 ;;
   curl)
-    o=""; u=""
-    while [ $# -gt 0 ]; do case "$1" in -o) o="$2"; shift ;; https://*) u="$1" ;; esac; shift; done
+    o=""; u=""; w=""
+    while [ $# -gt 0 ]; do case "$1" in -o) o="$2"; shift ;; -w) w="$2"; shift ;; https://*) u="$1" ;; esac; shift; done
     case "$u" in
-      */mac/check-runtime.sh) cp "$FAKE/upstream/mac/check-runtime.sh" "$o" ;;
+      # The macOS gate: each attempt takes the next exit status from
+      # $FAKE/gate_rcs (0, 6 or 7) when there is one.
+      */mac/check-runtime.sh)
+        if [ -s "$FAKE/gate_rcs" ]; then
+          r="$(head -n 1 "$FAKE/gate_rcs")"; sed -i 1d "$FAKE/gate_rcs"
+          [ "$r" = 0 ] || { echo "curl: ($r) Failed to connect to raw.githubusercontent.com port 443 after 1783 ms: Couldn't connect to server" >&2; exit "$r"; }
+        fi
+        cp "$FAKE/upstream/mac/check-runtime.sh" "$o" ;;
       # A release asset (Sub-plan 5 Task 2.4): each attempt takes the next
-      # exit status from $FAKE/asset_rcs (0, or 6 for a failed lookup), then
-      # gets $FAKE/assets/<file>'s bytes when there is one (Sub-plan 6 Task
-      # 2.1: the GUI's tarball), else $FAKE/asset's; with neither it is not
-      # found (22).
+      # exit status from $FAKE/asset_rcs (0, 6 for a failed lookup, 7 for a
+      # failed connect), then gets $FAKE/assets/<file>'s bytes when there is
+      # one (Sub-plan 6 Task 2.1: the GUI's tarball), else $FAKE/asset's;
+      # with neither it is not found (22). A failure prints curl's own error
+      # line; -w prints what curl 8.5 prints: after a failed connect no
+      # address and the time taken (BL-067).
       https://github.com/sureserverman/nice-dns/releases/download/*)
         if [ -s "$FAKE/asset_rcs" ]; then
           r="$(head -n 1 "$FAKE/asset_rcs")"; sed -i 1d "$FAKE/asset_rcs"
-          [ "$r" = 0 ] || exit "$r"
+          if [ "$r" != 0 ]; then
+            h="${u#https://}"; h="${h%%/*}"
+            case "$r" in
+              6) echo "curl: (6) Could not resolve host: $h" >&2 ;;
+              7) echo "curl: (7) Failed to connect to $h port 443 after 1783 ms: Couldn't connect to server" >&2 ;;
+              *) echo "curl: ($r) The requested URL returned error: 404" >&2 ;;
+            esac
+            [ -z "$w" ] || printf ' 1.784000'
+            exit "$r"
+          fi
         fi
+        [ -z "$w" ] || printf '140.82.121.4 0.412000'
         if [ -f "$FAKE/assets/${u##*/}" ]; then cp "$FAKE/assets/${u##*/}" "$o"; exit 0; fi
-        [ -f "$FAKE/asset" ] || exit 22
+        [ -f "$FAKE/asset" ] || { echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; }
         cp "$FAKE/asset" "$o" ;;
       *) exit 22 ;;
     esac
@@ -296,6 +350,13 @@ case "$me" in
       esac
       # The pod runs while the stack is up.
       case "$2 $*" in "is-active "*nice-dns-pod.service*) [ -f "$FAKE/dns_up" ] || exit 3 ;; esac
+      # The bridge unit's last result ($FAKE/bridge_result; default success):
+      # exec-condition when its ExecCondition skipped it (BL-028).
+      case "$2 $*" in "show "*"-p Result"*nice-dns-fetch-bridges.service*)
+        r="$(cat "$FAKE/bridge_result" 2>/dev/null || echo success)"
+        case " $* " in *" --value "*) echo "$r" ;; *) echo "Result=$r" ;; esac
+        exit 0 ;;
+      esac
       [ -f "$FAKE/fail_user_$2" ] && exit 1
       exit 0
     fi
@@ -457,7 +518,17 @@ case "$me" in
   sleep)
     # A command deadline (nd_bounded's watchdog) must really wait, or it kills
     # the command it guards at once. The installer's own polls are 5 s or less.
-    case "${1:-0}" in *[!0-9]*) ;; *) [ "$1" -lt 15 ] || exec /bin/sleep "$1" ;; esac
+    # A new generation id that is taken waits 1 s for the next second's id
+    # (nd_install_begin): returning at once would try the same id three
+    # times, so two installs in one second failed (`generation … already
+    # exists`, 2026-11-18). That wait is real; it costs about 2 s a group.
+    # A retry's 20 s wait returns at once in a world with $FAKE/instant_retry.
+    case "${1:-0}" in
+      1) /bin/sleep 1 ;;
+      20) [ -f "$FAKE/instant_retry" ] || exec /bin/sleep 20 ;;
+      *[!0-9]*) ;;
+      *) [ "$1" -lt 15 ] || exec /bin/sleep "$1" ;;
+    esac
     if [ -s "$FAKE/mullvad_pending" ]; then
       n=$(($(cat "$FAKE/mullvad_pending") - 1))
       if [ "$n" -le 0 ]; then rm -f "$FAKE/mullvad_pending" "$FAKE_ROOT/etc/resolv.conf"; printf 'nameserver 127.0.0.1\n' >"$FAKE_ROOT/etc/resolv.conf"

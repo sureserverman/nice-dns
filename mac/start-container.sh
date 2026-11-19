@@ -113,7 +113,7 @@ load_bridges() {
 # sourced); absent or any other value is on, as in the image.
 load_tor_bridges() {
   TOR_BRIDGES=on
-  if [[ "$(awk -F '=' '$1 == "TOR_BRIDGES" { print $2; exit }' "$TOR_BRIDGES_FILE" 2>/dev/null)" == off ]]; then
+  if [[ "$(awk -F '=' '$1 == "TOR_BRIDGES" && NF >= 2 { v = $2 } END { print v }' "$TOR_BRIDGES_FILE" 2>/dev/null)" == off ]]; then
     TOR_BRIDGES=off
   fi
   return 0

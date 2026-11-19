@@ -47,10 +47,18 @@ case "$s" in
     [ -f "\$FAKE/clone_fails" ] && exit 128
     case "\$*" in
       *ls-remote*)
+        # A branch the remote does not have (BL-044): --exit-code exits 2.
+        [ -f "\$FAKE/no_such_branch" ] && exit 2
         [ -f "\$FAKE/ls_remote_fails" ] && { echo "fatal: unable to access the remote" >&2; exit 128; }
         [ -f "\$FAKE/ls_remote" ] && cat "\$FAKE/ls_remote" ;;
       *rev-parse*) [ -f "\$FAKE/git_branch" ] && cat "\$FAKE/git_branch" ;;
       *clone*)
+        [ -f "\$FAKE/no_such_branch" ] && { echo "fatal: Remote branch not found in upstream origin" >&2; exit 128; }
+        if [ -f "\$FAKE/clone_lookup_once" ]; then
+          rm -f "\$FAKE/clone_lookup_once"
+          echo "fatal: unable to access 'https://github.com/sureserverman/nice-dns.git/': Could not resolve host: github.com" >&2
+          exit 128
+        fi
         for last; do :; done
         mkdir -p "\$last"
         cp "\$FAKE"/../tree/install-*.sh "\$last/"
@@ -481,6 +489,22 @@ t_macos_restart_waits_for_the_rebuild_before_checking_dns() {
   cl_assert_released Darwin
 }
 
+# BL-055: a macOS restart waiting on a slow rebuild says so every 30 s
+# (ND_WAIT_NOTE_S here), and ND_INST_READY_TRIES shortens that wait as it
+# does the DNS wait after it.
+t_macos_restart_says_it_is_still_waiting_BL_055() {
+  local t0 took
+  cl_restart_world Darwin
+  : >"$CL_FAKE/agent_stuck"
+  t0="$(date +%s)"
+  ND_WAIT_NOTE_S=1 ND_INST_READY_TRIES=2 cl_run "$CL_TREE/nice-dns" restart
+  took=$(( $(date +%s) - t0 ))
+  assert_rc 1 "$CL_RC" "BL-055 a rebuild that never ends is a failure: $CL_OUT"
+  [ "$(printf '%s\n' "$CL_OUT" | grep -cE '^still waiting for the stack \([0-9]+ s\)$')" -ge 2 ] || fail "BL-055 at least two waiting lines: $CL_OUT"
+  [ "$took" -le 20 ] || fail "BL-055 the wait keeps to the tries set (10 s): it took $took s"
+  cl_assert_released Darwin
+}
+
 t_restart_failure_is_reported_and_releases() {
   cl_restart_world Linux
   echo 5 >"$CL_FAKE/restart_rc"
@@ -529,6 +553,33 @@ t_restart_waits_for_a_running_pass_and_gives_up_cleanly() {
   ND_STATE_DIR="$d" ND_CLI_LOCK_TRIES=1 cl_run "$CL_TREE/nice-dns" restart
   assert_rc 0 "$CL_RC" "a free lock restarts: $CL_ERR"
   assert_eq "" "$(readlink "$d/lock" 2>/dev/null)" "the lock is given back"
+}
+
+# BL-059: a manual restart tells the controller, under the lock it holds, so
+# the next pass counts its cooldown from it: last_action, its time and the
+# cooldown's start in the state, one journal row. A failed restart records
+# nothing.
+t_restart_records_itself_for_the_controller_BL_059() {
+  local u d at
+  for u in $(cl_platforms); do
+    cl_restart_world "$u"
+    d="$CASE_DIR/state-059-$u"; rm -rf "$d"; mkdir -p "$d"; chmod 700 "$d"
+    ND_STATE_DIR="$d" cl_run "$CL_TREE/nice-dns" restart
+    assert_rc 0 "$CL_RC" "BL-059 $u: restart: $CL_ERR"
+    assert_eq restart-component "$(awk -F '\t' '$1 == "last_action" { print $2 }' "$d/state.tsv" 2>/dev/null)" "BL-059 $u: the state holds the action"
+    at="$(awk -F '\t' '$1 == "last_action_at" { print $2 }' "$d/state.tsv" 2>/dev/null)"
+    assert_match '^[0-9]+$' "$at" "BL-059 $u: and its time"
+    assert_eq "$at" "$(awk -F '\t' '$1 == "recovery_at" { print $2 }' "$d/state.tsv" 2>/dev/null)" "BL-059 $u: the cooldown starts at it"
+    assert_eq 1 "$(awk -F '\t' 'NR > 1 && $1 ~ /^[0-9]+$/' "$d/recovery.tsv" 2>/dev/null | wc -l | tr -d ' ')" "BL-059 $u: one journal row"
+    assert_match "^[0-9]+	[^	]*	stack	manual	" "$(cat "$d/recovery.tsv" 2>/dev/null)" "BL-059 $u: the row names the stack and a manual restart"
+    assert_eq "" "$(readlink "$d/lock" 2>/dev/null)" "BL-059 $u: the lock is given back"
+  done
+  cl_restart_world Linux
+  d="$CASE_DIR/state-059-failed"; mkdir -p "$d"; chmod 700 "$d"
+  echo 5 >"$CL_FAKE/restart_rc"
+  ND_STATE_DIR="$d" cl_run "$CL_TREE/nice-dns" restart
+  assert_rc 1 "$CL_RC" "BL-059 a failed restart fails"
+  assert_no_path "$d/state.tsv" "BL-059 a failed restart records nothing"
 }
 
 # Live 2026-10-31: 120 tries of 5 s took 935 s, each with its dig on top, while
@@ -1232,6 +1283,27 @@ t_bridges_not_installed_exits_1_and_writes_nothing() {
   done
 }
 
+# BL-060: a hand edit that left two lines reads as its last line, as
+# systemd's EnvironmentFile= reads it, in the status row and bridges status.
+t_bridges_status_reads_the_last_line_BL_060() {
+  local u
+  for u in $(cl_platforms); do
+    st_world "$u"; bt_restart_fakes
+    mkdir -p "$(dirname "$(bt_mode_file)")"
+    printf 'TOR_BRIDGES=on\nTOR_BRIDGES=off\n' >"$(bt_mode_file)"
+    ND_STATUS_NOW="$ST_NOW" cl_run "$CL_TREE/nice-dns" status --tsv
+    assert_match "^bridges	mode	off$" "$CL_OUT" "BL-060 $u: on then off: status --tsv reads off"
+    cl_run "$CL_TREE/nice-dns" bridges status
+    assert_match "^mode	off$" "$CL_OUT" "BL-060 $u: and bridges status reads off"
+    printf 'TOR_BRIDGES=off\nTOR_BRIDGES=on\n' >"$(bt_mode_file)"
+    ND_STATUS_NOW="$ST_NOW" cl_run "$CL_TREE/nice-dns" status --tsv
+    assert_match "^bridges	mode	on$" "$CL_OUT" "BL-060 $u: off then on: status --tsv reads on"
+    printf 'TOR_BRIDGES=off\nTOR_BRIDGES\n' >"$(bt_mode_file)"
+    ND_STATUS_NOW="$ST_NOW" cl_run "$CL_TREE/nice-dns" status --tsv
+    assert_match "^bridges	mode	off$" "$CL_OUT" "BL-060 $u: off then a bare line: status --tsv still reads off"
+  done
+}
+
 t_bridges_an_unwritable_mode_file_names_the_path() {
   local u d
   for u in $(cl_platforms); do
@@ -1359,6 +1431,25 @@ $(cat "$CL_LOG")"
   done
 }
 
+# BL-059 (class sweep): `nice-dns bridges on|off` restarts the proxy under the
+# same lock as `restart`, so it tells the controller too: the cooldown counts
+# from the proxy restart.
+t_bridges_a_mode_change_records_its_restart_BL_059() {
+  local u at
+  for u in $(cl_platforms); do
+    st_world "$u"; bt_restart_fakes
+    # A whole state (the status fixture's is a partial one the writer refuses).
+    printf 'schema\tnice-dns-controller-state/1\ngeneration\t42\nboot_id\tboot-a\nupdated\t%s\nstarted\t%s\nroute\tcloudflare-onion\noutage_since\t-\noutage_restarts\t0\nlast_action\tescalate\nlast_action_at\t%s\nrecovery_at\t-\n' \
+      "$ST_NOW" "$((ST_NOW - 7200))" "$((ST_NOW - 60))" >"$ST_SD/state.tsv"
+    cl_run "$CL_TREE/nice-dns" bridges off
+    assert_rc 0 "$CL_RC" "BL-059 $u bridges off: $CL_ERR"
+    assert_eq 43 "$(awk -F '\t' '$1 == "generation" { print $2 }' "$ST_SD/state.tsv" 2>/dev/null)" "BL-059 $u bridges: one commit"
+    assert_eq restart-component "$(awk -F '\t' '$1 == "last_action" { print $2 }' "$ST_SD/state.tsv" 2>/dev/null)" "BL-059 $u bridges: the state holds the restart"
+    at="$(awk -F '\t' '$1 == "recovery_at" { print $2 }' "$ST_SD/state.tsv" 2>/dev/null)"
+    assert_match '^[0-9]+$' "$at" "BL-059 $u bridges: the cooldown starts at it"
+  done
+}
+
 t_bridges_an_unchanged_mode_restarts_nothing() {
   local u
   for u in $(cl_platforms); do
@@ -1465,4 +1556,26 @@ t_bridges_an_install_older_than_the_switch_is_refused() {
     assert_rc 1 "$CL_RC" "$u: no launcher at all refuses too"
     unset ND_INST_ROOT
   done
+}
+
+# BL-044: a branch the remote does not have is named as such; it is not a
+# DNS problem. A failed lookup is tried again, and then the clone works.
+t_missing_branch_is_named_not_blamed_on_dns_BL_044() {
+  cl_world Linux; cl_installed; cl_record haproxy standard main
+  : >"$CL_FAKE/no_such_branch"
+  cl_run "$CL_CMD" reinstall --branch nosuch
+  assert_rc 1 "$CL_RC" "BL-044 a missing branch fails"
+  assert_match "branch 'nosuch' was not found" "$CL_ERR" "BL-044 it names the missing branch"
+  assert_not_match 'DNS' "$CL_ERR" "BL-044 and does not ask about DNS"
+  assert_match 'running stack is untouched' "$CL_ERR" "BL-044 it says the stack is untouched"
+  assert_eq "" "$(cl_calls '^installer')" "BL-044 no installer ran"
+  # A bare name also matches refs/heads/feature/<name>: the full ref is asked.
+  assert_match '^git .*ls-remote --exit-code --heads [^ ]+ refs/heads/nosuch$' "$(cl_calls '^git ')" "BL-044 the check asks for the full ref"
+
+  cl_world Linux; cl_installed; cl_record haproxy standard main
+  : >"$CL_FAKE/clone_lookup_once"
+  cl_run "$CL_CMD" reinstall --branch dev
+  assert_rc 0 "$CL_RC" "BL-044 a failed lookup then a clone: $CL_ERR"
+  assert_eq 2 "$(cl_calls '^git .*clone' | grep -c .)" "BL-044 the clone is tried again"
+  assert_eq "installer[clone] install-deb.sh haproxy dev" "$(cl_calls '^installer')" "BL-044 and the branch installs"
 }

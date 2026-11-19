@@ -169,10 +169,27 @@ fetch_branch() {
   mkdir -p "$base" && chmod go-w "$base" || return 1
   ND_CLI_TMP="$(mktemp -d "$base/fetch.XXXXXXXX")" || return 1
   trap cleanup_tmp EXIT
-  if ! git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 clone -q --depth 1 -b "$1" "$ND_CLI_REPO" "$ND_CLI_TMP/nice-dns"; then
-    err "could not fetch branch '$1' (is DNS down?). The running stack is untouched."
+  # A failed name lookup is tried again, 3 tries in all, 20 s apart (BL-044).
+  # A branch the remote does not have is named as that, not as a DNS fault.
+  local tries=1 rc=0
+  until git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 clone -q --depth 1 -b "$1" "$ND_CLI_REPO" "$ND_CLI_TMP/nice-dns" 2>"$ND_CLI_TMP/clone.err"; do
+    cat "$ND_CLI_TMP/clone.err" >&2
+    if grep -Eq 'Could not resolve host|Temporary failure in name resolution' "$ND_CLI_TMP/clone.err" && [ "$tries" -lt 3 ]; then
+      tries=$((tries + 1))
+      rm -rf "${ND_CLI_TMP:?}/nice-dns"
+      echo "  the name lookup failed; trying again in 20 s ($tries of 3)" >&2
+      sleep 20
+      continue
+    fi
+    # The full ref: a bare name also matches as a suffix (feature/<name>).
+    git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 ls-remote --exit-code --heads "$ND_CLI_REPO" "refs/heads/$1" >/dev/null 2>&1 || rc=$?
+    if [ "$rc" = 2 ]; then
+      err "branch '$1' was not found at $ND_CLI_REPO. The running stack is untouched."
+    else
+      err "could not fetch branch '$1' (is DNS down?). The running stack is untouched."
+    fi
     return 1
-  fi
+  done
   chmod -R go-w "$ND_CLI_TMP" || return 1
   ND_CLI_SRC="$ND_CLI_TMP/nice-dns"
 }
@@ -350,6 +367,34 @@ restart_load_libs() {
   ND_INST_TREE="$ND_CLI_ROOT"
 }
 
+# restart_record_state <what>: under the lock this command holds, tell the
+# controller (the one restart owner, DEC-022) that <what> was restarted, so
+# its next pass counts the cooldown from now and does not restart it again
+# (BL-059), through the controller's own state writer. A record that fails is
+# reported; the restart itself stands.
+restart_record_state() {
+  if ! nd_state_record_action "$ND_CLI_LOCK" restart-component "$(date +%s)" >/dev/null 2>"$ND_CLI_TMP/record.err"; then
+    err "the controller was not told of this restart, so its next pass may restart the $1 again: $(head -n 1 "$ND_CLI_TMP/record.err" 2>/dev/null)"
+  fi
+}
+
+# restart_record: the stack restart's record, and its one journal row.
+restart_record() {
+  restart_record_state stack
+  nd_recovery_journal "nd-cli-$(date +%s)-$$" stack manual "nice-dns restart restarted the stack" || true
+}
+
+# restart_rebuild_s: how long to wait for a macOS rebuild (Linux returns at
+# once). ND_CLI_REBUILD_S when set; otherwise 300 s, or less when the
+# readiness tries (ND_INST_READY_TRIES, 5 s each) allow less (BL-055).
+restart_rebuild_s() {
+  local s=300 t
+  if [ -n "${ND_CLI_REBUILD_S:-}" ]; then printf '%s\n' "$ND_CLI_REBUILD_S"; return 0; fi
+  t="${ND_INST_READY_TRIES:-120}"
+  case "$t" in ''|*[!0-9]*) ;; *) [ $((t * 5)) -lt "$s" ] && s=$((t * 5)) ;; esac
+  printf '%s\n' "$s"
+}
+
 cmd_restart() {
   [ $# -eq 0 ] || bad_usage "unknown option '$1' for restart"
   local rc=0
@@ -381,12 +426,13 @@ cmd_restart() {
     err 'Check `nice-dns-health status`.'
     return 1
   fi
+  [ -z "$ND_CLI_LOCK" ] || restart_record
   # The schedules stay held until exit, so the lock has done its work; a long
   # readiness wait must not outlast its 600 s lease.
   nd_state_unlock "$ND_CLI_LOCK" >/dev/null 2>&1
   ND_CLI_LOCK=""
   # The readiness check below must see the new stack, not the old one.
-  nd_platform_wait_restarted "${ND_CLI_REBUILD_S:-300}" || rc=$?
+  nd_platform_wait_restarted "$(restart_rebuild_s)" || rc=$?
   if [ "$rc" -ne 0 ] || ! nd_install_wait_ready 2>/dev/null; then
     # shellcheck disable=SC2016  # the backticks are text for the reader
     err 'the stack restarted, but DNS is not answering yet. Check `nice-dns-health status`.'
@@ -710,9 +756,10 @@ cmd_bridges() {
     err 'Run `nice-dns restart` to apply it now, or check `nice-dns-health status`.'
     return 1
   fi
+  [ -z "$ND_CLI_LOCK" ] || restart_record_state proxy
   nd_state_unlock "$ND_CLI_LOCK" >/dev/null 2>&1
   ND_CLI_LOCK=""
-  nd_platform_wait_restarted "${ND_CLI_REBUILD_S:-300}" || rc=$?
+  nd_platform_wait_restarted "$(restart_rebuild_s)" || rc=$?
   if [ "$rc" -ne 0 ] || ! nd_install_wait_ready 2>/dev/null; then
     # shellcheck disable=SC2016  # the backticks are text for the reader
     err 'the proxy restarted, but DNS is not answering yet. Check `nice-dns-health status`.'

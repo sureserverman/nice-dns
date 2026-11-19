@@ -212,6 +212,5 @@ Also:
   only. On macOS the refreshes left out weak bridges that were not running,
   so no restart was needed.
 - Latency is judged per platform, on the representative cell.
-- The Linux installer prints "Bridges selected" also when the selection was
-  skipped (BL-028), and `nice-dns-health --help` still says a refreshed set
-  waits for the proxy's next start (BL-029).
+- `nice-dns-health --help` still says a refreshed set waits for the proxy's
+  next start (BL-029).

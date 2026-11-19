@@ -617,6 +617,16 @@ nd_install_read_current "$s" >/dev/null 2>&1; echo "badcurrent=$?"
 printf 'schema\tsomething-else/1\nbranch\tx\n' >/tmp/other.tsv
 nd_install_manifest_get /tmp/other.tsv branch >/dev/null 2>&1; echo "badschema=$?"
 [ -e /tmp/pwned ] && echo pwned || echo clean
+# _nd_inst_retry_lookup under 3.2 (${*: -1}, PIPESTATUS in a brace group).
+sleep() { :; }
+f=/tmp/calls
+lookup_fail() { echo x >>"$f"; echo "dial tcp: lookup registry-1.docker.io: no such host" >&2; return 125; }
+: >"$f"; _nd_inst_retry_lookup lookup_fail docker.io/x/y@sha256:1 >/tmp/rl.out 2>&1; echo "retry_rc=$? retry_calls=$(wc -l <"$f" | tr -d ' ')"
+grep -q 'could not pull docker.io/x/y@sha256:1' /tmp/rl.out && echo retry_names=1
+other_fail() { echo y >>"$f"; echo "manifest unknown" >&2; return 3; }
+: >"$f"; _nd_inst_retry_lookup other_fail ref >/dev/null 2>&1; echo "other_rc=$? other_calls=$(wc -l <"$f" | tr -d ' ')"
+ok_cmd() { echo out-line; }
+o="$(_nd_inst_retry_lookup ok_cmd 2>/dev/null)"; echo "ok_rc=$? ok_out=$o"
 INNER
   out="$(podman run --rm --network none --pull=never -v "$NICE_DNS_ROOT:/src:ro" -v "$w:/work:ro" "$img" bash /work/inner.sh 2>&1)"
   assert_match '^source=0$' "$out" "bash 3.2 loads lib/install.sh: $out"
@@ -634,6 +644,10 @@ INNER
   assert_match '^badcurrent=[1-9]' "$out" "a malformed current is refused"
   assert_match '^badschema=[1-9]' "$out" "a manifest with another schema is refused"
   assert_match '^clean$' "$out" "nothing in the data was executed"
+  assert_match '^retry_rc=125 retry_calls=3$' "$out" "BL-044 bash 3.2: a failed lookup is tried 3 times and keeps the command's status"
+  assert_match '^retry_names=1$' "$out" "BL-044 bash 3.2: the last error names the image"
+  assert_match '^other_rc=3 other_calls=1$' "$out" "BL-044 bash 3.2: another failure is not retried"
+  assert_match '^ok_rc=0 ok_out=out-line$' "$out" "BL-044 bash 3.2: a pull's stdout passes through"
 }
 
 t_bash32_runs_the_mac_entrypoints() {
@@ -709,7 +723,7 @@ t_helper_asset_good_sha_is_staged_and_installed() {
     if [ "$ep" = install-deb ]; then os=deb; else os=mac; fi
     assert_match "^sudo bash $IP_TREE/$os/root-ops install-helper $(ip_staged_helper)( |$)" "$(cat "$FAKE_LOG")" "$ep: and installs it"
     assert_not_match 'GUI actions needing root will not work' "$IP_OUT" "$ep: nothing to report"
-    assert_match '^curl -fsSL https://github\.com/[^ ]+ -o .+\.part --proto =https --proto-redir =https --connect-timeout 30 --max-time 600$' "$(cat "$FAKE_LOG")" "$ep: https only, and it cannot hang"
+    assert_match '^curl -fsSL https://github\.com/[^ ]+ -o .+\.part --proto =https --proto-redir =https --connect-timeout 30 --max-time 600 -w %\{remote_ip\} %\{time_total\}$' "$(cat "$FAKE_LOG")" "$ep: https only, and it cannot hang"
     # A reinstall with that helper in place fetches nothing.
     : >"$FAKE_LOG"; printf '%040d\n' 5 >"$FAKE/git_head"
     ip_install "$ep" haproxy
@@ -754,6 +768,20 @@ t_helper_asset_lookup_failures_are_retried_three_times() {
   ip_install install-deb haproxy
   assert_rc 0 "$IP_RC" "not found: the install goes on: $IP_OUT"
   assert_eq 1 "$(grep -c '^curl -fsSL https://github\.com/' "$FAKE_LOG")" "not found: one attempt"
+}
+
+# BL-067: a connect that fails once (curl exit 7, twice on mint) is tried
+# again like a failed lookup, and the helper is staged.
+t_helper_asset_connect_failure_is_retried_BL_067() {
+  ip_asset_world install-deb
+  : >"$FAKE/instant_retry"
+  printf '7\n0\n' >"$FAKE/asset_rcs"
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "BL-067 helper, one connect fails: $IP_OUT"
+  assert_eq 2 "$(grep -c '^curl -fsSL https://github\.com/' "$FAKE_LOG")" "BL-067 helper: two attempts"
+  assert_eq 1 "$(grep -c '^sleep 20$' "$FAKE_LOG")" "BL-067 helper: 20 s apart"
+  cmp -s "$FAKE/asset" "$(ip_staged_helper)" || fail "BL-067 helper: then the helper is staged: $IP_OUT"
+  assert_not_match 'GUI actions needing root will not work' "$IP_OUT" "BL-067 helper: nothing to report"
 }
 
 # ─────────── the GUI's release asset (Sub-plan 6 Task 2.1) ───────────
@@ -808,7 +836,7 @@ t_gui_asset_good_sha_is_published_and_uninstall_removes_it() {
   ip_gui_world
   ip_install install-deb haproxy
   assert_rc 0 "$IP_RC" "the install: $IP_OUT"
-  assert_match "^curl -fsSL ${IP_GUI_URL//./\\.} -o .+\\.part --proto =https --proto-redir =https --connect-timeout 30 --max-time 600$" "$(cat "$FAKE_LOG")" "the asset is fetched, https only, bounded"
+  assert_match "^curl -fsSL ${IP_GUI_URL//./\\.} -o .+\\.part --proto =https --proto-redir =https --connect-timeout 30 --max-time 600 -w %\\{remote_ip\\} %\\{time_total\\}$" "$(cat "$FAKE_LOG")" "the asset is fetched, https only, bounded"
   ip_gui_paths
   [ -x "$IP_GUI_BIN" ] || fail "the program is published: $IP_OUT"
   cmp -s "$FAKE/gui-src/nice-dns-gui" "$IP_GUI_BIN" || fail "the program is the asset's"
@@ -851,6 +879,45 @@ t_gui_asset_download_failure_and_no_asset_say_so() {
   assert_rc 0 "$IP_RC" "no asset: the install goes on: $IP_OUT"
   ip_gui_absent "no asset"
   assert_match 'No nice-dns-gui release asset for linux/amd64 in release/assets.lock: GUI not installed' "$IP_OUT" "no asset says so"
+}
+
+# BL-067: the GUI fetch failed twice on mint with curl exit 7 (a failed
+# connect, github.com resolved). One failed connect is tried again and the
+# GUI is installed; three leave the install green without it, and the note
+# carries curl's own line: the address it tried and how long the connect
+# took. curl 8.5 prints no %{remote_ip} after a failed connect, so the
+# address comes from that line. Another failure (22) is not retried.
+t_gui_asset_connect_failure_is_retried_and_named_BL_067() {
+  local last
+  ip_gui_world
+  : >"$FAKE/instant_retry"
+  printf '7\n0\n' >"$FAKE/asset_rcs"
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "BL-067 one connect fails: $IP_OUT"
+  assert_eq 2 "$(grep -c "^curl -fsSL ${IP_GUI_URL//./\\.} " "$FAKE_LOG")" "BL-067 one connect fails: two attempts"
+  assert_eq 1 "$(grep -c '^sleep 20$' "$FAKE_LOG")" "BL-067 one connect fails: 20 s apart"
+  ip_gui_paths
+  [ -x "$IP_GUI_BIN" ] || fail "BL-067 one connect fails: the GUI is installed: $IP_OUT"
+  assert_not_match 'GUI not installed' "$IP_OUT" "BL-067 one connect fails: nothing missing"
+
+  ip_gui_world
+  : >"$FAKE/instant_retry"
+  printf '7\n7\n7\n' >"$FAKE/asset_rcs"
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "BL-067 every connect fails: the install goes on: $IP_OUT"
+  assert_eq 3 "$(grep -c "^curl -fsSL ${IP_GUI_URL//./\\.} " "$FAKE_LOG")" "BL-067 every connect fails: three attempts, no more"
+  ip_gui_absent "BL-067 every connect fails"
+  last="$(printf '%s\n' "$IP_OUT" | tail -n 3)"
+  assert_match 'nice-dns-gui download failed \(curl exit 7\): GUI not installed; reinstall with network to add it' "$last" "BL-067 every connect fails: the last lines say so"
+  assert_match 'Failed to connect to github\.com port 443 after [0-9]+ ms' "$last" "BL-067 every connect fails: the note names the address tried and the connect time"
+  assert_match 'Last try: .*[0-9]+\.[0-9]+ s' "$last" "BL-067 every connect fails: and how long the try took"
+
+  ip_gui_world
+  : >"$FAKE/instant_retry"
+  printf '22\n' >"$FAKE/asset_rcs"
+  ip_install install-deb haproxy
+  assert_rc 0 "$IP_RC" "BL-067 not found: the install goes on: $IP_OUT"
+  assert_eq 1 "$(grep -c "^curl -fsSL ${IP_GUI_URL//./\\.} " "$FAKE_LOG")" "BL-067 not found: one attempt"
 }
 
 t_gui_asset_that_does_not_start_or_holds_more_is_not_published() {
@@ -1001,7 +1068,7 @@ t_gui_mac_asset_good_sha_lands_the_app_and_uninstall_removes_it() {
   ip_gui_mac_world
   ip_install install-mac haproxy
   assert_rc 0 "$IP_RC" "the install: $IP_OUT"
-  assert_match "^curl -fsSL ${IP_GUI_MAC_URL//./\\.} -o .+\\.part --proto =https --proto-redir =https --connect-timeout 30 --max-time 600$" "$(cat "$FAKE_LOG")" "the zip is fetched, https only, bounded"
+  assert_match "^curl -fsSL ${IP_GUI_MAC_URL//./\\.} -o .+\\.part --proto =https --proto-redir =https --connect-timeout 30 --max-time 600 -w %\\{remote_ip\\} %\\{time_total\\}$" "$(cat "$FAKE_LOG")" "the zip is fetched, https only, bounded"
   cmp -s "$FAKE/gui-mac-src/nice-dns.app/Contents/MacOS/NiceDNSGUI" "$IP_GUI_APP/Contents/MacOS/NiceDNSGUI" || fail "the app is in ~/Applications: $IP_OUT"
   assert_file "$IP_GUI_APP/Contents/Resources/NiceDNS_NiceDNSKit.bundle/actions.tsv" "with its action table"
   assert_match '^ditto -x -k .+/nice-dns-gui\.zip .+$' "$(cat "$FAKE_LOG")" "the zip is unpacked with ditto"
@@ -1136,4 +1203,115 @@ t_source_a_set_aside_copy_that_cannot_go_back_is_kept() {
   ip_install install-deb haproxy
   assert_file "$IP_HOME/.local/share/nice-dns/.source.cut.old/lib/install.sh" "the set-aside source is kept: $IP_OUT"
   assert_match 'set aside at .*\.source\.cut\.old could not be put back' "$IP_OUT" "and the install says where it is"
+}
+
+# ─────────── a failed name lookup in a pull or the clone (BL-044) ───────────
+
+# BL-044: an upgrade over a legacy stack pulls through the stack it replaces,
+# whose first lookup of a new name often fails; podman pull does not retry a
+# failed lookup. Each pull, and the clone, is tried again on one, 3 tries in
+# all, 20 s apart; any other failure is not retried. Nothing running is
+# touched (DEC-018: still preparation).
+ip_pulls() { grep -cE '^(podman pull|container image pull) ' "$FAKE_LOG"; }
+ip_pulled_refs() { grep -E '^(podman pull|container image pull) ' "$FAKE_LOG" | awk '{ print $NF }' | LC_ALL=C sort -u | grep -c .; }
+
+t_pulls_retry_a_failed_lookup_BL_044() {
+  local ep n
+  for ep in install-deb install-mac; do
+    ip_env "$ep"
+    : >"$FAKE/instant_retry"; : >"$FAKE/pull_lookup_once"
+    ip_install "$ep" haproxy
+    assert_rc 0 "$IP_RC" "BL-044 $ep: each name's first lookup fails: $IP_OUT"
+    n="$(ip_pulled_refs)"
+    assert_ne 0 "$n" "BL-044 $ep: images were pulled"
+    assert_eq "$((2 * n))" "$(ip_pulls)" "BL-044 $ep: two calls per image"
+    assert_match 'the name lookup failed; trying again in 20 s \(2 of 3\)' "$IP_OUT" "BL-044 $ep: says it tries again"
+
+    ip_env "$ep"
+    : >"$FAKE/instant_retry"; : >"$FAKE/pull_lookup_always"
+    ip_install "$ep" haproxy
+    assert_nonzero "$IP_RC" "BL-044 $ep: every lookup fails: the install stops: $IP_OUT"
+    assert_eq 3 "$(ip_pulls)" "BL-044 $ep: every lookup fails: three calls, then it stops"
+    assert_match 'could not pull docker\.io/[^ ]+: its registry name did not resolve in 3 tries' "$IP_OUT" "BL-044 $ep: the message names the registry"
+    ip_assert_untouched "BL-044 $ep every lookup fails"
+    assert_no_path "$IP_STATE/current" "BL-044 $ep: nothing is marked current"
+
+    ip_env "$ep"
+    : >"$FAKE/instant_retry"; : >"$FAKE/pull_manifest_unknown"
+    ip_install "$ep" haproxy
+    assert_nonzero "$IP_RC" "BL-044 $ep: manifest unknown: the install stops: $IP_OUT"
+    assert_eq 1 "$(ip_pulls)" "BL-044 $ep: manifest unknown is not retried"
+  done
+}
+
+t_clone_retries_a_failed_lookup_BL_044() {
+  local ep
+  for ep in install-deb install-deb-hardened install-mac install-mac-hardened; do
+    ip_env "$ep"
+    : >"$FAKE/instant_retry"; : >"$FAKE/clone_lookup_once"
+    mkdir -p "$IP_W/solo" && cp "$IP_TREE/$ep.sh" "$IP_W/solo/"
+    ip_run "$IP_W/solo/$ep.sh" haproxy dev
+    assert_rc 0 "$IP_RC" "BL-044 $ep: the clone's first lookup fails: $IP_OUT"
+    assert_eq 2 "$(grep -c '^git clone' "$FAKE_LOG")" "BL-044 $ep: the clone is tried again"
+    assert_eq clone "$(ip_row "$(ip_manifest "$(ip_gen_current)")" source_origin)" "BL-044 $ep: and installs from it"
+  done
+}
+
+# ─────────── old generation records (BL-061) ───────────
+
+# BL-061: mint held 191 generation directories; the prune removed their
+# images and kept the directories for ever. A finish now keeps the running
+# generation, its rollback and the 5 newest others; older pruned ones go.
+# The two kept for the stack stay even when they are the oldest; a symlink
+# in the directory is not a generation of ours and is left alone.
+t_old_generation_directories_are_removed_BL_061() {
+  local ep g1 g2 i gens d
+  for ep in install-deb install-mac; do
+    ip_env "$ep"
+    ip_install "$ep" haproxy
+    assert_rc 0 "$IP_RC" "BL-061 $ep 1: $IP_OUT"
+    g1="$(ip_gen_current)"
+    gens="$IP_STATE/generations"
+    # Seven older installs whose images were pruned long ago, dated after
+    # the two the stack keeps, so those two are the oldest.
+    for i in 1 2 3 4 5 6 7; do
+      d="$gens/2099010${i}T000000Z-aaaaaaaaaaaa"
+      mkdir -p "$d" && cp "$gens/$g1/prepare.tsv" "$d/" && : >"$d/pruned"
+    done
+    mkdir -p "$IP_W/elsewhere"; ln -s "$IP_W/elsewhere" "$gens/20990109T000000Z-bbbbbbbbbbbb"
+    printf 'aaaaaaaaaaaabbbbbbbbbbbbccccccccccccdddd\n' >"$FAKE/git_head"
+    ip_install "$ep" haproxy
+    assert_rc 0 "$IP_RC" "BL-061 $ep 2: $IP_OUT"
+    g2="$(ip_gen_current)"
+    assert_eq 7 "$(find "$gens" -mindepth 1 -maxdepth 1 -type d | grep -c .)" "BL-061 $ep: 9 generations leave 7"
+    assert_file "$gens/$g2/prepare.tsv" "BL-061 $ep: the running generation stays"
+    assert_file "$gens/$g1/prepare.tsv" "BL-061 $ep: its rollback stays, though older"
+    for i in 3 4 5 6 7; do assert_file "$gens/2099010${i}T000000Z-aaaaaaaaaaaa/pruned" "BL-061 $ep: one of the 5 newest others stays ($i)"; done
+    for i in 1 2; do assert_no_path "$gens/2099010${i}T000000Z-aaaaaaaaaaaa" "BL-061 $ep: an older one goes ($i)"; done
+    [ -L "$gens/20990109T000000Z-bbbbbbbbbbbb" ] || fail "BL-061 $ep: a symlink is left alone"
+    [ -d "$IP_W/elsewhere" ] || fail "BL-061 $ep: and so is what it points at"
+  done
+}
+
+# BL-044, BL-067: the macOS gate is the first network call of an install
+# without a checkout. A failed lookup or connect is tried again; any other
+# failure, or three, stop the install before anything changes.
+t_mac_gate_fetch_retries_a_failed_connect_BL_067() {
+  local ep
+  for ep in install-mac install-mac-hardened; do
+    ip_env "$ep"
+    : >"$FAKE/instant_retry"; printf '7\n0\n' >"$FAKE/gate_rcs"
+    mkdir -p "$IP_W/solo" && cp "$IP_TREE/$ep.sh" "$IP_W/solo/"
+    ip_run "$IP_W/solo/$ep.sh" haproxy dev
+    assert_rc 0 "$IP_RC" "BL-067 $ep: one failed connect: $IP_OUT"
+    assert_eq 2 "$(grep -c '^curl -fsSL https://raw\.githubusercontent\.com/.*/mac/check-runtime\.sh' "$FAKE_LOG")" "BL-067 $ep: the gate is fetched again"
+    ip_env "$ep"
+    : >"$FAKE/instant_retry"; printf '7\n7\n7\n' >"$FAKE/gate_rcs"
+    mkdir -p "$IP_W/solo" && cp "$IP_TREE/$ep.sh" "$IP_W/solo/"
+    ip_run "$IP_W/solo/$ep.sh" haproxy dev
+    assert_rc 1 "$IP_RC" "BL-067 $ep: three failed connects stop the install: $IP_OUT"
+    assert_eq 3 "$(grep -c '^curl -fsSL https://raw\.githubusercontent\.com/.*/mac/check-runtime\.sh' "$FAKE_LOG")" "BL-067 $ep: three tries, no more"
+    assert_match 'failed to download compatibility gate' "$IP_OUT" "BL-067 $ep: says why"
+    assert_eq "" "$(grep '^git clone' "$FAKE_LOG")" "BL-067 $ep: nothing after the gate ran"
+  done
 }

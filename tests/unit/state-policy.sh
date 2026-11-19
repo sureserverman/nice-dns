@@ -474,6 +474,39 @@ t_policy_full_outage_waits_grace_then_restarts_tor_once_per_cooldown() {
   assert_eq 0 "$(sp_key "$CASE_DIR/cur" outage_restarts)" "and its restart count"
 }
 
+# BL-059: `nice-dns restart` records its stack restart in the controller's
+# state (nd_state_record_action, under the lock the command holds), so the
+# next pass counts its cooldown from it. The control first: without the
+# record, this outage, its ladder spent and the last restart 2000 s ago,
+# restarts the stack 33 s after the manual one.
+t_policy_a_manual_restart_starts_the_cooldown_BL_059() {
+  local tok gen
+  sp_libs
+  nd_state_init || fail "state init"
+  printf 'schema\tnice-dns-controller-state/1\nboot_id\tboot-a\nupdated\t%s\nstarted\t%s\nroute\tcloudflare-onion\noutage_since\t%s\noutage_restarts\t2\nlast_action\tescalate\nlast_action_at\t%s\nrecovery_at\t%s\n' \
+    $((SP_T0 - 60)) $((SP_T0 - 7200)) $((SP_T0 - 3600)) $((SP_T0 - 60)) $((SP_T0 - 2000)) >"$CASE_DIR/before"
+  sp_obs "$CASE_DIR/o" healthy unhealthy unhealthy unhealthy unhealthy
+  sp_decide "$CASE_DIR/o" "$CASE_DIR/before" $((SP_T0 + 33))
+  assert_eq restart-component "$SP_ACTION" "BL-059 control: without the record the pass restarts"
+  assert_eq stack "$SP_TARGET" "BL-059 control: the stack"
+  tok="$(nd_state_lock)" || fail "lock"
+  gen="$(nd_state_commit "$tok" 0 "$CASE_DIR/before")" || fail "commit the state before"
+  nd_state_record_action "$tok" restart-component "$SP_T0" >/dev/null
+  assert_rc 0 $? "BL-059 the record is written under the held lock"
+  nd_state_unlock "$tok"
+  nd_state_load >"$CASE_DIR/cur" || fail "load"
+  assert_eq $((gen + 1)) "$(sp_key "$CASE_DIR/cur" generation)" "BL-059 one commit"
+  assert_eq restart-component "$(sp_key "$CASE_DIR/cur" last_action)" "BL-059 the action"
+  assert_eq "$SP_T0" "$(sp_key "$CASE_DIR/cur" last_action_at)" "BL-059 its time"
+  assert_eq "$SP_T0" "$(sp_key "$CASE_DIR/cur" recovery_at)" "BL-059 the cooldown starts at it"
+  assert_eq $((SP_T0 - 3600)) "$(sp_key "$CASE_DIR/cur" outage_since)" "BL-059 the rest of the state is kept"
+  sp_decide "$CASE_DIR/o" "$CASE_DIR/cur" $((SP_T0 + 33))
+  assert_eq no-op "$SP_ACTION" "BL-059 33 s after the manual restart the pass does not restart"
+  assert_match 'cooldown' "$SP_REASON" "BL-059 and says the cooldown holds it"
+  nd_state_record_action "$tok" restart-component "$SP_T0" >/dev/null 2>&1
+  assert_rc 5 $? "BL-059 without the lock nothing is recorded"
+}
+
 t_policy_startup_allowance_blocks_restart() {
   local t
   sp_libs

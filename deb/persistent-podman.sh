@@ -13,7 +13,7 @@ PIHOLE="${2:-standard}"
 # Ensure we are not running as root. The script relies on rootless Podman and
 # user-mode systemd. Running it via sudo will cause `systemctl --user` failures.
 if [ "$(id -u)" -eq 0 ]; then
-  echo "ERROR: Run this script as your regular user (without sudo)." >&2
+  echo "Please run ${0##*/} as a regular user, not with sudo." >&2
   exit 1
 fi
 
@@ -200,8 +200,9 @@ Type=oneshot
 # ExecCondition, and a status it lists counts as a pass, so exit 1 ran the
 # selection at every install and boot over the controller's set (live on
 # mint, 2026-10-05). \$\$ is a literal \$ for systemd. With bridges off
-# (TOR_BRIDGES=off in bridges-mode.env) the selection is skipped too.
-ExecCondition=/usr/bin/sh -c '! grep -qx "TOR_BRIDGES=off" %h/.config/nice-dns/bridges-mode.env 2>/dev/null || exit 2; n=\$\$(grep -cE "^BRIDGE[0-9]+=obfs4 " %h/.config/nice-dns/bridges.env 2>/dev/null); [ "\$\${n:-0}" -lt 3 ] || exit 2'
+# (TOR_BRIDGES=off in bridges-mode.env) the selection is skipped too; the
+# last TOR_BRIDGES line decides, as systemd's EnvironmentFile= reads it (BL-060).
+ExecCondition=/usr/bin/sh -c '[ "\$\$(grep "^TOR_BRIDGES=" %h/.config/nice-dns/bridges-mode.env 2>/dev/null | tail -n 1 | cut -d= -f2)" != off ] || exit 2; n=\$\$(grep -cE "^BRIDGE[0-9]+=obfs4 " %h/.config/nice-dns/bridges.env 2>/dev/null); [ "\$\${n:-0}" -lt 3 ] || exit 2'
 # RemainAfterExit: run once per boot before the proxy (Wants=/After= from the
 # tor quadlets); a container restart won't re-trigger the ~150s manage cycle.
 RemainAfterExit=yes
@@ -307,6 +308,9 @@ for cand in /usr/libexec/podman/quadlet /usr/lib/podman/quadlet /usr/lib/systemd
   fi
 done
 
+# lib/platform/linux.sh sets XDG_RUNTIME_DIR only inside the ROUTE_DIR
+# subshell above; this shell falls back to the same path itself.
+# shellcheck disable=SC2031
 GEN_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/systemd/generator"
 if [ ! -e "$GEN_DIR/nice-dns-pod.service" ]; then
   echo "   ✗ daemon-reload did not generate nice-dns-pod.service." >&2
@@ -333,7 +337,13 @@ fi
 # proxy keeps whatever bridges.env already exists.
 echo "   • Selecting reachable bridges (host-side bridge-eval; ~2-3 min)..."
 if systemctl --user restart nice-dns-fetch-bridges.service 2>/dev/null; then
-  echo "   ✓ Bridges selected → ~/.config/nice-dns/bridges.env"
+  # A restart the unit's ExecCondition skipped (a usable set kept, or bridges
+  # off) also returns 0; its Result then reads exec-condition (BL-028).
+  if [ "$(systemctl --user show -p Result --value nice-dns-fetch-bridges.service 2>/dev/null)" = exec-condition ]; then
+    echo "   ✓ No selection needed: kept the existing bridges (~/.config/nice-dns/bridges.env)"
+  else
+    echo "   ✓ Bridges selected → ~/.config/nice-dns/bridges.env"
+  fi
 else
   echo "   ! bridge-eval manage run failed; proxy will use existing bridges.env (if any)." >&2
 fi
@@ -343,7 +353,7 @@ fi
 # created: a missing set stops the proxy unit, as before the mode existed.
 # The same paths the quadlets read (%h/.config/nice-dns/...).
 BRIDGES_ENV="$HOME/.config/nice-dns/bridges.env"
-if grep -qx "TOR_BRIDGES=off" "$HOME/.config/nice-dns/bridges-mode.env" 2>/dev/null && [ ! -e "$BRIDGES_ENV" ]; then
+if [ "$(awk -F '=' '$1 == "TOR_BRIDGES" && NF >= 2 { v = $2 } END { print v }' "$HOME/.config/nice-dns/bridges-mode.env" 2>/dev/null)" = off ] && [ ! -e "$BRIDGES_ENV" ]; then
   (umask 077 && : >"$BRIDGES_ENV")
 fi
 

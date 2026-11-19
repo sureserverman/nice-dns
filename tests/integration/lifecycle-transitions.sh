@@ -514,3 +514,90 @@ t_macos_install_honours_the_bridges_mode() {
     assert_no_path "$IP_HOME/.config/nice-dns/bridges.env" "off: no set is written"
   ) || exit 1
 }
+
+# BL-060: the macOS install reads a two-line bridges-mode.env as its last
+# line; an uninstall that gave host DNS back removes the mode file, so a later
+# install starts with bridges on, and the config directory once it is empty.
+t_bridges_mode_last_line_and_uninstall_BL_060() {
+  local ep line cfg bl060_set
+  (
+    dt_world install-mac fresh
+    printf 'TOR_BRIDGES=on\nTOR_BRIDGES=off\n' >"$IP_HOME/.config/nice-dns/bridges-mode.env"
+    : >"$FAKE_LOG"
+    ip_install install-mac socat
+    assert_rc 0 "$IP_RC" "BL-060 two lines: install: $IP_OUT"
+    line="$(grep -E '^container run -d --name tor-socat ' "$FAKE_LOG" | tail -n 1)"
+    assert_match ' -e TOR_BRIDGES=off ' "$line" "BL-060 on then off: the proxy starts direct"
+  ) || exit 1
+  for ep in install-deb install-mac; do
+    (
+      dt_world "$ep" "$(dt_fresh_state "$ep")"
+      ip_install "$ep" haproxy
+      assert_rc 0 "$IP_RC" "BL-060 $ep install: $IP_OUT"
+      cfg="$IP_HOME/.config/nice-dns"
+      printf 'TOR_BRIDGES=off\n' >"$cfg/bridges-mode.env"
+      find "$cfg" -mindepth 1 ! -name bridges-mode.env -exec rm -rf {} +
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "BL-060 $ep uninstall: $IP_OUT"
+      assert_no_path "$cfg/bridges-mode.env" "BL-060 $ep: no bridges mode is left"
+      assert_no_path "$cfg" "BL-060 $ep: nor the empty config directory"
+    ) || exit 1
+    (
+      dt_world "$ep" "$(dt_fresh_state "$ep")"
+      ip_install "$ep" haproxy
+      assert_rc 0 "$IP_RC" "BL-060 $ep keep: install: $IP_OUT"
+      cfg="$IP_HOME/.config/nice-dns"
+      printf 'TOR_BRIDGES=off\n' >"$cfg/bridges-mode.env"
+      printf 'mine\n' >"$cfg/owner-notes.txt"
+      bl060_set="$(cat "$cfg/bridges.env" 2>/dev/null || printf 'set\n' | tee "$cfg/bridges.env")"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "BL-060 $ep keep: uninstall: $IP_OUT"
+      assert_no_path "$cfg/bridges-mode.env" "BL-060 $ep keep: the mode file goes"
+      assert_eq mine "$(cat "$cfg/owner-notes.txt" 2>/dev/null)" "BL-060 $ep keep: the owner's file and its directory stay"
+      assert_eq "$bl060_set" "$(cat "$cfg/bridges.env" 2>/dev/null)" "BL-060 $ep keep: the bridge set is kept for the next install"
+    ) || exit 1
+  done
+  (
+    ep=install-deb
+    dt_world "$ep" "$(dt_fresh_state "$ep")"
+    ip_install "$ep" haproxy
+    assert_rc 0 "$IP_RC" "BL-060 failed restore: install: $IP_OUT"
+    printf 'TOR_BRIDGES=off\n' >"$IP_HOME/.config/nice-dns/bridges-mode.env"
+    printf '%s\n' 'custom-dns-deb restore' >"$FAKE/fail"
+    ip_install "$ep" uninstall
+    assert_nonzero "$IP_RC" "BL-060 failed restore: the uninstall fails: $IP_OUT"
+    assert_file "$IP_HOME/.config/nice-dns/bridges-mode.env" "BL-060 failed restore: the mode file is kept with the rest"
+  ) || exit 1
+}
+
+# BL-061: an uninstall that gave host DNS back removes the generation records
+# and then the state directory once it is empty; one whose DNS restore failed
+# keeps every record, as it keeps the rest of the state for the retry.
+t_uninstall_removes_the_generation_records_BL_061() {
+  local ep sd
+  for ep in install-deb install-mac; do
+    (
+      dt_world "$ep" "$(dt_fresh_state "$ep")"
+      ip_install "$ep" haproxy
+      assert_rc 0 "$IP_RC" "BL-061 $ep install: $IP_OUT"
+      printf 'aaaaaaaaaaaabbbbbbbbbbbbccccccccccccdddd\n' >"$FAKE/git_head"
+      ip_install "$ep" haproxy
+      assert_rc 0 "$IP_RC" "BL-061 $ep reinstall: $IP_OUT"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "BL-061 $ep uninstall: $IP_OUT"
+      assert_no_path "$IP_STATE/generations" "BL-061 $ep: no generation records are left"
+      assert_no_path "$IP_STATE" "BL-061 $ep: nor the empty state directory"
+    ) || exit 1
+  done
+  (
+    ep=install-deb
+    dt_world "$ep" "$(dt_fresh_state "$ep")"
+    ip_install "$ep" haproxy
+    assert_rc 0 "$IP_RC" "BL-061 failed restore: install: $IP_OUT"
+    sd="$(find "$IP_STATE/generations" -mindepth 1 -maxdepth 1 | LC_ALL=C sort)"
+    printf '%s\n' 'custom-dns-deb restore' >"$FAKE/fail"
+    ip_install "$ep" uninstall
+    assert_nonzero "$IP_RC" "BL-061 failed restore: the uninstall fails: $IP_OUT"
+    assert_eq "$sd" "$(find "$IP_STATE/generations" -mindepth 1 -maxdepth 1 2>/dev/null | LC_ALL=C sort)" "BL-061 failed restore: every generation record is kept"
+  ) || exit 1
+}

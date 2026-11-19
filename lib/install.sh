@@ -70,6 +70,40 @@ ND_INST_NL='
 
 _nd_inst_err() { printf 'nice-dns install: %s\n' "$*" >&2; }
 
+# ND_INST_LOOKUP_ERE: what a failed name lookup prints: podman (`lookup
+# <name>: no such host`, BL-044), curl and git (`Could not resolve host`),
+# glibc (`Temporary failure in name resolution`) and Apple's container
+# (`failed to resolve either repository hostname`, 2026-11-18). Anchored:
+# a bare `failed to resolve` also starts runtimes' messages for a missing
+# tag or digest, which a retry cannot mend.
+ND_INST_LOOKUP_ERE='no such host|Could not resolve host|Temporary failure in name resolution|failed to resolve either repository hostname'
+
+# _nd_inst_retry_lookup <command...>: runs a pull; when it fails and what it
+# printed names a failed name lookup, runs it again, 3 tries in all, 20 s
+# apart. Any other failure returns at once with the command's status. An
+# upgrade over a legacy stack pulls through the stack it replaces, whose
+# first lookup of a new name often fails, and podman does not retry one
+# (BL-044). Still preparation: nothing running is touched (DEC-018). The
+# command's stderr is shown as it comes and kept to be read.
+_nd_inst_retry_lookup() {
+  local tries=1 rc err
+  err="$(mktemp "${TMPDIR:-/tmp}/nice-dns-pull.XXXXXXXX")" || return 1
+  while :; do
+    { "$@" 2>&1 1>&3 3>&- | tee "$err" >&2; rc=${PIPESTATUS[0]}; } 3>&1
+    [ "$rc" != 0 ] || break
+    grep -Eq "$ND_INST_LOOKUP_ERE" "$err" || break
+    if [ "$tries" -ge 3 ]; then
+      _nd_inst_err "could not pull ${*: -1}: its registry name did not resolve in 3 tries. Nothing was changed; run the install again once DNS answers."
+      break
+    fi
+    tries=$((tries + 1))
+    echo "  the name lookup failed; trying again in 20 s ($tries of 3)" >&2
+    sleep 20
+  done
+  rm -f "$err"
+  return "$rc"
+}
+
 # ─────────────────────────── generation ids and manifests (pure) ─────────────
 
 # nd_install_generation_id <commit|unknown> [YYYYMMDDTHHMMSSZ]: prints the id.
@@ -492,7 +526,12 @@ nd_install_seed_route() {
   fi
   case "$(printf '%s\n' "$out" | awk -F '\t' '$1 == "result" { print $2 }')" in
     kept) echo "  • Unbound keeps its route ($(_nd_inst_route_dir))." ;;
+    recorded) echo "  • Unbound keeps its route: $(printf '%s\n' "$out" | awk -F '\t' '$1 == "route" { print $2 }') ($(_nd_inst_route_dir))." ;;
     *) echo "  • Unbound's route is seeded: $(printf '%s\n' "$out" | awk -F '\t' '$1 == "route" { print $2 }') ($(_nd_inst_route_dir))." ;;
+  esac
+  # An include without its record (BL-020): the detail says what was done.
+  case "$(printf '%s\n' "$out" | awk -F '\t' '$1 == "detail" { print $2 }')" in
+    "the route record was incomplete"*) echo "    $(printf '%s\n' "$out" | awk -F '\t' '$1 == "detail" { print $2 }')" ;;
   esac
 }
 
@@ -529,10 +568,18 @@ _nd_inst_state_remove() {
 # prunes generations older than the previous one. Only after a fully
 # successful install.
 nd_install_finish() {
-  local d="$ND_INST_STATE/generations/$ND_INST_GEN"
+  local d="$ND_INST_STATE/generations/$ND_INST_GEN" os
   _nd_inst_write_file "$d/activated" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
   _nd_inst_write_file "$ND_INST_STATE/current" "$ND_INST_GEN" || return 1
   _nd_inst_publish_command
+  # The helper runs the kept source's root-ops (BL-063): when the source
+  # could not be published, the helper from before goes back with it.
+  if [ "$ND_INST_PLATFORM" = linux ]; then os=deb; else os=mac; fi
+  if [ "$ND_INST_HELPER_REPLACED" = 1 ] && ! ND_INST_TREE="$(_nd_inst_source_dir)" _nd_root_held_is_tree "$os"; then
+    _nd_inst_helper_undo || true
+  fi
+  ND_INST_HELPER_REPLACED=0
+  rm -f "$d/previous-helper"
   _nd_inst_publish_gui
   _nd_inst_prune
   _nd_inst_sudo_keepalive_stop
@@ -719,9 +766,11 @@ _nd_inst_command_remove() {
 
 # _nd_inst_prune: removes the generation-tagged images of every generation
 # except the current and the previous one (ARCH-08: prior generations are kept
-# for rollback). The manifests stay, marked pruned.
+# for rollback), and marks them pruned. Of the pruned ones the 5 newest
+# records stay; older directories go (BL-061: mint held 191). A symlink, or a
+# name that is not a generation id, is not ours and is left alone.
 _nd_inst_prune() {
-  local d g keep="" rows ref
+  local d g keep="" rows ref old
   for g in "$ND_INST_GEN" "$ND_INST_PREV"; do
     [ "$g" != none ] || continue
     rows="$(nd_install_manifest_images "$ND_INST_STATE/generations/$g/prepare.tsv" 2>/dev/null)" || continue
@@ -742,6 +791,17 @@ _nd_inst_prune() {
 $rows
 EOF
     _nd_inst_write_file "$d/pruned" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || true
+  done
+  # Generation ids sort in install order (YYYYMMDDTHHMMSSZ-...).
+  old="$(for d in "$ND_INST_STATE/generations"/*; do
+      [ -d "$d" ] && [ ! -L "$d" ] && [ -e "$d/pruned" ] || continue
+      g="${d##*/}"
+      nd_install_valid_generation "$g" || continue
+      [ "$g" != "$ND_INST_GEN" ] && [ "$g" != "$ND_INST_PREV" ] || continue
+      printf '%s\n' "$g"
+    done | LC_ALL=C sort -r | sed 1,5d)"
+  for g in $old; do
+    rm -rf "${ND_INST_STATE:?}/generations/${g:?}"
   done
 }
 
@@ -1184,6 +1244,9 @@ _nd_inst_exit_trap() {
   if [ "$rc" -ne 0 ] && [ "${ND_INST_PHASE:-}" = interrupted ]; then
     echo "✗ The install failed after the stack was interrupted (exit $rc); rolling back." >&2
     _nd_inst_rollback
+  elif [ "$rc" -ne 0 ]; then
+    # After the interruption ended (the rollback does this inside it).
+    _nd_inst_helper_undo
   fi
   _nd_inst_sudo_keepalive_stop
   nd_root_runner_stop
@@ -1234,6 +1297,8 @@ _nd_inst_rollback() {
   if [ "$ND_INST_PLATFORM" = linux ] && systemctl is-active --quiet NetworkManager 2>/dev/null; then
     nd_root_deb nm-reload
   fi
+  # The helper last of the root steps: each one above ran through it.
+  _nd_inst_helper_undo || true
   if [ "$ND_INST_HAD_DEPLOY" = 1 ]; then
     if [ "$ND_INST_PLATFORM" = linux ]; then
       systemctl --user daemon-reload
@@ -1607,6 +1672,9 @@ _nd_inst_helper_current() {
 # The release assets (release/assets.lock, Sub-plan 5 Task 2.4).
 ND_INST_ASSETS_SCHEMA=nice-dns-assets-lock/1
 ND_INST_HELPER_MISSING="GUI actions needing root will not work until a reinstall with network"
+# Set by _nd_inst_helper_keep_previous once install-helper is about to run:
+# what a failed install gives back (_nd_inst_helper_undo, BL-063).
+ND_INST_HELPER_REPLACED=0 ND_INST_HELPER_PREV="" ND_INST_HELPER_PREV_SHA=""
 
 # _nd_inst_assets_check <lock>: 0 when every row has the lock's grammar
 # (lengths are counted, not matched with {n}: mawk 1.3.4 has no intervals).
@@ -1631,16 +1699,55 @@ _nd_inst_asset_arch() {
   case "$(uname -m)" in x86_64|amd64) echo amd64 ;; aarch64|arm64) echo arm64 ;; esac
 }
 
+# _nd_inst_fetch_asset <url> <dest>: one release asset, https only and
+# bounded. A failed name lookup (curl exit 6) or a failed connect (exit 7)
+# is tried again, 3 tries in all, 20 s apart: twice on mint a connect to
+# github.com failed once and worked a minute later (BL-067). Any other
+# failure is not retried. On failure it returns curl's exit status and sets
+# ND_INST_FETCH_WHY to curl's own error line (after a failed connect it names
+# the host, port and connect time; curl 8.5 leaves %{remote_ip} empty then),
+# the address curl reached when it reached one, and the try's time.
+_nd_inst_fetch_asset() {
+  local url="$1" dst="$2" tries=1 rc err out line
+  ND_INST_FETCH_WHY=""
+  err="$(mktemp "${TMPDIR:-/tmp}/nice-dns-fetch.XXXXXXXX")" || return 1
+  while :; do
+    rc=0
+    out="$(curl -fsSL "$url" -o "$dst" --proto =https --proto-redir =https --connect-timeout 30 --max-time 600 -w '%{remote_ip} %{time_total}' 2>"$err")" || rc=$?
+    [ "$rc" != 0 ] || break
+    rm -f "$dst"
+    cat "$err" >&2
+    if { [ "$rc" = 6 ] || [ "$rc" = 7 ]; } && [ "$tries" -lt 3 ]; then
+      tries=$((tries + 1))
+      if [ "$rc" = 6 ]; then
+        echo "  the name lookup failed; trying again in 20 s ($tries of 3)" >&2
+      else
+        echo "  the connect failed; trying again in 20 s ($tries of 3)" >&2
+      fi
+      sleep 20
+      continue
+    fi
+    line="$(sed -n 's/^curl: ([0-9]*) //p' "$err" | tail -n 1)"
+    ND_INST_FETCH_WHY="${line:-curl printed no error}; address ${out%% *}, ${out##* } s"
+    case "$out" in " "*|"") ND_INST_FETCH_WHY="${line:-curl printed no error}; no address reached, ${out##* } s" ;; esac
+    rm -f "$err"
+    return "$rc"
+  done
+  rm -f "$err"
+  return 0
+}
+
 # _nd_inst_stage_helper: downloads this host's helper asset into the
 # generation (preparation; release/bootstrap.tsv `assets`) and keeps it only
-# when its sha256 is the lock's. A name lookup that fails (cold DNS, BL-044)
-# is tried three times, 20 s apart. Without an asset, a download or a
+# when its sha256 is the lock's. A name lookup or a connect that fails (cold
+# DNS, BL-044; BL-067) is tried three times, 20 s apart
+# (_nd_inst_fetch_asset). Without an asset, a download or a
 # matching file, the install goes on without the helper and says so, now and
 # in its last lines (ND_INST_HELPER_NOTE). A malformed lock fails the
 # install. With ND_INST_HELPER_STAGED set (the fixture tests), nothing is
 # fetched.
 _nd_inst_stage_helper() {
-  local lock="$ND_INST_TREE/release/assets.lock" plat arch row url sha dst tries=1 rc got os
+  local lock="$ND_INST_TREE/release/assets.lock" plat arch row url sha dst rc got os
   if [ -n "${ND_INST_ROOT:-}" ] && [ -n "${ND_INST_HELPER_STAGED:-}" ]; then return 0; fi
   _nd_inst_assets_check "$lock" || return 1
   if [ "$ND_INST_PLATFORM" = linux ]; then plat=linux os=deb; else plat=macos os=mac; fi
@@ -1657,21 +1764,13 @@ _nd_inst_stage_helper() {
   dst="$(_nd_inst_helper_staged)"
   rm -f "$dst" "$dst.part"
   echo "▸ Fetching nice-dns-helper ($plat/$arch)"
-  while :; do
-    rc=0
-    curl -fsSL "$url" -o "$dst.part" --proto =https --proto-redir =https --connect-timeout 30 --max-time 600 || rc=$?
-    [ "$rc" != 0 ] || break
-    rm -f "$dst.part"
-    if [ "$rc" = 6 ] && [ "$tries" -lt 3 ]; then
-      tries=$((tries + 1))
-      echo "  the name lookup failed; trying again in 20 s ($tries of 3)" >&2
-      sleep 20
-      continue
-    fi
-    ND_INST_HELPER_NOTE="! The nice-dns-helper download failed (curl exit $rc): $ND_INST_HELPER_MISSING."
+  rc=0
+  _nd_inst_fetch_asset "$url" "$dst.part" || rc=$?
+  if [ "$rc" != 0 ]; then
+    ND_INST_HELPER_NOTE="! The nice-dns-helper download failed (curl exit $rc): $ND_INST_HELPER_MISSING.${ND_INST_FETCH_WHY:+ Last try: $ND_INST_FETCH_WHY.}"
     echo "$ND_INST_HELPER_NOTE" >&2
     return 0
-  done
+  fi
   got="$(health_sha_file "$dst.part")" || got=""
   if [ "$got" != "$sha" ]; then
     rm -f "$dst.part"
@@ -1680,6 +1779,71 @@ _nd_inst_stage_helper() {
     return 0
   fi
   chmod 755 "$dst.part" && mv -f "$dst.part" "$dst"
+}
+
+# _nd_inst_helper_keep_previous <deb|mac>: before install-helper replaces the
+# helper and its root-held root-ops, a copy of the helper installed now goes
+# into this generation (OD-7), or none is kept when there is none; and from
+# here a failure in the preparation gives them back (the preparation's EXIT
+# trap; inside the interruption, the rollback). Its sha256 is checked again
+# before root installs it. BL-063.
+_nd_inst_helper_keep_previous() {
+  local h keep="$ND_INST_STATE/generations/$ND_INST_GEN/previous-helper"
+  if [ "$1" = deb ]; then h="${ND_INST_ROOT:-}$ND_ROOT_HELPER_DEB"; else h="${ND_INST_ROOT:-}$ND_ROOT_HELPER_MAC"; fi
+  ND_INST_HELPER_PREV=""
+  rm -f "$keep"
+  if [ -f "$h" ] && [ ! -L "$h" ]; then
+    if ! { cp "$h" "$keep" && chmod 600 "$keep" && ND_INST_HELPER_PREV_SHA="$(health_sha_file "$keep")" && [ -n "$ND_INST_HELPER_PREV_SHA" ]; }; then
+      _nd_inst_err "could not keep a copy of the installed nice-dns-helper ($h); it was not replaced"
+      return 1
+    fi
+    ND_INST_HELPER_PREV="$keep"
+  fi
+  ND_INST_HELPER_REPLACED=1
+  trap '_nd_inst_linux_prep_exit' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM HUP
+}
+
+# _nd_inst_helper_undo: after a failed install that ran install-helper, the
+# helper the host had before: the kept copy installed again with the kept
+# source's root-ops (the tree the deployment that stays runs), so the helper
+# path works again (_nd_root_held_is_tree); or, when there was none, the
+# helper removed. Nothing when the host already has exactly that. 1 when it
+# could not be given back, which the install's message says.
+_nd_inst_helper_undo() {
+  local os src h
+  [ "${ND_INST_HELPER_REPLACED:-0}" = 1 ] || return 0
+  ND_INST_HELPER_REPLACED=0
+  if [ "$ND_INST_PLATFORM" = linux ]; then os=deb h="${ND_INST_ROOT:-}$ND_ROOT_HELPER_DEB"; else os=mac h="${ND_INST_ROOT:-}$ND_ROOT_HELPER_MAC"; fi
+  src="$(_nd_inst_source_dir)"
+  if [ -z "$ND_INST_HELPER_PREV" ]; then
+    if "nd_root_$os" remove-helper; then
+      echo "  • nice-dns-helper, which this install added, is removed again." >&2
+      return 0
+    fi
+    echo "! nice-dns-helper, which this install added, could not be removed (see above); 'nice-dns uninstall' removes it." >&2
+    return 1
+  fi
+  if [ -f "$src/$os/root-ops" ] && cmp -s "$ND_INST_HELPER_PREV" "$h" && ND_INST_TREE="$src" _nd_root_held_is_tree "$os"; then
+    return 0
+  fi
+  if [ "$(health_sha_file "$ND_INST_HELPER_PREV" 2>/dev/null)" != "$ND_INST_HELPER_PREV_SHA" ]; then
+    echo "! The copy of the earlier nice-dns-helper ($ND_INST_HELPER_PREV) changed after this install kept it; it was not installed: GUI actions needing root use sudo until the next install." >&2
+    return 1
+  fi
+  if [ -f "$src/$os/root-ops" ]; then
+    if [ "$os" = deb ]; then
+      ND_INST_TREE="$src" nd_root_deb install-helper "$ND_INST_HELPER_PREV" "$src/deb/org.nice-dns.policy"
+    else
+      ND_INST_TREE="$src" nd_root_mac install-helper "$ND_INST_HELPER_PREV"
+    fi && ND_INST_TREE="$src" _nd_root_held_is_tree "$os" && {
+      echo "  • nice-dns-helper is the one from before this install again." >&2
+      return 0
+    }
+  fi
+  echo "! nice-dns-helper could not be given back with the kept source's root-ops ($src): GUI actions needing root use sudo until the next install." >&2
+  return 1
 }
 
 # nd_install_helper <deb|mac>: installs or replaces the helper through
@@ -1702,6 +1866,7 @@ nd_install_helper() {
   s="$(_nd_inst_helper_staged)"
   if [ -f "$s" ] && ! _nd_inst_helper_current "$os"; then
     echo "▸ Installing nice-dns-helper (for actions without a terminal)"
+    _nd_inst_helper_keep_previous "$os" || return 1
     if [ "$os" = deb ]; then
       nd_root_deb install-helper "$s" "$ND_INST_TREE/deb/org.nice-dns.policy" || return 1
     else
@@ -1711,7 +1876,7 @@ nd_install_helper() {
       _nd_inst_err "the nice-dns-helper just installed is not the version this tree's root-ops expects, or does not run it"
       return 1
     fi
-    echo "  nice-dns-helper is installed at $("_nd_root_helper_file_$os"); it stays if this install fails, and an uninstall removes it."
+    echo "  nice-dns-helper is installed at $("_nd_root_helper_file_$os"); a failed install puts back the one from before (or removes it, when there was none), and an uninstall removes it."
     # Then the helper path end to end before anything relies on it: its
     # root-held root-ops answers with the version this tree expects. A tree
     # the helper does not take (a clone in /tmp) keeps to sudo; the next
@@ -1784,7 +1949,7 @@ _nd_inst_gui_note() {
 # _nd_inst_stage_gui: preparation (release/bootstrap.tsv `gui-asset`,
 # `gui-asset-macos`), on both platforms.
 _nd_inst_stage_gui() {
-  local lock="$ND_INST_TREE/release/assets.lock" plat arch row url sha dst tries=1 rc got
+  local lock="$ND_INST_TREE/release/assets.lock" plat arch row url sha dst rc got
   if [ "$ND_INST_PLATFORM" = linux ]; then plat=linux; else plat=macos; fi
   ND_INST_GUI_NOTE=""
   _nd_inst_assets_check "$lock" || return 1
@@ -1798,20 +1963,12 @@ _nd_inst_stage_gui() {
   dst="$(_nd_inst_gui_staged)"
   rm -f "$dst" "$dst.part"
   echo "▸ Fetching nice-dns-gui ($plat/$arch)"
-  while :; do
-    rc=0
-    curl -fsSL "$url" -o "$dst.part" --proto =https --proto-redir =https --connect-timeout 30 --max-time 600 || rc=$?
-    [ "$rc" != 0 ] || break
-    rm -f "$dst.part"
-    if [ "$rc" = 6 ] && [ "$tries" -lt 3 ]; then
-      tries=$((tries + 1))
-      echo "  the name lookup failed; trying again in 20 s ($tries of 3)" >&2
-      sleep 20
-      continue
-    fi
-    _nd_inst_gui_note "The nice-dns-gui download failed (curl exit $rc)"
+  rc=0
+  _nd_inst_fetch_asset "$url" "$dst.part" || rc=$?
+  if [ "$rc" != 0 ]; then
+    _nd_inst_gui_note "The nice-dns-gui download failed (curl exit $rc)" "$ND_INST_GUI_MISSING${ND_INST_FETCH_WHY:+. Last try: $ND_INST_FETCH_WHY}"
     return 0
-  done
+  fi
   got="$(health_sha_file "$dst.part")" || got=""
   if [ "$got" != "$sha" ]; then
     rm -f "$dst.part"
@@ -2058,10 +2215,10 @@ nd_install_linux_prepare_images() {
   if [ "$ND_INST_PIHOLE" = hardened ]; then
     _nd_inst_linux_hardened_base || return 1
   else
-    podman pull "$ND_INST_PINNED_PIHOLE" || return 1
+    _nd_inst_retry_lookup podman pull "$ND_INST_PINNED_PIHOLE" || return 1
     _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled base "$ND_INST_PINNED_PIHOLE" || return 1
   fi
-  podman pull "$ND_INST_PINNED_UNBOUND" || return 1
+  _nd_inst_retry_lookup podman pull "$ND_INST_PINNED_UNBOUND" || return 1
   _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled base "$ND_INST_PINNED_UNBOUND" || return 1
   _nd_inst_record_blocklist || return 1
   podman build "${ND_INST_LINUX_BUILD_FLAGS[@]}" --build-arg "BASE_IMAGE=$ND_INST_PINNED_UNBOUND" \
@@ -2081,7 +2238,7 @@ nd_install_linux_prepare_images() {
   # The proxy is pulled by its locked digest, not built. Its generation tag
   # keeps the image this generation ran for rollback; :latest (the name the
   # quadlet runs) moves to it only at activation.
-  podman pull "$ND_INST_PINNED_PROXY" || return 1
+  _nd_inst_retry_lookup podman pull "$ND_INST_PINNED_PROXY" || return 1
   podman tag "$ND_INST_PINNED_PROXY" "localhost/tor-${ND_INST_VARIANT}:$gen" || return 1
   _nd_inst_record_image proxy "localhost/tor-${ND_INST_VARIANT}:$gen" || return 1
   _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled proxy "$ND_INST_PINNED_PROXY"
@@ -2094,7 +2251,7 @@ _nd_inst_linux_hardened_base() {
   local base_img="localhost/pi-hole-hardened-base:$ND_INST_GEN" dir
   echo "▸ Building the hardened base from the nice-dns tree…"
   dir="$(_nd_inst_hardened_base)" || return 1
-  podman pull "$ND_INST_PINNED_HARDENED_OS" || return 1
+  _nd_inst_retry_lookup podman pull "$ND_INST_PINNED_HARDENED_OS" || return 1
   _nd_inst_record_image hardened-os "$ND_INST_PINNED_HARDENED_OS" || return 1
   _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled base "$ND_INST_PINNED_HARDENED_OS" || return 1
   podman build "${ND_INST_LINUX_BUILD_FLAGS[@]}" --from "$ND_INST_PINNED_HARDENED_OS" -t "$base_img" "$dir" || return 1
@@ -2248,8 +2405,9 @@ _nd_inst_mullvad_restore() {
 }
 
 # _nd_inst_linux_prep_exit: the EXIT trap of the preparation once Mullvad's
-# setting may have changed: a failure or a signal puts it back (the
-# interruption's own trap, _nd_inst_exit_trap, replaces this one).
+# setting may have changed, or (Linux and macOS) once install-helper ran: a
+# failure or a signal puts them back (the interruption's own trap,
+# _nd_inst_exit_trap, replaces this one).
 _nd_inst_linux_prep_exit() {
   local rc=$?
   trap - EXIT
@@ -2259,9 +2417,11 @@ _nd_inst_linux_prep_exit() {
   if [ "$rc" -ne 0 ] && [ "$ND_INST_MULLVAD_CHANGED" = 1 ]; then
     _nd_inst_mullvad_restore "$ND_INST_STATE/generations/$ND_INST_GEN/mullvad-dns.tsv" before_install
   fi
+  [ "$rc" -eq 0 ] || _nd_inst_helper_undo
   _nd_inst_sudo_keepalive_stop
   nd_root_runner_stop
   [ -z "${ND_INST_CLEANUP:-}" ] || rm -rf "${ND_INST_CLEANUP:?}"
+  [ -z "${ND_INST_WORK:-}" ] || rm -rf "${ND_INST_WORK:?}"
   exit "$rc"
 }
 
@@ -2416,6 +2576,21 @@ nd_install_linux_uninstall() {
   local ref ep sd dns_ok=1
   ND_INST_TREE="$ND_INST_SRC"
   nd_root_runner_start || true
+  # Host DNS goes back first, while the stack still answers (BL-043 item 6,
+  # WF-DNS-003), with the controller held so nothing restarts or pins it
+  # meanwhile: the DNS state before nice-dns (resolv.conf, systemd-resolved,
+  # the ipv6 sysctls and the NetworkManager/systemd files the pin installed),
+  # then, only once that is back, Mullvad's DNS setting from before nice-dns
+  # (BL-048, DEC-019). A failed restore keeps its record and stops nothing;
+  # the exit trap releases the controller.
+  _nd_inst_uninstall_hold
+  _nd_inst_dns_helper restore || dns_ok=0
+  if [ "$dns_ok" = 1 ]; then _nd_inst_linux_mullvad_uninstall || dns_ok=0; fi
+  if [ "$dns_ok" = 0 ]; then
+    _nd_inst_uninstall_kept
+    return 1
+  fi
+  _nd_inst_uninstall_go
   nd_install_linux_stop_stack
   systemctl --user disable --now nice-dns-fetch-bridges.service 2>/dev/null || true
   rm -f "$HOME/.config/systemd/user/nice-dns-fetch-bridges.service" "$HOME/.local/bin/nice-dns-fetch-bridges"
@@ -2438,13 +2613,6 @@ nd_install_linux_uninstall() {
              $(ND_INST_PLATFORM=linux _nd_inst_generation_refs); do
     podman image rm -f "$ref" 2>/dev/null || true
   done
-  # The DNS state before nice-dns: resolv.conf, systemd-resolved, the ipv6
-  # sysctls and the NetworkManager/systemd files the pin installed. A failed
-  # restore keeps its record; the rest of the uninstall still runs, and the
-  # uninstall then fails so the operator retries it.
-  _nd_inst_dns_helper restore || dns_ok=0
-  # Mullvad's DNS setting from before nice-dns (BL-048).
-  _nd_inst_linux_mullvad_uninstall || dns_ok=0
   _nd_inst_linux_mullvad_resolves
   # The pin helper and the legacy grub drop-in go.
   nd_root_deb uninstall
@@ -2465,8 +2633,86 @@ _nd_inst_uninstall_state() {
   [ "$1" = 1 ] || return 0
   _nd_inst_state_remove
   _nd_inst_pihole_credential_remove
-  sd="$(nd_install_state_dir)" && rm -f "${sd:?}/current"
+  # The generation records go with the marker (BL-061), and the state
+  # directory once nothing else is left in it.
+  if sd="$(nd_install_state_dir)"; then
+    rm -f "${sd:?}/current"
+    if [ -d "$sd/generations" ] && [ ! -L "$sd" ] && [ ! -L "$sd/generations" ]; then
+      rm -rf "${sd:?}/generations"
+    fi
+    rmdir "$sd" 2>/dev/null || true
+  fi
+  # The bridges mode goes too, so a later install starts with bridges on
+  # (BL-060), and the config directory once nothing else is left in it.
+  rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges-mode.env"
+  rmdir "${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns" 2>/dev/null || true
   _nd_inst_command_remove
+}
+
+# _nd_inst_uninstall_kept: an uninstall whose DNS restore failed, before it
+# stopped anything (BL-043 item 6). The restore may have changed part of the
+# host's DNS before it failed; its own message says which.
+_nd_inst_uninstall_kept() {
+  _nd_inst_err "host DNS was NOT given back in full (the message above says what the restore did and did not change), so the stack was not stopped or removed: nice-dns keeps running and answering, with its Tor state, root anchor, Pi-hole lists and admin password, and Unbound's route."
+  _nd_inst_err "Fix the cause and run 'nice-dns uninstall' again."
+}
+
+# _nd_inst_uninstall_hold: before an uninstall gives host DNS back, the
+# controller's schedules are held and, as `nice-dns restart` does
+# (restart_take_lock), its state lock is taken: stopping a schedule does not
+# end a pass already running, and a macOS rebuild would pin again. Up to
+# ND_INST_LOCK_TRIES (125) tries, 5 s apart (the lock's lease is 600 s); a
+# state directory that cannot be locked has no controller to wait for. From
+# here the exit trap releases both on any exit, a signal included, until
+# _nd_inst_uninstall_go.
+_nd_inst_uninstall_hold() {
+  local i=0 rc max="${ND_INST_LOCK_TRIES:-125}"
+  ND_INST_HELD="" ND_INST_UNINSTALL_RELEASE=1 ND_INST_UNINSTALL_LOCK=""
+  trap '_nd_inst_uninstall_exit' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM HUP
+  nd_install_hold_controller
+  ND_PLATFORM="$ND_INST_PLATFORM"; export ND_PLATFORM
+  # shellcheck source=lib/recovery.sh
+  . "$ND_INST_SRC/lib/recovery.sh" || return 1
+  while :; do
+    # || keeps errexit (the entrypoints' set -e) from ending here on 2 or 3.
+    rc=0; ND_INST_UNINSTALL_LOCK="$(nd_state_lock 2>/dev/null)" || rc=$?
+    case "$rc" in
+      0) return 0 ;;
+      3) ;;
+      *) ND_INST_UNINSTALL_LOCK=""; return 0 ;;
+    esac
+    ND_INST_UNINSTALL_LOCK=""
+    i=$((i + 1))
+    if [ "$i" -ge "$max" ]; then
+      _nd_inst_err "a controller pass still holds its state lock; nothing was changed. Run 'nice-dns uninstall' again."
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+# _nd_inst_uninstall_go: host DNS is back; from here the uninstall removes
+# the controller and the stack, so nothing is released again.
+_nd_inst_uninstall_go() {
+  [ -z "${ND_INST_UNINSTALL_LOCK:-}" ] || nd_state_unlock "$ND_INST_UNINSTALL_LOCK" >/dev/null 2>&1 || true
+  ND_INST_UNINSTALL_LOCK="" ND_INST_UNINSTALL_RELEASE=0
+}
+
+# _nd_inst_uninstall_exit: the uninstall's EXIT trap (it replaces the
+# entrypoint's, whose cleanup it repeats).
+_nd_inst_uninstall_exit() {
+  local rc=$?
+  trap - EXIT
+  trap '' INT TERM HUP
+  set +e
+  [ -z "${ND_INST_UNINSTALL_LOCK:-}" ] || nd_state_unlock "$ND_INST_UNINSTALL_LOCK" >/dev/null 2>&1
+  [ "${ND_INST_UNINSTALL_RELEASE:-0}" = 1 ] && _nd_inst_release_controller
+  nd_root_runner_stop
+  [ -z "${ND_INST_CLEANUP:-}" ] || rm -rf "${ND_INST_CLEANUP:?}"
+  [ -z "${ND_INST_WORK:-}" ] || rm -rf "${ND_INST_WORK:?}"
+  exit "$rc"
 }
 
 # _nd_inst_uninstall_verdict <dns_ok>: fails the uninstall when host DNS was
@@ -2690,7 +2936,7 @@ _nd_inst_containerfile_base() {
 # preparation (and given a plain local name for the builder).
 _nd_inst_macos_pull_base() {
   [ -n "$1" ] || { _nd_inst_err "cannot read a build base"; return 1; }
-  "$CONTAINER_BIN" image pull "$1" || return 1
+  _nd_inst_retry_lookup "$CONTAINER_BIN" image pull "$1" || return 1
   if [ -n "${2:-}" ]; then
     "$CONTAINER_BIN" image tag "$1" "$2" || return 1
     _nd_inst_record_image base "$2" || return 1
@@ -2710,7 +2956,7 @@ nd_install_macos_prepare_images() {
   # second cold DNS latency with nothing wrong in this repo. Pull explicitly, by
   # the reviewed digest in release/images.lock (Task 1.3); :latest moves to it
   # only at activation.
-  "$CONTAINER_BIN" image pull "$ND_INST_PINNED_PROXY" || return 1
+  _nd_inst_retry_lookup "$CONTAINER_BIN" image pull "$ND_INST_PINNED_PROXY" || return 1
   "$CONTAINER_BIN" image tag "$ND_INST_PINNED_PROXY" "tor-${ND_INST_VARIANT}:$gen" || return 1
   _nd_inst_record_image proxy "tor-${ND_INST_VARIANT}:$gen" || return 1
   _nd_inst_manifest_row "$ND_INST_MANIFEST" pulled proxy "$ND_INST_PINNED_PROXY" || return 1
@@ -2740,7 +2986,7 @@ nd_install_macos_bridges() {
   local _bridges_file _nbridges=0 _bline _mode=on
   # The bridges mode (nice-dns bridges on|off), read as data: with
   # TOR_BRIDGES=off Tor runs direct, so no set is fetched or required.
-  if [ "$(awk -F '=' '$1 == "TOR_BRIDGES" { print $2; exit }' "${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges-mode.env" 2>/dev/null)" = off ]; then
+  if [ "$(awk -F '=' '$1 == "TOR_BRIDGES" && NF >= 2 { v = $2 } END { print v }' "${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges-mode.env" 2>/dev/null)" = off ]; then
     _mode=off
   fi
   # Fetch default obfs4 bridges from the Tor Project on first install, then
@@ -2911,10 +3157,20 @@ nd_install_macos_activate() {
 nd_install_macos_uninstall() {
   local ep sd dns_ok=1 helper_ok=1
   ND_INST_TREE="$ND_INST_SRC"
+  # Host DNS goes back first, while the stack still answers (BL-043 item 6),
+  # with the controller held: a rebuild it started would pin again. A failed
+  # restore keeps its record and stops nothing; the exit trap releases the
+  # controller.
+  _nd_inst_uninstall_hold
+  _nd_inst_dns_helper restore || dns_ok=0
+  if [ "$dns_ok" = 0 ]; then
+    _nd_inst_uninstall_kept
+    return 1
+  fi
+  _nd_inst_uninstall_go
   nd_install_macos_teardown uninstall
   ep="$(_nd_inst_controller_entry)"
   if [ -n "$ep" ] && [ -f "$ep" ]; then bash "$ep" uninstall || true; fi
-  _nd_inst_dns_helper restore || dns_ok=0
   # The helper goes last, so every root step above could use it. Left
   # behind it is passwordless root for its owner, so the uninstall fails.
   nd_root_mac remove-helper || helper_ok=0

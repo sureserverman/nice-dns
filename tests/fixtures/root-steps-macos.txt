@@ -82,6 +82,7 @@ sudo mkdir -p <W>/root/etc/sudoers.d
 sudo install -m 440 <SAVED> <W>/root/etc/sudoers.d/start-container
 ## uninstall
 rc 0
+sudo bash <W>/src/nice-dns/mac/start-container-root.sh restore
 sudo rm -f <W>/root/usr/local/sbin/nice-dns-debug-monitor.sh
 sudo rm -f <W>/root/etc/sudoers.d/start-container <W>/root/usr/local/sbin/start-container.sh <W>/root/usr/local/sbin/start-container-root.sh <W>/root/usr/local/sbin/nice-dns-bridge-eval.sh <W>/root/usr/local/sbin/nice-dns-fetch-bridges.sh
 sudo launchctl bootout system/org.nice-dns.free-port53
@@ -93,6 +94,5 @@ sudo rm -f /Library/LaunchDaemons/com.local.mullvad-pfctl-disable-on-connect.pli
 sudo rm -f /etc/sudoers.d/start-podman /usr/local/sbin/start-podman.sh /usr/local/sbin/start-podman-root.sh /usr/local/sbin/mullvad-pfctl-disable-on-connect
 sudo ifconfig lo0 -alias 127.0.0.53
 sudo launchctl print system/com.apple.mDNSResponder
-sudo bash <W>/src/nice-dns/mac/start-container-root.sh restore
 sudo rm -f <W>/root/usr/local/libexec/nice-dns-helper <W>/root/usr/local/libexec/nice-dns/root-ops <W>/root/usr/local/libexec/nice-dns/owner <W>/root/usr/local/libexec/nice-dns/.root-ops.new
 sudo test -d <W>/root/usr/local/libexec/nice-dns
