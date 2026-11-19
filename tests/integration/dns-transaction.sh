@@ -126,6 +126,82 @@ t_helper_blocks_scoped_dns_off_the_container_bridge() {
   ) || exit 1
 }
 
+# BL-032: the helper runs under set -euo pipefail, so an assignment whose
+# capture fails ended it. An offline Mac has no route to the stack: `route`
+# exits 1, and post ended before its cache flush. A failing `pfctl -E` did the
+# same. Neither may end the pin.
+t_helper_post_finishes_when_the_mac_is_offline() {
+  dt_select_platforms
+  case " $DT_PLATS " in *" macos "*) ;; *) echo "macos not selected (--platforms)"; return 0 ;; esac
+  (
+    local f
+    dt_world "$(dt_ep_of macos)" fresh
+    dt_helper macos snapshot
+    for f in '^route -n get ' '^pfctl -E$'; do
+      printf '%s\n' "$f" >"$FAKE/fail"; : >"$FAKE_LOG"; rm -f "$FAKE/pf.rules"
+      dt_helper macos post
+      assert_rc 0 "$DT_RC" "BL-032: post exits 0 when '$f' fails: $DT_OUT"
+      assert_ne "" "$(ip_last "$FAKE_LOG" '^networksetup -setdnsservers ')" "BL-032: '$f' failing: the pin is made"
+      assert_ne "" "$(ip_first "$FAKE_LOG" '^dscacheutil -flushcache$')" "BL-032: '$f' failing: the cache is flushed: $(cat "$FAKE_LOG")"
+      assert_ne "" "$(ip_first "$FAKE_LOG" '^killall -HUP mDNSResponder$')" "BL-032: '$f' failing: mDNSResponder is reset"
+    done
+    rm -f "$FAKE/fail"
+    # The token cannot be written (here: a directory in its place): the pin
+    # still ends with its flush (Task 1.1 quick review).
+    mkdir -p "$FAKE_ROOT/var/db/nice-dns/pf-token"; : >"$FAKE_LOG"
+    dt_helper macos post
+    assert_rc 0 "$DT_RC" "BL-032: post exits 0 when the pf token cannot be written: $DT_OUT"
+    assert_ne "" "$(ip_first "$FAKE_LOG" '^dscacheutil -flushcache$')" "BL-032: and still flushes the cache"
+    assert_match 'could not record the pf token' "$DT_OUT" "BL-032: and says so"
+    rmdir "$FAKE_ROOT/var/db/nice-dns/pf-token"
+  ) || exit 1
+}
+
+# BL-032 and BL-043 item 5: `pfctl -s info | grep -q` let grep exit at its
+# first match; a pfctl still writing then dies of SIGPIPE, pipefail fails the
+# pipeline, an enabled pf reads as disabled and `pfctl -E` takes a second
+# reference over the recorded token. The status is read whole first. The
+# token directory is made 0700 (sudo runs the helper with umask 022).
+t_helper_reads_pf_status_whole_and_keeps_its_token() {
+  dt_select_platforms
+  case " $DT_PLATS " in *" macos "*) ;; *) echo "macos not selected (--platforms)"; return 0 ;; esac
+  (
+    local tokdir
+    dt_world "$(dt_ep_of macos)" fresh
+    tokdir="$FAKE_ROOT/var/db/nice-dns"
+    # pf off, no directory yet, the umask sudo gives the helper.
+    umask 022
+    : >"$FAKE_LOG"
+    dt_helper macos post
+    assert_rc 0 "$DT_RC" "post with pf off: $DT_OUT"
+    assert_ne "" "$(ip_first "$FAKE_LOG" '^pfctl -E$')" "pf is enabled when it is off"
+    assert_eq 4242 "$(cat "$tokdir/pf-token" 2>/dev/null)" "the token is recorded"
+    assert_eq 700 "$(ip_mode "$tokdir")" "BL-043: the token directory is 0700"
+    # pf on, with a status longer than a pipe buffer (pfctl is still writing
+    # when grep -q would have exited).
+    rm -f "$IP_BIN/pfctl"
+    cat >"$IP_BIN/pfctl" <<'STUB'
+#!/bin/sh
+printf 'pfctl %s\n' "$*" >>"$FAKE_LOG"
+case "$*" in
+  "-s info")
+    echo "Status: Enabled for 0 days 00:01:00           Debug: Urgent"
+    i=0; while [ "$i" -lt 4000 ]; do echo "  filler $i ..................................................."; i=$((i + 1)); done ;;
+  -E) echo "Token : 9999" ;;
+  *"-f -") cat >"$FAKE/pf.rules" ;;
+esac
+exit 0
+STUB
+    chmod 755 "$IP_BIN/pfctl"
+    : >"$FAKE_LOG"
+    dt_helper macos post
+    assert_rc 0 "$DT_RC" "post with pf on: $DT_OUT"
+    assert_eq "" "$(ip_first "$FAKE_LOG" '^pfctl -E$')" "BL-032: an enabled pf is not enabled again: $(cat "$FAKE_LOG")"
+    assert_eq 4242 "$(cat "$tokdir/pf-token" 2>/dev/null)" "BL-032: and the recorded token is unchanged"
+    assert_ne "" "$(ip_first "$FAKE_LOG" '^pfctl -a com\.apple/260\.nice-dns-scoped -f -$')" "the block is still loaded"
+  ) || exit 1
+}
+
 t_helper_refuses_external_changes() {
   local plat
   dt_select_platforms

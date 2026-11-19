@@ -83,18 +83,27 @@ set_local_dns() {
 # state skips the rules. Without a bridge to the stack nothing is loaded: a
 # block could cut the stack off. A failure here never fails the pin.
 block_scoped_dns() {
-  local br tok
-  br="$(route -n get "$PIHOLE_IP" 2>/dev/null | awk '/interface:/ { print $2; exit }')"
+  local br tok info
+  # Under set -e a failed capture would end post before its cache flush: an
+  # offline Mac has no route at all (BL-032).
+  br="$(route -n get "$PIHOLE_IP" 2>/dev/null | awk '/interface:/ { print $2; exit }')" || br=""
   case "$br" in
     bridge[0-9]*) ;;
     *) echo "no container bridge to $PIHOLE_IP (${br:-none}); scoped DNS is not blocked" >&2; return 0 ;;
   esac
-  if ! pfctl -s info 2>/dev/null | grep -q 'Status: Enabled'; then
-    tok="$(pfctl -E 2>&1 | sed -n 's/^Token : //p')"
-    if [[ -n $tok ]]; then
-      mkdir -p "$(dirname "$PF_TOKEN")" && printf '%s\n' "$tok" >"$PF_TOKEN"
-    fi
-  fi
+  # pf's status is read whole before it is searched: `| grep -q` exits at its
+  # first match, a pfctl still writing dies of SIGPIPE, and pipefail would
+  # then read an enabled pf as disabled and take a second reference.
+  info="$(pfctl -s info 2>/dev/null)" || info=""
+  case "$info" in
+    *'Status: Enabled'*) ;;
+    *)
+      tok="$(pfctl -E 2>&1 | sed -n 's/^Token : //p')" || tok=""
+      if [[ -n $tok ]]; then
+        { mkdir -p "$(dirname "$PF_TOKEN")" && chmod 700 "$(dirname "$PF_TOKEN")" && printf '%s\n' "$tok" >"$PF_TOKEN"; } 2>/dev/null \
+          || echo "could not record the pf token in $PF_TOKEN" >&2
+      fi ;;
+  esac
   if ! printf 'pass out quick on %s proto { udp, tcp } to %s port { 53, 853 }\nblock drop out quick proto { udp, tcp } to %s port { 53, 853 }\n' \
       "$br" "$DNSNET_SUBNET" "$DNSNET_SUBNET" | pfctl -a "$PF_ANCHOR" -f - 2>/dev/null; then
     echo "could not load $PF_ANCHOR; scoped DNS is not blocked" >&2
