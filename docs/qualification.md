@@ -180,9 +180,10 @@ address a restart gets (BL-038).
 Found by the Stage 2 gate reviews and deferred (user decision 2026-10-06:
 qualify what was soaked; any product fix would need a new 24 h soak):
 
-- The restart that adopts a filtered bridge set takes no state lock, so it
-  can overlap a restart the minutely tick decides (BL-030), and on macOS it
-  rebuilds the whole stack (BL-038).
+- The restart that adopts a filtered bridge set rebuilds the whole stack on
+  macOS (BL-038). (It also took no state lock, so it could overlap a restart
+  the minutely tick decided, BL-030; since the 2026-11-18 sweep it runs
+  under the lock.)
 - Rolling the controller back to a bundle from before this sub-plan fails
   on the new `proxy_gen` state key (BL-036).
 - macOS: a slow Tor at login can be read as a bad bridge set and trigger a
