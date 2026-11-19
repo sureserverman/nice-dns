@@ -1014,6 +1014,9 @@ nd_recovery_tick() {
   now="$(date +%s)"; boot="$(_nd_state_boot)"
   if ! nd_state_load >"$t/state"; then rm -rf "$t"; nd_state_unlock "$tok"; return 2; fi
   gen="$(_nd_rec_field generation "$t/state")"
+  # A key a newer bundle wrote (BL-036): said once, since this pass's commit
+  # writes only the keys the policy knows and so drops it.
+  [ -z "${_ND_STATE_UNKNOWN:-}" ] || nd_recovery_journal "nd-$now-$((gen + 1))" controller state-skipped "unknown state keys skipped (written by a newer bundle?): $_ND_STATE_UNKNOWN"
   _nd_rec_readiness "$obs" "$now"
   if ! ND_POLICY_RUNTIME_REPAIRS="$(nd_platform_runtime_repairs)" nd_policy_decide "$obs" "$t/state" "$now" "$boot" >"$t/out"; then rm -rf "$t"; nd_state_unlock "$tok"; return 2; fi
   awk '$0 == "schema\tnice-dns-controller-state/1" { s = 1 } !s' "$t/out" >"$t/decision"

@@ -646,7 +646,8 @@ nd_policy_decide() {
   printf 'schema\tnice-dns-decision/1\naction\t%s\ntarget\t%s\nreason\t%s\n' "$action" "$target" "$reason"
   printf 'schema\tnice-dns-controller-state/1\nboot_id\t%s\nupdated\t%s\nstarted\t%s\nroute\t%s\n' "$s_boot" "$s_updated" "$s_started" "$s_route"
   printf 'outage_since\t%s\noutage_restarts\t%s\nlast_action\t%s\nlast_action_at\t%s\nrecovery_at\t%s\nproxy_gen\t%s\n' "$s_out" "$s_rest" "$s_la" "$s_laat" "$s_rec" "$s_pgen"
-  # Only when non-zero: a bundle from before these rows refuses them (BL-036).
+  # Only when non-zero: a bundle from before these rows and before BL-036's
+  # fix (which skips a key it does not know) refuses them.
   [ "$s_ubfail" = 0 ] || printf 'unbound_fail\t%s\n' "$s_ubfail"
   [ "$s_ubrest" = 0 ] || printf 'unbound_restarts\t%s\n' "$s_ubrest"
   [ "$s_rtrep" = 0 ] || printf 'runtime_repairs\t%s\n' "$s_rtrep"

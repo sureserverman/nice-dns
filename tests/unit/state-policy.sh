@@ -142,7 +142,8 @@ t_state_rejects_malformed_and_never_executes_it() {
     's/^last_action\t-/last_action\treboot-the-host/' \
     's/^boot_id\tboot-a/boot_id\tboot a/' \
     's/^started\t1/started\t1\r/' \
-    's/^recovery_at\t-/recovery_at\t-\nbonus\tx/' \
+    's/^recovery_at\t-/recovery_at\t-\nBonus key\tx/' \
+    's/^recovery_at\t-/recovery_at\t-\nbonus\t/' \
     's/^recovery_at\t-/recovery_at\t-\nstreak\tcloudflare-onion\t1\t0/' \
     's/^recovery_at\t-/recovery_at\t-\nstreak\tcloudflare-onion\t1\t0\t0\nstreak\tcloudflare-onion\t2\t0\t0/'; do
     # shellcheck disable=SC2059
@@ -151,6 +152,39 @@ t_state_rejects_malformed_and_never_executes_it() {
     assert_rc 2 "$rc" "malformed state refused: $bad"
     assert_no_path "$CASE_DIR/PWNED" "state content was executed"
   done
+}
+
+# BL-036: a rollback to an older bundle meets a key a newer one wrote. A
+# well-formed unknown row is skipped, so the older controller keeps running;
+# its tick says so once in the journal and its commit drops the row. A
+# malformed row, and a bad value for a known key, are refused as before (the
+# malformed cases are in t_state_rejects_malformed_and_never_executes_it).
+t_state_skips_an_unknown_key_and_journals_it_once_BL_036() {
+  local base out rc
+  sp_libs
+  export ND_ROUTE_DIR="$CASE_DIR/no-route-dir"
+  # shellcheck source=lib/recovery.sh
+  . "$NICE_DNS_ROOT/lib/recovery.sh" || fail "cannot source lib/recovery.sh"
+  nd_state_init || fail "init"
+  base='schema\tnice-dns-controller-state/1\ngeneration\t3\nboot_id\tboot-a\nupdated\t1\nstarted\t1\nroute\t-\noutage_since\t-\noutage_restarts\t0\nlast_action\t-\nlast_action_at\t-\nrecovery_at\t-\n'
+  # shellcheck disable=SC2059
+  { printf "$base"; printf 'future_key\t1\n'; } >"$ND_STATE_DIR/state.tsv"; chmod 600 "$ND_STATE_DIR/state.tsv"
+  nd_state_load >"$CASE_DIR/loaded" 2>"$CASE_DIR/err"; rc=$?
+  assert_rc 0 "$rc" "BL-036: a state with an unknown well-formed key loads: $(cat "$CASE_DIR/err")"
+  assert_eq future_key "${_ND_STATE_UNKNOWN:-}" "BL-036: the load names the skipped key"
+  assert_match '^route	-$' "$(cat "$CASE_DIR/loaded")" "BL-036: the known keys load as before"
+  # shellcheck disable=SC2059
+  printf "$base" | sed 's/^outage_restarts\t0/outage_restarts\tx/' >"$ND_STATE_DIR/state.tsv"
+  nd_state_load >/dev/null 2>"$CASE_DIR/err"
+  assert_rc 2 "$?" "BL-036: a bad value for a known key is still refused"
+  assert_match 'outage_restarts' "$(cat "$CASE_DIR/err")" "BL-036: and the key is named"
+  # shellcheck disable=SC2059
+  { printf "$base"; printf 'future_key\t1\n'; } >"$ND_STATE_DIR/state.tsv"
+  sp_obs "$CASE_DIR/obs" healthy unhealthy healthy healthy -
+  out="$(nd_recovery_tick active "$CASE_DIR/obs" 2>&1)"; assert_rc 0 "$?" "BL-036: the tick runs over the unknown key: $out"
+  out="$(nd_recovery_tick active "$CASE_DIR/obs" 2>&1)"; assert_rc 0 "$?" "BL-036: and the next tick: $out"
+  assert_eq 1 "$(grep -c 'future_key' "$ND_STATE_DIR/recovery.tsv" 2>/dev/null)" "BL-036: the journal names the skipped key once over two passes"
+  assert_eq 0 "$(grep -c '^future_key' "$ND_STATE_DIR/state.tsv")" "BL-036: the tick's commit drops the unknown row"
 }
 
 t_state_dir_must_be_private_and_real() {

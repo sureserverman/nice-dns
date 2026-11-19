@@ -131,7 +131,12 @@ nd_state_init() {
 }
 
 # _nd_state_check <file> <with_generation 1|0>: validate; problems on stderr.
-# With 0, a generation row is allowed and ignored.
+# With 0, a generation row is allowed and ignored. A well-formed row whose key
+# this bundle does not know (a newer bundle wrote it; BL-036) is skipped, not
+# refused: its key is printed on stdout, space-separated. The key must be
+# lower-case [a-z0-9_-] and the value non-empty, so a malformed row is still
+# refused as an unknown key; so is a per-container key (paused_, restart_seen_,
+# crash_) for a container outside the stack.
 _nd_state_check() {
   awk -F '\t' -v need="$2" -v schema="$_ND_S_SCHEMA" '
     function bad(m) { print "state line " NR ": " m > "/dev/stderr"; err = 1 }
@@ -168,10 +173,12 @@ _nd_state_check() {
       else if (k == "outage_restarts" || k == "unbound_fail" || k == "unbound_restarts" || k == "runtime_repairs" || k == "pihole_fail" || k == "pihole_restarts" || k == "paused_repairs" || k ~ /^(paused|restart_seen|crash_esc|crash_since)_(pi-hole|unbound|tor-haproxy|tor-socat)$/) ok = num(v)
       else if (k ~ /^crash_(pi-hole|unbound|tor-haproxy|tor-socat)$/) ok = epochs(v)
       else if (k == "last_action") ok = v ~ /^(-|no-op|switch-route|refresh-bridges|restart-component|repair-runtime|escalate)$/
+      else if (k ~ /^[a-z][a-z0-9_-]*$/ && k !~ /^(paused|restart_seen|crash)_/ && length(k) <= 64 && v != "" && length(v) <= 256) { unk = unk (unk == "" ? "" : " ") k; next }
       else { bad("unknown key " k); next }
       if (!ok) bad("bad value for " k)
     }
     END {
+      if (unk != "") print unk
       if (NR == 0) bad("empty state")
       n = split("boot_id updated started route outage_since outage_restarts last_action last_action_at recovery_at", req, " ")
       for (i = 1; i <= n; i++) if (!(req[i] in seen)) bad("missing key " req[i])
@@ -185,15 +192,19 @@ _nd_state_default() {
   printf 'outage_since\t-\noutage_restarts\t0\nlast_action\t-\nlast_action_at\t-\nrecovery_at\t-\n'
 }
 
+# _ND_STATE_UNKNOWN: the keys nd_state_load skipped (BL-036), space-separated;
+# set when it runs in the caller's shell, empty when there were none.
 nd_state_load() {
-  local d f msg
+  local d f msg unk
+  _ND_STATE_UNKNOWN=""
   d="$(_nd_state_dir)"
   msg="$(_nd_state_dir_ok "$d")" || { printf '%s\n' "$msg" >&2; return 2; }
   f="$d/state.tsv"
   if [ -L "$f" ]; then printf '%s is a symlink\n' "$f" >&2; return 2; fi
   if [ ! -e "$f" ]; then _nd_state_default; return 0; fi
   if [ ! -f "$f" ]; then printf '%s is not a regular file\n' "$f" >&2; return 2; fi
-  _nd_state_check "$f" 1 || return 2
+  unk="$(_nd_state_check "$f" 1)" || return 2
+  _ND_STATE_UNKNOWN="$unk"
   cat "$f"
 }
 
@@ -279,7 +290,7 @@ nd_state_commit() {
   case "$exp" in ''|*[!0-9]*) printf 'expected generation must be a number, got %s\n' "$exp" >&2; return 2 ;; esac
   nd_state_lock_held "$tok" || { printf 'commit refused: token %s does not hold the state lock\n' "$tok" >&2; return 5; }
   [ -f "$f" ] && [ ! -L "$f" ] || { printf 'next state %s is not a regular file\n' "$f" >&2; return 2; }
-  _nd_state_check "$f" 0 || return 2
+  _nd_state_check "$f" 0 >/dev/null || return 2
   cur="$(_nd_state_generation)" || return 2
   if [ "$cur" != "$exp" ]; then
     printf 'commit conflict: stored generation is %s, expected %s\n' "$cur" "$exp" >&2
