@@ -212,6 +212,51 @@ Not shown: an ssh install that has to ask for a sudo password (this mac's
 user has a NOPASSWD rule), and a Mac with no one logged in (fixture case
 only).
 
+## macOS pre-login start
+
+Backlog sweep Sub-plan 3, Task 3.1 (BL-058), on the mac (macOS 27.2.1,
+container CLI 1.7.1, FileVault off, no automatic login), 2026-11-19. The
+question: can Apple's container runtime, and then the stack, start before
+anyone logs in?
+
+A scratch daemon, /Library/LaunchDaemons/org.nice-dns.spike-prelogin.plist
+(`UserName` the install's user, `RunAtLoad`, no `KeepAlive`), ran at boot
+`container system start --disable-kernel-install --timeout 120`, then
+`container system status`, then the installed
+/usr/local/sbin/start-container.sh, logging to /tmp/nice-dns-spike.log. The
+mac was rebooted at 17:59:18 UTC (the owner said go, OD-3); ssh answered at
+17:59:54 with no user logged in.
+
+What the daemon logged (`launchctl managername` there: `System`):
+
+```
+spike start 2026-11-19T17:59:44Z uid=501 managername=System
+Launching container-apiserver...
+Testing access to container-apiserver...
+Error: internalError: "failed to get a response from apiserver: interrupted: "XPC connection error: Connection invalid""
+system start rc=1 17:59:44
+apiserver is not running and not registered with launchd
+system status rc=1 17:59:44
+start-container rc=1 18:00:22   (its log: "container system never came up", after 10 tries)
+```
+
+Read over ssh before login, each under a 60 s limit: `container system
+status` printed "apiserver is not running and not registered with
+launchd"; `container ls -a` failed ("XPC connection error: Connection
+invalid"); `dig @172.31.240.250 cloudflare.com` timed out (host DNS stays
+pinned to the stack, which is not up); no container-apiserver process. The
+scratch daemon was then booted out and removed (no spike runtime existed to
+stop), and the owner logged in; the start-container agent started the
+runtime in the login session (apiserver 18:01:06), rebuilt the stack on
+its addresses (18:01:15) and DNS answered again at 18:01:36.
+
+verdict: does not start
+
+So on this macOS the Mac has no DNS after a reboot until its user logs in,
+and nice-dns cannot change that from a daemon: the runtime starts only in a
+login session. Automatic login (System Settings, Users & Groups; it needs
+FileVault off) is the way to have DNS after an unattended reboot.
+
 ## Known limits
 
 Found by the Stage 2 gate reviews and deferred (user decision 2026-10-06:
