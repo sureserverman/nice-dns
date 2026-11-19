@@ -1193,7 +1193,9 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   in preparation (lib/install.sh:1983) and keeps it only when its sha256 is
   the one release/assets.lock pins (lib/install.sh:2004-2009). No row, a
   failed download or a wrong sha256 leaves the GUI out with one note
-  (lib/install.sh:1976) and the install goes on. Only a whole install
+  (lib/install.sh:1976) and the install goes on. A file whose sha256 cannot
+  be taken at all (no sha256 tool answered) is said by name and stops that
+  step (lib/install.sh:1476-1480, BL-021). Only a whole install
   publishes it (lib/install.sh:588): the three files beside the kept source,
   then the program beside the command, the launcher and the icon, each by
   rename, and where they went in published.tsv (lib/install.sh:2016,
@@ -1480,7 +1482,10 @@ Sub-plan 3; docs/cli-contract.md is the contract the GUIs pin to.
 3. `update --check` asks the recorded branch for its newest commit and keeps
    the answer for `status`: `current`, `available` (the commits differ,
    usually the branch is newer) or `unknown`. A check of another branch keeps
-   nothing. The controller runs the published `nice-dns update --check`
+   nothing. An install that activates a generation drops a kept check made
+   for another commit or branch (lib/install.sh:578, lib/install.sh:601-608),
+   so `status` says `unknown never-checked` until the next check rather than
+   `current` for a commit no longer installed (2026-11-18 sweep, Sub-plan 2). The controller runs the published `nice-dns update --check`
    itself twice a day, bounded to 60 s, and never installs
    (health/nice-dns-health:1404-1445): Linux a calendar timer at 00:00 and
    12:00 with `RandomizedDelaySec=30m` and `Persistent=true`
