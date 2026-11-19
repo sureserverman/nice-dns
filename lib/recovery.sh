@@ -1250,29 +1250,76 @@ _nd_br_listed() {
     for (i = 3; i <= NF; i++) if ($i ~ /^rsa_id=/) { v = $i; sub(/^rsa_id=/, "", v); print toupper(v) } }' "$1" 2>/dev/null
 }
 
-# _nd_br_remember <weak list>: the judgement outlives Tor's state, which the
-# macOS agent deletes whenever the bridge set changes (mac/start-container.sh
-# prune_guard_state) and Tor prunes for unlisted bridges after about 20 days.
-# bridges.weak (state directory, 0600, fingerprints only) keeps each weak
-# bridge for ND_BRIDGE_WEAK_DAYS (30) from its last judgement. Prints the
-# weak list plus the remembered ones ("FP<TAB>0<TAB>remembered").
+# _nd_br_healthy <tor state file>: the fingerprints judged (at least
+# ND_BRIDGE_MIN_USE uses) and at or above the bar.
+_nd_br_healthy() {
+  awk -v min="${ND_BRIDGE_MIN_USE:-20}" -v pct="${ND_BRIDGE_MIN_USE_PCT:-90}" '
+    $1 == "Guard" && $2 == "in=bridges" {
+      fp = ""; a = 0; s = 0
+      for (i = 3; i <= NF; i++) {
+        k = $i; sub(/=.*/, "", k); v = $i; sub(/^[^=]*=/, "", v)
+        if (k == "rsa_id") fp = toupper(v)
+        else if (k == "pb_use_attempts") a = v + 0
+        else if (k == "pb_use_successes") s = v + 0
+      }
+      if (length(fp) == 40 && fp !~ /[^0-9A-F]/ && a >= min && s * 100 >= pct * a) print fp
+    }' "$1" 2>/dev/null
+}
+
+# _nd_br_fresh <file> <now> <keep_s>: the well-formed entries of a weak-bridge
+# file ("FP<TAB>epoch<TAB>..."), judged less than <keep_s> ago. A missing
+# file has none (the controller runs under pipefail, health/nice-dns-health:27:
+# a failing read would fail the whole write, as on mint 2026-10-04).
+_nd_br_fresh() {
+  [ -f "$1" ] || return 0
+  awk -F '\t' -v n="$2" -v keep="$3" \
+    'NF >= 3 && length($1) == 40 && $1 !~ /[^0-9A-F]/ && $2 != "" && $2 !~ /[^0-9]/ && n - $2 < keep' "$1"
+}
+
+# _nd_br_put <file>: stdin replaces <file> (0600, by rename); no line removes it.
+_nd_br_put() {
+  if ! (umask 077 && cat >"$1.new.$$"); then rm -f "${1:?}.new.$$"; return 1; fi
+  if [ -s "$1.new.$$" ]; then mv -f "$1.new.$$" "$1" || { rm -f "${1:?}.new.$$"; return 1; }
+  else rm -f "${1:?}.new.$$" "${1:?}"; fi
+}
+
+# _nd_br_remember <weak list> <healthy fingerprints>: the judgement outlives
+# Tor's state, which the macOS agent deletes whenever the bridge set changes
+# (mac/start-container.sh prune_guard_state) and Tor prunes for unlisted
+# bridges after about 20 days. One bad hour is not 30 days (BL-031): a first
+# weak verdict goes to bridges.weak.once; bridges.weak (state directory, 0600,
+# fingerprints only) takes a bridge only when the next refresh judges it weak
+# again, and keeps it ND_BRIDGE_WEAK_DAYS (30) from its last judgement. A
+# healthy verdict forgets a first one. Every weak bridge of this refresh is
+# still left out of its set at once (DEC-017). Prints the weak list plus the
+# remembered ones ("FP<TAB>0<TAB>remembered").
 _nd_br_remember() {
-  local f now days live
-  f="$(nd_platform_state_dir)/bridges.weak"; now="$(date +%s)"
+  local f o now days keep live ok rep
+  f="$(nd_platform_state_dir)/bridges.weak"; o="$f.once"; now="$(date +%s)"
   days="${ND_BRIDGE_WEAK_DAYS:-30}"; case "$days" in ''|*[!0-9]*) days=30 ;; esac
-  live="$(printf '%s\n' "$1" | cut -f1 | tr '\n' ' ')"
-  # The controller runs under pipefail (health/nice-dns-health:27): reading a
-  # missing file would fail the whole write, so the first one never landed.
-  if ! {
-    printf '%s\n' "$1" | awk -F '\t' -v n="$now" 'NF >= 3 { printf "%s\t%s\t%s\n", $1, n, $3 }'
-    if [ -f "$f" ]; then
-      awk -F '\t' -v n="$now" -v keep=$((days * 86400)) -v live="$live" '
-        BEGIN { k = split(live, x, " "); for (i = 1; i <= k; i++) l[x[i]] = 1 }
-        NF >= 3 && length($1) == 40 && $1 !~ /[^0-9A-F]/ && $2 !~ /[^0-9]/ && n - $2 < keep && !($1 in l)' "$f"
-    fi
-  } | (umask 077 && cat >"$f.new.$$") || ! mv -f "$f.new.$$" "$f"; then
-    rm -f "${f:?}.new.$$"
-  fi
+  keep=$((days * 86400))
+  live="$(printf '%s\n' "$1" | awk -F '\t' 'NF >= 3 { print $1 }' | tr '\n' ' ')"
+  ok="$(printf '%s\n' "${2:-}" | tr '\n' ' ')"
+  # The weak bridges of this refresh that were weak at the last judgement too.
+  rep="$({ _nd_br_fresh "$f" "$now" "$keep"; _nd_br_fresh "$o" "$now" "$keep"; } | awk -F '\t' -v live="$live" '
+    BEGIN { k = split(live, x, " "); for (i = 1; i <= k; i++) l[x[i]] = 1 }
+    ($1 in l) && !seen[$1]++ { print $1 }' | tr '\n' ' ')"
+  {
+    printf '%s\n' "$1" | awk -F '\t' -v n="$now" -v rep="$rep" '
+      BEGIN { k = split(rep, x, " "); for (i = 1; i <= k; i++) r[x[i]] = 1 }
+      NF >= 3 && ($1 in r) { printf "%s\t%s\t%s\n", $1, n, $3 }'
+    _nd_br_fresh "$f" "$now" "$keep" | awk -F '\t' -v live="$live" '
+      BEGIN { k = split(live, x, " "); for (i = 1; i <= k; i++) l[x[i]] = 1 }
+      !($1 in l)'
+  } | _nd_br_put "$f"
+  {
+    printf '%s\n' "$1" | awk -F '\t' -v n="$now" -v rep="$rep" '
+      BEGIN { k = split(rep, x, " "); for (i = 1; i <= k; i++) r[x[i]] = 1 }
+      NF >= 3 && !($1 in r) { printf "%s\t%s\t%s\n", $1, n, $3 }'
+    _nd_br_fresh "$o" "$now" "$keep" | awk -F '\t' -v live="$live" -v ok="$ok" '
+      BEGIN { k = split(live " " ok, x, " "); for (i = 1; i <= k; i++) l[x[i]] = 1 }
+      !($1 in l)'
+  } | _nd_br_put "$o"
   printf '%s\n' "$1" | awk 'NF >= 3'
   [ -f "$f" ] || return 0
   awk -F '\t' -v live="$live" '
@@ -1293,7 +1340,7 @@ _nd_br_running_weak() {
 }
 
 nd_bridges_refresh() {
-  local v="${1:-}" d base cand rc t out weak="" listed="" dropped=0 n0 adopted=-
+  local v="${1:-}" d base cand rc t out weak="" listed="" ok="" dropped=0 n0 n1 adopted=-
   case "$v" in haproxy|socat) ;; *) printf 'result\trefused\ndetail\tvariant must be haproxy or socat\n'; return 2 ;; esac
   if [ "$(nd_bridges_mode)" = off ]; then
     nd_recovery_journal "br-$(date +%s)" bridges skipped "bridges off"
@@ -1310,13 +1357,23 @@ nd_bridges_refresh() {
   nd_platform_bridge_eval "$v" "$cand" "${ND_BRIDGE_EVAL_S:-300}" "$t"; rc=$?
   if [ "$rc" -eq 0 ] && _nd_br_tor_state "$t"; then
     weak="$(_nd_br_weak "$t/tor-state")"; listed="$(_nd_br_listed "$t/tor-state")"
+    ok="$(_nd_br_healthy "$t/tor-state")"
   fi
   rm -rf "${t:?}"
-  [ "$rc" -eq 0 ] && weak="$(_nd_br_remember "$weak")"
+  [ "$rc" -eq 0 ] && weak="$(_nd_br_remember "$weak" "$ok")"
   if [ "$rc" -eq 0 ] && [ -n "$weak" ]; then
     n0="$(_nd_br_norm "$d/$cand" | wc -l | tr -d ' ')"
     _nd_br_drop "$d/$cand" "$weak"
-    dropped=$((n0 - $(_nd_br_norm "$d/$cand" | wc -l | tr -d ' ')))
+    n1="$(_nd_br_norm "$d/$cand" | wc -l | tr -d ' ')"; dropped=$((n0 - n1))
+    # A drop that would leave fewer than 3 keeps the running set and says so
+    # (BL-031, BL-039 item 5); an evaluation that was thin on its own is not
+    # this case and takes nd_bridges_apply's refusal below.
+    if [ "$n0" -ge 3 ] && [ "$n1" -lt 3 ]; then
+      rm -f "${d:?}/$cand"; _nd_br_mutex_drop
+      nd_recovery_journal "br-$(date +%s)" bridges weak_blocked "leaving out the $dropped weak bridges would leave $n1 of $n0; the running set stays"
+      printf 'result\tweak-blocked\nweak_blocked\t%s\ndropped\t0\nadopted\t-\n' "$dropped"
+      return 0
+    fi
     nd_recovery_journal "br-$(date +%s)" bridges weak "below ${ND_BRIDGE_MIN_USE_PCT:-90}% stream success after ${ND_BRIDGE_MIN_USE:-20} uses, left out: $(printf '%s\n' "$weak" | awk -F '\t' '{ printf "%s%s %s%s", (NR > 1 ? ", " : ""), substr($1, 1, 12), $3, ($2 == 1 ? " (running)" : "") }')"
   fi
   if [ "$rc" -ne 0 ]; then

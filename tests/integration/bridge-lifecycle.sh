@@ -433,20 +433,25 @@ t_weak_bridge_not_running_is_filtered_without_restart() {
   done
 }
 
-t_filter_never_leaves_fewer_than_three_bridges() {
-  local plat out before
+# BL-031 (backlog sweep Sub-plan 2, Task 1.2): a drop that would leave fewer
+# than 3 bridges keeps the running set and says so with the count, exit 0
+# (before, the refresh failed as not-applied and named no cause).
+t_filter_never_leaves_fewer_than_three_bridges_BL_031() {
+  local plat out rc before
   for plat in $(bl_platforms); do
     (
       bl_env "$plat"
       bl_set "$BL_LIVE" 5; before="$(cat "$BL_LIVE")"
       bl_set "$CASE_DIR/cand" 4 9
       printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
-      { bl_guard 1 1 40 10; bl_guard 2 1 40 10; bl_guard 3 1 40 35; } >"$FAKE/ctl/state"
+      { bl_guard 1 1 40 10; bl_guard 2 1 40 10; bl_guard 3 1 40 40; } >"$FAKE/ctl/state"
       : >"$FAKE/restart_changes"
-      out="$(nd_bridges_refresh haproxy)"
-      assert_eq not-applied "$(bl_get result "$out")" "$plat: 2 left after the filter is not applied: $out"
+      out="$(nd_bridges_refresh haproxy)"; rc=$?
+      assert_rc 0 "$rc" "$plat: BL-031 a blocked drop is an answer, not a failure: $out"
+      assert_eq 2 "$(bl_get weak_blocked "$out")" "$plat: BL-031 it reports weak_blocked with the count"
       assert_eq "$before" "$(cat "$BL_LIVE")" "$plat: the last good set stays"
       assert_eq "" "$(bl_restarts)" "$plat: nothing restarted"
+      assert_match 'bridges	weak_blocked	' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: BL-031 the journal names it"
     ) || exit 1
   done
 }
@@ -486,8 +491,13 @@ t_weak_bridge_stays_out_after_the_tor_state_is_wiped() {
       : >"$FAKE/restart_changes"
       out="$(nd_bridges_refresh haproxy)"
       assert_eq restarted "$(bl_get adopted "$out")" "$plat: first refresh adopts: $out"
-      assert_eq "" "$(find "$ND_STATE_DIR" -name bridges.weak -perm -0004)" "$plat: the memory is private"
       assert_not_match 'cert=|192\.0\.' "$(cat "$ND_STATE_DIR/bridges.weak" 2>/dev/null)" "$plat: the memory holds fingerprints only"
+      # BL-031: a second weak verdict in the next refresh is what remembers them.
+      { bl_guard 2 0 70.500000 56.500000; bl_guard 6 0 44.000000 30.000000; } >"$FAKE/ctl/state"
+      : >"$FAKE_LOG"
+      out="$(nd_bridges_refresh haproxy)"
+      assert_match "$(bl_fp 2)" "$(cat "$ND_STATE_DIR/bridges.weak" 2>/dev/null)" "$plat: the second weak verdict remembers bridge 2"
+      assert_eq "" "$(find "$ND_STATE_DIR" -name 'bridges.weak*' -perm -0004)" "$plat: the memory is private"
       # The recreate wiped Tor's state: the new Tor knows only its 5 bridges,
       # none judged yet. The next evaluation offers bridge 2 again.
       { bl_guard 1 1 0 0; bl_guard 3 1 0 0; bl_guard 4 1 0 0; bl_guard 5 1 0 0; bl_guard 7 1 0 0; } >"$FAKE/ctl/state"
@@ -876,6 +886,53 @@ t_bridges_off_during_a_refresh_restarts_nothing_BL_030() {
       assert_eq pending "$(bl_get adopted "$out")" "$plat: BL-030 bridges off since the start defers the adoption: $out"
       assert_eq "" "$(bl_restarts)" "$plat: BL-030 nothing restarted after bridges off"
       assert_file "$ND_STATE_DIR/bridges.pending" "$plat: the set waits for a start with bridges on"
+    ) || exit 1
+  done
+}
+
+# BL-031 (backlog sweep Sub-plan 2, Task 1.2): one bad hour is not 30 days.
+# A bridge judged weak is left out of the new set at once (DEC-017), but the
+# 30-day memory (bridges.weak) takes it only when the next refresh judges it
+# weak again; a healthy verdict in between forgets the first one. The guards
+# are unlisted (listed=0), so no adoption restart runs.
+bl031_refresh() {
+  bl_set "$CASE_DIR/cand" 7 9
+  printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+  printf '%s\n' "$@" >"$FAKE/ctl/state"
+  nd_bridges_refresh haproxy
+}
+
+t_one_weak_verdict_is_not_remembered_BL_031() {
+  local plat out
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      bl_set "$BL_LIVE" 5
+      out="$(bl031_refresh "$(bl_guard 2 0 40 10)" "$(bl_guard 3 0 40 40)")"
+      assert_eq changed "$(bl_get result "$out")" "$plat: applied: $out"
+      assert_not_match "$(bl_fp 2)" "$(cat "$BL_LIVE")" "$plat: BL-031 the weak bridge is left out at once"
+      assert_eq 1 "$(bl_get dropped "$out")" "$plat: one dropped"
+      assert_not_match "$(bl_fp 2)" "$(cat "$ND_STATE_DIR/bridges.weak" 2>/dev/null)" "$plat: BL-031 one verdict is not remembered for 30 days"
+      out="$(bl031_refresh "$(bl_guard 2 0 40 10)" "$(bl_guard 3 0 40 40)")"
+      assert_not_match "$(bl_fp 2)" "$(cat "$BL_LIVE")" "$plat: the second verdict leaves it out too"
+      assert_match "$(bl_fp 2)" "$(cat "$ND_STATE_DIR/bridges.weak" 2>/dev/null)" "$plat: BL-031 a second weak verdict in a row remembers it"
+      assert_not_match "$(bl_fp 3)" "$(cat "$ND_STATE_DIR/bridges.weak" 2>/dev/null)" "$plat: a healthy bridge is never remembered"
+    ) || exit 1
+  done
+}
+
+t_a_healthy_verdict_between_two_weak_ones_remembers_nothing_BL_031() {
+  local plat out
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      bl_set "$BL_LIVE" 5
+      bl031_refresh "$(bl_guard 2 0 40 10)" >/dev/null
+      out="$(bl031_refresh "$(bl_guard 2 0 40 40)")"
+      assert_match "$(bl_fp 2)" "$(cat "$BL_LIVE")" "$plat: judged healthy, it is offered again: $out"
+      bl031_refresh "$(bl_guard 2 0 40 10)" >/dev/null
+      assert_not_match "$(bl_fp 2)" "$(cat "$BL_LIVE")" "$plat: weak again, left out again"
+      assert_not_match "$(bl_fp 2)" "$(cat "$ND_STATE_DIR/bridges.weak" 2>/dev/null)" "$plat: BL-031 weak, healthy, weak remembers nothing"
     ) || exit 1
   done
 }
