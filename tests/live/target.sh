@@ -124,7 +124,18 @@
 #                    every other route works: tor-haproxy puts its servers in
 #                    maintenance, tor-socat SIGSTOPs its listener; a detached
 #                    timer heals it after NICE_DNS_FREEZE_MAX_SECS
-#   heal-route       undo fault-route
+#                    With --component unbound --mode tls-name (BL-042) the
+#                    running --route keeps its address and port but gets a
+#                    wrong TLS name in Unbound (unbound-control forward_add
+#                    +t ...#nd-wrong-name.invalid); a detached timer reloads
+#                    Unbound's config after NICE_DNS_FREEZE_MAX_SECS
+#   heal-route       undo fault-route (--mode tls-name: unbound-control reload)
+#   transport-report read-only (Sub-plan 4 Task 2.3, BL-042): the running
+#                    route; cloudflare.com (signed), neverssl.com (unsigned)
+#                    and dnssec-failed.org through the client resolver and at
+#                    Unbound's own listener (rcode, ad or noad); whether TCP
+#                    8953 listens in the Unbound container, its control
+#                    interface, whether that is a Unix socket and answers
 #   route-report     read-only (Sub-plan 5 Task 1.2): Unbound's route as the
 #                    host holds it (the directory's mode, the include's
 #                    marker and forwarder, desired.tsv), whether the
@@ -345,7 +356,7 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network freeze-unbound thaw-unbound stop-proxy fresh-name command command-report freeze-service thaw-service pause-container unpause-container stop-container start-container crash-container stop-crash crash-report proxy-supervisor-lines mac-runtime-ssh mac-runtime-gui helper-report polkit-test-rule gui-report gui-session switch-report update-schedule cut-bridges restore-bridges'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network freeze-unbound thaw-unbound stop-proxy fresh-name command command-report freeze-service thaw-service pause-container unpause-container stop-container start-container crash-container stop-crash crash-report proxy-supervisor-lines mac-runtime-ssh mac-runtime-gui helper-report polkit-test-rule gui-report gui-session switch-report update-schedule cut-bridges restore-bridges transport-report'
 FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
@@ -407,7 +418,8 @@ fi
 case "$op" in install-cell|uninstall-cell) ;; command) [ -z "$i_hsha" ] || die "--hardened-sha is not valid for command" ;; *) [ -z "$i_cell$i_hsha" ] || die "--cell/--hardened-sha are only valid for install-cell, uninstall-cell and command" ;; esac
 case "$op" in install-cell|uninstall-cell|build-proxy|install-controller|install-agent|arm-prepare|command) ;; *) [ -z "$i_sha" ] || die "--source-sha is only valid for install-cell, uninstall-cell, build-proxy, install-controller, install-agent, arm-prepare and command" ;; esac
 case "$op" in fault-route|heal-route|route-apply) ;; *) [ -z "$i_route" ] || die "--route is only valid for fault-route, heal-route and route-apply" ;; esac
-case "$op" in install-controller|set-tunables|arm-set|command|polkit-test-rule|gui-session) ;; *) [ -z "$i_mode" ] || die "--mode is only valid for install-controller, set-tunables, arm-set, command, polkit-test-rule and gui-session" ;; esac
+case "$op" in install-controller|set-tunables|arm-set|command|polkit-test-rule|gui-session|fault-route|heal-route) ;; *) [ -z "$i_mode" ] || die "--mode is only valid for install-controller, set-tunables, arm-set, command, polkit-test-rule, gui-session, fault-route and heal-route" ;; esac
+if [ "$op" = fault-route ] || [ "$op" = heal-route ]; then case "$i_mode" in ''|tls-name) ;; *) die "$op takes only --mode tls-name" ;; esac; fi
 if [ "$op" = polkit-test-rule ]; then case "$i_mode" in add|remove) ;; *) die "polkit-test-rule needs --mode add|remove" ;; esac; fi
 if [ "$op" = gui-session ]; then case "$i_mode" in screenshot|restart|update-check|bridges-off|bridges-on|proxy-haproxy|proxy-socat|open|launch|running) ;; *) die "gui-session needs --mode screenshot|restart|update-check|bridges-off|bridges-on|proxy-haproxy|proxy-socat|open|launch|running" ;; esac; fi
 case "$op" in arm-prepare) [[ "$i_ptag" =~ ^v[0-9]+(\.[0-9]+)*$ ]] || die "arm-prepare needs --proxy-tag vN[.N]" ;; *) [ -z "$i_ptag" ] || die "--proxy-tag is only valid for arm-prepare" ;; esac
@@ -500,7 +512,17 @@ esac
   || die "mac-runtime-ssh is retired (OD-8): moving the container runtime broke the mac's vmnet on 2026-11-07; set NICE_DNS_ALLOW_RUNTIME_MOVE=yes to run it anyway"
 
 case "$op" in
-  sever-upstream|heal-upstream|freeze-upstream|thaw-upstream|build-proxy|recreate-proxy|fault-route|heal-route|thaw-on-request|arm-prepare|arm-set|stop-proxy)
+  fault-route|heal-route)
+    # BL-042: a TLS-name fault is Unbound's; a route fault is the proxy's.
+    if [ "$i_mode" = tls-name ]; then
+      [ "$component" = unbound ] || die "$op --mode tls-name needs --component unbound"
+    else
+      case " $UPSTREAM_COMPONENTS " in
+        *" $component "*) [ -n "$component" ] || die "--component is required" ;;
+        *) die "component '$component' is not an upstream component (allowed: $UPSTREAM_COMPONENTS)" ;;
+      esac
+    fi ;;
+  sever-upstream|heal-upstream|freeze-upstream|thaw-upstream|build-proxy|recreate-proxy|thaw-on-request|arm-prepare|arm-set|stop-proxy)
     case " $UPSTREAM_COMPONENTS " in
       *" $component "*) [ -n "$component" ] || die "--component is required" ;;
       *) die "component '$component' is not an upstream component (allowed: $UPSTREAM_COMPONENTS)" ;;
@@ -937,13 +959,58 @@ first_answer() {
     printf "first_answer\t%s\t%d\ttimeout\t-\t-\t%d\n", $iso, $cap * 1e6, $cap * 1000;
     exit 1;' "$1" "$2" "${RESOLVER%#*}" "${RESOLVER#*#}"
 }
+tlsu() { ctl_exec unbound unbound-control -c /usr/share/nice-dns/control.conf "$@"; }
+# route_now: "<route> TAB <generation>" of the route Unbound runs, from its
+# marker read over the control socket (as lib/recovery.sh route_readback);
+# nothing when it cannot be read.
+route_now() {
+  tlsu list_local_data 2>/dev/null \
+    | awk '$1 == "nice-dns-route.invalid." && $4 == "TXT" && match($0, /"route=[a-z0-9-]+ generation=[0-9]+"/) {
+        split(substr($0, RSTART + 1, RLENGTH - 2), kv, /[ =]/); print kv[2] "\t" kv[4]; exit }'
+}
+# ub_dig <dig args>: dig at Unbound's own listener (5335): from inside the pod
+# on Linux (the pod publishes only :53), at Unbound's address on macOS.
+ub_dig() {
+  if [ "$plat" = macos ]; then dig @172.31.240.251 -p 5335 "$@" </dev/null
+  else "$C" exec pi-hole dig @127.0.0.1 -p 5335 "$@" </dev/null; fi
+}
+# dig_st: "<rcode> TAB ad|noad" of one dig's output (timeout when none).
+dig_st() {
+  awk '/status:/ { s = $0; sub(/.*status: /, "", s); sub(/,.*/, "", s) }
+    /^;; flags:/ { f = ($0 ~ /flags:[^;]* ad[ ;]/) ? "ad" : "noad" }
+    END { printf "%s\t%s", (s == "" ? "timeout" : s), (f == "" ? "-" : f) }'
+}
+# tls_route: fault-route|heal-route --mode tls-name (BL-042). The running
+# route keeps its address and port but gets a wrong TLS name at runtime, so
+# Unbound's certificate check must refuse the upstream. The route files are
+# untouched, so `reload` (Unbound re-reads its config) heals it, and a
+# detached timer reloads after NICE_DNS_FREEZE_MAX whatever happens to this
+# session. The controller's readback compares forwarders by address only
+# (lib/recovery.sh route_readback), so it does not see a route change.
+tls_route() {
+  running unbound || { echo "unbound is not running" >&2; return 1; }
+  tr_cur=$(route_now | cut -f1)
+  [ "$tr_cur" = "$NICE_DNS_ROUTE" ] || { echo "the running route is ${tr_cur:-unknown}, not $NICE_DNS_ROUTE" >&2; return 2; }
+  if [ "$NICE_DNS_OP" = fault-route ]; then
+    fa=$(ctl_exec unbound cat /etc/unbound/route/forward-route.conf 2>/dev/null | awk '$1 == "forward-addr:" { print $2; exit }')
+    case "$fa" in *@*'#'?*) ;; *) echo "the route's forwarder has no TLS name: ${fa:-none}" >&2; return 1 ;; esac
+    nohup sh -c 'sleep "$1"; "$2" exec unbound unbound-control -c /usr/share/nice-dns/control.conf reload' nice-dns-route-watchdog "$NICE_DNS_FREEZE_MAX" "$C" </dev/null >/dev/null 2>&1 &
+    if ! { tlsu forward_remove . >&2 && tlsu forward_add +t . "${fa%%#*}#nd-wrong-name.invalid" >&2; }; then
+      tlsu reload >&2
+      return 1
+    fi
+    printf 'tls_name\tfaulted\t%s\nforwarder\t%s\n' "$NICE_DNS_ROUTE" "${fa%%#*}#nd-wrong-name.invalid"
+  else
+    pkill -f nice-dns-route-watchdog 2>/dev/null
+    tlsu reload >&2 || return 1
+    printf 'tls_name\thealed\t%s\n' "$NICE_DNS_ROUTE"
+  fi
+}
 # wake_state <before|after>: the route Unbound runs (its marker, read over the
 # control socket as lib/recovery.sh route_readback does) and the proxy
 # container's generation, around a timed wake (BL-025).
 wake_state() {
-  ws_r=$(ctl_exec unbound unbound-control -c /usr/share/nice-dns/control.conf list_local_data 2>/dev/null \
-    | awk '$1 == "nice-dns-route.invalid." && $4 == "TXT" && match($0, /"route=[a-z0-9-]+ generation=[0-9]+"/) {
-        split(substr($0, RSTART + 1, RLENGTH - 2), kv, /[ =]/); print kv[2] "\t" kv[4]; exit }')
+  ws_r=$(route_now)
   [ -n "$ws_r" ] || ws_r=$(printf 'unknown\t-')
   ws_g=$(container_gen "tor-$NICE_DNS_ID_PROXY")
   printf 'route\t%s\t%s\nproxy_generation\t%s\t%s\n' "$1" "$ws_r" "$1" "${ws_g:--}"
@@ -1663,6 +1730,7 @@ case "$NICE_DNS_OP" in
     sed 's/^/receipt	/' "$r" 2>/dev/null
     exit $rc ;;
   fault-route|heal-route)
+    if [ "${NICE_DNS_MODE:-}" = tls-name ]; then tls_route; exit $?; fi
     c="$NICE_DNS_COMPONENT"
     running "$c" || { echo "$c is not running" >&2; exit 1; }
     case "$NICE_DNS_ROUTE" in
@@ -1705,6 +1773,28 @@ case "$NICE_DNS_OP" in
       fi
       printf 'listener\t%s\tstate=%s\n' "$port" "$(ctl_exec "$c" awk '{ print $3 }' "/proc/$pid/stat")"
     fi ;;
+  transport-report)
+    identity
+    printf 'section\ttransport\n'
+    r=$(route_now); [ -n "$r" ] || r=$(printf 'unknown\t-')
+    printf 'route\trunning\t%s\n' "$r"
+    # TL-DNSSEC: Pi-hole never passes `ad` on, so validation is read at Unbound.
+    for k in signed:cloudflare.com unsigned:neverssl.com bogus:dnssec-failed.org; do
+      n=${k#*:}
+      printf 'dnssec\tclient\t%s\t%s\t%s\n' "${k%%:*}" "$n" "$(dig "@${RESOLVER%#*}" -p "${RESOLVER#*#}" +time=10 +tries=1 +dnssec "$n" A </dev/null 2>/dev/null | dig_st)"
+      printf 'dnssec\tunbound\t%s\t%s\t%s\n' "${k%%:*}" "$n" "$(ub_dig +time=10 +tries=1 +dnssec "$n" A 2>/dev/null | dig_st)"
+    done
+    # TL-CONTROL: a TCP 8953 (0x22F9) listener anywhere in Unbound's network
+    # namespace (on Linux, the pod's); unknown when the table cannot be read.
+    l=$(ctl_exec unbound cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '{ seen = 1 } $4 == "0A" { p = $2; sub(/.*:/, "", p); if (toupper(p) == "22F9") n++ }
+      END { print (!seen ? "unknown" : n ? "listening" : "none") }')
+    printf 'control\ttcp_8953\t%s\n' "$l"
+    ci=$(ctl_exec unbound cat /usr/share/nice-dns/control.conf 2>/dev/null | awk '$1 == "control-interface:" { print $2; exit }')
+    printf 'control\tinterface\t%s\n' "${ci:--}"
+    if [ -n "$ci" ] && ctl_exec unbound sh -c 'test -S "$1"' sh "$ci"; then s=unix; else s=absent; fi
+    printf 'control\tsocket\t%s\n' "$s"
+    if tlsu status >/dev/null 2>&1; then s=yes; else s=no; fi
+    printf 'control\tanswers\t%s\n' "$s" ;;
   thaw-on-request)
     c="$NICE_DNS_COMPONENT"; i=0
     while [ "$i" -lt "$NICE_DNS_FREEZE_MAX" ]; do
@@ -2624,7 +2714,7 @@ case "$op" in
     } >"$STATE/receipt.tsv"
     log_op 0
     printf 'snapshot %s -> %s\n' "$alias_" "$STATE/snapshot.tsv" ;;
-  config|health|controller-report|lifecycle-report|route-report|command-report|fresh-name|crash-report|proxy-supervisor-lines|helper-report|gui-report|switch-report)
+  config|health|controller-report|lifecycle-report|route-report|command-report|fresh-name|crash-report|proxy-supervisor-lines|helper-report|gui-report|switch-report|transport-report)
     # Read-only; the output starts with the identity lines, which are checked.
     preconnect_guards
     probe_identity "$op"

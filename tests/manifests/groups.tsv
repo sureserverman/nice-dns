@@ -69,3 +69,5 @@ live	bridges-toggle	tests/live/bridges-toggle.sh	live
 integration	bridges-toggle-dryrun	tests/integration/bridges-toggle-dryrun.sh	local
 live	switch-autocheck	tests/live/switch-autocheck.sh	live
 integration	switch-autocheck-dryrun	tests/integration/switch-autocheck-dryrun.sh	local
+live	transport-live	tests/live/transport-live.sh	live
+integration	transport-live-dryrun	tests/integration/transport-live-dryrun.sh	local

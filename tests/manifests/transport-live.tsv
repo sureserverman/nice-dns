@@ -1,0 +1,27 @@
+# Receipt manifest: transport-live. Parsed as data by tests/reports/verify.sh (never sourced).
+# Rows (tab-separated):
+#   platforms all                            the receipt holds an observed cell on every platform
+#   scenario  <id>  per-cell|per-cell-linux|per-cell-macos|global  <meaning>
+#   content   <id>  <ERE>                    the scenario's artifact has a line matching ERE
+# One observed cell per platform (Sub-plan 4 Task 2.3, BL-042), on the stack as
+# the target runs it: DNSSEC is validated, the control channel is a Unix socket
+# only, and a wrong TLS name on the running route is refused, then healed.
+platforms	all
+scenario	TL-DNSSEC	per-cell	through the client resolver a signed and an unsigned name answer and dnssec-failed.org is SERVFAIL; at Unbound the signed name has ad, the unsigned one not
+scenario	TL-CONTROL	per-cell	nothing listens on TCP 8953 in the Unbound container; its control interface is a Unix socket that answers
+scenario	TL-TLS-NEGATIVE	per-cell	the running route with a wrong TLS name makes a fresh name SERVFAIL, never an answer; heal-route brings answers back
+content	TL-DNSSEC	^dnssec	client	signed	[^	]+	NOERROR
+content	TL-DNSSEC	^dnssec	client	unsigned	[^	]+	NOERROR
+content	TL-DNSSEC	^dnssec	client	bogus	dnssec-failed\.org	SERVFAIL
+content	TL-DNSSEC	^dnssec	unbound	signed	[^	]+	NOERROR	ad$
+content	TL-DNSSEC	^dnssec	unbound	unsigned	[^	]+	NOERROR	noad$
+content	TL-DNSSEC	^result	pass$
+content	TL-CONTROL	^control	tcp_8953	none$
+content	TL-CONTROL	^control	interface	/[^	]+$
+content	TL-CONTROL	^control	socket	unix$
+content	TL-CONTROL	^control	answers	yes$
+content	TL-CONTROL	^result	pass$
+content	TL-TLS-NEGATIVE	^forwarder	[^	]+#nd-wrong-name\.invalid$
+content	TL-TLS-NEGATIVE	^faulted	[^	]+	SERVFAIL$
+content	TL-TLS-NEGATIVE	^healed	[^	]+	(NOERROR|NXDOMAIN)$
+content	TL-TLS-NEGATIVE	^result	pass$

@@ -1566,3 +1566,130 @@ t_install_and_command_ops_end_at_their_outer_limit_bl060() {
   TG_OUT="$(NICE_DNS_INSTALL_CELL_MAX=abc bash "$TG" command lin1 --targets "$CASE_DIR/targets.env" --mode restart 2>&1)"
   assert_rc 0 "$?" "a bad NICE_DNS_INSTALL_CELL_MAX does not block command: $TG_OUT"
 }
+
+# ─── Sub-plan 4 Task 2.3: the transport-live ops (BL-042) ───────────────────
+
+# tg_tl_podman: a podman whose stack answers the transport ops as mint's did
+# on 2026-11-19 (Stage 2 premise 3). FAKE_TL_8953=1 adds a TCP 8953 listener.
+tg_tl_podman() {
+  cat >"$CASE_DIR/rbin/podman" <<'FAKE'
+#!/bin/sh
+printf 'podman %s\n' "$*" >>"$FAKE_LOG"
+case "$*" in
+  'ps -a --format {{.Names}}') printf 'pi-hole\nunbound\ntor-haproxy\n' ;;
+  'inspect pi-hole --format '*) printf 'pi-hole\trunning\t\n' ;;
+  'inspect unbound --format '*) printf 'unbound\trunning\t\n' ;;
+  'inspect tor-haproxy --format '*) printf 'tor-haproxy\trunning\t\n' ;;
+  'inspect -f {{.Id}} {{.State.StartedAt}} {{.State.Status}} tor-haproxy') echo "c0ffee 2026-11-19T20:00:00Z running" ;;
+  'exec unbound unbound-control -c /usr/share/nice-dns/control.conf list_local_data') printf 'nice-dns-route.invalid.\t0\tIN\tTXT\t"route=cloudflare-onion generation=7"\n' ;;
+  'exec unbound unbound-control -c /usr/share/nice-dns/control.conf status') echo "is running..." ;;
+  'exec unbound unbound-control -c /usr/share/nice-dns/control.conf '*) echo ok ;;
+  'exec unbound cat /etc/unbound/route/forward-route.conf') printf 'forward-zone:\n    name: "."\n    forward-addr: 127.0.0.1@18531#tor.cloudflare-dns.com\n' ;;
+  'exec unbound cat /usr/share/nice-dns/control.conf') printf 'remote-control:\n    control-enable: yes\n    control-interface: /run/unbound/control.sock\n' ;;
+  'exec unbound sh -c test -S "$1" sh /run/unbound/control.sock') exit 0 ;;
+  'exec unbound cat /proc/net/tcp /proc/net/tcp6')
+    printf '  sl  local_address rem_address   st\n   0: 0100007F:14D7 00000000:0000 0A\n'
+    [ -z "${FAKE_TL_8953:-}" ] || printf '   1: 00000000:22F9 00000000:0000 0A\n' ;;
+  'exec pi-hole dig @127.0.0.1 -p 5335 '*) shift 2; exec dig "$@" ;;
+esac
+exit 0
+FAKE
+  # dig: signed names validate (ad at Unbound's 5335 only, as Pi-hole strips it).
+  cat >"$CASE_DIR/rbin/dig" <<'FAKE'
+#!/bin/sh
+p=53 n=
+for x in "$@"; do case "$x" in 5335) p=5335 ;; *.*) case "$x" in @*|+*) ;; *) n="$x" ;; esac ;; esac; done
+s=NOERROR f='qr rd ra'
+case "$n" in dnssec-failed.org) s=SERVFAIL ;; cloudflare.com) [ "$p" != 5335 ] || f='qr rd ra ad' ;; esac
+printf ';; ->>HEADER<<- opcode: QUERY, status: %s, id: 1\n;; flags: %s; QUERY: 1, ANSWER: 1\n; EDNS: version: 0, flags: do; udp: 1472\n' "$s" "$f"
+FAKE
+  # The fake remote is this host: its dead-man timer and its pkill only log,
+  # so no real timer is left and no process here is signalled.
+  printf '#!/bin/sh\nprintf "nohup %%s\\n" "$*" >>"$FAKE_LOG"\n' >"$CASE_DIR/rbin/nohup"
+  printf '#!/bin/sh\nprintf "pkill %%s\\n" "$*" >>"$FAKE_LOG"\n' >"$CASE_DIR/rbin/pkill"
+  chmod 755 "$CASE_DIR/rbin/podman" "$CASE_DIR/rbin/dig" "$CASE_DIR/rbin/nohup" "$CASE_DIR/rbin/pkill"
+}
+
+t_transport_report_reads_dnssec_and_the_control_channel_bl042() {
+  local b
+  tg_setup
+  tg_remote_tools Linux
+  tg_tl_podman
+  tg transport-report lin1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "BL-042: transport-report: $TG_OUT"
+  assert_match '^section	transport$' "$TG_OUT" "its own section"
+  assert_match '^route	running	cloudflare-onion	7$' "$TG_OUT" "BL-042: the running route"
+  assert_match '^dnssec	client	signed	cloudflare\.com	NOERROR	noad$' "$TG_OUT" "BL-042: the signed name through Pi-hole (no ad there)"
+  assert_match '^dnssec	client	unsigned	neverssl\.com	NOERROR	noad$' "$TG_OUT" "BL-042: the unsigned name through Pi-hole"
+  assert_match '^dnssec	client	bogus	dnssec-failed\.org	SERVFAIL	noad$' "$TG_OUT" "BL-042: the bogus name through Pi-hole"
+  assert_match '^dnssec	unbound	signed	cloudflare\.com	NOERROR	ad$' "$TG_OUT" "BL-042: ad at Unbound, read through the pod"
+  assert_match '^dnssec	unbound	unsigned	neverssl\.com	NOERROR	noad$' "$TG_OUT" "BL-042: the unsigned name has no ad"
+  assert_match '^control	tcp_8953	none$' "$TG_OUT" "BL-042: no TCP 8953 listener"
+  assert_match '^control	interface	/run/unbound/control\.sock$' "$TG_OUT" "BL-042: the control interface"
+  assert_match '^control	socket	unix$' "$TG_OUT" "BL-042: is a Unix socket"
+  assert_match '^control	answers	yes$' "$TG_OUT" "BL-042: that answers"
+  FAKE_TL_8953=1; export FAKE_TL_8953
+  tg transport-report lin1 --targets "$CASE_DIR/targets.env"
+  assert_match '^control	tcp_8953	listening$' "$TG_OUT" "BL-042: a TCP 8953 listener is seen"
+  unset FAKE_TL_8953
+  assert_not_match '^podman (stop|start|restart|rm|kill)' "$(cat "$FAKE_LOG")" "read-only"
+  b="$(sed -n '/^ub_dig() {/,/^}/p' "$TG")"
+  assert_match 'dig @172\.31\.240\.251 -p 5335' "$b" "macOS reads Unbound at its own address"
+  assert_match '"\$C" exec pi-hole dig @127\.0\.0\.1 -p 5335' "$b" "Linux reads it from inside the pod"
+}
+
+t_fault_route_takes_a_tls_name_bl042() {
+  local b v
+  tg_setup
+  for v in "--component unbound --route cloudflare-onion --mode tls-name"; do
+    : >"$FAKE_LOG"
+    # shellcheck disable=SC2086 # v is a word list
+    tg fault-route lin1 --targets "$CASE_DIR/targets.env" $v
+    assert_nonzero "$TG_RC" "BL-042: a tls-name fault needs the run's snapshot"
+    assert_eq 0 "$(tg_sent)" "nothing sent without a snapshot"
+  done
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  for v in "--component tor-haproxy --route cloudflare-onion --mode tls-name" "--component unbound --route cloudflare-onion --mode other" \
+           "--component unbound --route cloudflare-legacy --mode tls-name" "--component tor-haproxy --route cloudflare-onion --mode x;id"; do
+    : >"$FAKE_LOG"
+    # shellcheck disable=SC2086 # v is a word list
+    tg fault-route lin1 --targets "$CASE_DIR/targets.env" $v
+    assert_rc 2 "$TG_RC" "BL-042: fault-route [$v] refused: $TG_OUT"
+    assert_eq 0 "$(tg_sent)" "nothing sent for [$v]"
+  done
+  tg heal-route lin1 --targets "$CASE_DIR/targets.env" --component unbound --route cloudflare-onion --mode other
+  assert_rc 2 "$TG_RC" "BL-042: heal-route takes only tls-name too"
+  : >"$FAKE_LOG"
+  tg fault-route lin1 --targets "$CASE_DIR/targets.env" --component unbound --route cloudflare-onion --mode tls-name
+  assert_rc 0 "$TG_RC" "fault-route --mode tls-name after snapshot: $TG_OUT"
+  assert_match 'NICE_DNS_OP=fault-route NICE_DNS_COMPONENT=unbound NICE_DNS_FREEZE_MAX=900 NICE_DNS_ROUTE=cloudflare-onion NICE_DNS_MODE=tls-name ' "$(cat "$FAKE_LOG")" "BL-042: sent as data words"
+  b="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG" | sed -n '/^tls_route() {/,/^}/p')"
+  assert_match 'forward_add \+t \. "\$\{fa%%#\*\}#nd-wrong-name\.invalid"' "$b" "BL-042: the same address and port, a wrong TLS name"
+  assert_match 'nice-dns-route-watchdog "\$NICE_DNS_FREEZE_MAX" "\$C"' "$b" "BL-042: a dead-man reload"
+  [ "$(printf '%s\n' "$b" | grep -n 'nice-dns-route-watchdog' | head -1 | cut -d: -f1)" -lt "$(printf '%s\n' "$b" | grep -n 'forward_remove' | head -1 | cut -d: -f1)" ] \
+    || fail "BL-042: the dead-man timer starts before the fault"
+  assert_match 'tlsu reload' "$b" "BL-042: heal re-reads the config, which keeps the right name"
+  # Exec mode (another machine id, so its own run state): the running route
+  # only; the forwarder printed.
+  tg_remote_tools Linux
+  tg_tl_podman
+  ARTIFACT_DIR="$CASE_DIR/art-exec"; mkdir -p "$ARTIFACT_DIR"; export ARTIFACT_DIR
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "exec snapshot: $TG_OUT"
+  : >"$FAKE_LOG"
+  tg fault-route lin1 --targets "$CASE_DIR/targets.env" --component unbound --route quad9-exit --mode tls-name
+  assert_nonzero "$TG_RC" "BL-042: a route that is not running is refused"
+  assert_match 'the running route is cloudflare-onion' "$TG_OUT" "and named"
+  assert_not_match 'forward_(remove|add)' "$(cat "$FAKE_LOG")" "nothing changed"
+  tg fault-route lin1 --targets "$CASE_DIR/targets.env" --component unbound --route cloudflare-onion --mode tls-name
+  assert_rc 0 "$TG_RC" "BL-042: exec fault: $TG_OUT"
+  assert_match '^forwarder	127\.0\.0\.1@18531#nd-wrong-name\.invalid$' "$TG_OUT" "BL-042: the faulted forwarder"
+  assert_match '^nohup sh -c .*unbound-control -c /usr/share/nice-dns/control.conf reload nice-dns-route-watchdog 900 podman$' "$(cat "$FAKE_LOG")" "BL-042: the dead-man reload was started"
+  assert_match 'unbound-control -c /usr/share/nice-dns/control.conf forward_remove \.$' "$(cat "$FAKE_LOG")" "BL-042: the root forward removed"
+  assert_match 'unbound-control -c /usr/share/nice-dns/control.conf forward_add \+t \. 127\.0\.0\.1@18531#nd-wrong-name\.invalid$' "$(cat "$FAKE_LOG")" "BL-042: and added back with the wrong name"
+  tg heal-route lin1 --targets "$CASE_DIR/targets.env" --component unbound --route cloudflare-onion --mode tls-name
+  assert_rc 0 "$TG_RC" "BL-042: exec heal: $TG_OUT"
+  assert_match 'unbound-control -c /usr/share/nice-dns/control.conf reload$' "$(cat "$FAKE_LOG")" "BL-042: healed by reload"
+  assert_match '^tls_name	healed	cloudflare-onion$' "$TG_OUT" "BL-042: says so"
+  assert_match '^pkill -f nice-dns-route-watchdog$' "$(cat "$FAKE_LOG")" "BL-042: and its timer stopped"
+}
