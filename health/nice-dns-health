@@ -617,9 +617,15 @@ BRIDGE_TIMEOUT_SECS=$((BRIDGE_EVAL_SECS + BRIDGE_LOCK_WAIT_SECS + BRIDGE_RESTART
 # its own 55 s bound on git where timeout(1) exists).
 UPDATE_CHECK_SECS=60
 
-health_sha() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi
-}
+# _nd_sha_checked <64|16> [file]: the SHA-256 of <file> (of stdin without one)
+# in hex, cut to that many characters; exit 1, nothing printed, unless the
+# tool gave that many hex characters: no sha256 tool, or one that failed, is
+# an unknown hash, never the hash of nothing (BL-021). The same function is in
+# lib/health.sh, health/nice-dns-health and lib/install.sh.
+_nd_sha_checked() { local n="$1" h; shift; if command -v sha256sum >/dev/null 2>&1; then h="$(sha256sum "$@" 2>/dev/null)"; else h="$(shasum -a 256 "$@" 2>/dev/null)"; fi || return 1; h="${h%%[!0-9a-f]*}"; [ "${#h}" -ge "$n" ] || return 1; printf '%s\n' "${h:0:$n}"; }
+
+# health_sha: the sha256 of stdin, hex; exit 1 when it cannot be taken.
+health_sha() { _nd_sha_checked 64; }
 
 # health_interpreter: the Bash the schedules run, checked by running it.
 health_interpreter() {
@@ -649,7 +655,9 @@ build_bundle() {
       echo "$SCRIPT_NAME: cannot install: $src/$f is missing or a symlink" >&2; return 1
     fi
   done
-  id="$(for f in $HEALTH_LIB_FILES health/nice-dns-health; do printf '%s\n' "$f"; health_sha <"$src/$f"; done | health_sha | cut -c1-16)"
+  # A file whose hash cannot be taken ends the loop and fails the pipeline
+  # (pipefail, line 27), so an id is never a hash over missing hashes (BL-021).
+  id="$(for f in $HEALTH_LIB_FILES health/nice-dns-health; do printf '%s\n' "$f"; health_sha <"$src/$f" || exit 1; done | _nd_sha_checked 16)" || id=""
   case "$id" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;; *) echo "$SCRIPT_NAME: cannot compute the bundle id" >&2; return 1 ;; esac
   dst="${HEALTH_LIB_ROOT_INSTALLED:?}/bundles"
   if [ -L "$HEALTH_LIB_ROOT_INSTALLED" ] || [ -L "$dst" ]; then echo "$SCRIPT_NAME: refusing to install into a symlinked $dst" >&2; return 1; fi

@@ -633,6 +633,26 @@ t_quadlets_leave_chain_restarts_to_the_controller() {
 # (container, exec), the apply's generation (container, query), the pending
 # check before and under the lock (2 x container, query) and the restart's
 # own look-up (container, query).
+# BL-021: the bundle id is a hash of the bundle's files; with neither
+# sha256sum nor shasum it cannot be taken, and the install is refused rather
+# than naming a bundle by a hash of nothing.
+t_bundle_id_without_a_hash_tool_is_refused_BL_021() {
+  local plat
+  for plat in $(sc_platforms); do
+    (
+      sc_env "$plat"
+      rm -f "$CASE_DIR/bin-$plat/sha256sum" "$CASE_DIR/bin-$plat/shasum"
+      sc_cli "$SC_TREE/health/nice-dns-health" install
+      assert_nonzero "$SC_RC" "$plat: BL-021: the install is refused: $SC_OUT"
+      assert_match 'cannot compute the bundle id' "$SC_OUT" "$plat: BL-021: and says why"
+      assert_eq "" "$(sc_bundles 2>/dev/null)" "$plat: BL-021: no bundle is installed"
+      assert_no_path "$SC_BIN" "$plat: BL-021: nor the CLI"
+    ) || exit 1
+  done
+  assert_eq 1 "$(grep -h '^_nd_sha_checked()' "$NICE_DNS_ROOT/lib/health.sh" "$NICE_DNS_ROOT/lib/install.sh" "$NICE_DNS_ROOT/health/nice-dns-health" | sort -u | wc -l | tr -d ' ')" \
+    "BL-021: the three copies of _nd_sha_checked are one function"
+}
+
 t_refresh_unit_limit_covers_its_bounds_BL_033() {
   local eval tries svc dl sum lim usage
   eval="$(sed -n 's/.*ND_BRIDGE_EVAL_S:-\([0-9][0-9]*\)}.*/\1/p' "$NICE_DNS_ROOT/lib/recovery.sh" | head -n 1)"

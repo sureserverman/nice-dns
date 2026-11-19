@@ -1046,3 +1046,30 @@ t_a_thin_evaluation_is_not_weak_blocked_BL_031() {
     ) || exit 1
   done
 }
+
+# BL-021: with neither sha256sum nor shasum, every bridge set hashed to the
+# empty string, so two different sets compared equal and a refresh reported
+# "unchanged". The hash now says it is unknown and the refresh stops there.
+t_bridge_sets_without_a_hash_tool_never_compare_equal_BL_021() {
+  local plat out before
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      rm -f "$CASE_DIR/bin-$plat/sha256sum" "$CASE_DIR/bin-$plat/shasum"
+      bl_set "$BL_LIVE" 5
+      bl_set "$CASE_DIR/cand" 5 3
+      _nd_br_hash "$BL_LIVE" >"$CASE_DIR/h1"
+      assert_nonzero $? "$plat: BL-021: the running set cannot be hashed: $(cat "$CASE_DIR/h1")"
+      _nd_br_hash "$CASE_DIR/cand" >"$CASE_DIR/h2"
+      assert_nonzero $? "$plat: BL-021: nor the candidate"
+      assert_eq "" "$(cat "$CASE_DIR/h1" "$CASE_DIR/h2")" "$plat: BL-021: and no hash is printed"
+      printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+      before="$(cat "$BL_LIVE")"
+      out="$(nd_bridges_refresh haproxy)"
+      assert_nonzero $? "$plat: BL-021: the refresh stops: $out"
+      assert_eq not-applied "$(bl_get result "$out")" "$plat: BL-021: and says not-applied, never unchanged"
+      assert_eq "$before" "$(cat "$BL_LIVE")" "$plat: BL-021: the running set stays"
+      assert_match 'cannot be hashed' "$(awk -F '\t' 'NR > 1 && $3 == "bridges" { print $5 }' "$ND_STATE_DIR/recovery.tsv")" "$plat: BL-021: the journal says why"
+    ) || exit 1
+  done
+}

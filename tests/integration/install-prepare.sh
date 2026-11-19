@@ -745,6 +745,23 @@ t_helper_asset_wrong_sha_is_refused_and_the_install_goes_on() {
   done
 }
 
+# BL-021: with neither sha256sum nor shasum the installer could not hash the
+# lock it records (an empty "sha256:" row) nor the assets it fetches. It now
+# says the hash is unknown and stops before anything is installed.
+t_an_asset_whose_hash_cannot_be_taken_is_not_installed_BL_021() {
+  local ep
+  for ep in install-deb install-mac; do
+    ip_asset_world "$ep"
+    rm -f "$IP_BIN/sha256sum" "$IP_BIN/shasum"
+    ip_install "$ep" haproxy
+    assert_nonzero "$IP_RC" "$ep: BL-021: the install stops: $IP_OUT"
+    assert_match 'cannot take the sha256 of' "$IP_OUT" "$ep: BL-021: and says the hash is unknown"
+    assert_eq "" "$(ip_staged_helper)" "$ep: BL-021: no helper is staged"
+    assert_eq "" "$(grep -E '^sudo bash [^ ]*/root-ops install-helper' "$FAKE_LOG")" "$ep: BL-021: nothing is installed"
+    ln -sf "$(command -v sha256sum)" "$IP_BIN/sha256sum"
+  done
+}
+
 t_helper_asset_lookup_failures_are_retried_three_times() {
   # Two failed lookups, then the download: the helper is staged.
   ip_asset_world install-deb

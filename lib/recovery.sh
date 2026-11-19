@@ -1145,12 +1145,14 @@ _nd_br_norm() {
   grep -E "$_ND_BR_LINE" "$1" 2>/dev/null | sed 's/^BRIDGE[0-9]*=//' | LC_ALL=C sort -u
 }
 
+# _nd_br_hash <file>: the 16-hex hash of its normalized set, "none" without a
+# valid line; exit 1, nothing printed, when no hash can be taken, so two sets
+# never compare equal by accident (BL-021; _nd_sha_checked is lib/health.sh's).
 _nd_br_hash() {
   local n
   n="$(_nd_br_norm "$1")"
   [ -n "$n" ] || { printf 'none\n'; return 0; }
-  if command -v sha256sum >/dev/null 2>&1; then printf '%s\n' "$n" | sha256sum | cut -c1-16
-  else printf '%s\n' "$n" | shasum -a 256 | cut -c1-16; fi
+  printf '%s\n' "$n" | _nd_sha_checked 16
 }
 
 # _nd_br_lock_wait: take the state lock, trying ND_BRIDGE_LOCK_TRIES (60)
@@ -1174,7 +1176,11 @@ nd_bridges_apply() {
     printf 'result\tnot-applied\n'; return 1
   fi
   tok="$(_nd_br_lock_wait)" || { printf 'result\tbusy\n'; return 3; }
-  cur="$(_nd_br_hash "$live")"; new="$(_nd_br_hash "$cand")"
+  if ! cur="$(_nd_br_hash "$live")" || ! new="$(_nd_br_hash "$cand")"; then
+    nd_state_unlock "$tok"
+    nd_recovery_journal "br-$(date +%s)" bridges not-applied "the bridge sets cannot be hashed (no sha256 tool answered); the last good set stays"
+    printf 'result\tnot-applied\n'; return 1
+  fi
   if [ "$cur" != "$base" ]; then
     nd_state_unlock "$tok"
     nd_recovery_journal "br-$(date +%s)" bridges superseded "bridges.env changed while this evaluation ran ($base -> $cur); its candidate is dropped"
@@ -1382,7 +1388,11 @@ nd_bridges_refresh() {
     nd_recovery_journal "br-$(date +%s)" bridges skipped "another bridge refresh is running"
     printf 'result\tskipped\n'; return 3
   fi
-  base="$(_nd_br_hash "$d/bridges.env")"
+  if ! base="$(_nd_br_hash "$d/bridges.env")"; then
+    _nd_br_mutex_drop
+    nd_recovery_journal "br-$(date +%s)" bridges not-applied "the running bridge set cannot be hashed (no sha256 tool answered); nothing is evaluated"
+    printf 'result\tnot-applied\n'; return 1
+  fi
   cand=".bridges.env.candidate.$$"
   t="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-bridges.XXXXXX")" || { _nd_br_mutex_drop; return 2; }
   nd_platform_bridge_eval "$v" "$cand" "${ND_BRIDGE_EVAL_S:-300}" "$t"; rc=$?

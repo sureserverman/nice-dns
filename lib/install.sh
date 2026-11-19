@@ -606,10 +606,11 @@ _nd_inst_tree_hash() {
   (
     set -o pipefail
     cd "$1" || exit 1
-    set -- sha256sum
-    command -v sha256sum >/dev/null 2>&1 || set -- shasum -a 256
+    # Each file as sha256sum lists it ("<hash>  <path>"), so recorded trees
+    # still match; a file whose hash cannot be taken fails the tree (BL-021).
     # shellcheck disable=SC2086 # the item list is words
-    files="$(find $ND_INST_SOURCE_ITEMS -type f -print0 | LC_ALL=C sort -z | xargs -0 "$@")" || exit 1
+    files="$(find $ND_INST_SOURCE_ITEMS -type f -print0 | LC_ALL=C sort -z \
+      | while IFS= read -r -d '' p; do h="$(_nd_sha_checked 64 "$p")" || exit 1; printf '%s  %s\n' "$h" "$p"; done)" || exit 1
     # shellcheck disable=SC2086 # the item list is words
     links="$(find $ND_INST_SOURCE_ITEMS -type l -print | LC_ALL=C sort)" || exit 1
     [ -n "$files" ] || exit 1
@@ -620,10 +621,15 @@ _nd_inst_tree_hash() {
   ) 2>/dev/null
 }
 
-# _nd_inst_sha_stdin: the sha256 of stdin, hex.
-_nd_inst_sha_stdin() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi
-}
+# _nd_sha_checked <64|16> [file]: the SHA-256 of <file> (of stdin without one)
+# in hex, cut to that many characters; exit 1, nothing printed, unless the
+# tool gave that many hex characters: no sha256 tool, or one that failed, is
+# an unknown hash, never the hash of nothing (BL-021). The same function is in
+# lib/health.sh, health/nice-dns-health and lib/install.sh.
+_nd_sha_checked() { local n="$1" h; shift; if command -v sha256sum >/dev/null 2>&1; then h="$(sha256sum "$@" 2>/dev/null)"; else h="$(shasum -a 256 "$@" 2>/dev/null)"; fi || return 1; h="${h%%[!0-9a-f]*}"; [ "${#h}" -ge "$n" ] || return 1; printf '%s\n' "${h:0:$n}"; }
+
+# _nd_inst_sha_stdin: the sha256 of stdin, hex; exit 1 when it cannot be taken.
+_nd_inst_sha_stdin() { _nd_sha_checked 64; }
 
 # _nd_inst_kept_commit <dir>: "<commit> <dirty>" when <dir> is the kept
 # source (physically) and its .source-commit, read as data (DEC-001), names a
@@ -1442,9 +1448,12 @@ EOF
   done
 }
 
-# health_sha_file <file>: its sha256, hex (sha256sum on Linux, shasum on macOS).
+# health_sha_file <file>: its sha256, hex; exit 1, saying so, when it cannot
+# be taken (no sha256 tool answered, BL-021): the caller stops that step.
 health_sha_file() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+  _nd_sha_checked 64 "$1" && return 0
+  _nd_inst_err "cannot take the sha256 of $1 (no sha256 tool answered)"
+  return 1
 }
 
 # nd_install_verify_signatures: each signed image this install uses, checked

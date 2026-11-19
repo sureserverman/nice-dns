@@ -319,15 +319,17 @@ EOF
   esac
 }
 
+# _nd_sha_checked <64|16> [file]: the SHA-256 of <file> (of stdin without one)
+# in hex, cut to that many characters; exit 1, nothing printed, unless the
+# tool gave that many hex characters: no sha256 tool, or one that failed, is
+# an unknown hash, never the hash of nothing (BL-021). The same function is in
+# lib/health.sh, health/nice-dns-health and lib/install.sh.
+_nd_sha_checked() { local n="$1" h; shift; if command -v sha256sum >/dev/null 2>&1; then h="$(sha256sum "$@" 2>/dev/null)"; else h="$(shasum -a 256 "$@" 2>/dev/null)"; fi || return 1; h="${h%%[!0-9a-f]*}"; [ "${#h}" -ge "$n" ] || return 1; printf '%s\n' "${h:0:$n}"; }
+
 # nd_generation_hash <generation line>: its 16-hex hash, as the proxy
 # observation records it (and lib/recovery.sh start_route compares it with
 # the state's proxy_gen). Exit 1, nothing printed, when it cannot be hashed.
-nd_generation_hash() {
-  local h
-  if command -v sha256sum >/dev/null 2>&1; then h="$(printf '%s' "$1" | sha256sum | cut -c1-16)"
-  else h="$(printf '%s' "$1" | shasum -a 256 2>/dev/null | cut -c1-16)"; fi
-  case "$h" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) printf '%s\n' "$h" ;; *) return 1 ;; esac
-}
+nd_generation_hash() { printf '%s' "$1" | _nd_sha_checked 16; }
 
 # ─── DNS owner ───────────────────────────────────────────────────────────────
 
