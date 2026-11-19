@@ -110,9 +110,9 @@ block_scoped_dns() {
           || echo "could not record the pf token in $PF_TOKEN" >&2
       fi ;;
   esac
-  # The token's directory is 0700 whoever made it: an older install left it
-  # 0755 (BL-043 item 5), and pf may already be on, so no token is written.
-  if [[ -d $tokdir && ! -L $tokdir ]]; then chmod 700 "$tokdir" 2>/dev/null || true; fi
+  # The token's directory is 0700 and the token 0600 whoever wrote them: an older
+  # install left 0755 and 0644 (BL-043 item 5), and with pf on nothing is rewritten.
+  if [[ -d $tokdir && ! -L $tokdir ]]; then chmod 700 "$tokdir" 2>/dev/null || true; [[ ! -f $PF_TOKEN || -L $PF_TOKEN ]] || chmod 600 "$PF_TOKEN" 2>/dev/null || true; fi
   if ! printf 'pass out quick on %s proto { udp, tcp } to %s port { 53, 853 }\nblock drop out quick proto { udp, tcp } to %s port { 53, 853 }\n' \
       "$br" "$DNSNET_SUBNET" "$DNSNET_SUBNET" | pfctl -a "$PF_ANCHOR" -f - 2>/dev/null; then
     echo "could not load $PF_ANCHOR; scoped DNS is not blocked" >&2

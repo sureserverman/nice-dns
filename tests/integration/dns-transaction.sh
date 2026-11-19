@@ -274,8 +274,9 @@ t_helper_reads_pf_status_whole_and_keeps_its_token() {
     assert_eq 4242 "$(cat "$tokdir/pf-token" 2>/dev/null)" "the token is recorded"
     assert_eq 700 "$(ip_mode "$tokdir")" "BL-043: the token directory is 0700"
     assert_eq 600 "$(ip_mode "$tokdir/pf-token")" "the token file is 0600"
-    # An older install left the directory 0755 (Stage 1 Tier-2 I2).
-    chmod 755 "$tokdir"
+    # An older install left the directory 0755 and the token 0644 (Stage 1
+    # Tier-2 I2 and round-1 S3).
+    chmod 755 "$tokdir"; chmod 644 "$tokdir/pf-token"
     # pf on, with a status longer than a pipe buffer (pfctl is still writing
     # when grep -q would have exited).
     rm -f "$IP_BIN/pfctl"
@@ -299,6 +300,7 @@ STUB
     assert_eq 4242 "$(cat "$tokdir/pf-token" 2>/dev/null)" "BL-032: and the recorded token is unchanged"
     assert_ne "" "$(ip_first "$FAKE_LOG" '^pfctl -a com\.apple/260\.nice-dns-scoped -f -$')" "the block is still loaded"
     assert_eq 700 "$(ip_mode "$tokdir")" "BL-043: an existing 0755 directory is made 0700 with pf already on"
+    assert_eq 600 "$(ip_mode "$tokdir/pf-token")" "BL-043: and an existing 0644 token 0600"
   ) || exit 1
   # The token's directory is a symlink: nothing is written or chmodded
   # through it, and the pin still finishes.
