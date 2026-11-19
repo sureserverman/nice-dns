@@ -80,6 +80,10 @@ System Settings > General > Login Items if you want it there.
 ## Install
 
 Run as a **regular user** (no `sudo`). macOS needs macOS 26+ on Apple silicon and [Homebrew](https://brew.sh/).
+On a Mac the stack runs in your login session, so after a reboot the Mac has
+no DNS until you log in (a test on macOS 27.2: the runtime does not start
+before login). Turn on automatic login if it must have DNS after an
+unattended reboot.
 Debian 12 and Whonix 17 are not supported: their `mawk` is too old for the
 patterns the controller and installer use.
 
