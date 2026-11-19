@@ -157,6 +157,66 @@ t_helper_post_finishes_when_the_mac_is_offline() {
   ) || exit 1
 }
 
+# BL-033: the scoped-DNS block names the bridge `post` saw, and every agent
+# run that keeps or builds the stack reloads it. A login run or an unrequested
+# kickstart of a healthy stack takes the fast path, which runs the helper's
+# `post`; a controller restart leaves restart-requested
+# (lib/platform/macos.sh nd_platform_restart_proxy), so fast_path_ok refuses
+# and the run takes the full path, whose last step is `post`
+# (mac/start-container.sh). So a renumbered bridge is repaired at the next
+# run; the agent has no schedule of its own (RunAtLoad only). Without a bridge
+# to the stack nothing is loaded (a block could cut the stack off), and the
+# run says so.
+t_agent_fast_path_reasserts_the_scoped_dns_block() {
+  local sc="$NICE_DNS_ROOT/mac/start-container.sh" out
+  sed -n '/^if fast_path_ok; then$/,/^fi$/p' "$sc" >"$CASE_DIR/fast.sh"
+  assert_match 'fast_path_ok' "$(cat "$CASE_DIR/fast.sh")" "BL-033: the fast path is a block of the agent"
+  cat >"$CASE_DIR/fast-run.sh" <<'RUN'
+set -u
+VARIANT=haproxy
+log() { printf 'log: %s\n' "$*"; }
+fast_path_ok() { return 0; }
+run_root_helper() { printf 'helper %s\n' "$1"; }
+. "$W/fast.sh"
+echo 'fell through'
+RUN
+  out="$(W="$CASE_DIR" bash "$CASE_DIR/fast-run.sh" 2>&1)"
+  assert_eq 1 "$(printf '%s\n' "$out" | grep -c '^helper post$')" "BL-033: a healthy stack's run calls the helper's post once: $out"
+  assert_eq 1 "$(printf '%s\n' "$out" | grep -c '^helper ')" "BL-033: and no other helper call"
+  assert_not_match 'fell through' "$out" "BL-033: and ends there"
+  # The full path ends with the same `post`, at the top level, after it.
+  assert_eq 'run_root_helper post || log "post-start helper failed"' \
+    "$(grep '^run_root_helper ' "$sc" | tail -n 1)" "BL-033: the full path's last helper call is post"
+  assert_eq 'log "done"' "$(grep -vE '^[[:space:]]*(#|$)' "$sc" | tail -n 1)" "BL-033: and only its done line follows"
+  assert_eq 1 "$(( $(grep -n '^run_root_helper post' "$sc" | tail -n 1 | cut -d: -f1) > $(grep -n '^if fast_path_ok; then$' "$sc" | cut -d: -f1) ))" "BL-033: after the fast path"
+  dt_select_platforms
+  case " $DT_PLATS " in *" macos "*) ;; *) echo "macos not selected (--platforms)"; return 0 ;; esac
+  (
+    local load kill
+    dt_world "$(dt_ep_of macos)" fresh
+    dt_helper macos snapshot
+    dt_helper macos post
+    assert_match 'on bridge100 ' "$(cat "$FAKE/pf.rules" 2>/dev/null)" "BL-033: the first run names bridge100"
+    # The bridge was renumbered (repair-dnsnet restarts InternetSharing).
+    printf 'bridge101\n' >"$FAKE/bridge"; : >"$FAKE_LOG"
+    dt_helper macos post
+    assert_rc 0 "$DT_RC" "BL-033: post after the renumbering: $DT_OUT"
+    assert_match 'on bridge101 ' "$(cat "$FAKE/pf.rules" 2>/dev/null)" "BL-033: the next run names bridge101"
+    assert_not_match 'bridge100' "$(cat "$FAKE/pf.rules" 2>/dev/null)" "BL-033: and no longer bridge100"
+    load="$(ip_first "$FAKE_LOG" '^pfctl -a com\.apple/260\.nice-dns-scoped -f -$')"
+    kill="$(ip_first "$FAKE_LOG" '^pfctl -k 0\.0\.0\.0/0 -k 172\.31\.240\.248/29$')"
+    assert_ne "" "$load" "BL-033: the new rules are loaded"
+    assert_ne "" "$kill" "BL-033: the states of earlier queries are killed"
+    assert_eq 1 "$((kill > load))" "BL-033: after the new rules are loaded"
+    : >"$FAKE/bridge"; : >"$FAKE_LOG"
+    dt_helper macos post
+    assert_rc 0 "$DT_RC" "BL-033: post with no bridge exits 0: $DT_OUT"
+    assert_eq "" "$(ip_first "$FAKE_LOG" '^pfctl -a ')" "BL-033: and loads nothing"
+    assert_eq "" "$(ip_first "$FAKE_LOG" '^pfctl -k ')" "BL-033: and kills no states"
+    assert_match 'no container bridge' "$DT_OUT" "BL-033: and says so"
+  ) || exit 1
+}
+
 # BL-032 and BL-043 item 5: `pfctl -s info | grep -q` let grep exit at its
 # first match; a pfctl still writing then dies of SIGPIPE, pipefail fails the
 # pipeline, an enabled pf reads as disabled and `pfctl -E` takes a second
