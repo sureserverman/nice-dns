@@ -135,6 +135,27 @@ nd_platform_container_generation() {
   head -n 1 "$3/gen"
 }
 
+# nd_platform_container_absent <container> <deadline> <tmp>: 0 podman says
+# there is no such container; 1 it exists; 2 the query failed or timed out
+# (one line of reason in <tmp>/absent.err). `podman container exists` exits 1
+# for an absent container and also when podman cannot load its configuration
+# (podman 5.8.1, mint 2026-11-19), so exit 1 is absent only when podman printed
+# nothing but its storage-driver warning (BL-022).
+nd_platform_container_absent() {
+  local bin rc
+  bin="$(nd_platform_runtime_bin)" || { printf 'no podman CLI\n' >"$3/absent.err"; return 2; }
+  nd_bounded "$2" "$3/abs" "$3/abs.err" "$bin" container exists "$1"; rc=$?
+  case "$rc" in
+    0) return 1 ;;
+    1) grep -v "level=warning msg=\"The storage 'driver' option" "$3/abs.err" 2>/dev/null | grep -q . || return 0 ;;
+  esac
+  if [ "$rc" -eq 124 ]; then printf 'deadline: podman container exists %s\n' "$1"
+  else
+    { grep -v "level=warning msg=\"The storage 'driver' option" "$3/abs.err" 2>/dev/null; printf 'podman container exists %s exited %s\n' "$1" "$rc"; } | head -n 1
+  fi >"$3/absent.err"
+  return 2
+}
+
 # nd_platform_container_state <container> <deadline> <tmp>: one line
 # "status<TAB>health<TAB>restarts<TAB>exit_code<TAB>detail". The status,
 # health, exit code and detail come from podman inspect: health is none

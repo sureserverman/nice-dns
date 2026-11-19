@@ -533,16 +533,17 @@ seed_default_route() {
 # Fresh is the policy's test (lib/policy.sh, the fresh-proxy rule), with one
 # difference: the proxy container's generation hash (nd_generation_hash, as
 # the proxy observation records it) differs from the state's proxy_gen, or,
-# here only, cannot be read (the proxy is being recreated; the policy takes an
+# here only, the runtime says no proxy container runs (the proxy is being
+# recreated: the macOS agent creates it after Unbound; the policy takes an
 # unreadable generation as no evidence). So the controller's next pass drops the
 # onion from its state too and selects the exit (unchanged), then promotes the
 # onion once sustained: include and state agree. Unbound restarting alone
 # while the proxy runs on (same generation) keeps its onion: the circuits are
 # warm, and a demotion there would stick, since the state would still say
-# onion (Tier-1 review I1). Accepted risk (review N1, backlog): a proxy
-# generation that cannot be read counts as fresh, which the macOS rebuild
-# needs (the proxy does not exist yet); a failed read of a warm proxy
-# therefore demotes too, and that demotion sticks until the proxy restarts.
+# onion (Tier-1 review I1). A runtime that cannot be asked (a query that
+# failed or timed out, BL-022) says nothing about the proxy, so its onion is
+# kept as well and the controller's next pass decides on real evidence; only a
+# runtime that answered "no such container" makes the proxy fresh.
 #
 # Files only (Unbound is not running), under the controller's state lock, so
 # a tick's apply_route never interleaves. A tick holding the lock wins (busy,
@@ -553,7 +554,7 @@ seed_default_route() {
 # desired.tsv is refused, as apply_route refuses it. No include, or an exit,
 # is kept. Exit 0 applied or kept; 2 refused; 3 busy.
 start_route() {
-  local dir info cur igen gen tok rc msg pgen sgen
+  local dir info cur igen gen tok rc msg pgen sgen prc
   _ND_DES_ROUTE="" _ND_DES_GEN=""
   dir="$(nd_platform_route_dir)"
   if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
@@ -574,9 +575,15 @@ start_route() {
   tok="$(nd_state_lock 2>/dev/null)"; rc=$?
   if [ "$rc" -eq 3 ]; then _nd_route_out busy "$cur" "$igen" - "the controller holds the state lock; the start runs on the persisted route until its pass decides"; return 3; fi
   [ "$rc" -eq 0 ] || { _nd_route_out refused - - - "cannot take the controller state lock"; return 2; }
-  pgen="$(_nd_route_proxy_gen)"
+  pgen="$(_nd_route_proxy_gen)"; prc=$?
   sgen="$(awk -F '\t' '$1 == "proxy_gen" { print $2; exit }' "$(_nd_state_dir)/state.tsv" 2>/dev/null)"
-  if [ -n "$pgen" ] && [ "$pgen" = "$sgen" ]; then
+  if [ "$prc" -eq 2 ]; then
+    nd_state_unlock "$tok" >/dev/null 2>&1
+    _nd_route_read_desired "$dir" || true
+    _nd_route_out kept "$cur" "$igen" "$(printf '%s\n' "$info" | cut -f3)" "the proxy could not be asked ($pgen): its onion circuits may be warm; kept until the controller's pass decides"
+    return 0
+  fi
+  if [ "$prc" -eq 0 ] && [ "$pgen" = "$sgen" ]; then
     nd_state_unlock "$tok" >/dev/null 2>&1
     _nd_route_read_desired "$dir" || true
     _nd_route_out kept "$cur" "$igen" "$(printf '%s\n' "$info" | cut -f3)" "the proxy is not fresh (generation $pgen, as the controller recorded it): its onion circuits are warm; kept"
@@ -602,22 +609,37 @@ start_route() {
   fi
   nd_state_unlock "$tok" >/dev/null 2>&1
   _ND_DES_ROUTE="$ND_ROUTE_SEED" _ND_DES_GEN="$gen"
-  _nd_route_out applied "$ND_ROUTE_SEED" "$gen" "$_ND_FWD" "the proxy is fresh (generation ${pgen:-unreadable}, recorded ${sgen:--}): demoted $cur (generation $igen) before Unbound starts"
+  _nd_route_out applied "$ND_ROUTE_SEED" "$gen" "$_ND_FWD" "the proxy is fresh (generation ${pgen:-none: no proxy container runs}, recorded ${sgen:--}): demoted $cur (generation $igen) before Unbound starts"
 }
 
-# _nd_route_proxy_gen: the running proxy container's generation hash, or
-# nothing when none can be read (not created yet: the macOS agent creates the
-# proxy after Unbound).
+# _nd_route_proxy_gen: the running proxy container's generation hash (exit
+# 0); exit 1, nothing printed, when the runtime says no proxy container runs
+# (not created yet: the macOS agent creates the proxy after Unbound); exit 2,
+# the reason printed, when that could not be learnt: a query failed or timed
+# out, or a generation could not be hashed (BL-022). Each query is bounded by
+# ND_ROUTE_PROXY_DEADLINE seconds (10); a timeout ends the search, since the
+# runtime is not answering.
 _nd_route_proxy_gen() {
-  local c t out
-  t="$(mktemp -d "${TMPDIR:-/tmp}/nd-route-start.XXXXXX")" || return 0
+  local c t out rc why="" dl="${ND_ROUTE_PROXY_DEADLINE:-10}"
+  t="$(mktemp -d "${TMPDIR:-/tmp}/nd-route-start.XXXXXX")" || { printf 'no temporary directory\n'; return 2; }
   for c in tor-haproxy tor-socat; do
-    if out="$(nd_platform_container_generation "$c" 10 "$t" 2>/dev/null)" && [ -n "$out" ]; then
-      nd_generation_hash "$out" || true
-      break
+    out="$(nd_platform_container_generation "$c" "$dl" "$t" 2>/dev/null)"; rc=$?
+    if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
+      if out="$(nd_generation_hash "$out")"; then rm -rf "${t:?}"; printf '%s\n' "$out"; return 0; fi
+      why="${why:-$c: its generation cannot be hashed}"; continue
     fi
+    if [ "$rc" -eq 124 ]; then why="$c: deadline: the generation query"; break; fi
+    nd_platform_container_absent "$c" "$dl" "$t"; rc=$?
+    case "$rc" in
+      0) ;;
+      1) why="${why:-$c exists but its generation cannot be read}" ;;
+      *) why="$c: $(head -n 1 "$t/absent.err" 2>/dev/null)"
+         case "$why" in *deadline*) break ;; esac ;;
+    esac
   done
   rm -rf "${t:?}"
+  [ -n "$why" ] || return 1
+  printf '%s\n' "$why"; return 2
 }
 
 # ─── Recovery actions (Sub-plan 3, Task 1.3) ────────────────────────────────

@@ -208,6 +208,24 @@ nd_platform_container_generation() {
        END { exit !f }' "$3/gen"
 }
 
+# nd_platform_container_absent <container> <deadline> <tmp>: 0 a `container
+# ls -a` that answered does not list <container> as running (absent, or
+# stopped: the agent's rebuild recreates it, so its circuits are new either
+# way); 1 it runs; 2 no answer (one line of reason in <tmp>/absent.err; an
+# "Error:" banner with exit 0 is no answer, as in _nd_mac_table). BL-022.
+nd_platform_container_absent() {
+  local rc
+  _nd_mac_table "$2" "$3/abs" -a; rc=$?
+  case "$rc" in
+    0) awk -F '\t' -v n="$1" '$1 == n && $2 == "running" { f = 1 } END { exit !f }' "$3/abs" && return 1
+       return 0 ;;
+    124) printf 'deadline: container ls -a\n' ;;
+    3) printf 'no container CLI\n' ;;
+    *) { head -n 1 "$3/abs.err" 2>/dev/null; printf 'container ls -a exited %s\n' "$rc"; } | head -n 1 ;;
+  esac >"$3/absent.err"
+  return 2
+}
+
 # nd_platform_container_state <container> <deadline> <tmp>: one line
 # "status<TAB>health<TAB>restarts<TAB>exit_code<TAB>" (the detail is empty).
 # The status is the STATE column of `container ls -a`: Apple container keeps
