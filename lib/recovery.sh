@@ -1078,11 +1078,13 @@ nd_recovery_tick() {
 #   * bridges.env is only replaced when it still holds the set the evaluation
 #     started from, so a slow evaluation never overwrites a newer one;
 #   * a changed set replaces bridges.env atomically (the old one kept as
-#     bridges.env.prev) and restarts nothing: the proxy reads it at its next
-#     natural start. bridges.pending records the proxy container's
+#     bridges.env.prev); applying restarts nothing: the proxy reads it at its
+#     next natural start. bridges.pending records the proxy container's
 #     generation, so a later Tor restart during a sustained failure can adopt
 #     the set through the service restart (nd_recovery_restart_tor); a proxy
-#     that restarted since has adopted it already.
+#     that restarted since has adopted it already. Only when the running
+#     proxy uses a weak bridge the set leaves out does the refresh restart it
+#     at once, under the state lock (_nd_br_adopt, BL-030).
 #   * with bridges off (TOR_BRIDGES=off in bridges-mode.env, nd_bridges_mode)
 #     nothing is evaluated or applied; the pool is kept for `on`.
 

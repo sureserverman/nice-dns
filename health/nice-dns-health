@@ -520,8 +520,9 @@ export ND_POLICY_GRACE_S
 # outlasted the grace, re-evaluate the bridges (lib/recovery.sh
 # nd_bridges_refresh: the image's bridge-eval, applied only under its rules),
 # at most once per ND_BRIDGE_OUTAGE_REFRESH_S (3600), before the pass and
-# outside the state lock. A changed set is then adopted by the pass's service
-# restart. Nothing here writes bridges.env directly: until Task 2.2 this
+# outside the state lock. A changed set the running proxy needs at once is
+# adopted by the refresh's own restart under the state lock (BL-030); any
+# other waits for the proxy's next start, such as the pass's service restart. Nothing here writes bridges.env directly: until Task 2.2 this
 # called the raw Moat fetcher, which replaced an evaluated set with an
 # unranked pool.
 refresh_bridges_on_outage() {
@@ -597,6 +598,16 @@ INSTALL_RECEIPT="$HEALTH_LIB_ROOT_INSTALLED/install.tsv"
 SCHEDULE_STOPPED="$HEALTH_LIB_ROOT_INSTALLED/schedule-stopped"
 # Kept within the state lock's 600 s lease (lib/state.sh).
 TICK_TIMEOUT_SECS=540
+# One bridge refresh (lib/recovery.sh nd_bridges_refresh): bridge-eval
+# (ND_BRIDGE_EVAL_S, 300), two waits for the state lock, the apply's and the
+# adoption's (ND_BRIDGE_LOCK_TRIES 60 x 0.5 s, 30 s each), and the adoption
+# restart (ND_RECOVERY_SERVICE_S, 120). The rest of the 600 s covers the
+# bounded queries around them (Tor state, container generations; 15 s each).
+# Linux only: launchd has no run-time limit for the macOS job (BL-033).
+BRIDGE_EVAL_SECS=300
+BRIDGE_LOCK_WAIT_SECS=60
+BRIDGE_RESTART_SECS=120
+BRIDGE_TIMEOUT_SECS=$((BRIDGE_EVAL_SECS + BRIDGE_LOCK_WAIT_SECS + BRIDGE_RESTART_SECS + 120))
 # The bound on one unattended update check (`nice-dns update --check` keeps
 # its own 55 s bound on git where timeout(1) exists).
 UPDATE_CHECK_SECS=60
@@ -701,8 +712,9 @@ After=default.target
 [Service]
 Type=oneshot
 ExecStart=$interp $INSTALLED_BIN bridges-refresh
-# The evaluation takes about 150 s; it holds no controller lock.
-TimeoutStartSec=420
+# The evaluation (about 150 s) holds no controller lock; the adoption
+# restart, when one is due, runs under it (BL-030).
+TimeoutStartSec=$BRIDGE_TIMEOUT_SECS
 EOF
   cat >"$d/.$SYSTEMD_BR_TIMER.new" <<EOF || return 1
 [Unit]
@@ -1344,9 +1356,9 @@ cmd_tick() {
 }
 
 # bridges-refresh: evaluate the bridge pool with the proxy image's
-# bridge-eval and adopt a changed set: at once, through a proxy restart, when the
-# running proxy uses a bridge the set leaves out; otherwise when the proxy
-# restarts for another reason (lib/recovery.sh nd_bridges_refresh; the daily
+# bridge-eval and adopt a changed set: at once, through the adoption restart
+# under the state lock (BL-030), when the running proxy uses a bridge the set
+# leaves out; otherwise when the proxy restarts for another reason (lib/recovery.sh nd_bridges_refresh; the daily
 # schedule calls it).
 cmd_bridges_refresh() {
   local out rc v t c
@@ -1435,9 +1447,10 @@ Usage: $SCRIPT_NAME <command>
   self-check  Check that this copy's libraries load (no stack contact).
   bridges-refresh
               Evaluate the bridge pool (the proxy image's bridge-eval) and
-              adopt a changed set (daily schedule): at once, through a proxy
-              restart, when the running proxy uses a bridge the set leaves out;
-              otherwise when the proxy restarts for another reason.
+              adopt a changed set (daily schedule): at once, through an
+              adoption restart under the controller's state lock, when the
+              running proxy uses a bridge the set leaves out; otherwise, or
+              while the controller holds the lock, at the proxy's next start.
   update-check
               Run the published \`nice-dns update --check\` once, bounded to
               60 s (twice a day: 00:00/12:00 on Linux, 04:47/16:47 on macOS;
