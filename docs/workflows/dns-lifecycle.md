@@ -357,10 +357,11 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   LaunchAgent refuses a stack whose addresses do not match
   (mac/start-container.sh:285-293, mac/start-container.sh:777-785).
 - macOS: the scoped-DNS block (WF-DNS-003, [PRIV-NO-DIRECT]) names the bridge
-  that leads to Pi-hole. Every agent run that keeps or builds the stack
-  reloads it for the bridge of that moment: the fast path and the full path
-  both end in the helper's `post` (mac/start-container.sh:716,
-  mac/start-container.sh:842; mac/start-container-root.sh:85-122) (BL-033).
+  that leads to Pi-hole. Every agent run that keeps the stack or rebuilds it
+  successfully reloads it for the bridge of that moment: the fast path and
+  the full path both end in the helper's `post` (mac/start-container.sh:717,
+  mac/start-container.sh:842; mac/start-container-root.sh:85-122); a run
+  whose rebuild fails exits before it and keeps the pin (BL-033).
 
 ## WF-DNS-002 Recovery
 
@@ -1265,14 +1266,16 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
 - macOS: persistence comes from the start-container LaunchAgent installed by
   `mac/persist.sh` (mac/persist.sh:62-77) and helpers in `/usr/local/sbin`
   (mac/root-ops:230-242). It requires macOS 26+ on arm64
-  (mac/check-runtime.sh:18-31). The agent runs in the user's login session
-  (mac/org.nice-dns.start-container.plist:9), so after a reboot the Mac has
-  no DNS until its user logs in: host DNS stays pinned to the stack. Apple's
-  runtime does not start before a login either: from a system LaunchDaemon
-  at boot `container system start` fails ("XPC connection error: Connection
-  invalid"; docs/qualification.md "macOS pre-login start", 2026-11-19).
-  Automatic login is the recommendation for a Mac that must have DNS after
-  an unattended reboot (README, DEC-032; BL-058). An install over ssh needs a
+  (mac/check-runtime.sh:18-31). The agent is a LaunchAgent in the user's
+  ~/Library/LaunchAgents (mac/persist.sh:62-77), so it runs in their login
+  session, and after a reboot the Mac has no DNS until its user logs in: host
+  DNS stays pinned to the stack. From a system LaunchDaemon at boot Apple's
+  runtime did not start either: `container system start` failed ("XPC
+  connection error: Connection invalid"; docs/qualification.md "macOS
+  pre-login start", 2026-11-19, macOS 27.2.1; other routes were not tried).
+  Automatic login, untested here, is the recommendation for a Mac that must
+  have DNS after an unattended reboot; macOS allows it only with FileVault
+  off (README, DEC-032; BL-058). An install over ssh needs a
   login session too (see the ssh bullet above).
 - The four entrypoints stay public (ARCH-01). The target moves their shared
   lifecycle into `lib/install.sh` behind them.

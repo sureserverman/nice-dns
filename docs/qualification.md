@@ -253,9 +253,11 @@ its addresses (18:01:15) and DNS answered again at 18:01:36.
 verdict: does not start
 
 So on this macOS the Mac has no DNS after a reboot until its user logs in,
-and nice-dns cannot change that from a daemon: the runtime starts only in a
-login session. Automatic login (System Settings, Users & Groups; it needs
-FileVault off) is the way to have DNS after an unattended reboot.
+and a system LaunchDaemon does not change that: the runtime did not start
+from one. Other routes (a bootstrap into user/<uid>, say) were not tried.
+Automatic login (System Settings, Users & Groups; macOS allows it only with
+FileVault off) is the recommendation for DNS after an unattended reboot; it
+was not tested here, and it lets anyone at the Mac into the account.
 
 ## Known limits
 

@@ -80,10 +80,6 @@ System Settings > General > Login Items if you want it there.
 ## Install
 
 Run as a **regular user** (no `sudo`). macOS needs macOS 26+ on Apple silicon and [Homebrew](https://brew.sh/).
-On a Mac the stack runs in your login session, so after a reboot the Mac has
-no DNS until you log in (a test on macOS 27.2: the runtime does not start
-before login). Turn on automatic login if it must have DNS after an
-unattended reboot.
 Debian 12 and Whonix 17 are not supported: their `mawk` is too old for the
 patterns the controller and installer use.
 
@@ -94,6 +90,17 @@ curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install
 # macOS
 curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac.sh -o install-mac.sh && bash install-mac.sh
 ```
+
+<details>
+<summary>macOS after a reboot</summary>
+
+The stack runs in your login session, so after a reboot a Mac has no DNS
+until you log in (on macOS 27.2.1 the runtime did not start before login;
+docs/qualification.md, "macOS pre-login start"). Automatic login avoids the
+gap; macOS allows it only with FileVault off, and it lets anyone at the Mac
+into your account.
+
+</details>
 
 Re-running the installer prepares the new images first, then replaces the running stack, and puts the previous one back if anything fails. Tor state, the Pi-hole lists and the admin password are kept; only `uninstall` removes them.
 
