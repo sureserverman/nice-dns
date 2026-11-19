@@ -33,7 +33,13 @@
 #                    SECS seconds and wakes by its own alarm (Linux: sudo
 #                    rtcwake -m mem; macOS: sudo pmset relative wake, then
 #                    pmset sleepnow), and the queries start once its default
-#                    gateway answers: DEC-012's wake sample.
+#                    gateway answers: DEC-012's wake sample. With no default
+#                    route after NICE_DNS_WAKE_ROUTE_S (1..600, default 60)
+#                    seconds, Linux brings the Wi-Fi profile that was active
+#                    before the sleep back once (sudo nmcli, by UUID) and waits
+#                    as long again, noting `note wifi-recovered` on the woke
+#                    line; still no route fails the call with `no default
+#                    route after the wake` and no sample (BL-026).
 #   freeze-upstream  SIGSTOP the tor process inside --component, so every
 #                    listener (Pi-hole, Unbound, the proxy) stays up while
 #                    upstream is dead; a detached remote timer thaws it after
@@ -543,6 +549,11 @@ if [ -n "$op_limit_var" ]; then
   [ "$op_limit" -ge 1 ] && [ "$op_limit" -le 7200 ] || die "$op_limit_var must be 1..7200 (seconds)"
   command -v timeout >/dev/null 2>&1 || die "$op needs timeout(1) on this machine for its outer limit ($op_limit_var)"
 fi
+# How long a wake waits for a default route, and again after bringing the
+# Wi-Fi back (BL-026).
+wake_route="${NICE_DNS_WAKE_ROUTE_S:-60}"
+case "$wake_route" in ''|*[!0-9]*) die "NICE_DNS_WAKE_ROUTE_S must be an integer (seconds)" ;; esac
+[ "$wake_route" -ge 1 ] && [ "$wake_route" -le 600 ] || die "NICE_DNS_WAKE_ROUTE_S must be 1..600 (seconds)"
 case "$watch_secs" in ''|*[!0-9]*) die "NICE_DNS_WATCH_SECS must be an integer" ;; esac
 [ "$watch_secs" -ge 10 ] && [ "$watch_secs" -le 3600 ] || die "NICE_DNS_WATCH_SECS must be 10..3600"
 if [ "$op" = mark-state ]; then
@@ -1009,16 +1020,40 @@ case "$NICE_DNS_OP" in
         gw() { route -n get default 2>/dev/null | awk '$1 == "gateway:" { print $2 }'; }
         pg() { ping -c 1 -t 1 "$1" </dev/null >/dev/null 2>&1; }
       else
+        # The Wi-Fi profile active before the sleep, by UUID (a name may hold
+        # spaces): a resume can leave the link down for hours (BL-026).
+        wprof=$(nmcli -t -f UUID,TYPE connection show --active </dev/null 2>/dev/null | awk -F: '$2 == "802-11-wireless" { print $1; exit }')
         sudo -n rtcwake -m mem -s "$NICE_DNS_SLEEP_SECS" </dev/null >&2 || { echo "the target did not sleep" >&2; exit 2; }
         gw() { ip route show default 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }'; }
         pg() { ping -c 1 -W 1 "$1" </dev/null >/dev/null 2>&1; }
       fi
-      w0=$(date +%s); i=0
-      while [ "$i" -lt 60 ]; do
-        g=$(gw); if [ -n "$g" ] && pg "$g"; then break; fi
-        i=$((i + 1)); sleep 1
-      done
-      printf 'woke\t%s\tlink_after_s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(( $(date +%s) - w0 ))" >&2
+      # link_wait <secs>: 0 once the default gateway answers; 1 if there is a
+      # default route but its gateway did not answer; 2 if there is no route.
+      link_wait() {
+        lw_i=0 lw_r=2
+        while [ "$lw_i" -lt "$1" ]; do
+          g=$(gw)
+          if [ -n "$g" ]; then lw_r=1; if pg "$g"; then return 0; fi; else lw_r=2; fi
+          lw_i=$((lw_i + 1)); sleep 1
+        done
+        return "$lw_r"
+      }
+      w0=$(date +%s) note=''
+      link_wait "$NICE_DNS_WAKE_ROUTE_S"; lr=$?
+      if [ "$lr" -eq 2 ] && [ -n "${wprof:-}" ]; then
+        # Once: as root, since an ssh session may not control the network.
+        sudo -n nmcli device wifi rescan </dev/null >&2 || true
+        sudo -n nmcli connection up uuid "$wprof" </dev/null >&2 || true
+        link_wait "$NICE_DNS_WAKE_ROUTE_S"; lr=$?
+        [ "$lr" -eq 2 ] || note=wifi-recovered
+      fi
+      # No route, no sample: its queries would measure the link, not the stack.
+      [ "$lr" -ne 2 ] || { echo "no default route after the wake" >&2; exit 2; }
+      {
+        printf 'woke\t%s\tlink_after_s\t%s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(( $(date +%s) - w0 ))"
+        [ -z "$note" ] || printf '\tnote\t%s' "$note"
+        printf '\n'
+      } >&2
     fi
     {
       printf 'target_id\t%s\nplatform\t%s\nproxy\t%s\n' "$NICE_DNS_ID_TARGET_ID" "$NICE_DNS_ID_PLATFORM" "$NICE_DNS_ID_PROXY"
@@ -2576,7 +2611,7 @@ case "$op" in
     fi
     preconnect_guards
     probe_identity probe
-    remote_run "NICE_DNS_OP=collect NICE_DNS_WORKLOAD=$c_workload NICE_DNS_COUNT=$c_count NICE_DNS_TIMEOUT_MS=$c_timeout NICE_DNS_PAUSE_MS=$c_pause NICE_DNS_RUN_ID=$RUN_ID$ID_ENV NICE_DNS_SLEEP_SECS=$c_sleep"
+    remote_run "NICE_DNS_OP=collect NICE_DNS_WORKLOAD=$c_workload NICE_DNS_COUNT=$c_count NICE_DNS_TIMEOUT_MS=$c_timeout NICE_DNS_PAUSE_MS=$c_pause NICE_DNS_RUN_ID=$RUN_ID$ID_ENV NICE_DNS_SLEEP_SECS=$c_sleep NICE_DNS_WAKE_ROUTE_S=$wake_route"
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;

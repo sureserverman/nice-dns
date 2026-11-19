@@ -1037,6 +1037,83 @@ t_wake_sample_is_guarded() {
   assert_eq "" "$(printf '%s\n' "$b" | grep -E '(sudo|pmset|ping) ' | grep -v '</dev/null')" "no sleep command reads the script's stdin"
 }
 
+# ─── Sub-plan 4 Task 2.1: a wake with no route brings the Wi-Fi back (BL-026) ─
+
+# tg_wake_tools <route>: fake suspend and network tools on the exec-mode
+# remote. <route>: now (a default route at once), after-up (none until
+# `nmcli connection up` ran), never.
+tg_wake_tools() {
+  local r="$CASE_DIR/rbin"
+  printf '#!/bin/sh\nprintf "sudo %%s\\n" "$*" >>"$FAKE_LOG"\n[ "$1" != -n ] || shift\nexec "$@"\n' >"$r/sudo"
+  printf '#!/bin/sh\nexit 0\n' >"$r/rtcwake"
+  printf '#!/bin/sh\nexit 0\n' >"$r/ping"
+  printf '#!/bin/sh\nprintf ";; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1\\n"\n' >"$r/dig"
+  printf '#!/bin/sh\ncase "$FAKE_ROUTE" in now) ;; after-up) [ -f "$FAKE_UP" ] || exit 0 ;; *) exit 0 ;; esac\necho "default via 192.0.2.1 dev wlp1s0 proto dhcp metric 600"\n' >"$r/ip"
+  cat >"$r/nmcli" <<'FAKE'
+#!/bin/sh
+printf 'nmcli %s\n' "$*" >>"$FAKE_LOG"
+case "$*" in
+  *'connection show --active'*) printf '11111111-2222-3333-4444-555555555555:802-11-wireless\n22222222-3333-4444-5555-666666666666:loopback\n' ;;
+  *'connection up uuid 11111111-2222-3333-4444-555555555555'*) : >"$FAKE_UP" ;;
+esac
+exit 0
+FAKE
+  chmod 755 "$r"/*
+  FAKE_ROUTE="$1" FAKE_UP="$CASE_DIR/wifi-up"
+  rm -f "$FAKE_UP"
+  export FAKE_ROUTE FAKE_UP
+}
+
+tg_wake() {
+  : >"$FAKE_LOG"
+  tg collect lin1 --targets "$CASE_DIR/targets.env" --workload wake --count 1 --identity "$CASE_DIR/identity.tsv" --after-sleep 60
+}
+
+t_wake_without_a_route_brings_the_wifi_back_bl026() {
+  local v
+  tg_setup
+  tg_remote_tools Linux
+  RUN_ID=run-wake-1; export RUN_ID
+  tg_identity 'pi-hole=sha256:ab'
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "snapshot: $TG_OUT"
+  NICE_DNS_WAKE_ROUTE_S=2; export NICE_DNS_WAKE_ROUTE_S
+  # BL-026: none until the profile is up again -> one recovery, then the sample.
+  tg_wake_tools after-up
+  tg_wake
+  assert_rc 0 "$TG_RC" "recovered wake: $TG_OUT"
+  assert_match '^sudo -n nmcli device wifi rescan$' "$(cat "$FAKE_LOG")" "BL-026: a rescan first"
+  assert_match '^sudo -n nmcli connection up uuid 11111111-2222-3333-4444-555555555555$' "$(cat "$FAKE_LOG")" "BL-026: the profile active before the sleep, by UUID"
+  assert_match '^woke	[0-9TZ:-]+	link_after_s	[0-9]+	note	wifi-recovered$' "$TG_OUT" "BL-026: the sample is noted wifi-recovered"
+  assert_eq 1 "$(printf '%s\n' "$TG_OUT" | grep -c '^run-wake-1	')" "BL-026: then the sample is taken"
+  # BL-026: a route at once -> no recovery call.
+  tg_wake_tools now
+  tg_wake
+  assert_rc 0 "$TG_RC" "plain wake: $TG_OUT"
+  assert_not_match 'nmcli (device|connection up)' "$(cat "$FAKE_LOG")" "BL-026: no recovery when the route is there"
+  assert_match '^woke	[0-9TZ:-]+	link_after_s	[0-9]+$' "$TG_OUT" "BL-026: the woke line is unchanged"
+  assert_eq 1 "$(printf '%s\n' "$TG_OUT" | grep -c '^run-wake-1	')" "BL-026: one sample"
+  # BL-026: never a route -> the cell fails with the reason, nothing queried.
+  tg_wake_tools never
+  tg_wake
+  assert_rc 2 "$TG_RC" "no route: $TG_OUT"
+  assert_match 'no default route after the wake' "$TG_OUT" "BL-026: names the reason"
+  assert_eq 1 "$(grep -c '^sudo -n nmcli connection up' "$FAKE_LOG")" "BL-026: one recovery attempt only"
+  assert_eq 0 "$(printf '%s\n' "$TG_OUT" | grep -c '^run-wake-1	')" "BL-026: no sample without a route"
+  # The wait is a checked tunable, sent as a data word.
+  for v in 0 601 x '5;id'; do
+    : >"$FAKE_LOG"
+    NICE_DNS_WAKE_ROUTE_S="$v" tg collect lin1 --targets "$CASE_DIR/targets.env" --workload wake --count 1 --identity "$CASE_DIR/identity.tsv" --after-sleep 60
+    assert_rc 2 "$TG_RC" "NICE_DNS_WAKE_ROUTE_S [$v] refused: $TG_OUT"
+    assert_eq 0 "$(tg_sent)" "nothing sent for NICE_DNS_WAKE_ROUTE_S [$v]"
+  done
+  unset NICE_DNS_WAKE_ROUTE_S
+  tg_wake_tools now
+  tg_wake
+  assert_rc 0 "$TG_RC" "default wait: $TG_OUT"
+  assert_match ' NICE_DNS_WAKE_ROUTE_S=60 ' "$(cat "$FAKE_LOG")" "BL-026: 60 s by default"
+}
+
 # tg_idle_wake_ops <fn> [args]: tune-idle-wake on stubs; prints the target
 # operations <fn> ran.
 tg_idle_wake_ops() {
