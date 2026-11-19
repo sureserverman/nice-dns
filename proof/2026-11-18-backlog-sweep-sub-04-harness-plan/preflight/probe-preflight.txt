@@ -1,0 +1,33 @@
+# Sub-plan 4 Preflight probe output (taken 2026-11-19 19:24-19:29 UTC; committed late, at the Stage 1 gate)
+
+## Branch (OD-1)
+main at c9e6fcf, `git status --porcelain` empty; `git checkout -b sweep-harness main` -> Switched to a new branch 'sweep-harness'
+
+## No test run in progress
+`pgrep -af 'tests/[r]un.sh'` printed nothing before the first edit
+
+## Tools
+shellcheck: version: 0.11.0
+mawk: /usr/bin/mawk (mawk 1.3.4 20240123)
+timeout: timeout (GNU coreutils) 9.4
+
+## Baseline (each group under systemd-run --user, master OD-4 amendment of Sub-plan 1)
+unit harness-contracts rc=0 secs=105 group unit/harness-contracts: collected=68 passed=68 failed=0 collected=68 passed=68 failed=0 result=pass run_id=20261119T192445Z-9b9da3be
+integration target-guards rc=0 secs=15 group integration/target-guards: collected=61 passed=61 failed=0 collected=61 passed=61 failed=0 result=pass run_id=20261119T192630Z-add197f2
+integration bridges-toggle-dryrun rc=0 secs=48 group integration/bridges-toggle-dryrun: collected=9 passed=9 failed=0 collected=9 passed=9 failed=0 result=pass run_id=20261119T192645Z-c4448c99
+integration command-recovery-dryrun rc=0 secs=94 group integration/command-recovery-dryrun: collected=9 passed=9 failed=0 collected=9 passed=9 failed=0 result=pass run_id=20261119T192733Z-e8f0decf
+DONE rc_all=0
+
+## Calibration re-check
+review-scope: as authored `light`; recomputed `standard` (new executable harness behavior across more than 5 files); amended in the plan with the was-value kept
+stage-scope Stage 1 timed at the baseline: bridges-toggle-dryrun 48 s + command-recovery-dryrun 94 s + target-guards 15 s = 157 s, under ~5 min: unchanged
+
+## Decisions re-check
+register DEC-001..DEC-032: DEC-030, DEC-031, DEC-032 are new since the master was written; none binds the harness. DEC-009, DEC-012, DEC-013, DEC-014, DEC-024 accepted, unchanged.
+
+## Dispatch
+roster: 0 of 6 tasks Dispatch: YES; probe: skipped - empty roster
+Review: skip annotations at c9e6fcf - 0 tasks
+
+## Gate-selector probe
+no gate check invokes pytest; every group a Test or gate names is in tests/manifests/groups.tsv except integration/transport-live-dryrun, which Task 2.3 creates
