@@ -1114,6 +1114,78 @@ t_wake_without_a_route_brings_the_wifi_back_bl026() {
   assert_match ' NICE_DNS_WAKE_ROUTE_S=60 ' "$(cat "$FAKE_LOG")" "BL-026: 60 s by default"
 }
 
+# ─── Sub-plan 4 Task 2.2: the wake class can time the first answer (BL-025) ──
+
+# tg_fa_podman: a podman that answers the route readback and the proxy's
+# generation as the real ones do.
+tg_fa_podman() {
+  cat >"$CASE_DIR/rbin/podman" <<'FAKE'
+#!/bin/sh
+printf 'podman %s\n' "$*" >>"$FAKE_LOG"
+case "$*" in
+  'exec unbound unbound-control -c /usr/share/nice-dns/control.conf list_local_data') printf 'nice-dns-route.invalid.\t0\tIN\tTXT\t"route=cloudflare-onion generation=7"\n' ;;
+  'inspect -f {{.Id}} {{.State.StartedAt}} {{.State.Status}} tor-haproxy') echo "c0ffee 2026-11-19T20:00:00Z running" ;;
+esac
+exit 0
+FAKE
+  chmod 755 "$CASE_DIR/rbin/podman"
+}
+
+# tg_mask: stdout with its times, ids and fresh names masked, for comparing
+# two runs of the same collect.
+tg_mask() { sed -E -e 's/[0-9a-f]{16}\.example\.com/N.example.com/g' -e 's/[0-9]+/0/g'; }
+
+t_wake_first_answer_is_timed_beside_the_frozen_sample_bl025() {
+  local v old new
+  tg_setup
+  RUN_ID=run-fa-1; export RUN_ID
+  tg_identity 'pi-hole=sha256:ab'
+  # Guards: the pair only, CAP 30..600, nothing sent on a refusal.
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  for v in '300' '10 60' '601 60' 'x 60' '60;id 60'; do
+    : >"$FAKE_LOG"
+    # shellcheck disable=SC2086 # v is "<cap> [<sleep>]"
+    set -- $v
+    if [ $# -eq 2 ]; then
+      tg collect lin1 --targets "$CASE_DIR/targets.env" --workload wake --count 1 --identity "$CASE_DIR/identity.tsv" --first-answer "$1" --after-sleep "$2"
+    else
+      tg collect lin1 --targets "$CASE_DIR/targets.env" --workload wake --count 1 --identity "$CASE_DIR/identity.tsv" --first-answer "$1"
+    fi
+    assert_rc 2 "$TG_RC" "BL-025: --first-answer [$v] refused: $TG_OUT"
+    assert_eq 0 "$(tg_sent)" "BL-025: nothing sent for [$v]"
+  done
+  tg probe lin1 --targets "$CASE_DIR/targets.env" --first-answer 300
+  assert_rc 2 "$TG_RC" "BL-025: --first-answer on another operation refused"
+  # Exec mode: one first_answer row in DEC-014's format, the route and the
+  # proxy generation before the sleep and after the answer, no sample rows.
+  tg_remote_tools Linux
+  NICE_DNS_WAKE_ROUTE_S=2; export NICE_DNS_WAKE_ROUTE_S
+  tg_wake_tools now
+  tg_fa_podman
+  : >"$FAKE_LOG"
+  tg collect lin1 --targets "$CASE_DIR/targets.env" --workload wake --count 1 --identity "$CASE_DIR/identity.tsv" --after-sleep 60 --first-answer 300
+  assert_rc 0 "$TG_RC" "BL-025: first-answer wake: $TG_OUT"
+  assert_eq 1 "$(printf '%s\n' "$TG_OUT" | grep -c '^first_answer	')" "BL-025: one first_answer row"
+  assert_match '^first_answer	[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}\.[0-9]{6}Z	[0-9]+	ok	NOERROR	[0-9a-f]{16}\.example\.com	300000$' "$TG_OUT" "BL-025: DEC-014's row, capped at 300 s"
+  assert_eq 2 "$(printf '%s\n' "$TG_OUT" | grep -c '^route	')" "BL-025: two route rows"
+  assert_match '^route	before	cloudflare-onion	7$' "$TG_OUT" "BL-025: the route before the sleep"
+  assert_match '^route	after	cloudflare-onion	7$' "$TG_OUT" "BL-025: the route after the answer"
+  assert_match '^proxy_generation	before	c0ffee 2026-11-19T20:00:00Z running$' "$TG_OUT" "BL-025: the proxy generation before"
+  assert_match '^proxy_generation	after	c0ffee 2026-11-19T20:00:00Z running$' "$TG_OUT" "BL-025: and after"
+  [ "$(printf '%s\n' "$TG_OUT" | grep -n '^route	before' | cut -d: -f1)" -lt "$(printf '%s\n' "$TG_OUT" | grep -n '^woke	' | cut -d: -f1)" ] \
+    || fail "BL-025: the before rows are read before the sleep"
+  assert_eq 0 "$(printf '%s\n' "$TG_OUT" | grep -c '^run-fa-1	')" "BL-025: no one-query sample in this mode"
+  assert_match 'NICE_DNS_FIRST_ANSWER=300 ' "$(cat "$FAKE_LOG")" "BL-025: sent as a data word"
+  # Without --first-answer, stdout is byte-equal to the script before this
+  # task (3f8b998), times and fresh names masked.
+  mkdir -p "$CASE_DIR/old"
+  git -C "$NICE_DNS_ROOT" archive 3f8b998 tests/live/target.sh tests/live/collect.sh tests/manifests/workloads.tsv tests/manifests/matrix.tsv | tar -x -C "$CASE_DIR/old"
+  old="$(bash "$CASE_DIR/old/tests/live/target.sh" collect lin1 --targets "$CASE_DIR/targets.env" --workload wake --count 1 --identity "$CASE_DIR/identity.tsv" --after-sleep 60 2>/dev/null | tg_mask)"
+  new="$(bash "$TG" collect lin1 --targets "$CASE_DIR/targets.env" --workload wake --count 1 --identity "$CASE_DIR/identity.tsv" --after-sleep 60 2>/dev/null | tg_mask)"
+  assert_match '^run-fa-0	' "$new" "BL-025: the plain wake still takes its one-query sample"
+  assert_eq "$old" "$new" "BL-025: the frozen wake sample's output is unchanged"
+}
+
 # tg_idle_wake_ops <fn> [args]: tune-idle-wake on stubs; prints the target
 # operations <fn> ran.
 tg_idle_wake_ops() {

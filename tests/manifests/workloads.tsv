@@ -13,6 +13,9 @@
 # restart (DEC-014) is the one exception: its sample is the time from a stack
 # restart to the first answered query, so tests/live/target.sh arm-set times
 # it from the restart command and collect.sh refuses it.
+# wake stays DEC-012's one-query sample. Its first answer (BL-025) is a second
+# kind beside it, timed by target.sh collect --after-sleep SECS --first-answer CAP
+# as DEC-014's first_answer row, never as a row of this file's workloads.
 cold	miss	{nonce}.example.com	A
 warm	hit	example.com	A
 idle	hit-after-idle	example.com	A

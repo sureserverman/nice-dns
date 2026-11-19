@@ -39,7 +39,12 @@
 #                    before the sleep back once (sudo nmcli, by UUID) and waits
 #                    as long again, noting `note wifi-recovered` on the woke
 #                    line; still no route fails the call with `no default
-#                    route after the wake` and no sample (BL-026).
+#                    route after the wake` and no sample (BL-026). With
+#                    --after-sleep SECS --first-answer CAP (30..600) the
+#                    one query is replaced by DEC-014's `first_answer` row,
+#                    timed from the wake and capped at CAP, between `route`
+#                    and `proxy_generation` rows read before the sleep and
+#                    after the answer; DEC-012's sample is unchanged (BL-025).
 #   freeze-upstream  SIGSTOP the tor process inside --component, so every
 #                    listener (Pi-hole, Unbound, the proxy) stays up while
 #                    upstream is dead; a detached remote timer thaws it after
@@ -355,10 +360,10 @@ if [ "$op" != validate ]; then
   [ $# -gt 0 ] && shift
   case "$alias_" in ''|-*) die "usage: target.sh $op ALIAS --targets FILE" ;; esac
 fi
-targets='' component='' c_workload='' c_count='' c_timeout=5000 c_pause=0 c_identity='' c_sleep='' has_sleep='' i_cell='' i_sha='' i_hsha='' i_route='' i_mode='' i_ptag='' i_times='' i_every='' i_keep=''
+targets='' component='' c_workload='' c_count='' c_timeout=5000 c_pause=0 c_identity='' c_sleep='' has_sleep='' c_fa='' has_fa='' i_cell='' i_sha='' i_hsha='' i_route='' i_mode='' i_ptag='' i_times='' i_every='' i_keep=''
 while [ $# -gt 0 ]; do
   case "$1" in
-    --targets|--component|--workload|--count|--timeout-ms|--pause-ms|--identity|--after-sleep|--cell|--source-sha|--hardened-sha|--route|--mode|--proxy-tag|--times|--every|--keep)
+    --targets|--component|--workload|--count|--timeout-ms|--pause-ms|--identity|--after-sleep|--first-answer|--cell|--source-sha|--hardened-sha|--route|--mode|--proxy-tag|--times|--every|--keep)
       [ $# -ge 2 ] || die "option $1 needs a value"
       case "$1" in
         --targets) targets="$2" ;;
@@ -369,6 +374,7 @@ while [ $# -gt 0 ]; do
         --pause-ms) c_pause="$2" ;;
         --identity) c_identity="$2" ;;
         --after-sleep) c_sleep="$2" has_sleep=1 ;;
+        --first-answer) c_fa="$2" has_fa=1 ;;
         --cell) i_cell="$2" ;;
         --hardened-sha) i_hsha="$2" ;;
         --source-sha) i_sha="$2" ;;
@@ -385,13 +391,18 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$targets" ] || die "missing --targets FILE"
 if [ "$op" = capture-dns ]; then
-  [ -z "$c_workload$c_identity$has_sleep" ] || die "--workload/--identity/--after-sleep are only valid for collect"
+  [ -z "$c_workload$c_identity$has_sleep$has_fa" ] || die "--workload/--identity/--after-sleep/--first-answer are only valid for collect"
   [[ "$c_count" =~ ^[1-9][0-9]?$ ]] || die "capture-dns needs --count 1..99"
-elif [ "$op" != collect ] && [ -n "$c_workload$c_count$c_identity$has_sleep" ]; then
-  die "--workload/--count/--identity/--after-sleep are only valid for collect"
+elif [ "$op" != collect ] && [ -n "$c_workload$c_count$c_identity$has_sleep$has_fa" ]; then
+  die "--workload/--count/--identity/--after-sleep/--first-answer are only valid for collect"
 fi
 if [ -n "$has_sleep" ]; then
   [[ "$c_sleep" =~ ^[1-9][0-9]{1,2}$ ]] && [ "$c_sleep" -ge 30 ] && [ "$c_sleep" -le 600 ] || die "--after-sleep must be 30..600 (seconds)"
+fi
+if [ -n "$has_fa" ]; then
+  # BL-025: the wake class's first answer, so only after a sleep.
+  [ -n "$has_sleep" ] || die "--first-answer needs --after-sleep"
+  [[ "$c_fa" =~ ^[1-9][0-9]{1,2}$ ]] && [ "$c_fa" -ge 30 ] && [ "$c_fa" -le 600 ] || die "--first-answer must be 30..600 (seconds)"
 fi
 case "$op" in install-cell|uninstall-cell) ;; command) [ -z "$i_hsha" ] || die "--hardened-sha is not valid for command" ;; *) [ -z "$i_cell$i_hsha" ] || die "--cell/--hardened-sha are only valid for install-cell, uninstall-cell and command" ;; esac
 case "$op" in install-cell|uninstall-cell|build-proxy|install-controller|install-agent|arm-prepare|command) ;; *) [ -z "$i_sha" ] || die "--source-sha is only valid for install-cell, uninstall-cell, build-proxy, install-controller, install-agent, arm-prepare and command" ;; esac
@@ -886,6 +897,57 @@ tor_states() {
   # space; it is the literal "(tor)" here.
   ctl_exec "$1" sh -c 'for p in $(pgrep -x tor); do awk "{ print \$3 }" /proc/$p/stat; done' | tr '\n' ' ' | sed 's/ $//'
 }
+# first_answer <t0 epoch s> <cap s>: DEC-014's sample. A fresh name every
+# 0.5 s, each waiting 5 s as collect.sh's queries do (a shorter wait would
+# abandon a slow first answer through Tor); the first answered one ends it.
+# Prints: first_answer, t0 UTC, elapsed us (to the arrival, +-50 ms),
+# outcome, rcode, qname, cap ms. No answer within the cap is a timeout.
+first_answer() {
+  perl -MTime::HiRes=time,sleep -MPOSIX=WNOHANG,strftime -e '
+    my ($t0, $cap, $addr, $port) = @ARGV;
+    my (%kid, $best, $q, $rc);
+    my $next = time;
+    while (1) {
+      my $now = time;
+      if ($now >= $next && $now - $t0 < $cap) {
+        my $n = join("", map { sprintf "%02x", int(rand(256)) } 1 .. 8) . ".example.com";
+        pipe(my $r, my $w) or die "pipe: $!";
+        my $pid = fork(); die "fork: $!" unless defined $pid;
+        if (!$pid) {
+          close $r; open(STDOUT, ">&", $w); open(STDERR, ">", "/dev/null");
+          exec("dig", "\@$addr", "-p", $port, "+time=5", "+tries=1", "+noall", "+comments", $n, "A"); exit 127;
+        }
+        close $w; $kid{$pid} = [$r, $n]; $next = $now + 0.5;
+      }
+      while ((my $pid = waitpid(-1, WNOHANG)) > 0) {
+        my $k = delete $kid{$pid} or next;
+        my $end = time; my $fh = $k->[0]; local $/; my $out = <$fh> // ""; close $fh;
+        my ($s) = $out =~ /status: ([A-Z]+)/;
+        if (defined $s && ($s eq "NOERROR" || $s eq "NXDOMAIN") && (!defined $best || $end < $best)) { ($best, $q, $rc) = ($end, $k->[1], $s); }
+      }
+      last if defined $best || (time - $t0 >= $cap && !%kid);
+      sleep 0.05;
+    }
+    kill "TERM", keys %kid;
+    my $iso = strftime("%Y-%m-%dT%H:%M:%S", gmtime($t0)) . sprintf(".%06dZ", int(($t0 - int($t0)) * 1e6));
+    if (defined $best) {
+      printf "first_answer\t%s\t%d\t%s\t%s\t%s\t%d\n", $iso, int(($best - $t0) * 1e6), $rc eq "NOERROR" ? "ok" : "nxdomain", $rc, $q, $cap * 1000;
+      exit 0;
+    }
+    printf "first_answer\t%s\t%d\ttimeout\t-\t-\t%d\n", $iso, $cap * 1e6, $cap * 1000;
+    exit 1;' "$1" "$2" "${RESOLVER%#*}" "${RESOLVER#*#}"
+}
+# wake_state <before|after>: the route Unbound runs (its marker, read over the
+# control socket as lib/recovery.sh route_readback does) and the proxy
+# container's generation, around a timed wake (BL-025).
+wake_state() {
+  ws_r=$(ctl_exec unbound unbound-control -c /usr/share/nice-dns/control.conf list_local_data 2>/dev/null \
+    | awk '$1 == "nice-dns-route.invalid." && $4 == "TXT" && match($0, /"route=[a-z0-9-]+ generation=[0-9]+"/) {
+        split(substr($0, RSTART + 1, RLENGTH - 2), kv, /[ =]/); print kv[2] "\t" kv[4]; exit }')
+  [ -n "$ws_r" ] || ws_r=$(printf 'unknown\t-')
+  ws_g=$(container_gen "tor-$NICE_DNS_ID_PROXY")
+  printf 'route\t%s\t%s\nproxy_generation\t%s\t%s\n' "$1" "$ws_r" "$1" "${ws_g:--}"
+}
 case "$NICE_DNS_OP" in
   probe|snapshot)
     identity
@@ -1008,6 +1070,7 @@ case "$NICE_DNS_OP" in
       # DEC-012's wake sample: the machine suspends, wakes by its own alarm,
       # and the queries start as soon as its default gateway answers (up to
       # 60 s), as a client's first lookup after a wake would.
+      [ -z "${NICE_DNS_FIRST_ANSWER:-}" ] || wake_state before
       if [ "$plat" = macos ]; then
         sudo -n pmset relative wake "$NICE_DNS_SLEEP_SECS" </dev/null >&2 || { echo "cannot schedule the wake" >&2; exit 2; }
         t=$(date +%s); pmset sleepnow </dev/null >&2
@@ -1039,6 +1102,8 @@ case "$NICE_DNS_OP" in
         return "$lw_r"
       }
       w0=$(date +%s) note=''
+      # BL-025: the first answer is timed from the wake, the link wait included.
+      [ -z "${NICE_DNS_FIRST_ANSWER:-}" ] || t0=$(perl -MTime::HiRes=time -e 'printf "%.6f", time')
       link_wait "$NICE_DNS_WAKE_ROUTE_S"; lr=$?
       if [ "$lr" -eq 2 ] && [ -n "${wprof:-}" ]; then
         # Once: as root, since an ssh session may not control the network.
@@ -1054,6 +1119,14 @@ case "$NICE_DNS_OP" in
         [ -z "$note" ] || printf '\tnote\t%s' "$note"
         printf '\n'
       } >&2
+      if [ -n "${NICE_DNS_FIRST_ANSWER:-}" ]; then
+        # BL-025, beside DEC-012's one-query sample: repeat fresh names until
+        # one is answered (DEC-014's row), instead of the one query. A
+        # timeout row exits 1, which is data, as collect.sh's failed rows are.
+        fa_rc=0; first_answer "$t0" "$NICE_DNS_FIRST_ANSWER" || fa_rc=1
+        wake_state after
+        exit "$fa_rc"
+      fi
     fi
     {
       printf 'target_id\t%s\nplatform\t%s\nproxy\t%s\n' "$NICE_DNS_ID_TARGET_ID" "$NICE_DNS_ID_PLATFORM" "$NICE_DNS_ID_PROXY"
@@ -1210,46 +1283,6 @@ case "$NICE_DNS_OP" in
         i=$((i + 1)); sleep 5
       done
       return 1
-    }
-    # first_answer <t0 epoch s> <cap s>: DEC-014's sample. A fresh name every
-    # 0.5 s, each waiting 5 s as collect.sh's queries do (a shorter wait would
-    # abandon a slow first answer through Tor); the first answered one ends it.
-    # Prints: first_answer, t0 UTC, elapsed us (to the arrival, +-50 ms),
-    # outcome, rcode, qname, cap ms. No answer within the cap is a timeout.
-    first_answer() {
-      perl -MTime::HiRes=time,sleep -MPOSIX=WNOHANG,strftime -e '
-        my ($t0, $cap, $addr, $port) = @ARGV;
-        my (%kid, $best, $q, $rc);
-        my $next = time;
-        while (1) {
-          my $now = time;
-          if ($now >= $next && $now - $t0 < $cap) {
-            my $n = join("", map { sprintf "%02x", int(rand(256)) } 1 .. 8) . ".example.com";
-            pipe(my $r, my $w) or die "pipe: $!";
-            my $pid = fork(); die "fork: $!" unless defined $pid;
-            if (!$pid) {
-              close $r; open(STDOUT, ">&", $w); open(STDERR, ">", "/dev/null");
-              exec("dig", "\@$addr", "-p", $port, "+time=5", "+tries=1", "+noall", "+comments", $n, "A"); exit 127;
-            }
-            close $w; $kid{$pid} = [$r, $n]; $next = $now + 0.5;
-          }
-          while ((my $pid = waitpid(-1, WNOHANG)) > 0) {
-            my $k = delete $kid{$pid} or next;
-            my $end = time; my $fh = $k->[0]; local $/; my $out = <$fh> // ""; close $fh;
-            my ($s) = $out =~ /status: ([A-Z]+)/;
-            if (defined $s && ($s eq "NOERROR" || $s eq "NXDOMAIN") && (!defined $best || $end < $best)) { ($best, $q, $rc) = ($end, $k->[1], $s); }
-          }
-          last if defined $best || (time - $t0 >= $cap && !%kid);
-          sleep 0.05;
-        }
-        kill "TERM", keys %kid;
-        my $iso = strftime("%Y-%m-%dT%H:%M:%S", gmtime($t0)) . sprintf(".%06dZ", int(($t0 - int($t0)) * 1e6));
-        if (defined $best) {
-          printf "first_answer\t%s\t%d\t%s\t%s\t%s\t%d\n", $iso, int(($best - $t0) * 1e6), $rc eq "NOERROR" ? "ok" : "nxdomain", $rc, $q, $cap * 1000;
-          exit 0;
-        }
-        printf "first_answer\t%s\t%d\ttimeout\t-\t-\t%d\n", $iso, $cap * 1e6, $cap * 1000;
-        exit 1;' "$1" "$2" "${RESOLVER%#*}" "${RESOLVER#*#}"
     }
     restart_stack() {
       if [ "$plat" = macos ]; then
@@ -2611,7 +2644,7 @@ case "$op" in
     fi
     preconnect_guards
     probe_identity probe
-    remote_run "NICE_DNS_OP=collect NICE_DNS_WORKLOAD=$c_workload NICE_DNS_COUNT=$c_count NICE_DNS_TIMEOUT_MS=$c_timeout NICE_DNS_PAUSE_MS=$c_pause NICE_DNS_RUN_ID=$RUN_ID$ID_ENV NICE_DNS_SLEEP_SECS=$c_sleep NICE_DNS_WAKE_ROUTE_S=$wake_route"
+    remote_run "NICE_DNS_OP=collect NICE_DNS_WORKLOAD=$c_workload NICE_DNS_COUNT=$c_count NICE_DNS_TIMEOUT_MS=$c_timeout NICE_DNS_PAUSE_MS=$c_pause NICE_DNS_RUN_ID=$RUN_ID$ID_ENV NICE_DNS_SLEEP_SECS=$c_sleep NICE_DNS_WAKE_ROUTE_S=$wake_route NICE_DNS_FIRST_ANSWER=$c_fa"
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
