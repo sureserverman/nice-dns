@@ -995,8 +995,8 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   (lib/install.sh:2921-2930, mac/root-ops:150, mac/root-ops:343-352)
   (BL-052, DEC-024). Before the install starts, an ssh install refuses when
   the user has no login session, or when sudo cannot authenticate, since
-  that verb always runs through sudo; the ticket is then kept for the whole
-  install (install-mac.sh:137, install-mac-hardened.sh:152,
+  that verb always runs through sudo; the ticket is then refreshed while the
+  install runs (install-mac.sh:137, install-mac-hardened.sh:152,
   lib/install.sh:2898-2908, lib/install.sh:914-932). Both entrypoints append
   Homebrew's directories to a PATH that lacks them, as an ssh shell's does
   (install-mac.sh:26-32, install-mac-hardened.sh:44-50). An agent that finds
