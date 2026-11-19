@@ -491,13 +491,15 @@ t_weak_bridge_stays_out_after_the_tor_state_is_wiped() {
       : >"$FAKE/restart_changes"
       out="$(nd_bridges_refresh haproxy)"
       assert_eq restarted "$(bl_get adopted "$out")" "$plat: first refresh adopts: $out"
-      assert_not_match 'cert=|192\.0\.' "$(cat "$ND_STATE_DIR/bridges.weak" 2>/dev/null)" "$plat: the memory holds fingerprints only"
+      assert_match "$(bl_fp 2)" "$(cat "$ND_STATE_DIR/bridges.weak.once" 2>/dev/null)" "$plat: the first verdict is kept as seen once"
       # BL-031: a second weak verdict in the next refresh is what remembers them.
       { bl_guard 2 0 70.500000 56.500000; bl_guard 6 0 44.000000 30.000000; } >"$FAKE/ctl/state"
       : >"$FAKE_LOG"
       out="$(nd_bridges_refresh haproxy)"
       assert_match "$(bl_fp 2)" "$(cat "$ND_STATE_DIR/bridges.weak" 2>/dev/null)" "$plat: the second weak verdict remembers bridge 2"
-      assert_eq "" "$(find "$ND_STATE_DIR" -name 'bridges.weak*' -perm -0004)" "$plat: the memory is private"
+      assert_file "$ND_STATE_DIR/bridges.weak" "$plat: the memory exists"
+      assert_eq "" "$(find "$ND_STATE_DIR" -name 'bridges.weak*' \( -perm -040 -o -perm -004 \))" "$plat: the memory is private"
+      assert_not_match 'cert=|192\.0\.' "$(cat "$ND_STATE_DIR/bridges.weak" "$ND_STATE_DIR/bridges.weak.once" 2>/dev/null)" "$plat: the memory holds fingerprints only"
       # The recreate wiped Tor's state: the new Tor knows only its 5 bridges,
       # none judged yet. The next evaluation offers bridge 2 again.
       { bl_guard 1 1 0 0; bl_guard 3 1 0 0; bl_guard 4 1 0 0; bl_guard 5 1 0 0; bl_guard 7 1 0 0; } >"$FAKE/ctl/state"
@@ -933,6 +935,114 @@ t_a_healthy_verdict_between_two_weak_ones_remembers_nothing_BL_031() {
       bl031_refresh "$(bl_guard 2 0 40 10)" >/dev/null
       assert_not_match "$(bl_fp 2)" "$(cat "$BL_LIVE")" "$plat: weak again, left out again"
       assert_not_match "$(bl_fp 2)" "$(cat "$ND_STATE_DIR/bridges.weak" 2>/dev/null)" "$plat: BL-031 weak, healthy, weak remembers nothing"
+    ) || exit 1
+  done
+}
+
+# Stage 1 gate round 1 (review I1): what the adoption was decided on is read
+# again once the lock is held. A tick that held the lock was most likely
+# restarting the proxy itself: that restart adopted the set, and a second one
+# would be a second gap in DNS. A crash loop that began in the wait holds the
+# restart as the policy does (DEC-021, DEC-022). The wrapper acts on the
+# second lock wait only (the first is the apply's).
+bl030_in_wait() {
+  eval "bl030_wait$(declare -f _nd_br_lock_wait)"
+  BL030_ACT="$1"; rm -f "$CASE_DIR/waits-$ND_PLATFORM"
+  _nd_br_lock_wait() {
+    local n
+    n=$(( $(cat "$CASE_DIR/waits-$ND_PLATFORM" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$CASE_DIR/waits-$ND_PLATFORM"
+    [ "$n" -eq 2 ] && "$BL030_ACT"
+    bl030_wait_nd_br_lock_wait
+  }
+}
+
+bl030_other_restart() { echo "restarted-by-the-tick-$ND_PLATFORM" >"$FAKE/started"; }
+bl030_crash_begins() {
+  local tok
+  printf 'schema\tnice-dns-controller-state/1\nboot_id\tboot-a\nupdated\t-\nstarted\t-\nroute\t-\noutage_since\t-\noutage_restarts\t0\nlast_action\t-\nlast_action_at\t-\nrecovery_at\t-\nrestart_seen_tor-haproxy\t4\ncrash_tor-haproxy\t%s,%s\n' \
+    "$(( $(date +%s) - 120 ))" "$(( $(date +%s) - 30 ))" >"$CASE_DIR/crash-seed"
+  tok="$(nd_state_lock 2>>"$CASE_DIR/crash-err")" || { echo "lock refused" >>"$CASE_DIR/crash-err"; return 1; }
+  nd_state_commit "$tok" "$(nd_state_load | awk -F '\t' '$1 == "generation" { print $2 }')" "$CASE_DIR/crash-seed" >/dev/null 2>>"$CASE_DIR/crash-err" \
+    || echo "commit refused" >>"$CASE_DIR/crash-err"
+  nd_state_unlock "$tok"
+}
+
+t_adoption_is_decided_again_under_the_lock_BL_030() {
+  local plat out
+  for plat in $(bl_platforms); do
+    (
+      bl030_setup "$plat"
+      bl030_in_wait bl030_other_restart
+      out="$(nd_bridges_refresh haproxy)"
+      assert_eq 2 "$(cat "$CASE_DIR/waits-$plat")" "$plat: the apply and the adoption each waited once"
+      assert_eq already "$(bl_get adopted "$out")" "$plat: BL-030 a proxy restarted during the wait has the set: $out"
+      assert_eq "" "$(bl_restarts)" "$plat: BL-030 no second restart"
+      assert_no_path "$ND_STATE_DIR/bridges.pending" "$plat: nothing waits any more"
+    ) || exit 1
+    (
+      bl030_setup "$plat"
+      bl030_in_wait bl030_crash_begins
+      out="$(nd_bridges_refresh haproxy)"
+      assert_eq 2 "$(cat "$CASE_DIR/waits-$plat")" "$plat: the adoption waited after the apply"
+      assert_match '^crash_tor-haproxy	' "$(nd_state_load | grep '^crash_')" "$plat: the crash loop was recorded in the wait"
+      assert_eq "" "$(cat "$CASE_DIR/crash-err" 2>/dev/null)" "$plat: with no refusal"
+      assert_eq held "$(bl_get adopted "$out")" "$plat: BL-030 a crash loop that began in the wait holds the restart: $out"
+      assert_eq "" "$(bl_restarts)" "$plat: no restart"
+      assert_file "$ND_STATE_DIR/bridges.pending" "$plat: the set waits for the next start"
+    ) || exit 1
+  done
+}
+
+# Review S1: a restart that never ran (refused, unreachable, lock lost) is not
+# recorded, or its cooldown would hold a real one.
+t_an_adoption_restart_that_did_not_run_is_not_recorded_BL_030() {
+  local plat out
+  for plat in $(bl_platforms); do
+    (
+      bl030_setup "$plat"
+      nd_recovery_restart_service() { return 4; }
+      out="$(nd_bridges_refresh haproxy)"
+      assert_eq failed "$(bl_get adopted "$out")" "$plat: the restart did not run: $out"
+      assert_eq - "$(nd_state_load | awk -F '\t' '$1 == "last_action_at" { print $2 }')" "$plat: BL-030 nothing recorded for a restart that never ran"
+      assert_eq "" "$(readlink "$ND_STATE_DIR/lock" 2>/dev/null)" "$plat: the lock is released"
+      assert_file "$ND_STATE_DIR/bridges.pending" "$plat: the set still waits"
+    ) || exit 1
+  done
+}
+
+# Review S2: "the next refresh judges it weak again" — a first verdict older
+# than two days is no longer the last judgement, so a weak verdict after it is
+# a first one again (ND_BRIDGE_ONCE_S, 2 days).
+t_an_old_first_verdict_is_not_a_repeat_BL_031() {
+  local plat
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      bl_set "$BL_LIVE" 5
+      (umask 077 && printf '%s\t%s\t10/40\n' "$(bl_fp 2)" "$(( $(date +%s) - 3 * 86400 ))" >"$ND_STATE_DIR/bridges.weak.once")
+      bl031_refresh "$(bl_guard 2 0 40 10)" >/dev/null
+      assert_not_match "$(bl_fp 2)" "$(cat "$ND_STATE_DIR/bridges.weak" 2>/dev/null)" "$plat: BL-031 a verdict three days old is not the last refresh's"
+      assert_match "$(bl_fp 2)" "$(cat "$ND_STATE_DIR/bridges.weak.once" 2>/dev/null)" "$plat: the new verdict is a first one"
+    ) || exit 1
+  done
+}
+
+# Review S4: an evaluation thin on its own (fewer than 3 before any drop) is
+# not weak_blocked: nd_bridges_apply refuses it as before.
+t_a_thin_evaluation_is_not_weak_blocked_BL_031() {
+  local plat out rc before
+  for plat in $(bl_platforms); do
+    (
+      bl_env "$plat"
+      bl_set "$BL_LIVE" 5; before="$(cat "$BL_LIVE")"
+      bl_set "$CASE_DIR/cand" 2 9
+      printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+      bl_guard 1 0 40 10 >"$FAKE/ctl/state"
+      out="$(nd_bridges_refresh haproxy)"; rc=$?
+      assert_rc 1 "$rc" "$plat: a thin evaluation still fails: $out"
+      assert_eq not-applied "$(bl_get result "$out")" "$plat: as not-applied"
+      assert_eq "" "$(bl_get weak_blocked "$out")" "$plat: not as weak_blocked"
+      assert_eq "$before" "$(cat "$BL_LIVE")" "$plat: the last good set stays"
     ) || exit 1
   done
 }

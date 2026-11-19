@@ -148,15 +148,21 @@ the proxy image's `bridge-eval` and writes the result to
 - A bridge can pass `bridge-eval` (its obfs4 handshake works) and still
   carry streams badly. The controller reads the running Tor's own per-bridge
   counters and leaves out every bridge with at least 20 stream uses and
-  under 90% success. It remembers such a bridge for 30 days
-  (`bridges.weak` in its state directory, fingerprints only), because Tor's
-  counters do not survive every restart (macOS drops Tor's state when the
-  bridge set changes).
+  under 90% success, at once. It remembers such a bridge for 30 days
+  (`bridges.weak` in its state directory, fingerprints only) only when the
+  next refresh, within 2 days, judges it weak again; a healthy verdict in
+  between forgets the first one. The memory is kept because Tor's counters
+  do not survive every restart (macOS drops Tor's state when the bridge set
+  changes).
 - Fewer than 3 bridges left after that: nothing changes, the last good set
-  stays.
+  stays, and the journal says `weak_blocked` with the count.
 - A changed set is normally used at the proxy's next start. When the running
   proxy still uses a bridge the new set leaves out, the refresh restarts
-  the proxy at once so the bad bridge stops carrying queries. On Linux that
+  the proxy at once so the bad bridge stops carrying queries. That restart
+  runs under the controller's state lock and is recorded as the
+  controller's own; when the controller holds the lock past 30 s, a crash
+  loop holds the proxy, or bridges were turned off meanwhile, nothing is
+  restarted and the set waits for the next start. On Linux that
   is the proxy alone (Unbound only `Wants=` it, so it keeps running); on
   macOS the whole stack is rebuilt. DNS fails closed for that gap: 14 to
   17 s in the live tests on Linux, no query leaves the machine meanwhile.

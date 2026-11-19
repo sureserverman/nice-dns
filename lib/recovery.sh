@@ -1291,19 +1291,23 @@ _nd_br_put() {
 # bridges after about 20 days. One bad hour is not 30 days (BL-031): a first
 # weak verdict goes to bridges.weak.once; bridges.weak (state directory, 0600,
 # fingerprints only) takes a bridge only when the next refresh judges it weak
-# again, and keeps it ND_BRIDGE_WEAK_DAYS (30) from its last judgement. A
-# healthy verdict forgets a first one. Every weak bridge of this refresh is
+# again (a first verdict counts for ND_BRIDGE_ONCE_S, 2 days), and keeps it
+# ND_BRIDGE_WEAK_DAYS (30) from its last judgement. A healthy verdict forgets
+# a first one. Every weak bridge of this refresh is
 # still left out of its set at once (DEC-017). Prints the weak list plus the
 # remembered ones ("FP<TAB>0<TAB>remembered").
 _nd_br_remember() {
-  local f o now days keep live ok rep
+  local f o now days keep once live ok rep
   f="$(nd_platform_state_dir)/bridges.weak"; o="$f.once"; now="$(date +%s)"
   days="${ND_BRIDGE_WEAK_DAYS:-30}"; case "$days" in ''|*[!0-9]*) days=30 ;; esac
   keep=$((days * 86400))
+  # A first verdict counts only for the refreshes that follow it: the daily
+  # one, or the hourly outage ones in between (ND_BRIDGE_ONCE_S, 2 days).
+  once="${ND_BRIDGE_ONCE_S:-172800}"; case "$once" in ''|*[!0-9]*) once=172800 ;; esac
   live="$(printf '%s\n' "$1" | awk -F '\t' 'NF >= 3 { print $1 }' | tr '\n' ' ')"
   ok="$(printf '%s\n' "${2:-}" | tr '\n' ' ')"
   # The weak bridges of this refresh that were weak at the last judgement too.
-  rep="$({ _nd_br_fresh "$f" "$now" "$keep"; _nd_br_fresh "$o" "$now" "$keep"; } | awk -F '\t' -v live="$live" '
+  rep="$({ _nd_br_fresh "$f" "$now" "$keep"; _nd_br_fresh "$o" "$now" "$once"; } | awk -F '\t' -v live="$live" '
     BEGIN { k = split(live, x, " "); for (i = 1; i <= k; i++) l[x[i]] = 1 }
     ($1 in l) && !seen[$1]++ { print $1 }' | tr '\n' ' ')"
   {
@@ -1318,7 +1322,7 @@ _nd_br_remember() {
     printf '%s\n' "$1" | awk -F '\t' -v n="$now" -v rep="$rep" '
       BEGIN { k = split(rep, x, " "); for (i = 1; i <= k; i++) r[x[i]] = 1 }
       NF >= 3 && !($1 in r) { printf "%s\t%s\t%s\n", $1, n, $3 }'
-    _nd_br_fresh "$o" "$now" "$keep" | awk -F '\t' -v live="$live" -v ok="$ok" '
+    _nd_br_fresh "$o" "$now" "$once" | awk -F '\t' -v live="$live" -v ok="$ok" '
       BEGIN { k = split(live " " ok, x, " "); for (i = 1; i <= k; i++) l[x[i]] = 1 }
       !($1 in l)'
   } | _nd_br_put "$o"
@@ -1417,7 +1421,12 @@ nd_bridges_refresh() {
 # request and acknowledgement (DEC-006). A controller that holds the lock past
 # the wait, or bridges turned off since the refresh started, restarts nothing:
 # bridges.pending stays and the proxy takes the set at its next start
-# (DEC-017's set is still applied at once). Prints restarted, failed or pending.
+# (DEC-017's set is still applied at once). What the adoption was decided on
+# is read again under the lock: a proxy recreated during the wait (most often
+# by the tick that held the lock) has the set already, and a crash loop that
+# began meanwhile holds the restart as the policy does (DEC-021). Only a
+# restart that ran (acknowledged, or issued and not acknowledged) is recorded.
+# Prints restarted, failed, pending, already or held.
 _nd_br_adopt() {
   local tok id now rc
   if ! tok="$(_nd_br_lock_wait)"; then
@@ -1429,12 +1438,25 @@ _nd_br_adopt() {
     nd_recovery_journal "br-$(date +%s)" bridges pending "bridges were turned off during the refresh; nothing is restarted, the set waits for the proxy's next start"
     printf 'pending\n'; return 0
   fi
+  if ! _nd_br_pending; then
+    nd_state_unlock "$tok"
+    nd_recovery_journal "br-$(date +%s)" bridges adopted "the proxy was recreated while the refresh waited for the lock; it runs the new set, no restart"
+    printf 'already\n'; return 0
+  fi
+  if _nd_br_crash_held; then
+    nd_state_unlock "$tok"
+    nd_recovery_journal "br-$(date +%s)" bridges held "the running proxy uses a bridge the new set leaves out, but it began restarting on its own while the refresh waited (crash-loop hold); the set is adopted at its next start"
+    printf 'held\n'; return 0
+  fi
   now="$(date +%s)"; id="br-$now-svc"
   nd_recovery_journal "$id" bridges adopting "the running proxy uses a bridge the new set leaves out; the service restart adopts the set"
   ND_RECOVERY_LOCK_TOKEN="$tok" nd_recovery_restart_service "$id" >/dev/null; rc=$?
-  if ! nd_state_record_action "$tok" restart-component "$now" >/dev/null 2>&1; then
-    nd_recovery_journal "$id" bridges not-recorded "the restart is not in the controller's state; its next pass may restart the proxy again"
-  fi
+  case "$rc" in
+    0|1)
+      if ! nd_state_record_action "$tok" restart-component "$now" >/dev/null 2>&1; then
+        nd_recovery_journal "$id" bridges not-recorded "the restart is not in the controller's state; its next pass may restart the proxy again"
+      fi ;;
+  esac
   nd_state_unlock "$tok"
   if [ "$rc" -eq 0 ]; then
     rm -f "$(nd_platform_state_dir)/bridges.pending"; printf 'restarted\n'

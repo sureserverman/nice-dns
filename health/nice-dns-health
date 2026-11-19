@@ -481,8 +481,9 @@ cmd_run() {
 #   * readiness is recorded on a later pass.
 # Before the pass, and outside the lock (an evaluation is slow), the bridges
 # are re-evaluated once an observed outage has outlasted the grace
-# (refresh_bridges_on_outage); a changed set is adopted by the service
-# restart.
+# (refresh_bridges_on_outage); a changed set the running proxy needs at once
+# is adopted by the refresh's restart under the state lock (BL-030), any
+# other at the proxy's next start.
 # NICE_DNS_RESTART_GRACE_SECS still sets the grace (ND_POLICY_GRACE_S).
 #
 # The scheduled pass has no environment of its own, so the policy timers can
@@ -522,7 +523,8 @@ export ND_POLICY_GRACE_S
 # at most once per ND_BRIDGE_OUTAGE_REFRESH_S (3600), before the pass and
 # outside the state lock. A changed set the running proxy needs at once is
 # adopted by the refresh's own restart under the state lock (BL-030); any
-# other waits for the proxy's next start, such as the pass's service restart. Nothing here writes bridges.env directly: until Task 2.2 this
+# other waits for the proxy's next start, such as the pass's service
+# restart. Nothing here writes bridges.env directly: until Task 2.2 this
 # called the raw Moat fetcher, which replaced an evaluated set with an
 # unranked pool.
 refresh_bridges_on_outage() {
@@ -600,14 +602,17 @@ SCHEDULE_STOPPED="$HEALTH_LIB_ROOT_INSTALLED/schedule-stopped"
 TICK_TIMEOUT_SECS=540
 # One bridge refresh (lib/recovery.sh nd_bridges_refresh): bridge-eval
 # (ND_BRIDGE_EVAL_S, 300), two waits for the state lock, the apply's and the
-# adoption's (ND_BRIDGE_LOCK_TRIES 60 x 0.5 s, 30 s each), and the adoption
-# restart (ND_RECOVERY_SERVICE_S, 120). The rest of the 600 s covers the
-# bounded queries around them (Tor state, container generations; 15 s each).
-# Linux only: launchd has no run-time limit for the macOS job (BL-033).
+# adoption's (ND_BRIDGE_LOCK_TRIES 60 x 0.5 s, 30 s each), the adoption
+# restart (ND_RECOVERY_SERVICE_S, 120) and the wait for its new start (as
+# long again), and ten bounded queries around them (Tor state, container
+# generations; ND_RECOVERY_CMD_DEADLINE, 15 s each): 750 s (BL-033). The
+# state lock is held only around the apply and the restart, each inside its
+# 600 s lease. Linux only: launchd has no run-time limit for the macOS job.
 BRIDGE_EVAL_SECS=300
 BRIDGE_LOCK_WAIT_SECS=60
-BRIDGE_RESTART_SECS=120
-BRIDGE_TIMEOUT_SECS=$((BRIDGE_EVAL_SECS + BRIDGE_LOCK_WAIT_SECS + BRIDGE_RESTART_SECS + 120))
+BRIDGE_RESTART_SECS=240
+BRIDGE_QUERY_SECS=150
+BRIDGE_TIMEOUT_SECS=$((BRIDGE_EVAL_SECS + BRIDGE_LOCK_WAIT_SECS + BRIDGE_RESTART_SECS + BRIDGE_QUERY_SECS))
 # The bound on one unattended update check (`nice-dns update --check` keeps
 # its own 55 s bound on git where timeout(1) exists).
 UPDATE_CHECK_SECS=60
