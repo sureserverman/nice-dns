@@ -1426,3 +1426,36 @@ $(cat -n "$FAKE_LOG")"
   ) || exit 1
   done
 }
+
+# BL-024: after its builds a macOS install stopped Apple's builder, and the
+# stopped buildkit container stayed with its disk (live mac 2026-11-19:
+# `buildkit ... stopped`). A successful install now deletes it, once, after
+# its last build; a delete that fails never fails the install, and the
+# install says the builder was left.
+t_macos_install_deletes_the_builder_BL_024() {
+  local ep
+  for ep in install-mac install-mac-hardened; do
+    (
+      local build del
+      ip_env "$ep"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "BL-024 $ep: the install: $IP_OUT"
+      build="$(ip_last "$FAKE_LOG" '^container build ')"
+      del="$(ip_first "$FAKE_LOG" '^container builder delete --force$')"
+      assert_ne "" "$del" "BL-024 $ep: the builder is deleted:
+$(grep -n '^container builder' "$FAKE_LOG")"
+      assert_eq 1 "$((del > build))" "BL-024 $ep: after the last build (line $build)"
+      assert_eq "" "$(ip_lines "$FAKE_LOG" '^container builder ' | awk -F: -v d="$del" '$1 > d')" "BL-024 $ep: and no builder call follows it"
+      assert_eq 1 "$(grep -c '^container builder delete' "$FAKE_LOG")" "BL-024 $ep: deleted once"
+      assert_eq "" "$(grep '^container builder stop' "$FAKE_LOG")" "BL-024 $ep: never only stopped"
+    ) || exit 1
+  done
+  (
+    ip_env install-mac
+    printf '^container builder delete\n' >"$FAKE/fail"
+    ip_install install-mac
+    assert_rc 0 "$IP_RC" "BL-024: a builder that cannot be deleted does not fail the install: $IP_OUT"
+    assert_match 'builder could not be deleted and was left' "$IP_OUT" "BL-024: and the install says the builder was left"
+    assert_eq 1 "$(grep -c '^container builder delete' "$FAKE_LOG")" "BL-024: the delete is tried once"
+  ) || exit 1
+}

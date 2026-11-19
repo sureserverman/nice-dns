@@ -3303,9 +3303,25 @@ nd_install_macos_build_images() {
   fi
   _nd_inst_record_image pi-hole "pi-hole:$gen" || return 1
 
-  # Builder VM isn't needed once images are built; reclaim ~2 GB RAM. It will
-  # auto-start again on the next `container build`.
+  # The builder isn't needed once images are built: deleted, not only
+  # stopped, so its container and disk go too; the next `container build`
+  # creates it again (BL-024).
+  _nd_inst_mac_builder_delete
+}
+
+# _nd_inst_mac_builder_delete: deletes Apple's builder once per install
+# (after the builds; the fresh datapath step tries again only when the
+# builds never got that far, as in a rollback). A builder that cannot be
+# deleted never fails the install: it is stopped, and the install says it
+# was left (BL-024).
+ND_INST_BUILDER_DELETE_TRIED=0
+_nd_inst_mac_builder_delete() {
+  [ "$ND_INST_BUILDER_DELETE_TRIED" = 0 ] || return 0
+  ND_INST_BUILDER_DELETE_TRIED=1
+  "$CONTAINER_BIN" builder delete --force >/dev/null 2>&1 && return 0
   "$CONTAINER_BIN" builder stop >/dev/null 2>&1 || true
+  echo "  ! The container builder could not be deleted and was left (stopped); 'container builder delete --force' removes it." >&2
+  return 0
 }
 
 # nd_install_macos_fresh_datapath: the stack starts on a freshly started
@@ -3318,7 +3334,7 @@ nd_install_macos_build_images() {
 # and during an install no agent is loaded to do it.
 nd_install_macos_fresh_datapath() {
   local tries=0
-  "$CONTAINER_BIN" builder stop >/dev/null 2>&1 || true
+  _nd_inst_mac_builder_delete
   "$CONTAINER_BIN" system stop >/dev/null 2>&1 || true
   sleep 8
   # _nd_inst_mac_runtime answers the start's first-run prompts, as in

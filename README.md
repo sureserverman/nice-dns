@@ -188,6 +188,20 @@ queries badly (with `nice-dns bridges off`, the refresh is skipped), and
 checks for an update twice a day. See
 [health/README.md](health/README.md).
 
+<details>
+<summary>Disk use on macOS</summary>
+
+`container system df` shows what images, containers and volumes take. An
+install deletes the image builder when it is done. `container image prune -a`
+removes every image no container uses: the older generation kept for a
+rollback, and the runtime's init image, which every container start needs.
+After a prune, while DNS still answers, pull the init image that
+`container system property list` names under `[vminit]`
+(`container image pull ghcr.io/apple/containerization/vminit:<version>`)
+before you reinstall or restart nice-dns.
+
+</details>
+
 ## Uninstall
 
 ```bash
