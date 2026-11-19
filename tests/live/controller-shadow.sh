@@ -239,6 +239,7 @@ t_5_evidence_is_private() {
     cs_alias "$p"; a="$CS_ALIAS"
     assert_file "$(cs_dir "$a")/whole-outage.txt" "$a: the run reached the whole-outage evidence"
   done
+  nd_reports_present "$ARTIFACT_DIR/controller-shadow"
   # This group's evidence only: in a plan run $ARTIFACT_DIR/cases also holds
   # other groups' cases, whose fixtures plant bridge-shaped strings on purpose
   # (unit/observations proves the dump redacts them).

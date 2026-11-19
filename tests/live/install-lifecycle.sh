@@ -56,6 +56,9 @@
 # refuses it.
 
 IL_TG="${NICE_DNS_TARGET_ADAPTER:-$NICE_DNS_ROOT/tests/live/target.sh}"
+# nd_reports_present, for the privacy cases of every group built on this file.
+# shellcheck source=tests/live/fault-lib.sh
+. "$NICE_DNS_ROOT/tests/live/fault-lib.sh"
 
 il_dir() { printf '%s\n' "$ARTIFACT_DIR/install-lifecycle/$1"; }
 il_gate() { [ "${NICE_DNS_OPT_MATRIX:-}" = all ]; }
@@ -418,6 +421,7 @@ t_5_final_install() { il_selection; il_each il_final; }
 t_6_evidence_is_private() {
   local d="$ARTIFACT_DIR/install-lifecycle"
   il_selection
+  nd_reports_present "$d"
   assert_eq "" "$(grep -rlE 'cert=[A-Za-z0-9+/]{20}|(^|[^0-9A-Fa-f])[0-9A-F]{40}([^0-9A-Fa-f]|$)|PRIVATE KEY|"sid":|pwhash|BRIDGE[0-9]+=' "$d" --include='*.tsv' 2>/dev/null)" \
     "no report, sample or step record holds bridge material, a session or a hash"
 }

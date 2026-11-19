@@ -13,7 +13,9 @@
 #   sever-upstream   stop the Tor proxy container (--component tor-haproxy|tor-socat)
 #                    while Pi-hole and Unbound keep listening
 #   heal-upstream    start that container again
-#   restore          start every allow-listed container the snapshot saw running
+#   restore          start every allow-listed container the snapshot saw running;
+#                    on Linux also put back a bridges.env cut-bridges left
+#                    (bridges.env.harness-cut, a run killed in BT-ON-FEW)
 #   config           read-only effective configuration: image references and
 #                    digests, Pi-hole variant and upstreams, Unbound config,
 #                    proxy listeners/backends, health tooling, DNS owner.
@@ -31,7 +33,18 @@
 #                    SECS seconds and wakes by its own alarm (Linux: sudo
 #                    rtcwake -m mem; macOS: sudo pmset relative wake, then
 #                    pmset sleepnow), and the queries start once its default
-#                    gateway answers: DEC-012's wake sample.
+#                    gateway answers: DEC-012's wake sample. With no default
+#                    route after NICE_DNS_WAKE_ROUTE_S (1..600, default 60)
+#                    seconds, Linux brings the Wi-Fi profile that was active
+#                    before the sleep back once (sudo nmcli, by UUID) and waits
+#                    as long again, noting `note wifi-recovered` on the woke
+#                    line; still no route fails the call with `no default
+#                    route after the wake` and no sample (BL-026). With
+#                    --after-sleep SECS --first-answer CAP (30..600) the
+#                    one query is replaced by DEC-014's `first_answer` row,
+#                    timed from the wake and capped at CAP, between `route`
+#                    and `proxy_generation` rows read before the sleep and
+#                    after the answer; DEC-012's sample is unchanged (BL-025).
 #   freeze-upstream  SIGSTOP the tor process inside --component, so every
 #                    listener (Pi-hole, Unbound, the proxy) stays up while
 #                    upstream is dead; a detached remote timer thaws it after
@@ -45,7 +58,14 @@
 #                    entrypoint installs the tree it sits in (Sub-plan 4 Task
 #                    1.1), so no platform depends on GitHub main any more. The
 #                    installer's output is streamed back; it may carry bridge
-#                    lines, so keep it out of portable evidence.
+#                    lines, so keep it out of portable evidence. It and
+#                    uninstall-cell end at NICE_DNS_INSTALL_CELL_MAX (1..7200,
+#                    default 1800) seconds, `command` at NICE_DNS_COMMAND_MAX
+#                    (default 900), build-proxy and arm-prepare at
+#                    NICE_DNS_BUILD_MAX (default 3600): a call that never
+#                    returns fails with `timeout: <op>` (BL-060). The read-only
+#                    reports, fresh-name, fault-route and heal-route end at
+#                    NICE_DNS_REPORT_MAX (default 300)
 #   helper-report    read-only (Sub-plan 5 Task 2.6): nice-dns-helper on the
 #                    target (present, owner uid, mode, --version), the sha256
 #                    of the root-held root-ops it runs, and on Linux the polkit
@@ -106,7 +126,22 @@
 #                    every other route works: tor-haproxy puts its servers in
 #                    maintenance, tor-socat SIGSTOPs its listener; a detached
 #                    timer heals it after NICE_DNS_FREEZE_MAX_SECS
-#   heal-route       undo fault-route
+#                    With --component unbound --mode tls-name (BL-042) the
+#                    running --route keeps its address and port but gets a
+#                    wrong TLS name in Unbound (unbound-control forward_add
+#                    +t ...#nd-wrong-name.invalid, which replaces the root
+#                    forward in one step); --mode tls-control sets the
+#                    route's own name the same way, the positive control. A
+#                    detached timer reloads Unbound's config after
+#                    NICE_DNS_FREEZE_MAX_SECS
+#   heal-route       undo fault-route (--mode tls-name|tls-control:
+#                    unbound-control reload, then the timer is stopped)
+#   transport-report read-only (Sub-plan 4 Task 2.3, BL-042): the running
+#                    route; cloudflare.com (signed), neverssl.com (unsigned)
+#                    and dnssec-failed.org through the client resolver and at
+#                    Unbound's own listener (rcode, ad or noad); whether TCP
+#                    8953 listens in the Unbound container, its control
+#                    interface, whether that is a Unix socket and answers
 #   route-report     read-only (Sub-plan 5 Task 1.2): Unbound's route as the
 #                    host holds it (the directory's mode, the include's
 #                    marker and forwarder, desired.tsv), whether the
@@ -262,7 +297,19 @@
 #                    read from the container's own log and filtered in the
 #                    same pipe on the target: no other log line is printed or
 #                    kept, and nothing after the <how> words (bridge lines
-#                    are secret)
+#                    are secret). Then `supervisor_container <c> <generation>`:
+#                    the container whose log that was, named as the
+#                    controller's journal names it (`<c> restarted: <gen>`;
+#                    Linux: Id StartedAt Status, macOS: name state started),
+#                    or `changing` when it restarted while its log was read
+#   cut-bridges      Linux only, test-only (BT-ON-FEW, BL-060): keep the first
+#                    --keep N (1..9) bridges of ~/.config/nice-dns/bridges.env,
+#                    renumbered, and the whole file as bridges.env.harness-cut
+#                    beside it (refused when that copy exists or the file holds
+#                    no more than N). Prints only the counts; the proxy reads
+#                    the cut file at its next start
+#   restore-bridges  put bridges.env.harness-cut back as bridges.env (prints
+#                    the count, or `none` when no cut copy is kept)
 #   mac-runtime-ssh  NOT USED since OD-8: on 2026-11-07 it broke the mac's
 #                    vmnet (interface creation failed) until InternetSharing
 #                    was restarted. target.sh reaches a gui/<uid> runtime
@@ -315,7 +362,7 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network freeze-unbound thaw-unbound stop-proxy fresh-name command command-report freeze-service thaw-service pause-container unpause-container stop-container start-container crash-container stop-crash crash-report proxy-supervisor-lines mac-runtime-ssh mac-runtime-gui helper-report polkit-test-rule gui-report gui-session switch-report update-schedule'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network freeze-unbound thaw-unbound stop-proxy fresh-name command command-report freeze-service thaw-service pause-container unpause-container stop-container start-container crash-container stop-crash crash-report proxy-supervisor-lines mac-runtime-ssh mac-runtime-gui helper-report polkit-test-rule gui-report gui-session switch-report update-schedule cut-bridges restore-bridges transport-report'
 FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
@@ -330,10 +377,10 @@ if [ "$op" != validate ]; then
   [ $# -gt 0 ] && shift
   case "$alias_" in ''|-*) die "usage: target.sh $op ALIAS --targets FILE" ;; esac
 fi
-targets='' component='' c_workload='' c_count='' c_timeout=5000 c_pause=0 c_identity='' c_sleep='' has_sleep='' i_cell='' i_sha='' i_hsha='' i_route='' i_mode='' i_ptag='' i_times='' i_every=''
+targets='' component='' c_workload='' c_count='' c_timeout=5000 c_pause=0 c_identity='' c_sleep='' has_sleep='' c_fa='' has_fa='' i_cell='' i_sha='' i_hsha='' i_route='' i_mode='' i_ptag='' i_times='' i_every='' i_keep=''
 while [ $# -gt 0 ]; do
   case "$1" in
-    --targets|--component|--workload|--count|--timeout-ms|--pause-ms|--identity|--after-sleep|--cell|--source-sha|--hardened-sha|--route|--mode|--proxy-tag|--times|--every)
+    --targets|--component|--workload|--count|--timeout-ms|--pause-ms|--identity|--after-sleep|--first-answer|--cell|--source-sha|--hardened-sha|--route|--mode|--proxy-tag|--times|--every|--keep)
       [ $# -ge 2 ] || die "option $1 needs a value"
       case "$1" in
         --targets) targets="$2" ;;
@@ -344,6 +391,7 @@ while [ $# -gt 0 ]; do
         --pause-ms) c_pause="$2" ;;
         --identity) c_identity="$2" ;;
         --after-sleep) c_sleep="$2" has_sleep=1 ;;
+        --first-answer) c_fa="$2" has_fa=1 ;;
         --cell) i_cell="$2" ;;
         --hardened-sha) i_hsha="$2" ;;
         --source-sha) i_sha="$2" ;;
@@ -352,6 +400,7 @@ while [ $# -gt 0 ]; do
         --proxy-tag) i_ptag="$2" ;;
         --times) i_times="$2" ;;
         --every) i_every="$2" ;;
+        --keep) i_keep="$2" ;;
       esac
       shift 2 ;;
     *) die "unknown option '$1'" ;;
@@ -359,18 +408,24 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$targets" ] || die "missing --targets FILE"
 if [ "$op" = capture-dns ]; then
-  [ -z "$c_workload$c_identity$has_sleep" ] || die "--workload/--identity/--after-sleep are only valid for collect"
+  [ -z "$c_workload$c_identity$has_sleep$has_fa" ] || die "--workload/--identity/--after-sleep/--first-answer are only valid for collect"
   [[ "$c_count" =~ ^[1-9][0-9]?$ ]] || die "capture-dns needs --count 1..99"
-elif [ "$op" != collect ] && [ -n "$c_workload$c_count$c_identity$has_sleep" ]; then
-  die "--workload/--count/--identity/--after-sleep are only valid for collect"
+elif [ "$op" != collect ] && [ -n "$c_workload$c_count$c_identity$has_sleep$has_fa" ]; then
+  die "--workload/--count/--identity/--after-sleep/--first-answer are only valid for collect"
 fi
 if [ -n "$has_sleep" ]; then
   [[ "$c_sleep" =~ ^[1-9][0-9]{1,2}$ ]] && [ "$c_sleep" -ge 30 ] && [ "$c_sleep" -le 600 ] || die "--after-sleep must be 30..600 (seconds)"
 fi
+if [ -n "$has_fa" ]; then
+  # BL-025: the wake class's first answer, so only after a sleep.
+  [ -n "$has_sleep" ] || die "--first-answer needs --after-sleep"
+  [[ "$c_fa" =~ ^[1-9][0-9]{1,2}$ ]] && [ "$c_fa" -ge 30 ] && [ "$c_fa" -le 600 ] || die "--first-answer must be 30..600 (seconds)"
+fi
 case "$op" in install-cell|uninstall-cell) ;; command) [ -z "$i_hsha" ] || die "--hardened-sha is not valid for command" ;; *) [ -z "$i_cell$i_hsha" ] || die "--cell/--hardened-sha are only valid for install-cell, uninstall-cell and command" ;; esac
 case "$op" in install-cell|uninstall-cell|build-proxy|install-controller|install-agent|arm-prepare|command) ;; *) [ -z "$i_sha" ] || die "--source-sha is only valid for install-cell, uninstall-cell, build-proxy, install-controller, install-agent, arm-prepare and command" ;; esac
 case "$op" in fault-route|heal-route|route-apply) ;; *) [ -z "$i_route" ] || die "--route is only valid for fault-route, heal-route and route-apply" ;; esac
-case "$op" in install-controller|set-tunables|arm-set|command|polkit-test-rule|gui-session) ;; *) [ -z "$i_mode" ] || die "--mode is only valid for install-controller, set-tunables, arm-set, command, polkit-test-rule and gui-session" ;; esac
+case "$op" in install-controller|set-tunables|arm-set|command|polkit-test-rule|gui-session|fault-route|heal-route) ;; *) [ -z "$i_mode" ] || die "--mode is only valid for install-controller, set-tunables, arm-set, command, polkit-test-rule, gui-session, fault-route and heal-route" ;; esac
+if [ "$op" = fault-route ] || [ "$op" = heal-route ]; then case "$i_mode" in ''|tls-name|tls-control) ;; *) die "$op takes only --mode tls-name|tls-control" ;; esac; fi
 if [ "$op" = polkit-test-rule ]; then case "$i_mode" in add|remove) ;; *) die "polkit-test-rule needs --mode add|remove" ;; esac; fi
 if [ "$op" = gui-session ]; then case "$i_mode" in screenshot|restart|update-check|bridges-off|bridges-on|proxy-haproxy|proxy-socat|open|launch|running) ;; *) die "gui-session needs --mode screenshot|restart|update-check|bridges-off|bridges-on|proxy-haproxy|proxy-socat|open|launch|running" ;; esac; fi
 case "$op" in arm-prepare) [[ "$i_ptag" =~ ^v[0-9]+(\.[0-9]+)*$ ]] || die "arm-prepare needs --proxy-tag vN[.N]" ;; *) [ -z "$i_ptag" ] || die "--proxy-tag is only valid for arm-prepare" ;; esac
@@ -384,6 +439,11 @@ if [ "$op" = crash-container ]; then
   [[ "$i_every" =~ ^[0-9]{2,3}$ ]] && [ "$i_every" -ge 20 ] && [ "$i_every" -le 300 ] || die "crash-container needs --every 20..300 (seconds)"
 else
   [ -z "$i_times$i_every" ] || die "--times/--every are only valid for crash-container"
+fi
+if [ "$op" = cut-bridges ]; then
+  [[ "$i_keep" =~ ^[1-9]$ ]] || die "cut-bridges needs --keep 1..9"
+else
+  [ -z "$i_keep" ] || die "--keep is only valid for cut-bridges"
 fi
 if [ "$op" = set-tunables ]; then case "$i_mode" in fast|default) ;; *) die "set-tunables needs --mode fast|default" ;; esac; fi
 if [ "$op" = command ]; then
@@ -458,7 +518,17 @@ esac
   || die "mac-runtime-ssh is retired (OD-8): moving the container runtime broke the mac's vmnet on 2026-11-07; set NICE_DNS_ALLOW_RUNTIME_MOVE=yes to run it anyway"
 
 case "$op" in
-  sever-upstream|heal-upstream|freeze-upstream|thaw-upstream|build-proxy|recreate-proxy|fault-route|heal-route|thaw-on-request|arm-prepare|arm-set|stop-proxy)
+  fault-route|heal-route)
+    # BL-042: a TLS-name fault is Unbound's; a route fault is the proxy's.
+    if [ "$i_mode" = tls-name ] || [ "$i_mode" = tls-control ]; then
+      [ "$component" = unbound ] || die "$op --mode $i_mode needs --component unbound"
+    else
+      case " $UPSTREAM_COMPONENTS " in
+        *" $component "*) [ -n "$component" ] || die "--component is required" ;;
+        *) die "component '$component' is not an upstream component (allowed: $UPSTREAM_COMPONENTS)" ;;
+      esac
+    fi ;;
+  sever-upstream|heal-upstream|freeze-upstream|thaw-upstream|build-proxy|recreate-proxy|thaw-on-request|arm-prepare|arm-set|stop-proxy)
     case " $UPSTREAM_COMPONENTS " in
       *" $component "*) [ -n "$component" ] || die "--component is required" ;;
       *) die "component '$component' is not an upstream component (allowed: $UPSTREAM_COMPONENTS)" ;;
@@ -504,6 +574,29 @@ case "$freeze_max" in ''|*[!0-9]*) die "NICE_DNS_FREEZE_MAX_SECS must be an inte
 [ "$freeze_max" -ge 60 ] && [ "$freeze_max" -le 1800 ] || die "NICE_DNS_FREEZE_MAX_SECS must be 60..1800"
 INSTALL_ENV=''
 watch_secs="${NICE_DNS_WATCH_SECS:-1800}"
+# Outer limits of the calls with no bound of their own on the target (BL-060):
+# an install or uninstall cell, the installed command, and the image builds
+# and pulls of build-proxy and arm-prepare. Each op checks only its own.
+case "$op" in
+  install-cell|uninstall-cell) op_limit_var=NICE_DNS_INSTALL_CELL_MAX op_limit="${NICE_DNS_INSTALL_CELL_MAX:-1800}" ;;
+  command) op_limit_var=NICE_DNS_COMMAND_MAX op_limit="${NICE_DNS_COMMAND_MAX:-900}" ;;
+  build-proxy|arm-prepare) op_limit_var=NICE_DNS_BUILD_MAX op_limit="${NICE_DNS_BUILD_MAX:-3600}" ;;
+  # The read-only reports and the route faults (Stage 2 gate, I5): a wedged
+  # podman exec or unbound-control cannot hold the run.
+  config|health|controller-report|lifecycle-report|route-report|command-report|fresh-name|crash-report|proxy-supervisor-lines|helper-report|gui-report|switch-report|transport-report|fault-route|heal-route)
+    op_limit_var=NICE_DNS_REPORT_MAX op_limit="${NICE_DNS_REPORT_MAX:-300}" ;;
+  *) op_limit_var='' op_limit='' ;;
+esac
+if [ -n "$op_limit_var" ]; then
+  case "$op_limit" in ''|*[!0-9]*) die "$op_limit_var must be an integer (seconds)" ;; esac
+  [ "$op_limit" -ge 1 ] && [ "$op_limit" -le 7200 ] || die "$op_limit_var must be 1..7200 (seconds)"
+  command -v timeout >/dev/null 2>&1 || die "$op needs timeout(1) on this machine for its outer limit ($op_limit_var)"
+fi
+# How long a wake waits for a default route, and again after bringing the
+# Wi-Fi back (BL-026).
+wake_route="${NICE_DNS_WAKE_ROUTE_S:-60}"
+case "$wake_route" in ''|*[!0-9]*) die "NICE_DNS_WAKE_ROUTE_S must be an integer (seconds)" ;; esac
+[ "$wake_route" -ge 1 ] && [ "$wake_route" -le 600 ] || die "NICE_DNS_WAKE_ROUTE_S must be 1..600 (seconds)"
 case "$watch_secs" in ''|*[!0-9]*) die "NICE_DNS_WATCH_SECS must be an integer" ;; esac
 [ "$watch_secs" -ge 10 ] && [ "$watch_secs" -le 3600 ] || die "NICE_DNS_WATCH_SECS must be 10..3600"
 if [ "$op" = mark-state ]; then
@@ -616,9 +709,20 @@ remote_run() {
     printf 'target.sh: could not build the remote payload; nothing was sent\n' >&2
     return 2
   fi
-  # shellcheck disable=SC2029 # $1 is checked NAME=value words, meant to expand here
-  ssh "${SSH_OPTS[@]}" "$T_SSH" "$1 /bin/sh -s" <"$payload"
-  rc=$?
+  if [ -n "${RR_LIMIT:-}" ]; then
+    # The outer limit (BL-060): a remote call that never returns ends here.
+    # Only the ssh client is stopped; what it started on the target may run on.
+    # shellcheck disable=SC2029 # $1 is checked NAME=value words, meant to expand here
+    timeout -k 10 "$RR_LIMIT" ssh "${SSH_OPTS[@]}" "$T_SSH" "$1 /bin/sh -s" <"$payload"
+    rc=$?
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+      printf 'target.sh: timeout: %s on %s did not return within %ss (its outer limit); the call failed\n' "$op" "$alias_" "$RR_LIMIT" >&2
+    fi
+  else
+    # shellcheck disable=SC2029 # $1 is checked NAME=value words, meant to expand here
+    ssh "${SSH_OPTS[@]}" "$T_SSH" "$1 /bin/sh -s" <"$payload"
+    rc=$?
+  fi
   rm -f "$payload"
   return "$rc"
 }
@@ -804,6 +908,16 @@ started() {
   if [ "$plat" = macos ]; then ctl list --all | awk -v c="$1" '$1 == c && $5 == "running" { print $NF }'
   else ctl inspect "$1" --format '{{.Id}} {{.State.StartedAt}}' 2>/dev/null; fi
 }
+# container_gen <c>: the container's generation exactly as the controller
+# writes it (nd_platform_container_generation in lib/platform/*.sh).
+container_gen() {
+  if [ "$plat" = macos ]; then
+    ctl ls -a </dev/null 2>/dev/null | awk -v n="$1" 'NR == 1 { for (i = 1; i <= NF; i++) if ($i == "STATE") s = i; next }
+      $1 == n && s && $s == "running" { print $1 " " $s " " $NF; exit }'
+  else
+    ctl inspect -f '{{.Id}} {{.State.StartedAt}} {{.State.Status}}' "$1" </dev/null 2>/dev/null | head -n 1
+  fi
+}
 image_of() {
   if [ "$plat" = macos ]; then
     ctl inspect "$1" </dev/null 2>/dev/null | tr ',' '\n' | sed -n 's/.*"digest"[[:space:]]*:[[:space:]]*"\(sha256:[0-9a-f]*\)".*/\1/p' | head -1
@@ -814,6 +928,112 @@ tor_states() {
   # Field 3 of /proc/PID/stat is the state only while comm (field 2) has no
   # space; it is the literal "(tor)" here.
   ctl_exec "$1" sh -c 'for p in $(pgrep -x tor); do awk "{ print \$3 }" /proc/$p/stat; done' | tr '\n' ' ' | sed 's/ $//'
+}
+# first_answer <t0 epoch s> <cap s>: DEC-014's sample. A fresh name every
+# 0.5 s, each waiting 5 s as collect.sh's queries do (a shorter wait would
+# abandon a slow first answer through Tor); the first answered one ends it.
+# Prints: first_answer, t0 UTC, elapsed us (to the arrival, +-50 ms),
+# outcome, rcode, qname, cap ms. No answer within the cap is a timeout.
+first_answer() {
+  perl -MTime::HiRes=time,sleep -MPOSIX=WNOHANG,strftime -e '
+    my ($t0, $cap, $addr, $port) = @ARGV;
+    my (%kid, $best, $q, $rc);
+    my $next = time;
+    while (1) {
+      my $now = time;
+      if ($now >= $next && $now - $t0 < $cap) {
+        my $n = join("", map { sprintf "%02x", int(rand(256)) } 1 .. 8) . ".example.com";
+        pipe(my $r, my $w) or die "pipe: $!";
+        my $pid = fork(); die "fork: $!" unless defined $pid;
+        if (!$pid) {
+          close $r; open(STDOUT, ">&", $w); open(STDERR, ">", "/dev/null");
+          exec("dig", "\@$addr", "-p", $port, "+time=5", "+tries=1", "+noall", "+comments", $n, "A"); exit 127;
+        }
+        close $w; $kid{$pid} = [$r, $n]; $next = $now + 0.5;
+      }
+      while ((my $pid = waitpid(-1, WNOHANG)) > 0) {
+        my $k = delete $kid{$pid} or next;
+        my $end = time; my $fh = $k->[0]; local $/; my $out = <$fh> // ""; close $fh;
+        my ($s) = $out =~ /status: ([A-Z]+)/;
+        if (defined $s && ($s eq "NOERROR" || $s eq "NXDOMAIN") && (!defined $best || $end < $best)) { ($best, $q, $rc) = ($end, $k->[1], $s); }
+      }
+      last if defined $best || (time - $t0 >= $cap && !%kid);
+      sleep 0.05;
+    }
+    kill "TERM", keys %kid;
+    my $iso = strftime("%Y-%m-%dT%H:%M:%S", gmtime($t0)) . sprintf(".%06dZ", int(($t0 - int($t0)) * 1e6));
+    if (defined $best) {
+      printf "first_answer\t%s\t%d\t%s\t%s\t%s\t%d\n", $iso, int(($best - $t0) * 1e6), $rc eq "NOERROR" ? "ok" : "nxdomain", $rc, $q, $cap * 1000;
+      exit 0;
+    }
+    printf "first_answer\t%s\t%d\ttimeout\t-\t-\t%d\n", $iso, $cap * 1e6, $cap * 1000;
+    exit 1;' "$1" "$2" "${RESOLVER%#*}" "${RESOLVER#*#}"
+}
+tlsu() { ctl_exec unbound unbound-control -c /usr/share/nice-dns/control.conf "$@"; }
+# route_now: "<route> TAB <generation>" of the route Unbound runs, from its
+# marker read over the control socket (as lib/recovery.sh route_readback);
+# nothing when it cannot be read.
+route_now() {
+  tlsu list_local_data 2>/dev/null \
+    | awk '$1 == "nice-dns-route.invalid." && $4 == "TXT" && match($0, /"route=[a-z0-9-]+ generation=[0-9]+"/) {
+        split(substr($0, RSTART + 1, RLENGTH - 2), kv, /[ =]/); print kv[2] "\t" kv[4]; exit }'
+}
+# ub_dig <dig args>: dig at Unbound's own listener (5335): from inside the pod
+# on Linux (the pod publishes only :53), at Unbound's address on macOS.
+ub_dig() {
+  if [ "$plat" = macos ]; then dig @172.31.240.251 -p 5335 "$@" </dev/null
+  else "$C" exec pi-hole dig @127.0.0.1 -p 5335 "$@" </dev/null; fi
+}
+# dig_st: "<rcode> TAB ad|noad" of one dig's output (timeout when none).
+dig_st() {
+  awk '/status:/ { s = $0; sub(/.*status: /, "", s); sub(/,.*/, "", s) }
+    /^;; flags:/ { f = ($0 ~ /flags:[^;]* ad[ ;]/) ? "ad" : "noad" }
+    END { printf "%s\t%s", (s == "" ? "timeout" : s), (f == "" ? "-" : f) }'
+}
+# tls_route: fault-route|heal-route --mode tls-name|tls-control (BL-042).
+# The running route keeps its address and port but gets a wrong TLS name at
+# runtime (tls-control: its own name, by the same path), so Unbound's
+# certificate check must refuse the upstream. forward_add replaces the root
+# forward in one step under Unbound's lock (iterator/iter_fwd.c
+# forwards_add_zone), so there is no moment with no forward. The route files
+# are untouched, so `reload` (Unbound re-reads its config) heals it, and a
+# detached timer reloads after NICE_DNS_FREEZE_MAX whatever happens to this
+# session. The controller's readback compares forwarders by address only
+# (lib/recovery.sh route_readback), so it does not see a route change.
+tls_route() {
+  running unbound || { echo "unbound is not running" >&2; return 1; }
+  if [ "$NICE_DNS_OP" = heal-route ]; then
+    # Healed whatever the route marker says; the timer stops only once healed.
+    tlsu reload >&2 || { echo "unbound-control reload failed; the timer still heals it" >&2; return 1; }
+    pkill -f nice-dns-tls-watchdog 2>/dev/null
+    printf 'tls_name\thealed\t%s\n' "$NICE_DNS_ROUTE"
+    return 0
+  fi
+  tr_cur=$(route_now | cut -f1)
+  [ "$tr_cur" = "$NICE_DNS_ROUTE" ] || { echo "the running route is ${tr_cur:-unknown}, not $NICE_DNS_ROUTE" >&2; return 2; }
+  fa=$(ctl_exec unbound cat /etc/unbound/route/forward-route.conf 2>/dev/null | awk '$1 == "forward-addr:" { print $2; exit }')
+  case "$fa" in *@*'#'?*) ;; *) echo "the route's forwarder has no TLS name: ${fa:-none}" >&2; return 1 ;; esac
+  if [ "$NICE_DNS_MODE" = tls-control ]; then tr_new="$fa"; else tr_new="${fa%%#*}#nd-wrong-name.invalid"; fi
+  nohup sh -c 'sleep "$1"; "$2" exec unbound unbound-control -c /usr/share/nice-dns/control.conf reload' nice-dns-tls-watchdog "$NICE_DNS_FREEZE_MAX" "$C" </dev/null >/dev/null 2>&1 &
+  # The root zone must still be forwarded after the change, or Unbound would
+  # recurse outside Tor: otherwise it is reloaded at once.
+  if ! tlsu forward_add +t . "$tr_new" >&2 \
+    || ! tlsu list_forwards 2>/dev/null | awk '$1 == "." && $3 == "forward" { f = 1 } END { exit !f }'; then
+    if tlsu reload >&2; then pkill -f nice-dns-tls-watchdog 2>/dev/null; fi
+    echo "the root forward could not be set to $tr_new; reloaded" >&2
+    return 1
+  fi
+  if [ "$NICE_DNS_MODE" = tls-control ]; then tr_k=control; else tr_k=faulted; fi
+  printf 'tls_name\t%s\t%s\nforwarder\t%s\n' "$tr_k" "$NICE_DNS_ROUTE" "$tr_new"
+}
+# wake_state <before|after>: the route Unbound runs (its marker, read over the
+# control socket as lib/recovery.sh route_readback does) and the proxy
+# container's generation, around a timed wake (BL-025).
+wake_state() {
+  ws_r=$(route_now)
+  [ -n "$ws_r" ] || ws_r=$(printf 'unknown\t-')
+  ws_g=$(container_gen "tor-$NICE_DNS_ID_PROXY")
+  printf 'route\t%s\t%s\nproxy_generation\t%s\t%s\n' "$1" "$ws_r" "$1" "${ws_g:--}"
 }
 case "$NICE_DNS_OP" in
   probe|snapshot)
@@ -936,7 +1156,12 @@ case "$NICE_DNS_OP" in
     if [ -n "${NICE_DNS_SLEEP_SECS:-}" ]; then
       # DEC-012's wake sample: the machine suspends, wakes by its own alarm,
       # and the queries start as soon as its default gateway answers (up to
-      # 60 s), as a client's first lookup after a wake would.
+      # NICE_DNS_WAKE_ROUTE_S, twice that after a Wi-Fi recovery), as a
+      # client's first lookup after a wake would.
+      if [ -n "${NICE_DNS_FIRST_ANSWER:-}" ]; then
+        command -v perl >/dev/null 2>&1 || { echo "--first-answer needs perl on the target" >&2; exit 2; }
+        wake_state before
+      fi
       if [ "$plat" = macos ]; then
         sudo -n pmset relative wake "$NICE_DNS_SLEEP_SECS" </dev/null >&2 || { echo "cannot schedule the wake" >&2; exit 2; }
         t=$(date +%s); pmset sleepnow </dev/null >&2
@@ -949,16 +1174,58 @@ case "$NICE_DNS_OP" in
         gw() { route -n get default 2>/dev/null | awk '$1 == "gateway:" { print $2 }'; }
         pg() { ping -c 1 -t 1 "$1" </dev/null >/dev/null 2>&1; }
       else
+        # The Wi-Fi profile active before the sleep, by UUID (a name may hold
+        # spaces): a resume can leave the link down for hours (BL-026).
+        wprof=$(nmcli -t -f UUID,TYPE connection show --active </dev/null 2>/dev/null | awk -F: '$2 == "802-11-wireless" { print $1; exit }')
         sudo -n rtcwake -m mem -s "$NICE_DNS_SLEEP_SECS" </dev/null >&2 || { echo "the target did not sleep" >&2; exit 2; }
         gw() { ip route show default 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }'; }
         pg() { ping -c 1 -W 1 "$1" </dev/null >/dev/null 2>&1; }
       fi
-      w0=$(date +%s); i=0
-      while [ "$i" -lt 60 ]; do
-        g=$(gw); if [ -n "$g" ] && pg "$g"; then break; fi
-        i=$((i + 1)); sleep 1
-      done
-      printf 'woke\t%s\tlink_after_s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(( $(date +%s) - w0 ))" >&2
+      # link_wait <secs>: 0 once the default gateway answers; 1 if there is a
+      # default route but its gateway did not answer; 2 if there is no route.
+      link_wait() {
+        lw_i=0 lw_r=2
+        while [ "$lw_i" -lt "$1" ]; do
+          g=$(gw)
+          if [ -n "$g" ]; then lw_r=1; if pg "$g"; then return 0; fi; else lw_r=2; fi
+          lw_i=$((lw_i + 1)); sleep 1
+        done
+        return "$lw_r"
+      }
+      w0=$(date +%s) note=''
+      # BL-025: the first answer is timed from the wake, the link wait included.
+      [ -z "${NICE_DNS_FIRST_ANSWER:-}" ] || t0=$(perl -MTime::HiRes=time -e 'printf "%.6f", time')
+      link_wait "$NICE_DNS_WAKE_ROUTE_S"; lr=$?
+      if [ "$lr" -eq 2 ] && [ -n "${wprof:-}" ]; then
+        # Once: as root, since an ssh session may not control the network.
+        sudo -n nmcli device wifi rescan </dev/null >&2 || true
+        sudo -n nmcli connection up uuid "$wprof" </dev/null >&2 || true
+        link_wait "$NICE_DNS_WAKE_ROUTE_S"; lr=$?
+        [ "$lr" -eq 2 ] || note=wifi-recovered
+      fi
+      # No route, no sample: its queries would measure the link, not the stack.
+      if [ "$lr" -eq 2 ]; then
+        if [ -n "${wprof:-}" ]; then echo "no default route after the wake" >&2
+        else echo "no default route after the wake (no Wi-Fi profile to bring back)" >&2; fi
+        exit 2
+      fi
+      {
+        printf 'woke\t%s\tlink_after_s\t%s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(( $(date +%s) - w0 ))"
+        [ -z "$note" ] || printf '\tnote\t%s' "$note"
+        printf '\n'
+      } >&2
+      if [ -n "${NICE_DNS_FIRST_ANSWER:-}" ]; then
+        # BL-025, beside DEC-012's one-query sample: repeat fresh names until
+        # one is answered (DEC-014's row), instead of the one query. A
+        # timeout row exits 1, which is data, as collect.sh's failed rows are.
+        # The cap counts from the wake: a link slower than the cap left no
+        # time to query, which is not a stack timeout.
+        [ "$(( $(date +%s) - w0 ))" -lt "$NICE_DNS_FIRST_ANSWER" ] \
+          || { echo "the link took longer than the first-answer cap (${NICE_DNS_FIRST_ANSWER}s); nothing was queried" >&2; exit 2; }
+        fa_rc=0; first_answer "$t0" "$NICE_DNS_FIRST_ANSWER" || fa_rc=1
+        wake_state after
+        exit "$fa_rc"
+      fi
     fi
     {
       printf 'target_id\t%s\nplatform\t%s\nproxy\t%s\n' "$NICE_DNS_ID_TARGET_ID" "$NICE_DNS_ID_PLATFORM" "$NICE_DNS_ID_PROXY"
@@ -1115,46 +1382,6 @@ case "$NICE_DNS_OP" in
         i=$((i + 1)); sleep 5
       done
       return 1
-    }
-    # first_answer <t0 epoch s> <cap s>: DEC-014's sample. A fresh name every
-    # 0.5 s, each waiting 5 s as collect.sh's queries do (a shorter wait would
-    # abandon a slow first answer through Tor); the first answered one ends it.
-    # Prints: first_answer, t0 UTC, elapsed us (to the arrival, +-50 ms),
-    # outcome, rcode, qname, cap ms. No answer within the cap is a timeout.
-    first_answer() {
-      perl -MTime::HiRes=time,sleep -MPOSIX=WNOHANG,strftime -e '
-        my ($t0, $cap, $addr, $port) = @ARGV;
-        my (%kid, $best, $q, $rc);
-        my $next = time;
-        while (1) {
-          my $now = time;
-          if ($now >= $next && $now - $t0 < $cap) {
-            my $n = join("", map { sprintf "%02x", int(rand(256)) } 1 .. 8) . ".example.com";
-            pipe(my $r, my $w) or die "pipe: $!";
-            my $pid = fork(); die "fork: $!" unless defined $pid;
-            if (!$pid) {
-              close $r; open(STDOUT, ">&", $w); open(STDERR, ">", "/dev/null");
-              exec("dig", "\@$addr", "-p", $port, "+time=5", "+tries=1", "+noall", "+comments", $n, "A"); exit 127;
-            }
-            close $w; $kid{$pid} = [$r, $n]; $next = $now + 0.5;
-          }
-          while ((my $pid = waitpid(-1, WNOHANG)) > 0) {
-            my $k = delete $kid{$pid} or next;
-            my $end = time; my $fh = $k->[0]; local $/; my $out = <$fh> // ""; close $fh;
-            my ($s) = $out =~ /status: ([A-Z]+)/;
-            if (defined $s && ($s eq "NOERROR" || $s eq "NXDOMAIN") && (!defined $best || $end < $best)) { ($best, $q, $rc) = ($end, $k->[1], $s); }
-          }
-          last if defined $best || (time - $t0 >= $cap && !%kid);
-          sleep 0.05;
-        }
-        kill "TERM", keys %kid;
-        my $iso = strftime("%Y-%m-%dT%H:%M:%S", gmtime($t0)) . sprintf(".%06dZ", int(($t0 - int($t0)) * 1e6));
-        if (defined $best) {
-          printf "first_answer\t%s\t%d\t%s\t%s\t%s\t%d\n", $iso, int(($best - $t0) * 1e6), $rc eq "NOERROR" ? "ok" : "nxdomain", $rc, $q, $cap * 1000;
-          exit 0;
-        }
-        printf "first_answer\t%s\t%d\ttimeout\t-\t-\t%d\n", $iso, $cap * 1e6, $cap * 1000;
-        exit 1;' "$1" "$2" "${RESOLVER%#*}" "${RESOLVER#*#}"
     }
     restart_stack() {
       if [ "$plat" = macos ]; then
@@ -1535,6 +1762,7 @@ case "$NICE_DNS_OP" in
     sed 's/^/receipt	/' "$r" 2>/dev/null
     exit $rc ;;
   fault-route|heal-route)
+    case "${NICE_DNS_MODE:-}" in tls-name|tls-control) tls_route; exit $? ;; esac
     c="$NICE_DNS_COMPONENT"
     running "$c" || { echo "$c is not running" >&2; exit 1; }
     case "$NICE_DNS_ROUTE" in
@@ -1577,6 +1805,31 @@ case "$NICE_DNS_OP" in
       fi
       printf 'listener\t%s\tstate=%s\n' "$port" "$(ctl_exec "$c" awk '{ print $3 }' "/proc/$pid/stat")"
     fi ;;
+  transport-report)
+    identity
+    printf 'section\ttransport\n'
+    r=$(route_now); [ -n "$r" ] || r=$(printf 'unknown\t-')
+    printf 'route\trunning\t%s\n' "$r"
+    # TL-DNSSEC: Pi-hole never passes `ad` on, so validation is read at Unbound.
+    for k in signed:cloudflare.com unsigned:neverssl.com bogus:dnssec-failed.org; do
+      n=${k#*:}
+      printf 'dnssec\tclient\t%s\t%s\t%s\n' "${k%%:*}" "$n" "$(dig "@${RESOLVER%#*}" -p "${RESOLVER#*#}" +time=10 +tries=1 +dnssec "$n" A </dev/null 2>/dev/null | dig_st)"
+      printf 'dnssec\tunbound\t%s\t%s\t%s\n' "${k%%:*}" "$n" "$(ub_dig +time=10 +tries=1 +dnssec "$n" A 2>/dev/null | dig_st)"
+    done
+    # With checking disabled the bogus name's data must arrive, so its SERVFAIL
+    # above is validation, not an outage.
+    printf 'dnssec\tunbound\tbogus-cd\tdnssec-failed.org\t%s\n' "$(ub_dig +time=10 +tries=1 +cd dnssec-failed.org A 2>/dev/null | dig_st)"
+    # TL-CONTROL: a TCP 8953 (0x22F9) listener anywhere in Unbound's network
+    # namespace (on Linux, the pod's); unknown when the table cannot be read.
+    l=$(ctl_exec unbound cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$1 == "sl" { seen = 1 } $4 == "0A" { p = $2; sub(/.*:/, "", p); if (toupper(p) == "22F9") n++ }
+      END { print (!seen ? "unknown" : n ? "listening" : "none") }')
+    printf 'control\ttcp_8953\t%s\n' "$l"
+    ci=$(ctl_exec unbound cat /usr/share/nice-dns/control.conf 2>/dev/null | awk '$1 == "control-interface:" { print $2; exit }')
+    printf 'control\tinterface\t%s\n' "${ci:--}"
+    if [ -n "$ci" ] && ctl_exec unbound sh -c 'test -S "$1"' sh "$ci"; then s=unix; else s=absent; fi
+    printf 'control\tsocket\t%s\n' "$s"
+    if tlsu status >/dev/null 2>&1; then s=yes; else s=no; fi
+    printf 'control\tanswers\t%s\n' "$s" ;;
   thaw-on-request)
     c="$NICE_DNS_COMPONENT"; i=0
     while [ "$i" -lt "$NICE_DNS_FREEZE_MAX" ]; do
@@ -2135,12 +2388,40 @@ case "$NICE_DNS_OP" in
     printf 'section\tsupervisor\n'
     for c in tor-haproxy tor-socat; do
       running "$c" || continue
+      g0=$(container_gen "$c")
       # Filtered in the pipe: only the spawn lines, cut after their launch
       # words. The log itself is never printed, kept or written to a file.
       ctl logs "$c" </dev/null 2>&1 |
         sed -n -E 's/^.*(tor-supervisor: spawned tor pid=[0-9]+ generation=[0-9]+ (direct \(no bridges\)|with [0-9]+ bridge\(s\))).*$/\1/p' |
         tail -n 20 | while IFS= read -r l; do printf 'supervisor_line\t%s\t%s\n' "$c" "$l"; done
+      # The container those lines came from (BL-060): a switch is judged on
+      # the spawn of the container it started, not on an older one's line.
+      g1=$(container_gen "$c")
+      if [ -n "$g1" ] && [ "$g0" = "$g1" ]; then printf 'supervisor_container\t%s\t%s\n' "$c" "$g1"
+      else printf 'supervisor_container\t%s\tchanging\n' "$c"; fi
     done | redact ;;
+  cut-bridges|restore-bridges)
+    [ "$plat" = linux ] || { echo "$NICE_DNS_OP is Linux only (BT-ON-FEW)" >&2; exit 2; }
+    bd="${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns"; bf="$bd/bridges.env"; bk="$bd/bridges.env.harness-cut"
+    # Only counts are printed: a bridge line is secret.
+    if [ "$NICE_DNS_OP" = cut-bridges ]; then
+      if [ ! -f "$bf" ] || [ -L "$bf" ]; then echo "no bridges.env file at $bf" >&2; exit 1; fi
+      if [ -e "$bk" ] || [ -L "$bk" ]; then echo "a cut copy is already kept ($bk); run restore-bridges first" >&2; exit 1; fi
+      n=$(grep -cE '^BRIDGE[0-9]+=' "$bf")
+      [ "$n" -gt "$NICE_DNS_KEEP" ] || { echo "bridges.env holds $n bridges, not more than $NICE_DNS_KEEP" >&2; exit 1; }
+      (umask 077 && cp -p "$bf" "$bk") || exit 1
+      t="$bf.harness-tmp.$$"
+      if (umask 077 && awk -v k="$NICE_DNS_KEEP" '/^BRIDGE[0-9]+=/ { if (++i <= k) { sub(/^BRIDGE[0-9]+=/, ""); printf "BRIDGE%d=%s\n", i, $0 }; next } { print }' "$bk" >"$t") && mv -f "$t" "$bf"; then
+        printf 'bridges_before\t%s\nbridges_kept\t%s\n' "$n" "$(grep -cE '^BRIDGE[0-9]+=' "$bf")"
+      else
+        rm -f "$t"; mv -f "$bk" "$bf"; echo "could not write the cut bridges.env; the file is unchanged" >&2; exit 1
+      fi
+    elif [ -f "$bk" ] && [ ! -L "$bk" ]; then
+      mv -f "$bk" "$bf" || exit 1
+      printf 'bridges_restored\t%s\n' "$(grep -cE '^BRIDGE[0-9]+=' "$bf")"
+    else
+      printf 'bridges_restored\tnone\n'
+    fi ;;
   helper-report)
     identity
     if [ "$plat" = macos ]; then h=/usr/local/libexec/nice-dns-helper; d=/usr/local/libexec/nice-dns; else h=/usr/libexec/nice-dns-helper; d=/usr/libexec/nice-dns; fi
@@ -2408,6 +2689,11 @@ case "$NICE_DNS_OP" in
   restore)
     rc=0
     for c in $NICE_DNS_COMPONENTS; do ctl start "$c" || rc=1; done
+    # A bridges.env cut-bridges left behind (a run killed in BT-ON-FEW).
+    bk="${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges.env.harness-cut"
+    if [ "$plat" = linux ] && [ -f "$bk" ] && [ ! -L "$bk" ]; then
+      mv -f "$bk" "${bk%.harness-cut}" && echo "restored bridges.env from the cut copy" || rc=1
+    fi
     exit $rc ;;
   *) echo "unknown op" >&2; exit 2 ;;
 esac
@@ -2463,10 +2749,10 @@ case "$op" in
     } >"$STATE/receipt.tsv"
     log_op 0
     printf 'snapshot %s -> %s\n' "$alias_" "$STATE/snapshot.tsv" ;;
-  config|health|controller-report|lifecycle-report|route-report|command-report|fresh-name|crash-report|proxy-supervisor-lines|helper-report|gui-report|switch-report)
+  config|health|controller-report|lifecycle-report|route-report|command-report|fresh-name|crash-report|proxy-supervisor-lines|helper-report|gui-report|switch-report|transport-report)
     # Read-only; the output starts with the identity lines, which are checked.
     preconnect_guards
-    probe_identity "$op"
+    RR_LIMIT="$op_limit" probe_identity "$op"
     printf '%s\n' "$PROBE_OUT" ;;
   watch-dns)
     # Read-only and streamed: the identity is checked first, separately.
@@ -2483,11 +2769,11 @@ case "$op" in
     fi
     preconnect_guards
     probe_identity probe
-    remote_run "NICE_DNS_OP=collect NICE_DNS_WORKLOAD=$c_workload NICE_DNS_COUNT=$c_count NICE_DNS_TIMEOUT_MS=$c_timeout NICE_DNS_PAUSE_MS=$c_pause NICE_DNS_RUN_ID=$RUN_ID$ID_ENV NICE_DNS_SLEEP_SECS=$c_sleep"
+    remote_run "NICE_DNS_OP=collect NICE_DNS_WORKLOAD=$c_workload NICE_DNS_COUNT=$c_count NICE_DNS_TIMEOUT_MS=$c_timeout NICE_DNS_PAUSE_MS=$c_pause NICE_DNS_RUN_ID=$RUN_ID$ID_ENV NICE_DNS_SLEEP_SECS=$c_sleep NICE_DNS_WAKE_ROUTE_S=$wake_route NICE_DNS_FIRST_ANSWER=$c_fa"
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network|freeze-unbound|thaw-unbound|stop-proxy|command|freeze-service|thaw-service|pause-container|unpause-container|stop-container|start-container|crash-container|stop-crash|mac-runtime-ssh|mac-runtime-gui|polkit-test-rule|gui-session|update-schedule)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network|freeze-unbound|thaw-unbound|stop-proxy|command|freeze-service|thaw-service|pause-container|unpause-container|stop-container|start-container|crash-container|stop-crash|mac-runtime-ssh|mac-runtime-gui|polkit-test-rule|gui-session|update-schedule|cut-bridges|restore-bridges)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"
@@ -2496,13 +2782,15 @@ case "$op" in
     [ "$(kv machine_id "$(cat "$STATE/receipt.tsv")")" = "$PROBE_MID" ] \
       || die "snapshot for $alias_ is of machine $(kv machine_id "$(cat "$STATE/receipt.tsv")"), target now reports $PROBE_MID"
     if [ "$op" = install-cell ] || [ "$op" = uninstall-cell ]; then
-      remote_run "NICE_DNS_OP=$op $INSTALL_ENV"; rc=$?
+      RR_LIMIT="$op_limit" remote_run "NICE_DNS_OP=$op $INSTALL_ENV"; rc=$?
     elif [ "$op" = mark-state ]; then
       remote_run "NICE_DNS_OP=mark-state NICE_DNS_RUN_ID=$RUN_ID"; rc=$?
     elif [ "$op" = command ]; then
-      remote_run "NICE_DNS_OP=command NICE_DNS_MODE=$i_mode NICE_DNS_PROXY=${i_cell%/*} NICE_DNS_PIHOLE=${i_cell#*/} NICE_DNS_SOURCE_SHA=$i_sha"; rc=$?
+      RR_LIMIT="$op_limit" remote_run "NICE_DNS_OP=command NICE_DNS_MODE=$i_mode NICE_DNS_PROXY=${i_cell%/*} NICE_DNS_PIHOLE=${i_cell#*/} NICE_DNS_SOURCE_SHA=$i_sha"; rc=$?
     elif [ "$op" = capture-dns ]; then
       remote_run "NICE_DNS_OP=capture-dns NICE_DNS_COUNT=$c_count"; rc=$?
+    elif [ "$op" = cut-bridges ] || [ "$op" = restore-bridges ]; then
+      remote_run "NICE_DNS_OP=$op NICE_DNS_KEEP=${i_keep:-0}"; rc=$?
     elif [ "$op" = restore ]; then
       names=''
       # shellcheck disable=SC2013 # container names are single words
@@ -2511,7 +2799,7 @@ case "$op" in
       done
       remote_run "NICE_DNS_OP=restore NICE_DNS_COMPONENTS='${names# }'"; rc=$?
     else
-      remote_run "NICE_DNS_OP=$op NICE_DNS_COMPONENT=$component NICE_DNS_FREEZE_MAX=$freeze_max NICE_DNS_ROUTE=$i_route NICE_DNS_MODE=$i_mode NICE_DNS_SOURCE_SHA=$i_sha NICE_DNS_PROXY_TAG=$i_ptag NICE_DNS_TIMES=$i_times NICE_DNS_EVERY=$i_every"; rc=$?
+      RR_LIMIT="$op_limit" remote_run "NICE_DNS_OP=$op NICE_DNS_COMPONENT=$component NICE_DNS_FREEZE_MAX=$freeze_max NICE_DNS_ROUTE=$i_route NICE_DNS_MODE=$i_mode NICE_DNS_SOURCE_SHA=$i_sha NICE_DNS_PROXY_TAG=$i_ptag NICE_DNS_TIMES=$i_times NICE_DNS_EVERY=$i_every"; rc=$?
     fi
     log_op "$rc"
     [ "$rc" -eq 0 ] || exit 1 ;;

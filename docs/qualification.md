@@ -304,3 +304,9 @@ Also:
 - Latency is judged per platform, on the representative cell.
 - `nice-dns-health --help` still says a refreshed set waits for the proxy's
   next start (BL-029).
+- Evidence privacy: the live privacy cases fail a report that holds bridge
+  material, a session or a full 40-character fingerprint, and fail a run
+  that left no report to scan (BL-057). A 12-character fingerprint prefix
+  is allowed in evidence, because the product's own journal writes them
+  (its `bridges weak` row names each bridge it leaves out by that prefix,
+  `lib/recovery.sh`); the scans do not look for it (BL-034).

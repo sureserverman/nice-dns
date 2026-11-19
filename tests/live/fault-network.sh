@@ -68,5 +68,6 @@ t_1_network_loss() {
 
 t_2_evidence_is_private() {
   [ -d "$ARTIFACT_DIR/fault-network" ] || fail "no evidence: t_1 did not run"
+  nd_reports_present "$ARTIFACT_DIR/fault-network"
   assert_eq "" "$(grep -rlE 'obfs4 [0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]+|cert=[A-Za-z0-9+/=]{16,}' "$ARTIFACT_DIR/fault-network" 2>/dev/null)" "no bridge line in the evidence"
 }

@@ -228,6 +228,7 @@ t_1_interleaved_comparison() {
 
 t_2_evidence_is_private() {
   il_selection
+  nd_reports_present "$ARTIFACT_DIR/$TR_GROUP"
   assert_eq "" "$(grep -rlE 'cert=[A-Za-z0-9+/]{20}|(^|[^0-9A-Fa-f])[0-9A-F]{40}([^0-9A-Fa-f]|$)|PRIVATE KEY|"sid":|pwhash|BRIDGE[0-9]+=' "$ARTIFACT_DIR/$TR_GROUP" --include='*.tsv' 2>/dev/null)" \
     "no report, sample or step record holds bridge material, a session or a hash"
 }

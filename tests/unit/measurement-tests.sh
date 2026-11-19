@@ -154,6 +154,15 @@ t_collect_refuses_the_restart_workload() {
   assert_no_path "$CASE_DIR/samples.tsv" "nothing written"
 }
 
+# BL-025: the wake's first answer is a second kind beside DEC-012's frozen
+# one-query wake sample, never a change to it.
+t_wake_sample_stays_frozen_beside_its_first_answer_bl025() {
+  local m="$NICE_DNS_ROOT/tests/manifests/workloads.tsv"
+  assert_eq "wake	after-wake	{nonce}.example.com	A" "$(grep '^wake	' "$m")" "BL-025: the wake workload is unchanged"
+  assert_match 'target\.sh collect --after-sleep SECS --first-answer CAP' "$(grep '^#' "$m")" "BL-025: the manifest names where the wake's first answer is timed"
+  assert_match 'first_answer' "$(grep '^#' "$m")" "BL-025: as DEC-014's first_answer row, not a sample row"
+}
+
 t_collect_refuses_incomplete_identity() {
   local k
   mt_start

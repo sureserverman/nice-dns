@@ -358,6 +358,7 @@ t_07_after() { il_selection; il_each cf_after; }
 
 t_08_privacy() {
   il_selection
+  nd_reports_present "$ARTIFACT_DIR/container-faults"
   assert_eq "" "$(grep -rlE 'cert=[A-Za-z0-9+/]{20}|(^|[^0-9A-Fa-f])[0-9A-F]{40}([^0-9A-Fa-f]|$)|PRIVATE KEY|"sid":|pwhash|BRIDGE[0-9]+=' "$ARTIFACT_DIR/container-faults" --include='*.tsv' 2>/dev/null)" \
     "no report, sample or step record holds bridge material, a session or a hash"
 }

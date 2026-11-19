@@ -27,6 +27,8 @@ if [ -n "${FAKE_EXEC:-}" ]; then
   PATH="$FAKE_RBIN:$PATH" eval "$last"
   exit $?
 fi
+# FAKE_SLEEP: every call but the identity probe hangs that long (BL-060).
+case "$last" in *NICE_DNS_OP=probe*|*NICE_DNS_OP=snapshot*) ;; *) [ -z "${FAKE_SLEEP:-}" ] || exec sleep "$FAKE_SLEEP" ;; esac
 case "$last" in
   *NICE_DNS_OP=probe*|*NICE_DNS_OP=snapshot*)
     printf 'machine_id\t%s\nhostname\t%s\nplatform\t%s\n' "${FAKE_MACHINE_ID:-remote-machine-0001}" "${FAKE_REMOTE_HOST:-disposable-1}" "${FAKE_PLATFORM:-linux}"
@@ -1035,6 +1037,170 @@ t_wake_sample_is_guarded() {
   assert_eq "" "$(printf '%s\n' "$b" | grep -E '(sudo|pmset|ping) ' | grep -v '</dev/null')" "no sleep command reads the script's stdin"
 }
 
+# ─── Sub-plan 4 Task 2.1: a wake with no route brings the Wi-Fi back (BL-026) ─
+
+# tg_wake_tools <route>: fake suspend and network tools on the exec-mode
+# remote. <route>: now (a default route at once), after-up (none until
+# `nmcli connection up` ran), never.
+tg_wake_tools() {
+  local r="$CASE_DIR/rbin"
+  printf '#!/bin/sh\nprintf "sudo %%s\\n" "$*" >>"$FAKE_LOG"\n[ "$1" != -n ] || shift\nexec "$@"\n' >"$r/sudo"
+  printf '#!/bin/sh\nexit 0\n' >"$r/rtcwake"
+  printf '#!/bin/sh\nexit 0\n' >"$r/ping"
+  printf '#!/bin/sh\nprintf ";; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1\\n"\n' >"$r/dig"
+  printf '#!/bin/sh\ncase "$FAKE_ROUTE" in now) ;; after-up) [ -f "$FAKE_UP" ] || exit 0 ;; *) exit 0 ;; esac\necho "default via 192.0.2.1 dev wlp1s0 proto dhcp metric 600"\n' >"$r/ip"
+  cat >"$r/nmcli" <<'FAKE'
+#!/bin/sh
+printf 'nmcli %s\n' "$*" >>"$FAKE_LOG"
+case "$*" in
+  *'connection show --active'*) printf '11111111-2222-3333-4444-555555555555:802-11-wireless\n22222222-3333-4444-5555-666666666666:loopback\n' ;;
+  *'connection up uuid 11111111-2222-3333-4444-555555555555'*) : >"$FAKE_UP" ;;
+esac
+exit 0
+FAKE
+  chmod 755 "$r"/*
+  FAKE_ROUTE="$1" FAKE_UP="$CASE_DIR/wifi-up"
+  rm -f "$FAKE_UP"
+  export FAKE_ROUTE FAKE_UP
+}
+
+tg_wake() {
+  : >"$FAKE_LOG"
+  tg collect lin1 --targets "$CASE_DIR/targets.env" --workload wake --count 1 --identity "$CASE_DIR/identity.tsv" --after-sleep 60
+}
+
+t_wake_without_a_route_brings_the_wifi_back_bl026() {
+  local v
+  tg_setup
+  tg_remote_tools Linux
+  RUN_ID=run-wake-1; export RUN_ID
+  tg_identity 'pi-hole=sha256:ab'
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "snapshot: $TG_OUT"
+  NICE_DNS_WAKE_ROUTE_S=2; export NICE_DNS_WAKE_ROUTE_S
+  # BL-026: none until the profile is up again -> one recovery, then the sample.
+  tg_wake_tools after-up
+  tg_wake
+  assert_rc 0 "$TG_RC" "recovered wake: $TG_OUT"
+  assert_match '^sudo -n nmcli device wifi rescan$' "$(cat "$FAKE_LOG")" "BL-026: a rescan first"
+  assert_match '^sudo -n nmcli connection up uuid 11111111-2222-3333-4444-555555555555$' "$(cat "$FAKE_LOG")" "BL-026: the profile active before the sleep, by UUID"
+  assert_match '^woke	[0-9TZ:-]+	link_after_s	[0-9]+	note	wifi-recovered$' "$TG_OUT" "BL-026: the sample is noted wifi-recovered"
+  assert_eq 1 "$(printf '%s\n' "$TG_OUT" | grep -c '^run-wake-1	')" "BL-026: then the sample is taken"
+  # BL-026: a route at once -> no recovery call.
+  tg_wake_tools now
+  tg_wake
+  assert_rc 0 "$TG_RC" "plain wake: $TG_OUT"
+  assert_not_match 'nmcli (device|connection up)' "$(cat "$FAKE_LOG")" "BL-026: no recovery when the route is there"
+  assert_match '^woke	[0-9TZ:-]+	link_after_s	[0-9]+$' "$TG_OUT" "BL-026: the woke line is unchanged"
+  assert_eq 1 "$(printf '%s\n' "$TG_OUT" | grep -c '^run-wake-1	')" "BL-026: one sample"
+  # BL-026: never a route -> the cell fails with the reason, nothing queried.
+  tg_wake_tools never
+  tg_wake
+  assert_rc 2 "$TG_RC" "no route: $TG_OUT"
+  assert_match 'no default route after the wake' "$TG_OUT" "BL-026: names the reason"
+  assert_eq 1 "$(grep -c '^sudo -n nmcli connection up' "$FAKE_LOG")" "BL-026: one recovery attempt only"
+  assert_eq 0 "$(printf '%s\n' "$TG_OUT" | grep -c '^run-wake-1	')" "BL-026: no sample without a route"
+  # The wait is a checked tunable, sent as a data word.
+  for v in 0 601 x '5;id'; do
+    : >"$FAKE_LOG"
+    NICE_DNS_WAKE_ROUTE_S="$v" tg collect lin1 --targets "$CASE_DIR/targets.env" --workload wake --count 1 --identity "$CASE_DIR/identity.tsv" --after-sleep 60
+    assert_rc 2 "$TG_RC" "NICE_DNS_WAKE_ROUTE_S [$v] refused: $TG_OUT"
+    assert_eq 0 "$(tg_sent)" "nothing sent for NICE_DNS_WAKE_ROUTE_S [$v]"
+  done
+  unset NICE_DNS_WAKE_ROUTE_S
+  tg_wake_tools now
+  tg_wake
+  assert_rc 0 "$TG_RC" "default wait: $TG_OUT"
+  assert_match ' NICE_DNS_WAKE_ROUTE_S=60 ' "$(cat "$FAKE_LOG")" "BL-026: 60 s by default"
+}
+
+# ─── Sub-plan 4 Task 2.2: the wake class can time the first answer (BL-025) ──
+
+# tg_fa_podman: a podman that answers the route readback and the proxy's
+# generation as the real ones do.
+tg_fa_podman() {
+  cat >"$CASE_DIR/rbin/podman" <<'FAKE'
+#!/bin/sh
+printf 'podman %s\n' "$*" >>"$FAKE_LOG"
+case "$*" in
+  'exec unbound unbound-control -c /usr/share/nice-dns/control.conf list_local_data') printf 'nice-dns-route.invalid.\t0\tIN\tTXT\t"route=cloudflare-onion generation=7"\n' ;;
+  'inspect -f {{.Id}} {{.State.StartedAt}} {{.State.Status}} tor-haproxy') echo "c0ffee 2026-11-19T20:00:00Z running" ;;
+esac
+exit 0
+FAKE
+  chmod 755 "$CASE_DIR/rbin/podman"
+}
+
+# tg_mask: stdout with its times, ids and fresh names masked, for comparing
+# two runs of the same collect.
+tg_mask() { sed -E -e 's/[0-9a-f]{16}\.example\.com/N.example.com/g' -e 's/[0-9]+/0/g'; }
+
+t_wake_first_answer_is_timed_beside_the_frozen_sample_bl025() {
+  local v old new
+  tg_setup
+  RUN_ID=run-fa-1; export RUN_ID
+  tg_identity 'pi-hole=sha256:ab'
+  # Guards: the pair only, CAP 30..600, nothing sent on a refusal.
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  for v in '300' '10 60' '601 60' 'x 60' '60;id 60'; do
+    : >"$FAKE_LOG"
+    # shellcheck disable=SC2086 # v is "<cap> [<sleep>]"
+    set -- $v
+    if [ $# -eq 2 ]; then
+      tg collect lin1 --targets "$CASE_DIR/targets.env" --workload wake --count 1 --identity "$CASE_DIR/identity.tsv" --first-answer "$1" --after-sleep "$2"
+    else
+      tg collect lin1 --targets "$CASE_DIR/targets.env" --workload wake --count 1 --identity "$CASE_DIR/identity.tsv" --first-answer "$1"
+    fi
+    assert_rc 2 "$TG_RC" "BL-025: --first-answer [$v] refused: $TG_OUT"
+    assert_eq 0 "$(tg_sent)" "BL-025: nothing sent for [$v]"
+  done
+  tg probe lin1 --targets "$CASE_DIR/targets.env" --first-answer 300
+  assert_rc 2 "$TG_RC" "BL-025: --first-answer on another operation refused"
+  # Exec mode: one first_answer row in DEC-014's format, the route and the
+  # proxy generation before the sleep and after the answer, no sample rows.
+  tg_remote_tools Linux
+  NICE_DNS_WAKE_ROUTE_S=2; export NICE_DNS_WAKE_ROUTE_S
+  tg_wake_tools now
+  tg_fa_podman
+  : >"$FAKE_LOG"
+  tg collect lin1 --targets "$CASE_DIR/targets.env" --workload wake --count 1 --identity "$CASE_DIR/identity.tsv" --after-sleep 60 --first-answer 300
+  assert_rc 0 "$TG_RC" "BL-025: first-answer wake: $TG_OUT"
+  assert_eq 1 "$(printf '%s\n' "$TG_OUT" | grep -c '^first_answer	')" "BL-025: one first_answer row"
+  assert_match '^first_answer	[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}\.[0-9]{6}Z	[0-9]+	ok	NOERROR	[0-9a-f]{16}\.example\.com	300000$' "$TG_OUT" "BL-025: DEC-014's row, capped at 300 s"
+  assert_eq 2 "$(printf '%s\n' "$TG_OUT" | grep -c '^route	')" "BL-025: two route rows"
+  assert_match '^route	before	cloudflare-onion	7$' "$TG_OUT" "BL-025: the route before the sleep"
+  assert_match '^route	after	cloudflare-onion	7$' "$TG_OUT" "BL-025: the route after the answer"
+  assert_match '^proxy_generation	before	c0ffee 2026-11-19T20:00:00Z running$' "$TG_OUT" "BL-025: the proxy generation before"
+  assert_match '^proxy_generation	after	c0ffee 2026-11-19T20:00:00Z running$' "$TG_OUT" "BL-025: and after"
+  [ "$(printf '%s\n' "$TG_OUT" | grep -n '^route	before' | cut -d: -f1)" -lt "$(printf '%s\n' "$TG_OUT" | grep -n '^woke	' | cut -d: -f1)" ] \
+    || fail "BL-025: the before rows are read before the sleep"
+  assert_eq 0 "$(printf '%s\n' "$TG_OUT" | grep -c '^run-fa-1	')" "BL-025: no one-query sample in this mode"
+  assert_match 'NICE_DNS_FIRST_ANSWER=300 ' "$(cat "$FAKE_LOG")" "BL-025: sent as a data word"
+  # I1: each `date +%s` on the fake remote jumps 400 s, so the link took longer
+  # than the cap before the first query.
+  cat >"$CASE_DIR/rbin/date" <<'FAKE'
+#!/bin/sh
+if [ "$1" = +%s ]; then
+  n=$(cat "$FAKE_DATE_N" 2>/dev/null || echo 0); echo $((n + 1)) >"$FAKE_DATE_N"
+  echo $(( $(/bin/date +%s) + n * 400 ))
+else exec /bin/date "$@"; fi
+FAKE
+  chmod 755 "$CASE_DIR/rbin/date"
+  FAKE_DATE_N="$CASE_DIR/date-n"; export FAKE_DATE_N
+  tg collect lin1 --targets "$CASE_DIR/targets.env" --workload wake --count 1 --identity "$CASE_DIR/identity.tsv" --after-sleep 60 --first-answer 300
+  assert_rc 2 "$TG_RC" "I1: a link slower than the cap is refused: $TG_OUT"
+  assert_match 'the link took longer than the first-answer cap \(300s\); nothing was queried' "$TG_OUT" "I1: and named"
+  assert_eq 0 "$(printf '%s\n' "$TG_OUT" | grep -c '^first_answer	')" "I1: no first_answer row is recorded for it"
+  rm -f "$CASE_DIR/rbin/date"
+  # Without --first-answer, stdout is byte-equal to the script before Task 2.2
+  # (3f8b998), times and fresh names masked: tests/fixtures/wake-sample.golden
+  # is that script's output on these fakes.
+  old="$(cat "$NICE_DNS_ROOT/tests/fixtures/wake-sample.golden")"
+  new="$(bash "$TG" collect lin1 --targets "$CASE_DIR/targets.env" --workload wake --count 1 --identity "$CASE_DIR/identity.tsv" --after-sleep 60 2>/dev/null | tg_mask)"
+  assert_match '^run-fa-0	' "$new" "BL-025: the plain wake still takes its one-query sample"
+  assert_eq "$old" "$new" "BL-025: the frozen wake sample's output is unchanged"
+}
+
 # tg_idle_wake_ops <fn> [args]: tune-idle-wake on stubs; prints the target
 # operations <fn> ran.
 tg_idle_wake_ops() {
@@ -1293,4 +1459,311 @@ supervisor_line	tor-socat	tor-supervisor: spawned tor pid=40 generation=2 direct
   assert_not_match 'cert=|obfs4|BRIDGE|[0-9A-F]{40}|selecting|ignored' "$TG_OUT" "no other log line and no bridge material"
   assert_match '^podman logs tor-socat$' "$(cat "$FAKE_LOG")" "read from the container's own log"
   assert_not_match '^podman (exec|cp|stop|start|restart|kill|rm)' "$(cat "$FAKE_LOG")" "and nothing else is done to it"
+}
+
+# BL-060 (BT-ON-FEW): cut-bridges and restore-bridges change the target's
+# bridges.env, so they need the run's snapshot and a valid --keep, and they
+# print counts only, never a bridge line.
+t_bridge_cut_ops_are_guarded_bl060() {
+  local v w
+  tg_setup
+  for v in "cut-bridges --keep 2" "restore-bridges"; do
+    : >"$FAKE_LOG"
+    read -r -a w <<<"$v"
+    tg "${w[0]}" lin1 --targets "$CASE_DIR/targets.env" "${w[@]:1}"
+    assert_nonzero "$TG_RC" "BL-060: ${w[0]} without a snapshot"
+    assert_match 'no restore snapshot' "$TG_OUT" "${w[0]}: the refusal names the snapshot"
+    assert_eq 0 "$(tg_sent)" "${w[0]}: nothing sent without a snapshot"
+  done
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  for v in "cut-bridges" "cut-bridges --keep 0" "cut-bridges --keep 10" "cut-bridges --keep 2;id" "restore-bridges --keep 2" "bridges-refresh --keep 2"; do
+    : >"$FAKE_LOG"
+    read -r -a w <<<"$v"
+    tg "${w[0]}" lin1 --targets "$CASE_DIR/targets.env" "${w[@]:1}"
+    assert_rc 2 "$TG_RC" "BL-060: [$v] refused: $TG_OUT"
+    assert_eq 0 "$(tg_sent)" "nothing sent for [$v]"
+  done
+  : >"$FAKE_LOG"
+  tg cut-bridges lin1 --targets "$CASE_DIR/targets.env" --keep 2
+  assert_rc 0 "$TG_RC" "cut-bridges after snapshot: $TG_OUT"
+  assert_match 'NICE_DNS_OP=cut-bridges NICE_DNS_KEEP=2 ' "$(cat "$FAKE_LOG")" "sent as data words"
+}
+
+# The real remote op, run here against a scratch bridges.env (never this
+# host's): the first N bridges kept and renumbered, other lines kept, the
+# whole file put back by restore-bridges, and no bridge line printed.
+t_bridge_cut_keeps_n_and_restore_puts_the_file_back_bl060() {
+  local cfg="$CASE_DIR/cfg" bf orig i
+  tg_setup
+  tg_remote_tools Linux
+  mkdir -p "$cfg/nice-dns" "$CASE_DIR/home"
+  bf="$cfg/nice-dns/bridges.env"
+  {
+    printf '# fetched 2026-11-19\n'
+    for i in 1 2 3 4 5; do printf 'BRIDGE%s=obfs4 192.0.2.%s:443 %040d cert=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%s iat-mode=0\n' "$i" "$i" "$i" "$i"; done
+  } >"$bf"
+  chmod 600 "$bf"
+  orig="$(cat "$bf")"
+  export XDG_CONFIG_HOME="$cfg" HOME="$CASE_DIR/home"
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "snapshot: $TG_OUT"
+  tg cut-bridges lin1 --targets "$CASE_DIR/targets.env" --keep 2
+  assert_rc 0 "$TG_RC" "BL-060: cut-bridges --keep 2: $TG_OUT"
+  assert_match '^bridges_before	5$' "$TG_OUT" "it counts the bridges before"
+  assert_match '^bridges_kept	2$' "$TG_OUT" "and after"
+  assert_not_match 'obfs4|cert=' "$TG_OUT" "no bridge line is printed"
+  assert_eq "# fetched 2026-11-19 BRIDGE1=obfs4 192.0.2.1 BRIDGE2=obfs4 192.0.2.2" \
+    "$(sed -E 's/^(BRIDGE[0-9]+=obfs4 [0-9.]+):.*/\1/' "$bf" | tr '\n' ' ' | sed 's/ $//')" "the first 2 bridges, renumbered, and the other lines"
+  assert_eq "$orig" "$(cat "$cfg/nice-dns/bridges.env.harness-cut")" "the whole file is kept beside it"
+  tg cut-bridges lin1 --targets "$CASE_DIR/targets.env" --keep 1
+  assert_nonzero "$TG_RC" "BL-060: a second cut is refused while a cut copy is kept"
+  assert_match 'already kept' "$TG_OUT" "and says why"
+  tg restore-bridges lin1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "restore-bridges: $TG_OUT"
+  assert_match '^bridges_restored	5$' "$TG_OUT" "it counts the bridges put back"
+  assert_eq "$orig" "$(cat "$bf")" "BL-060: bridges.env is the original, byte for byte"
+  assert_no_path "$cfg/nice-dns/bridges.env.harness-cut" "and no cut copy is left"
+  tg restore-bridges lin1 --targets "$CASE_DIR/targets.env"
+  assert_match '^bridges_restored	none$' "$TG_OUT" "a restore with nothing cut changes nothing"
+  assert_eq "$orig" "$(cat "$bf")" "bridges.env is still the original"
+  # A run killed between the cut and its restore: the run's restore puts it back.
+  tg cut-bridges lin1 --targets "$CASE_DIR/targets.env" --keep 2
+  assert_rc 0 "$TG_RC" "cut again: $TG_OUT"
+  tg restore lin1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "restore: $TG_OUT"
+  assert_eq "$orig" "$(cat "$bf")" "BL-060: the run's restore puts the cut bridges.env back"
+  assert_no_path "$cfg/nice-dns/bridges.env.harness-cut" "and leaves no cut copy"
+}
+
+# BL-060: proxy-supervisor-lines names the container its lines came from, as
+# the controller's journal does.
+t_supervisor_lines_name_their_container_bl060() {
+  local script op
+  script="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG")"
+  op="$(printf '%s\n' "$script" | sed -n '/^  proxy-supervisor-lines)/,/;;$/p')"
+  assert_match "supervisor_container" "$op" "BL-060: the op prints the container generation"
+  assert_match 'container_gen "\$c"' "$op" "read before and after the log"
+  op="$(printf '%s\n' "$script" | sed -n '/^container_gen() {/,/^}/p')"
+  assert_match "inspect -f '\{\{\.Id\}\} \{\{\.State\.StartedAt\}\} \{\{\.State\.Status\}\}'" "$op" "Linux: the same fields as nd_platform_container_generation"
+  assert_match "inspect -f '\{\{\.Id\}\} \{\{\.State\.StartedAt\}\} \{\{\.State\.Status\}\}'" "$(sed -n '/^nd_platform_container_generation() {/,/^}/p' "$NICE_DNS_ROOT/lib/platform/linux.sh")" "which still reads those fields"
+}
+
+# BL-060: install-cell, uninstall-cell and command have an outer limit
+# (NICE_DNS_INSTALL_CELL_MAX 1800 s, NICE_DNS_COMMAND_MAX 900 s): a remote
+# call that never returns ends at it, says `timeout` and the op, and fails.
+t_install_and_command_ops_end_at_their_outer_limit_bl060() {
+  local sha psha v w t0 el
+  sha="$(git -C "$NICE_DNS_ROOT" rev-parse HEAD)"
+  tg_setup
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "snapshot: $TG_OUT"
+  psha="$(git -C "$NICE_DNS_ROOT/../tor-haproxy" rev-parse HEAD)"
+  for v in "install-cell --cell haproxy/standard --source-sha $sha" "uninstall-cell --cell haproxy/standard --source-sha $sha" "command --mode restart" "command --mode install --cell socat/standard --source-sha $sha" \
+           "build-proxy --component tor-haproxy --source-sha $psha" "arm-prepare --component tor-haproxy --proxy-tag v2.14 --source-sha $sha"; do
+    read -r -a w <<<"$v"
+    t0="$(date +%s)"
+    TG_OUT="$(FAKE_SLEEP=60 NICE_DNS_INSTALL_CELL_MAX=2 NICE_DNS_COMMAND_MAX=2 NICE_DNS_BUILD_MAX=2 timeout 60 bash "$TG" "${w[0]}" lin1 --targets "$CASE_DIR/targets.env" "${w[@]:1}" 2>&1)"
+    TG_RC=$?
+    el=$(( $(date +%s) - t0 ))
+    assert_nonzero "$TG_RC" "BL-060: [$v] against a target that never answers fails"
+    [ "$el" -lt 10 ] || fail "BL-060: [$v] took ${el}s; its 2 s limit should end it within 10 s"
+    assert_match "timeout: ${w[0]}" "$TG_OUT" "BL-060: [$v] says timeout and names the op"
+  done
+  for v in 0 abc 99999 "2;id"; do
+    TG_OUT="$(NICE_DNS_COMMAND_MAX="$v" bash "$TG" command lin1 --targets "$CASE_DIR/targets.env" --mode restart 2>&1)"
+    assert_rc 2 "$?" "BL-060: NICE_DNS_COMMAND_MAX=[$v] refused: $TG_OUT"
+  done
+  TG_OUT="$(NICE_DNS_INSTALL_CELL_MAX=abc bash "$TG" install-cell lin1 --targets "$CASE_DIR/targets.env" --cell haproxy/standard --source-sha "$sha" 2>&1)"
+  assert_rc 2 "$?" "BL-060: a bad NICE_DNS_INSTALL_CELL_MAX is refused: $TG_OUT"
+  TG_OUT="$(NICE_DNS_BUILD_MAX=0 bash "$TG" build-proxy lin1 --targets "$CASE_DIR/targets.env" --component tor-haproxy --source-sha "$psha" 2>&1)"
+  assert_rc 2 "$?" "BL-060: a bad NICE_DNS_BUILD_MAX is refused: $TG_OUT"
+  # Each op checks only its own limit.
+  TG_OUT="$(NICE_DNS_INSTALL_CELL_MAX=abc bash "$TG" command lin1 --targets "$CASE_DIR/targets.env" --mode restart 2>&1)"
+  assert_rc 0 "$?" "a bad NICE_DNS_INSTALL_CELL_MAX does not block command: $TG_OUT"
+}
+
+# ─── Sub-plan 4 Task 2.3: the transport-live ops (BL-042) ───────────────────
+
+# tg_tl_podman: a podman whose stack answers the transport ops as mint's did
+# on 2026-11-19 (Stage 2 premise 3). FAKE_TL_8953=1 adds a TCP 8953 listener.
+tg_tl_podman() {
+  cat >"$CASE_DIR/rbin/podman" <<'FAKE'
+#!/bin/sh
+printf 'podman %s\n' "$*" >>"$FAKE_LOG"
+case "$*" in
+  'ps -a --format {{.Names}}') printf 'pi-hole\nunbound\ntor-haproxy\n' ;;
+  'inspect pi-hole --format '*) printf 'pi-hole\trunning\t\n' ;;
+  'inspect unbound --format '*) printf 'unbound\trunning\t\n' ;;
+  'inspect tor-haproxy --format '*) printf 'tor-haproxy\trunning\t\n' ;;
+  'inspect -f {{.Id}} {{.State.StartedAt}} {{.State.Status}} tor-haproxy') echo "c0ffee 2026-11-19T20:00:00Z running" ;;
+  'exec unbound unbound-control -c /usr/share/nice-dns/control.conf list_local_data') printf 'nice-dns-route.invalid.\t0\tIN\tTXT\t"route=cloudflare-onion generation=7"\n' ;;
+  'exec unbound unbound-control -c /usr/share/nice-dns/control.conf status') echo "is running..." ;;
+  'exec unbound unbound-control -c /usr/share/nice-dns/control.conf list_forwards') echo ". IN forward 127.0.0.1" ;;
+  'exec unbound unbound-control -c /usr/share/nice-dns/control.conf reload') [ -z "${FAKE_TL_RELOAD_FAILS:-}" ] || exit 1; echo ok ;;
+  'exec unbound unbound-control -c /usr/share/nice-dns/control.conf forward_add '*) [ -z "${FAKE_TL_ADD_FAILS:-}" ] || exit 1; echo ok ;;
+  'exec unbound unbound-control -c /usr/share/nice-dns/control.conf '*) echo ok ;;
+  'exec unbound cat /etc/unbound/route/forward-route.conf') printf 'forward-zone:\n    name: "."\n    forward-addr: 127.0.0.1@18531#tor.cloudflare-dns.com\n' ;;
+  'exec unbound cat /usr/share/nice-dns/control.conf') printf 'remote-control:\n    control-enable: yes\n    control-interface: /run/unbound/control.sock\n' ;;
+  'exec unbound sh -c test -S "$1" sh /run/unbound/control.sock') exit 0 ;;
+  'exec unbound cat /proc/net/tcp /proc/net/tcp6')
+    [ -z "${FAKE_TL_PROC_ERR:-}" ] || { echo "Error: no such container"; exit 0; }
+    printf '  sl  local_address rem_address   st\n   0: 0100007F:14D7 00000000:0000 0A\n'
+    [ -z "${FAKE_TL_8953:-}" ] || printf '   1: 00000000:22F9 00000000:0000 0A\n' ;;
+  'exec pi-hole dig @127.0.0.1 -p 5335 '*) shift 2; exec dig "$@" ;;
+esac
+exit 0
+FAKE
+  # dig: signed names validate (ad at Unbound's 5335 only, as Pi-hole strips it).
+  cat >"$CASE_DIR/rbin/dig" <<'FAKE'
+#!/bin/sh
+p=53 n=
+for x in "$@"; do case "$x" in 5335) p=5335 ;; *.*) case "$x" in @*|+*) ;; *) n="$x" ;; esac ;; esac; done
+s=NOERROR f='qr rd ra'
+case "$n" in dnssec-failed.org) s=SERVFAIL ;; cloudflare.com) [ "$p" != 5335 ] || f='qr rd ra ad' ;; esac
+case " $* " in *' +cd '*) s=NOERROR ;; esac
+printf ';; ->>HEADER<<- opcode: QUERY, status: %s, id: 1\n;; flags: %s; QUERY: 1, ANSWER: 1\n; EDNS: version: 0, flags: do; udp: 1472\n' "$s" "$f"
+FAKE
+  # The fake remote is this host: its dead-man timer and its pkill only log,
+  # so no real timer is left and no process here is signalled.
+  printf '#!/bin/sh\nprintf "nohup %%s\\n" "$*" >>"$FAKE_LOG"\n' >"$CASE_DIR/rbin/nohup"
+  printf '#!/bin/sh\nprintf "pkill %%s\\n" "$*" >>"$FAKE_LOG"\n' >"$CASE_DIR/rbin/pkill"
+  chmod 755 "$CASE_DIR/rbin/podman" "$CASE_DIR/rbin/dig" "$CASE_DIR/rbin/nohup" "$CASE_DIR/rbin/pkill"
+}
+
+t_transport_report_reads_dnssec_and_the_control_channel_bl042() {
+  local b
+  tg_setup
+  tg_remote_tools Linux
+  tg_tl_podman
+  tg transport-report lin1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "BL-042: transport-report: $TG_OUT"
+  assert_match '^section	transport$' "$TG_OUT" "its own section"
+  assert_match '^route	running	cloudflare-onion	7$' "$TG_OUT" "BL-042: the running route"
+  assert_match '^dnssec	client	signed	cloudflare\.com	NOERROR	noad$' "$TG_OUT" "BL-042: the signed name through Pi-hole (no ad there)"
+  assert_match '^dnssec	client	unsigned	neverssl\.com	NOERROR	noad$' "$TG_OUT" "BL-042: the unsigned name through Pi-hole"
+  assert_match '^dnssec	client	bogus	dnssec-failed\.org	SERVFAIL	noad$' "$TG_OUT" "BL-042: the bogus name through Pi-hole"
+  assert_match '^dnssec	unbound	signed	cloudflare\.com	NOERROR	ad$' "$TG_OUT" "BL-042: ad at Unbound, read through the pod"
+  assert_match '^dnssec	unbound	unsigned	neverssl\.com	NOERROR	noad$' "$TG_OUT" "BL-042: the unsigned name has no ad"
+  assert_match '^control	tcp_8953	none$' "$TG_OUT" "BL-042: no TCP 8953 listener"
+  assert_match '^control	interface	/run/unbound/control\.sock$' "$TG_OUT" "BL-042: the control interface"
+  assert_match '^control	socket	unix$' "$TG_OUT" "BL-042: is a Unix socket"
+  assert_match '^control	answers	yes$' "$TG_OUT" "BL-042: that answers"
+  assert_match '^dnssec	unbound	bogus-cd	dnssec-failed\.org	NOERROR	' "$TG_OUT" "S3: with +cd the bogus name's data arrives"
+  FAKE_TL_PROC_ERR=1; export FAKE_TL_PROC_ERR
+  tg transport-report lin1 --targets "$CASE_DIR/targets.env"
+  assert_match '^control	tcp_8953	unknown$' "$TG_OUT" "S2: a table that cannot be read is unknown, never none"
+  unset FAKE_TL_PROC_ERR
+  FAKE_TL_8953=1; export FAKE_TL_8953
+  tg transport-report lin1 --targets "$CASE_DIR/targets.env"
+  assert_match '^control	tcp_8953	listening$' "$TG_OUT" "BL-042: a TCP 8953 listener is seen"
+  unset FAKE_TL_8953
+  assert_not_match '^podman (stop|start|restart|rm|kill)' "$(cat "$FAKE_LOG")" "read-only"
+  b="$(sed -n '/^ub_dig() {/,/^}/p' "$TG")"
+  assert_match 'dig @172\.31\.240\.251 -p 5335' "$b" "macOS reads Unbound at its own address"
+  assert_match '"\$C" exec pi-hole dig @127\.0\.0\.1 -p 5335' "$b" "Linux reads it from inside the pod"
+}
+
+t_fault_route_takes_a_tls_name_bl042() {
+  local b v
+  tg_setup
+  for v in "--component unbound --route cloudflare-onion --mode tls-name"; do
+    : >"$FAKE_LOG"
+    # shellcheck disable=SC2086 # v is a word list
+    tg fault-route lin1 --targets "$CASE_DIR/targets.env" $v
+    assert_nonzero "$TG_RC" "BL-042: a tls-name fault needs the run's snapshot"
+    assert_eq 0 "$(tg_sent)" "nothing sent without a snapshot"
+  done
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  for v in "--component tor-haproxy --route cloudflare-onion --mode tls-name" "--component unbound --route cloudflare-onion --mode other" \
+           "--component unbound --route cloudflare-legacy --mode tls-name" "--component tor-haproxy --route cloudflare-onion --mode x;id"; do
+    : >"$FAKE_LOG"
+    # shellcheck disable=SC2086 # v is a word list
+    tg fault-route lin1 --targets "$CASE_DIR/targets.env" $v
+    assert_rc 2 "$TG_RC" "BL-042: fault-route [$v] refused: $TG_OUT"
+    assert_eq 0 "$(tg_sent)" "nothing sent for [$v]"
+  done
+  tg heal-route lin1 --targets "$CASE_DIR/targets.env" --component unbound --route cloudflare-onion --mode other
+  assert_rc 2 "$TG_RC" "BL-042: heal-route takes only tls-name too"
+  : >"$FAKE_LOG"
+  tg fault-route lin1 --targets "$CASE_DIR/targets.env" --component unbound --route cloudflare-onion --mode tls-name
+  assert_rc 0 "$TG_RC" "fault-route --mode tls-name after snapshot: $TG_OUT"
+  assert_match 'NICE_DNS_OP=fault-route NICE_DNS_COMPONENT=unbound NICE_DNS_FREEZE_MAX=900 NICE_DNS_ROUTE=cloudflare-onion NICE_DNS_MODE=tls-name ' "$(cat "$FAKE_LOG")" "BL-042: sent as data words"
+  b="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG" | sed -n '/^tls_route() {/,/^}/p')"
+  assert_match 'tr_new="\$\{fa%%#\*\}#nd-wrong-name\.invalid"' "$b" "BL-042: the same address and port, a wrong TLS name"
+  assert_match 'forward_add \+t \. "\$tr_new"' "$b" "I2: set in one step"
+  assert_not_match 'forward_remove' "$b" "I2: never removed first (no moment without a root forward)"
+  assert_match 'nice-dns-tls-watchdog "\$NICE_DNS_FREEZE_MAX" "\$C"' "$b" "BL-042: a dead-man reload, under its own name (S1)"
+  [ "$(printf '%s\n' "$b" | grep -n 'nohup sh -c' | head -1 | cut -d: -f1)" -lt "$(printf '%s\n' "$b" | grep -n 'forward_add' | head -1 | cut -d: -f1)" ] \
+    || fail "BL-042: the dead-man timer starts before the fault"
+  assert_match 'tlsu reload' "$b" "BL-042: heal re-reads the config, which keeps the right name"
+  # Exec mode (another machine id, so its own run state): the running route
+  # only; the forwarder printed.
+  tg_remote_tools Linux
+  tg_tl_podman
+  ARTIFACT_DIR="$CASE_DIR/art-exec"; mkdir -p "$ARTIFACT_DIR"; export ARTIFACT_DIR
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "exec snapshot: $TG_OUT"
+  : >"$FAKE_LOG"
+  tg fault-route lin1 --targets "$CASE_DIR/targets.env" --component unbound --route quad9-exit --mode tls-name
+  assert_nonzero "$TG_RC" "BL-042: a route that is not running is refused"
+  assert_match 'the running route is cloudflare-onion' "$TG_OUT" "and named"
+  assert_not_match 'forward_(remove|add)' "$(cat "$FAKE_LOG")" "nothing changed"
+  tg fault-route lin1 --targets "$CASE_DIR/targets.env" --component unbound --route cloudflare-onion --mode tls-name
+  assert_rc 0 "$TG_RC" "BL-042: exec fault: $TG_OUT"
+  assert_match '^forwarder	127\.0\.0\.1@18531#nd-wrong-name\.invalid$' "$TG_OUT" "BL-042: the faulted forwarder"
+  assert_match '^nohup sh -c .*unbound-control -c /usr/share/nice-dns/control.conf reload nice-dns-tls-watchdog 900 podman$' "$(cat "$FAKE_LOG")" "BL-042: the dead-man reload was started"
+  assert_not_match 'forward_remove' "$(cat "$FAKE_LOG")" "I2: the root forward is never removed"
+  assert_match 'unbound-control -c /usr/share/nice-dns/control.conf forward_add \+t \. 127\.0\.0\.1@18531#nd-wrong-name\.invalid$' "$(cat "$FAKE_LOG")" "BL-042: replaced with the wrong name"
+  assert_match 'unbound-control -c /usr/share/nice-dns/control.conf list_forwards$' "$(cat "$FAKE_LOG")" "I2: and the root forward checked afterwards"
+  tg heal-route lin1 --targets "$CASE_DIR/targets.env" --component unbound --route cloudflare-onion --mode tls-name
+  assert_rc 0 "$TG_RC" "BL-042: exec heal: $TG_OUT"
+  assert_match 'unbound-control -c /usr/share/nice-dns/control.conf reload$' "$(cat "$FAKE_LOG")" "BL-042: healed by reload"
+  assert_match '^tls_name	healed	cloudflare-onion$' "$TG_OUT" "BL-042: says so"
+  assert_match '^pkill -f nice-dns-tls-watchdog$' "$(cat "$FAKE_LOG")" "BL-042: and its timer stopped"
+  assert_not_match 'pkill -f nice-dns-route-watchdog' "$(cat "$FAKE_LOG")" "S1: the proxy route faults' timers are left alone"
+  # I3: a heal reloads whatever the route marker says, and keeps the timer
+  # when the reload fails.
+  : >"$FAKE_LOG"
+  tg heal-route lin1 --targets "$CASE_DIR/targets.env" --component unbound --route quad9-exit --mode tls-name
+  assert_rc 0 "$TG_RC" "I3: heal does not depend on the running route: $TG_OUT"
+  : >"$FAKE_LOG"
+  FAKE_TL_RELOAD_FAILS=1; export FAKE_TL_RELOAD_FAILS
+  tg heal-route lin1 --targets "$CASE_DIR/targets.env" --component unbound --route cloudflare-onion --mode tls-name
+  assert_nonzero "$TG_RC" "I3: a failed reload fails the heal"
+  assert_not_match '^pkill ' "$(cat "$FAKE_LOG")" "I3: and the dead-man timer is kept"
+  unset FAKE_TL_RELOAD_FAILS
+  # I2: a forward_add that fails is reloaded at once and its timer stopped.
+  : >"$FAKE_LOG"
+  FAKE_TL_ADD_FAILS=1; export FAKE_TL_ADD_FAILS
+  tg fault-route lin1 --targets "$CASE_DIR/targets.env" --component unbound --route cloudflare-onion --mode tls-name
+  assert_nonzero "$TG_RC" "I2: a failed forward_add fails the fault"
+  assert_match 'control.conf reload$' "$(cat "$FAKE_LOG")" "I2: and reloads"
+  assert_match '^pkill -f nice-dns-tls-watchdog$' "$(cat "$FAKE_LOG")" "I2: then stops its timer"
+  unset FAKE_TL_ADD_FAILS
+  # I4: the positive control sets the route's own name by the same path.
+  tg fault-route lin1 --targets "$CASE_DIR/targets.env" --component unbound --route cloudflare-onion --mode tls-control
+  assert_rc 0 "$TG_RC" "I4: control: $TG_OUT"
+  assert_match '^tls_name	control	cloudflare-onion$' "$TG_OUT" "I4: says it is the control"
+  assert_match '^forwarder	127\.0\.0\.1@18531#tor\.cloudflare-dns\.com$' "$TG_OUT" "I4: with the route's own name"
+}
+
+# Stage 2 gate, I5: the new ops end at their outer limit.
+t_report_and_route_ops_have_an_outer_limit() {
+  local t0
+  tg_setup
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  FAKE_SLEEP=30 NICE_DNS_REPORT_MAX=2; export FAKE_SLEEP NICE_DNS_REPORT_MAX
+  t0=$(date +%s)
+  tg transport-report lin1 --targets "$CASE_DIR/targets.env"
+  assert_nonzero "$TG_RC" "I5: a transport-report that never returns fails"
+  assert_match 'timeout: transport-report' "$TG_OUT" "I5: at its outer limit"
+  tg fault-route lin1 --targets "$CASE_DIR/targets.env" --component unbound --route cloudflare-onion --mode tls-name
+  assert_nonzero "$TG_RC" "I5: so does fault-route"
+  assert_match 'timeout: fault-route' "$TG_OUT" "I5: at its outer limit"
+  tg fresh-name lin1 --targets "$CASE_DIR/targets.env"
+  assert_match 'timeout: fresh-name' "$TG_OUT" "I5: and fresh-name"
+  [ $(( $(date +%s) - t0 )) -lt 60 ] || fail "I5: the three calls took $(( $(date +%s) - t0 ))s"
+  unset FAKE_SLEEP
+  TG_OUT="$(NICE_DNS_REPORT_MAX=0 bash "$TG" transport-report lin1 --targets "$CASE_DIR/targets.env" 2>&1)"
+  assert_rc 2 "$?" "I5: a bad NICE_DNS_REPORT_MAX is refused: $TG_OUT"
 }

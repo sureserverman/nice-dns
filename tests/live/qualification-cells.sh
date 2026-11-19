@@ -125,6 +125,7 @@ t_1_cells() {
 
 t_2_evidence_is_private() {
   [ -d "$ARTIFACT_DIR/qualification-cells" ] || fail "no evidence: t_1 did not run"
+  nd_reports_present "$ARTIFACT_DIR/qualification-cells"
   assert_eq "" "$(grep -rlE 'obfs4 [0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]+|cert=[A-Za-z0-9+/=]{16,}' "$ARTIFACT_DIR/qualification-cells" 2>/dev/null)" \
     "no bridge line in the evidence"
 }

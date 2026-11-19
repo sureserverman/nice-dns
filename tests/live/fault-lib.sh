@@ -1,8 +1,24 @@
 # shellcheck shell=bash
 # Shared network-loss steps (Sub-plan 5, Tasks 2.1 and 2.2): live/fault-network
-# runs one loss per target; live/soak runs two inside its 24 hours. Sourced
-# after tests/live/controller-lib.sh (cs_t; the group defines cs_dir). Defines
-# no cases.
+# runs one loss per target; live/soak runs two inside its 24 hours. Defines
+# no cases and runs nothing when sourced, so it may be sourced before cs_t and
+# cs_dir exist: tests/live/install-lifecycle.sh and controller-lib.sh source it
+# for nd_reports_present, which every privacy case calls; the loss steps need
+# controller-lib.sh's cs_t and the group's cs_dir only when they run.
+
+# nd_reports_present <dir>: an assertion that <dir> holds at least one
+# non-empty .tsv report. A privacy case calls it before its secret scan: an
+# empty scan of a run that reached no host would otherwise pass (BL-057). An
+# empty .tsv is what a failed report op's redirect leaves, so it is no report.
+# Limit: any non-empty .tsv counts, including the step records the harness
+# writes itself: cell.tsv and passed.tsv come only after a cell's first step
+# reached the host, but reused-<platform>.tsv names a cell an earlier run
+# proved, so a run that only reused cells passes this check.
+nd_reports_present() {
+  local f
+  f="$(find "$1" -type f -name '*.tsv' -size +0 2>/dev/null | head -n 1)"
+  [ -n "$f" ] || fail "no report to scan in $1: the run left no evidence, so the privacy scan proves nothing"
+}
 
 NDF_LOSS_S="${NDF_LOSS_S:-120}"
 NDF_RETURN_S="${NDF_RETURN_S:-420}"

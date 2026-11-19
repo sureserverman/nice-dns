@@ -6,6 +6,9 @@
 # TSV sections ("section<TAB>name"), parsed here as data.
 
 CS_TG="$NICE_DNS_ROOT/tests/live/target.sh"
+# nd_reports_present, for the controller groups' privacy cases.
+# shellcheck source=tests/live/fault-lib.sh
+. "$NICE_DNS_ROOT/tests/live/fault-lib.sh"
 # shellcheck disable=SC2034 # used by the groups that source this file
 CS_SIBS="${NICE_DNS_SIBLINGS_DIR:-$(dirname "$NICE_DNS_ROOT")}"
 
