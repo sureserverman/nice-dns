@@ -1100,8 +1100,8 @@ nd_bridges_mode() {
 # proxy through the service action (nd_recovery_restart_service: Linux the
 # proxy unit, macOS the stack's agent), acknowledged by a new container start;
 # the controller's next pass observes readiness (DEC-006). The caller has
-# written bridges-mode.env and holds the state lock (ND_RECOVERY_LOCK_TOKEN):
-# unlike the bridge-adoption restart (BL-030), this one never runs without it.
+# written bridges-mode.env and holds the state lock (ND_RECOVERY_LOCK_TOKEN),
+# as the bridge-adoption restart does (_nd_br_adopt, BL-030).
 nd_bridges_mode_change() {
   case "${1:-}" in on|off) ;; *) _nd_rec_out refused bridges "${2:-}" - - "mode must be on or off"; return 2 ;; esac
   if ! _nd_rec_id_ok "${2:-}"; then _nd_rec_out refused bridges "${2:-}" - - "bad request id"; return 2; fi
@@ -1126,18 +1126,27 @@ _nd_br_hash() {
   else printf '%s\n' "$n" | shasum -a 256 | cut -c1-16; fi
 }
 
+# _nd_br_lock_wait: take the state lock, trying ND_BRIDGE_LOCK_TRIES (60)
+# times 0.5 s apart; print its token. 3 when it stayed busy.
+_nd_br_lock_wait() {
+  local tok i=0 n="${ND_BRIDGE_LOCK_TRIES:-60}"
+  case "$n" in ''|*[!0-9]*) n=60 ;; esac
+  while ! tok="$(nd_state_lock 2>/dev/null)"; do
+    i=$((i + 1)); [ "$i" -lt "$n" ] || return 3
+    sleep 0.5
+  done
+  printf '%s\n' "$tok"
+}
+
 nd_bridges_apply() {
-  local cand="$1" base="$2" d live n tok i=0 cur new g c
+  local cand="$1" base="$2" d live n tok cur new g c
   d="$(nd_platform_bridge_dir)"; live="$d/bridges.env"
   n="$(_nd_br_norm "$cand" | wc -l | tr -d ' ')"
   if [ "$n" -lt 3 ]; then
     nd_recovery_journal "br-$(date +%s)" bridges not-applied "the candidate has $n usable bridges; the last good set stays"
     printf 'result\tnot-applied\n'; return 1
   fi
-  while ! tok="$(nd_state_lock 2>/dev/null)"; do
-    i=$((i + 1)); [ "$i" -lt 60 ] || { printf 'result\tbusy\n'; return 3; }
-    sleep 0.5
-  done
+  tok="$(_nd_br_lock_wait)" || { printf 'result\tbusy\n'; return 3; }
   cur="$(_nd_br_hash "$live")"; new="$(_nd_br_hash "$cand")"
   if [ "$cur" != "$base" ]; then
     nd_state_unlock "$tok"
@@ -1334,15 +1343,45 @@ nd_bridges_refresh() {
     nd_recovery_journal "br-$(date +%s)" bridges held "the running proxy uses a bridge the new set leaves out, but it is restarting on its own (crash-loop hold); the set is adopted at its next start"
     adopted=held
   elif [ "$rc" -eq 0 ] && _nd_br_running_weak "$weak" "$listed" "$d/bridges.env" && _nd_br_pending; then
-    nd_recovery_journal "br-$(date +%s)" bridges adopting "the running proxy uses a bridge the new set leaves out; the service restart adopts the set"
-    if nd_recovery_restart_service "br-$(date +%s)-svc" >/dev/null; then
-      rm -f "$(nd_platform_state_dir)/bridges.pending"; adopted=restarted
-    else
-      adopted=failed
-    fi
+    adopted="$(_nd_br_adopt)"
   fi
   printf '%s\ndropped\t%s\nadopted\t%s\n' "$out" "$dropped" "$adopted"
   return "$rc"
+}
+
+# _nd_br_adopt: the adoption restart, a destructive action like the tick's,
+# so it runs under the state lock (BL-030; ARCH-03, ARCH-08): the lock's token
+# goes to the service restart (ND_RECOVERY_LOCK_TOKEN), the bridges mode is
+# read again under it, and the restart is recorded in the controller's state
+# (last_action, last_action_at, recovery_at) as a tick's would be, so the next
+# pass counts its cooldown from it (DEC-022). The service restart journals its
+# request and acknowledgement (DEC-006). A controller that holds the lock past
+# the wait, or bridges turned off since the refresh started, restarts nothing:
+# bridges.pending stays and the proxy takes the set at its next start
+# (DEC-017's set is still applied at once). Prints restarted, failed or pending.
+_nd_br_adopt() {
+  local tok id now rc
+  if ! tok="$(_nd_br_lock_wait)"; then
+    nd_recovery_journal "br-$(date +%s)" bridges pending "the controller holds the state lock; the set is adopted at the proxy's next start, no restart"
+    printf 'pending\n'; return 0
+  fi
+  if [ "$(nd_bridges_mode)" = off ]; then
+    nd_state_unlock "$tok"
+    nd_recovery_journal "br-$(date +%s)" bridges pending "bridges were turned off during the refresh; nothing is restarted, the set waits for the proxy's next start"
+    printf 'pending\n'; return 0
+  fi
+  now="$(date +%s)"; id="br-$now-svc"
+  nd_recovery_journal "$id" bridges adopting "the running proxy uses a bridge the new set leaves out; the service restart adopts the set"
+  ND_RECOVERY_LOCK_TOKEN="$tok" nd_recovery_restart_service "$id" >/dev/null; rc=$?
+  if ! nd_state_record_action "$tok" restart-component "$now" >/dev/null 2>&1; then
+    nd_recovery_journal "$id" bridges not-recorded "the restart is not in the controller's state; its next pass may restart the proxy again"
+  fi
+  nd_state_unlock "$tok"
+  if [ "$rc" -eq 0 ]; then
+    rm -f "$(nd_platform_state_dir)/bridges.pending"; printf 'restarted\n'
+  else
+    printf 'failed\n'
+  fi
 }
 
 # _nd_br_crash_held: 0 when the committed state holds a proxy restart-count rise

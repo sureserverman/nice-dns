@@ -804,3 +804,78 @@ t_every_bridge_reader_takes_the_last_line_BL_060() {
     assert_eq off "$(nd_bridges_mode)" "BL-060 controller: off then a bare line still reads off"
   ) || exit 1
 }
+
+# BL-030 (backlog sweep Sub-plan 2, Task 1.1): the adoption restart is a
+# destructive action and runs under the controller's state lock (ARCH-03,
+# ARCH-08), journalled and recorded in the state as any restart is. The cases
+# reach the moment between the apply and the restart through
+# _nd_br_running_weak, the last check before it: the wrapper takes the lock
+# under another token, or switches bridges off, as a tick or `nice-dns
+# bridges off` would in that window.
+bl030_setup() {
+  bl_env "$1"
+  bl_set "$BL_LIVE" 5
+  bl_set "$CASE_DIR/cand" 7 9
+  printf 'set %s\n' "$CASE_DIR/cand" >"$FAKE/bridge_eval"
+  bl_soak_state
+  : >"$FAKE/restart_changes"
+  export ND_BRIDGE_LOCK_TRIES=2
+  eval "bl030_orig$(declare -f _nd_br_running_weak)"
+}
+
+t_adoption_waits_while_the_controller_holds_the_lock_BL_030() {
+  local plat out
+  for plat in $(bl_platforms); do
+    (
+      bl030_setup "$plat"
+      _nd_br_running_weak() {
+        bl030_orig_nd_br_running_weak "$@" || return 1
+        [ -e "$CASE_DIR/other-token-$ND_PLATFORM" ] || nd_state_lock >"$CASE_DIR/other-token-$ND_PLATFORM" 2>/dev/null
+        return 0
+      }
+      out="$(nd_bridges_refresh haproxy)"
+      assert_file "$CASE_DIR/other-token-$plat" "$plat: the other actor took the lock"
+      assert_eq changed "$(bl_get result "$out")" "$plat: the filtered set is applied: $out"
+      assert_eq pending "$(bl_get adopted "$out")" "$plat: BL-030 the busy controller defers the adoption"
+      assert_eq "" "$(bl_restarts)" "$plat: BL-030 no restart without the lock"
+      assert_file "$ND_STATE_DIR/bridges.pending" "$plat: the set waits for the next start"
+      assert_match 'bridges	pending' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: the journal says the adoption waits"
+    ) || exit 1
+  done
+}
+
+t_adoption_restart_is_journalled_and_recorded_BL_030() {
+  local plat out before
+  for plat in $(bl_platforms); do
+    (
+      bl030_setup "$plat"
+      before="$(nd_state_load | awk -F '\t' '$1 == "last_action_at" { print $2 }')"
+      out="$(nd_bridges_refresh haproxy)"
+      assert_eq restarted "$(bl_get adopted "$out")" "$plat: the adoption restart runs: $out"
+      assert_match '	service	requested	' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: BL-030 the journal holds the request"
+      assert_match '	service	acknowledged	' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: BL-030 and the acknowledgement"
+      assert_eq restart-component "$(nd_state_load | awk -F '\t' '$1 == "last_action" { print $2 }')" "$plat: BL-030 the state records the action"
+      assert_not_match "^${before}\$" "$(nd_state_load | awk -F '\t' '$1 == "last_action_at" { print $2 }')" "$plat: BL-030 last_action_at moves (was $before)"
+      assert_match '^[0-9]+$' "$(nd_state_load | awk -F '\t' '$1 == "last_action_at" { print $2 }')" "$plat: BL-030 to the restart's time"
+      assert_eq "" "$(readlink "$ND_STATE_DIR/lock" 2>/dev/null)" "$plat: BL-030 the lock is released"
+    ) || exit 1
+  done
+}
+
+t_bridges_off_during_a_refresh_restarts_nothing_BL_030() {
+  local plat out
+  for plat in $(bl_platforms); do
+    (
+      bl030_setup "$plat"
+      _nd_br_running_weak() {
+        bl030_orig_nd_br_running_weak "$@" || return 1
+        printf 'TOR_BRIDGES=off\n' >"$ND_BRIDGE_CONFIG_DIR/bridges-mode.env"
+        return 0
+      }
+      out="$(nd_bridges_refresh haproxy)"
+      assert_eq pending "$(bl_get adopted "$out")" "$plat: BL-030 bridges off since the start defers the adoption: $out"
+      assert_eq "" "$(bl_restarts)" "$plat: BL-030 nothing restarted after bridges off"
+      assert_file "$ND_STATE_DIR/bridges.pending" "$plat: the set waits for a start with bridges on"
+    ) || exit 1
+  done
+}
