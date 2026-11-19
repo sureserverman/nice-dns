@@ -916,10 +916,13 @@ _nd_inst_sudo_keepalive() {
   [ "$every" != 0 ] || return 0
   [ -z "${ND_INST_KEEPALIVE_PID:-}" ] || return 0
   # Root steps through the helper hold no sudo ticket: a refresh would only
-  # log a failed sudo (a password is required; COMMAND=validate).
+  # log a failed sudo (a password is required; COMMAND=validate). On macOS
+  # outside the login session (ssh) root-ops' `runtime` runs through sudo
+  # even then, so the ticket nd_install_macos_check_session took is kept
+  # (Stage 2 gate review I1).
   case "$ND_INST_PLATFORM" in
     linux) ! _nd_root_helper_deb >/dev/null 2>&1 || return 0 ;;
-    macos) ! _nd_root_helper_mac >/dev/null 2>&1 || return 0 ;;
+    macos) [ "$(launchctl managername 2>/dev/null)" != Aqua ] || ! _nd_root_helper_mac >/dev/null 2>&1 || return 0 ;;
   esac
   ( while sleep "$every"; do
       kill -0 "$parent" 2>/dev/null || exit 0
@@ -2886,14 +2889,22 @@ nd_install_macos_host_prereqs() {
 
 # nd_install_macos_check_session: the runtime and the start-container agent
 # live in the user's login session (gui/<uid>). An install outside it (ssh)
-# reaches it through root-ops (_nd_inst_mac_runtime), so one must exist:
-# with no one logged in at the Mac the install refuses before any change,
-# before even its generation is prepared (BL-052).
+# reaches it through root-ops' `runtime` verb (_nd_inst_mac_runtime), so a
+# session must exist, and that verb runs through sudo even where the helper
+# runs every other root step (lib/root.sh): sudo must work now, so a
+# password it cannot ask for fails here, not in the cutover. Either refusal
+# comes before the install starts, before its generation is prepared
+# (BL-052; Stage 2 gate review I1).
 nd_install_macos_check_session() {
   [ "$(launchctl managername 2>/dev/null)" = Aqua ] && return 0
-  launchctl print "gui/$(id -u)" >/dev/null 2>&1 && return 0
-  _nd_inst_err "a user must be logged in at the Mac: the container runtime and the start-container agent run in $(id -un)'s login session (gui/$(id -u)), and there is none. Log in at the Mac (or turn on automatic login) and run the install again; refusing before any change"
-  return 1
+  if ! launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
+    _nd_inst_err "a user must be logged in at the Mac: the container runtime and the start-container agent run in $(id -un)'s login session (gui/$(id -u)), and there is none. Log in at the Mac (or turn on automatic login) and run the install again; refusing before the install starts"
+    return 1
+  fi
+  if ! sudo -n true 2>/dev/null && ! sudo -v; then
+    _nd_inst_err "outside the Mac's login session (ssh) the install reaches the container runtime through sudo, and sudo could not authenticate here. Run it over 'ssh -t' so sudo can ask, or from Terminal at the Mac; refusing before the install starts"
+    return 1
+  fi
 }
 
 # _nd_inst_mac_runtime <start|status|stop>: the container runtime the
@@ -2914,7 +2925,7 @@ _nd_inst_mac_runtime() {
   elif [ "$1" = start ]; then
     { yes 2>/dev/null || true; } | nd_root_mac runtime "$1"
   else
-    nd_root_mac runtime "$1"
+    nd_root_mac runtime "$1" </dev/null
   fi
 }
 

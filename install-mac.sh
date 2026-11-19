@@ -18,9 +18,10 @@ fi
 # Over plain ssh a command runs in a non-login shell whose PATH holds no
 # Homebrew directory (live mac 2026-11-19: /usr/bin:/bin:/usr/sbin:/sbin),
 # so brew and the container CLI it installs were not found. Homebrew's
-# directories are added when missing, after the caller's own, in the
-# LaunchAgent's order (mac/start-container.sh). ND_INST_BREW_DIRS is the
-# fixture tests' stand-in for that list.
+# directories (the LaunchAgent's two, mac/start-container.sh) are appended
+# when missing, so the caller's own PATH, system tools included, keeps its
+# precedence. ND_INST_BREW_DIRS is the fixture tests' stand-in for that
+# list.
 # shellcheck disable=SC2086  # a space-separated list of directories
 for nd_brew_dir in ${ND_INST_BREW_DIRS:-/opt/homebrew/bin /usr/local/bin}; do
   case ":$PATH:" in

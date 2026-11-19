@@ -685,10 +685,11 @@ until container system status >/dev/null 2>&1; do
   tries=$((tries + 1))
   if (( tries >= 10 )); then
     # `system status` fails both ways; an apiserver that still answers ls
-    # was started in another launchd domain, such as an install over ssh
-    # (BL-052).
+    # was likely started in another launchd domain, such as an install over
+    # ssh (BL-052). A `system stop` reaches only a runtime in the domain it
+    # runs in (live mac 2026-11-19, OD-6), so the advice names that domain.
     if container ls >/dev/null 2>&1; then
-      log "container system answers but is not registered in this launchd domain ($(launchctl managername 2>/dev/null || echo unknown)): it was started from another session, such as an install over ssh; stop it there with 'container system stop' and run this agent again"
+      log "container system answers but is not registered in this launchd domain ($(launchctl managername 2>/dev/null || echo unknown)): it was likely started from another session, such as an install over ssh. Stop it from that kind of session (over ssh: container system stop), or log out and back in, then run nice-dns restart"
     else
       log "container system never came up"
     fi

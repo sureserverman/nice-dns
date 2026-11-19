@@ -1482,3 +1482,25 @@ t_macos_install_over_plain_ssh_finds_homebrew_BL_052() {
     ) || exit 1
   done
 }
+
+# Stage 2 gate review I1: outside the login session root-ops' `runtime`
+# runs through sudo even where the helper runs every other root step, so
+# an ssh install whose sudo cannot authenticate (no NOPASSWD, no ticket, no
+# terminal to ask on) refuses before the install starts, not in the
+# cutover.
+t_macos_install_over_ssh_needs_sudo_up_front_BL_052() {
+  local ep
+  for ep in install-mac install-mac-hardened; do
+    (
+      ip_env "$ep"
+      printf 'Background\n' >"$FAKE/managername"
+      : >"$FAKE/sudo_needs_password"
+      ip_install "$ep"
+      assert_nonzero "$IP_RC" "BL-052 $ep: an ssh install without sudo fails: $IP_OUT"
+      assert_match 'sudo could not authenticate' "$IP_OUT" "BL-052 $ep: and says why"
+      ip_assert_untouched "BL-052 $ep no sudo"
+      assert_no_path "$IP_STATE/generations" "BL-052 $ep: no generation is prepared"
+      assert_eq "" "$(grep -E 'root-ops (runtime|host-prereqs|install-helper)' "$FAKE_LOG")" "BL-052 $ep: no root step ran"
+    ) || exit 1
+  done
+}

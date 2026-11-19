@@ -953,6 +953,7 @@ t_sudo_keepalive_skipped_when_the_helper_runs_root_steps() {
     pid="$(PATH="$w/bin:$PATH" ND_INST_SUDO_KEEPALIVE=0.1 ND_INST_PLATFORM="$plat" bash -c '
       . "$1/lib/install.sh"
       eval "$2() { echo /usr/libexec/nice-dns-helper; }"
+      launchctl() { echo Aqua; }
       _nd_inst_sudo_keepalive
       echo "${ND_INST_KEEPALIVE_PID:-none}"
       sleep 0.35
@@ -970,6 +971,19 @@ t_sudo_keepalive_skipped_when_the_helper_runs_root_steps() {
     assert_eq 1 "$(case "$pid" in none|'') echo 0 ;; *) echo 1 ;; esac)" "$plat, no helper: the keepalive starts: $pid"
     assert_match 'sudo -n -v' "$(cat "$w/log")" "$plat, no helper: it refreshes sudo"
   done
+  # macOS outside the login session (ssh): root-ops' `runtime` runs through
+  # sudo even with the helper, so the ticket is kept (Stage 2 gate review I1).
+  : >"$w/log"
+  pid="$(PATH="$w/bin:$PATH" ND_INST_SUDO_KEEPALIVE=0.1 ND_INST_PLATFORM=macos bash -c '
+    . "$1/lib/install.sh"
+    _nd_root_helper_mac() { echo /usr/local/libexec/nice-dns-helper; }
+    launchctl() { echo Background; }
+    _nd_inst_sudo_keepalive
+    echo "${ND_INST_KEEPALIVE_PID:-none}"
+    sleep 0.35
+    _nd_inst_sudo_keepalive_stop' _ "$NICE_DNS_ROOT" 2>&1)"
+  assert_eq 1 "$(case "$pid" in none|'') echo 0 ;; *) echo 1 ;; esac)" "macos over ssh, helper in use: the keepalive starts: $pid"
+  assert_match 'sudo -n -v' "$(cat "$w/log")" "macos over ssh, helper in use: it refreshes sudo"
 }
 
 # Live finding 2026-09-28 (mint): an older installer had pinned the Wi-Fi
