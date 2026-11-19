@@ -1,0 +1,55 @@
+# Stage 3 gate check 2 (mint answers and reports itself), re-run at close-out
+# date: 2026-11-19T02:14:03Z  local HEAD: bc1c0e1
+$ ssh mint dig @127.0.0.1 +time=5 +tries=2 +short cloudflare.com
+104.16.132.229
+104.16.133.229
+$ ssh mint ~/.local/bin/nice-dns status --tsv
+schema	nice-dns-status/1
+install	installed	yes
+install	generation	20261118T225504Z-d769e954a98f
+install	source_commit	d769e954a98f32e0c304c7bca7c0c5234db9f4ff
+install	branch	sweep-installer
+install	variant	socat
+install	pihole	standard
+install	platform	linux
+install	lock	sha256:e7fc412ea2c35b2f126b16d0baba8ae0a52475711fb3eb59cd41bd71302e0757
+controller	mode	active
+controller	last_pass	1795054388
+controller	verdict	OK
+controller	stale	no
+controller	schedule	loaded
+obs	runtime	healthy	115	running: pi-hole unbound tor-socat
+obs	container:pi-hole	healthy	145	running: health healthy restarts 0
+obs	container:unbound	healthy	155	running: health healthy restarts 0
+obs	container:tor-socat	healthy	160	running: health healthy restarts 0
+obs	proxy	healthy	110	generation:6e64172f14a0f5b5
+obs	dns-owner	healthy	7	/etc/resolv.conf: nameserver 127.0.0.1 only
+obs	install-drift	healthy	26	generation 20261118T225504Z-d769e954a98f; the quadlets declare :53 on loopback only
+obs	local-service	healthy	74	pi.hole A 0.0.0.0 from 127.0.0.1#53
+obs	filtering	healthy	32	doubleclick.net sinkholed to 0.0.0.0 at 127.0.0.1#53
+obs	local-cache	healthy	34	Pi-hole at 127.0.0.1#53 answered cloudflare.com NOERROR (A 104.16.133.229 104.16.132.229); a local answer may be cached or stale and is not upstream health
+obs	route:cloudflare-onion	healthy	1733	rcode NOERROR in 0 ms via tor-socat:18531 as tor.cloudflare-dns.com
+obs	route:cloudflare-exit	healthy	1092	rcode NOERROR in 0 ms via tor-socat:18532 as one.one.one.one
+obs	route:quad9-exit	healthy	708	rcode NOERROR in 0 ms via tor-socat:18533 as dns.quad9.net
+obs	route:cloudflare-legacy	healthy	991	rcode NOERROR in 0 ms via tor-socat:853 as tor.cloudflare-dns.com
+obs	unbound	healthy	1199	control and route answer
+route	selected	cloudflare-onion	12564
+bridges	mode	off
+bridges	count	7
+bridges	last_refresh	1794398584
+update	result	current
+update	checked_at	1795046791
+update	remote_commit	d769e954a98f32e0c304c7bca7c0c5234db9f4ff
+update	auto	loaded
+helper	path	/usr/libexec/nice-dns-helper
+helper	installed	yes
+helper	version	0.1.1
+admin	url	http://localhost:8880/admin
+admin	password_path	/home/user/.local/state/nice-dns/secrets/pihole/pihole_webpassword
+recent	1795043106	route:cloudflare-exit	ready
+recent	1795043288	route:cloudflare-onion	requested
+recent	1795043291	route:cloudflare-onion	acknowledged
+recent	1795043349	route:cloudflare-onion	ready
+recent	1795049975	bridges	skipped
+$ the gate command
+rc=0
