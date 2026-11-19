@@ -40,12 +40,17 @@ bt_plan() {
     else
       printf '%s %-13s %s\n' "$p" bt_install "install-cell --cell <proxy>/standard --source-sha HEAD; the deployment checked; real timers"
     fi
-    printf '%s %-13s %s\n' "$p" bt_off "settle; nice-dns bridges off (exit 0, last line); one request id journals bridges mode-change off and service acknowledged; proxy-supervisor-lines: the latest spawn is direct (no bridges); a fresh name answers within 600 s"
+    printf '%s %-13s %s\n' "$p" bt_off "settle; nice-dns bridges off (exit 0, last line); one request id journals bridges mode-change off and service acknowledged; proxy-supervisor-lines: the latest spawn, of the container that row names, is direct (no bridges); a fresh name answers within 600 s"
     printf '%s %-13s %s\n' "$p" bt_refresh "nice-dns-health bridges-refresh exits 0 and journals bridges skipped bridges off, nothing else"
     printf '%s %-13s %s\n' "$p" bt_status_off "nice-dns status --tsv shows bridges<TAB>mode<TAB>off"
-    printf '%s %-13s %s\n' "$p" bt_on "nice-dns bridges on (exit 0, last line); one request id journals bridges mode-change on and service acknowledged; the latest spawn is with N bridge(s); a fresh name answers within 600 s"
+    printf '%s %-13s %s\n' "$p" bt_on "nice-dns bridges on (exit 0, last line); one request id journals bridges mode-change on and service acknowledged; the latest spawn, of the container that row names, is with N>=1 bridge(s); a fresh name answers within 600 s"
     printf '%s %-13s %s\n' "$p" bt_status_on "nice-dns status --tsv shows bridges<TAB>mode<TAB>on"
-    printf '%s %-13s %s\n' "$p" bt_after "runs whatever came before: bridges on again if a step stopped while off; the stack settles"
+    if [ "$p" = linux ]; then
+      printf '%s %-13s %s\n' "$p" bt_on_few "BT-ON-FEW: cut-bridges --keep 2; bridges off, then on: Tor launches with 2 bridge(s), a fresh name answers, the on switch's seconds are reported against the ${BT_FEW_BOUND:-120} s restart bound; restore-bridges; nice-dns restart"
+    else
+      printf '%s %-13s %s\n' "$p" bt_on_few "nothing: BT-ON-FEW is Linux only"
+    fi
+    printf '%s %-13s %s\n' "$p" bt_after "runs whatever came before: restore-bridges and nice-dns restart if a cut copy is kept; bridges on again if a step stopped while off; the stack settles"
   done
   printf '%s %-13s %s\n' all bt_privacy "no bridge material, session or hash in the evidence"
   printf '%s %-13s %s\n' all bt_receipt "assemble and verify the bridges-toggle receipt (a passed cell of an earlier run is reused, DEC-009)"
@@ -67,7 +72,10 @@ fi
 unset -f t_01_before t_02_install t_03_fault_unbound t_04_fault_proxy t_05_restart t_06_reinstall t_07_uninstall t_08_final t_09_privacy t_10_receipt
 il_dir() { printf '%s\n' "$ARTIFACT_DIR/bridges-toggle/$1"; }
 
-BT_STEPS='bt_before bt_install bt_off bt_refresh bt_status_off bt_on bt_status_on bt_after'
+BT_STEPS='bt_before bt_install bt_off bt_refresh bt_status_off bt_on bt_status_on bt_on_few bt_after'
+# BT-ON-FEW (BL-060): the proxy's restart bound an on switch with few bridges
+# is measured against; over it is reported, not failed.
+BT_FEW_BOUND="${BT_FEW_BOUND:-120}"
 # A fresh name after each switch (the Outcomes' 10 minutes).
 BT_FRESH_MAX="${BT_FRESH_MAX:-600}"
 # The supervisor's spawn line after a switch the CLI already acknowledged.
@@ -101,6 +109,8 @@ bt_budget() {
 # bt_cli <alias> <label> <mode>: the installed nice-dns through target.sh
 # command (bridges-on, bridges-off, status). Output in cmd-<label>.log.
 bt_cli() { il_t "$1" command --mode "$3" >"$(il_dir "$1")/cmd-$2.log" 2>&1; }
+# bt_kv <file> <key>: the value of a top-level <key> TAB <value> row, or -.
+bt_kv() { awk -F '\t' -v k="$2" '$1 == k { v = $2; f = 1; exit } END { print (f ? v : "-") }' "$1" 2>/dev/null || echo -; }
 # bt_cli_exit / bt_cli_last <log>: the command's exit and its last line.
 bt_cli_exit() { awk -F '\t' '$1 == "command_exit" { v = $2 } END { print (v == "" ? "-" : v) }' "$1"; }
 bt_cli_last() { awk -F '\t' '$1 == "started_utc" { on = 1; next } $1 == "finished_utc" { on = 0 } on && NF { l = $0 } END { print l }' "$1"; }
@@ -121,35 +131,42 @@ bt_rows() {
   cr_jrows "$1" "$2" | awk -F '\t' -v f="$3" 'BEGIN { while ((getline l < f) > 0) old[l] = 1 } !($2 in old)'
 }
 
-# bt_spawn <alias> <report>: "<container> TAB <line>" of the latest spawn,
-# or nothing.
+# bt_spawn <alias> <report>: "<container> TAB <line> TAB <generation>" of the
+# latest spawn, or nothing. <generation> is the container whose log held the
+# line, as the controller's journal names it (`changing`, or - when absent).
 bt_spawn() {
   il_t "$1" proxy-supervisor-lines >"$2" 2>>"$(il_dir "$1")/ops.log" || return 1
-  awk -F '\t' '$1 == "supervisor_line" { c = $2; l = $3 } END { if (l != "") print c "\t" l }' "$2"
+  awk -F '\t' '$1 == "supervisor_line" { c = $2; l = $3 } $1 == "supervisor_container" { g[$2] = $3 }
+    END { if (l != "") print c "\t" l "\t" ((c in g) ? g[c] : "-") }' "$2"
 }
 
-# bt_switch <platform> <alias> <on|off>: the switch and everything it must
-# show, in switch-<mode>.tsv.
+# bt_switch <platform> <alias> <on|off> [label]: the switch and everything it
+# must show, in switch-<label>.tsv (label: the mode). The spawn line judged is
+# the latest one of the container the acknowledged row names (BL-060): a
+# line of an older container proves nothing about this switch.
 bt_switch() {
-  local a="$2" m="$3" d out ids r t0 tl rows rid spawn line c how hre end row rc=0 el ex last
-  d="$(il_dir "$a")"; out="$d/switch-$m.tsv"; ids="$d/switch-$m.ids"; r="$d/switch-$m.report"
+  local a="$2" m="$3" l="${4:-$3}" d out ids r t0 tl rows rid spawn line c cg ag how hre end row rc=0 el ex last
+  d="$(il_dir "$a")"; out="$d/switch-$l.tsv"; ids="$d/switch-$l.ids"; r="$d/switch-$l.report"
   if [ "$m" = off ]; then how='direct (no bridges)' hre='direct \(no bridges\)$'
-  else how='with N bridge(s)' hre='with [0-9]+ bridge\(s\)$'; fi
+  else how='with N>=1 bridge(s)' hre='with [1-9][0-9]* bridge\(s\)$'; fi
   cr_settled "$a"
   t0="$(bt_ids "$a" "$ids")"
   tl="$(date +%s)"
-  bt_cli "$a" "bridges-$m" "bridges-$m" || rc=1
-  ex="$(bt_cli_exit "$d/cmd-bridges-$m.log")"; last="$(bt_cli_last "$d/cmd-bridges-$m.log")"
+  bt_cli "$a" "bridges-$l" "bridges-$m" || rc=1
+  ex="$(bt_cli_exit "$d/cmd-bridges-$l.log")"; last="$(bt_cli_last "$d/cmd-bridges-$l.log")"
   il_t "$a" controller-report >"$r" 2>>"$d/ops.log" || fail "controller-report"
   rows="$(bt_rows "$r" "$t0" "$ids")"
   rid="$(printf '%s\n' "$rows" | awk -F '\t' -v m="$m" '$3 == "bridges" && $4 == "mode-change" && $5 == m { i = $2 } END { print i }')"
+  # The container the switch started: "<c> restarted: <generation>".
+  ag="$(printf '%s\n' "$rows" | awk -F '\t' -v i="$rid" 'i != "" && $2 == i && $3 == "service" && $4 == "acknowledged" && index($5, " restarted: ") { g = substr($5, index($5, " restarted: ") + 12) } END { print g }')"
   # The spawn line: the CLI waited for the new start, so it is there or
   # comes within BT_LINE_MAX.
   end=$(( $(date +%s) + BT_LINE_MAX ))
   while :; do
-    spawn="$(bt_spawn "$a" "$d/supervisor-$m.report")"
-    line="${spawn#*	}"; c="${spawn%%	*}"
-    printf '%s\n' "$line" | grep -Eq -- "$BT_LINE_RE" && printf '%s\n' "$line" | grep -Eq -- "$hre" && break
+    spawn="$(bt_spawn "$a" "$d/supervisor-$l.report")"
+    c="${spawn%%	*}"; line="${spawn#*	}"; cg="${line##*	}"; line="${line%	*}"
+    [ -n "$spawn" ] || cg=-
+    printf '%s\n' "$line" | grep -Eq -- "$BT_LINE_RE" && printf '%s\n' "$line" | grep -Eq -- "$hre" && [ -n "$ag" ] && [ "$cg" = "$ag" ] && break
     [ "$(date +%s)" -lt "$end" ] || break
     sleep "$CR_POLL"
   done
@@ -163,16 +180,19 @@ bt_switch() {
     printf 'mode\t%s\ncli_exit\t%s\ncli_last\t%s\nrequest_id\t%s\n' "$m" "$ex" "$last" "${rid:--}"
     [ -z "$rid" ] || printf '%s\n' "$rows" | awk -F '\t' -v i="$rid" '$2 == i' | sed 's/^/journal	/'
     printf 'supervisor\t%s\t%s\n' "${c:--}" "$line"
+    if [ -n "$ag" ] && [ "$cg" = "$ag" ]; then printf 'container_match\tyes\n'; else printf 'container_match\tno\n'; fi
     printf '%s\n' "$row"
     printf 'elapsed_s\t%s\n' "$el"
   } >"$out"
-  assert_eq 0 "$ex" "nice-dns bridges $m exited 0: $(tail -n 5 "$d/cmd-bridges-$m.log" | tr '\n' ' ')"
+  assert_eq 0 "$ex" "nice-dns bridges $m exited 0: $(tail -n 5 "$d/cmd-bridges-$l.log" | tr '\n' ' ')"
   assert_eq "Bridges are $m; the proxy restarted and DNS is answering." "$last" "nice-dns bridges $m acknowledged the restart"
   assert_ne "" "$rid" "the journal has a bridges mode-change $m row: $(printf '%s\n' "$rows" | cut -f2-4 | tr '\n' ' ')"
   assert_match "^bridges-$m-[0-9]+\$" "$rid" "the request id is the switch's own"
   printf '%s\n' "$rows" | awk -F '\t' -v i="$rid" '$2 == i && $3 == "service" && $4 == "acknowledged" { f = 1 } END { exit !f }' \
     || fail "no service acknowledged row for $rid: $(printf '%s\n' "$rows" | cut -f2-4 | tr '\n' ' ')"
   assert_ne unexpected "$line" "the supervisor op returned only spawn lines"
+  assert_ne "" "$ag" "the acknowledged row names the container the switch started"
+  [ "$cg" = "$ag" ] || fail "the latest spawn line is of container [$cg], not of the one the switch started [$ag]"
   printf '%s\n' "$line" | grep -Eq -- "$hre" || fail "the latest spawn is not '$how': $line"
   assert_eq 0 "$rc" "a fresh name answered within ${BT_FRESH_MAX}s of bridges $m: $row"
   [ "$el" -le "$BT_FRESH_MAX" ] || fail "bridges $m to a fresh name took ${el}s, over ${BT_FRESH_MAX}s"
@@ -250,10 +270,48 @@ bt_status_off() { bt_require "$2" bt_refresh; bt_budget bt_status_off; bt_status
 bt_on() { bt_require "$2" bt_status_off; bt_budget bt_on; bt_switch "$1" "$2" on; }
 bt_status_on() { bt_require "$2" bt_on; bt_budget bt_status_on; bt_status "$2" on; }
 
+# BT-ON-FEW (BL-060, Linux only): with bridges.env cut to 2 bridges, off then
+# on comes back on those 2; the on switch's seconds are reported against the
+# restart bound (BT_FEW_BOUND), not failed on it. The full bridges.env is put
+# back and the stack restarted onto it; bt_after does both if this fails.
+bt_on_few() {
+  local p="$1" a="$2" d el w rrc=0
+  d="$(il_dir "$a")"
+  bt_require "$a" bt_status_on
+  [ "$p" = linux ] || return 0
+  bt_budget bt_on_few
+  il_t "$a" cut-bridges --keep 2 >"$d/few-cut.tsv" 2>>"$d/ops.log" || fail "cut-bridges: $(tail -n 3 "$d/ops.log" | tr '\n' ' ')"
+  assert_eq 2 "$(bt_kv "$d/few-cut.tsv" bridges_kept)" "bridges.env holds 2 bridges for this step"
+  bt_switch "$p" "$a" off few-off
+  bt_switch "$p" "$a" on few-on
+  assert_match ' with 2 bridge\(s\)$' "$(grep '^supervisor	' "$d/switch-few-on.tsv")" "Tor came back on the 2 bridges"
+  el="$(bt_kv "$d/switch-few-on.tsv" elapsed_s)"
+  if [ "$el" -le "$BT_FEW_BOUND" ] 2>/dev/null; then w=yes; else w=no; fi
+  il_t "$a" restore-bridges >"$d/few-restore.tsv" 2>>"$d/ops.log" || fail "restore-bridges: $(tail -n 3 "$d/ops.log" | tr '\n' ' ')"
+  bt_cli "$a" few-restart restart || rrc=$?
+  {
+    grep -E '^bridges_(before|kept)	' "$d/few-cut.tsv"
+    grep -E '^(request_id|supervisor|container_match|fresh_name)	' "$d/switch-few-on.tsv"
+    printf 'elapsed_s\t%s\nbound_s\t%s\nwithin_bound\t%s\n' "$el" "$BT_FEW_BOUND" "$w"
+    grep '^bridges_restored	' "$d/few-restore.tsv"
+    printf 'restart_exit\t%s\n' "$rrc"
+  } >"$d/on-few.tsv"
+  assert_match '^bridges_restored	[1-9][0-9]*$' "$(grep '^bridges_restored	' "$d/on-few.tsv")" "the full bridges.env was put back"
+  assert_eq 0 "$rrc" "nice-dns restart onto the full set exited 0: $(tail -n 3 "$d/cmd-few-restart.log" | tr '\n' ' ')"
+  cr_settled "$a"
+}
+
 # Runs whatever came before it: the target ends with bridges on, settled.
 bt_after() {
-  local a="$2" d m
+  local p="$1" a="$2" d m
   d="$(il_dir "$a")"
+  # A cut bridges.env (bt_on_few stopped early) is put back first.
+  if [ "$p" = linux ]; then
+    il_t "$a" restore-bridges >"$d/after-restore.tsv" 2>>"$d/ops.log" || fail "restore-bridges: $(tail -n 3 "$d/ops.log" | tr '\n' ' ')"
+    case "$(bt_kv "$d/after-restore.tsv" bridges_restored)" in none|-) ;; *)
+      bt_cli "$a" after-restart restart || fail "nice-dns restart onto the restored bridges: $(tail -n 5 "$d/cmd-after-restart.log" | tr '\n' ' ')" ;;
+    esac
+  fi
   bt_cli "$a" status-after status
   m="$(awk -F '\t' '$1 == "bridges" && $2 == "mode" { print $3; exit }' "$d/cmd-status-after.log")"
   if [ "$m" = off ]; then
@@ -293,6 +351,8 @@ bt_reuse_dir() {
 }
 
 BT_SCENARIOS='BT-OFF:switch-off.tsv BT-REFRESH:refresh-off.tsv BT-STATUS-OFF:status-off.tsv BT-ON:switch-on.tsv BT-STATUS-ON:status-on.tsv'
+# per-cell-linux (tests/manifests/bridges-toggle.tsv)
+BT_SCENARIOS_LINUX='BT-ON-FEW:on-few.tsv'
 BT_SECRETS='cert=[A-Za-z0-9+/]{20}|(^|[^0-9A-Fa-f])[0-9A-F]{40}([^0-9A-Fa-f]|$)|PRIVATE KEY|"sid":|pwhash|BRIDGE[0-9]+=|obfs4 [0-9]'
 
 bt_receipt() {
@@ -346,7 +406,8 @@ bt_receipt() {
     n=$((n + 1))
     printf 'cell\t%s\t%s\t%s\t%s\t%s\tobserved\n' "${cell%%/*}" "$(printf '%s' "$cell" | cut -d/ -f2)" "${cell##*/}" "$a" "$gen" >>"$r"
     [ "$from" = - ] || printf 'reuse\t%s\t%s\t%s\n' "$cell" "$from" "$(il_cell_of "$d" source_sha)" >>"$r"
-    for id in $BT_SCENARIOS; do
+    s="$BT_SCENARIOS"; [ "${cell%%/*}" != linux ] || s="$s $BT_SCENARIOS_LINUX"
+    for id in $s; do
       f="${id#*:}"
       cp "$d/$f" "$out/cells/$key/$f"
       printf 'scenario\t%s\t%s\tpass\tcells/%s/%s\t%s\t%s\n' "${id%%:*}" "$cell" "$key" "$f" "$(sha256sum "$out/cells/$key/$f" | cut -d' ' -f1)" "$gen" >>"$r"
@@ -367,6 +428,8 @@ t_04_refresh() { il_selection; il_each bt_refresh; }
 t_05_status_off() { il_selection; il_each bt_status_off; }
 t_06_on() { il_selection; il_each bt_on; }
 t_07_status_on() { il_selection; il_each bt_status_on; }
+# run.sh runs cases in sorted order: this one sorts after t_07_status_on.
+t_07_then_on_few() { il_selection; il_each bt_on_few; }
 t_08_after() { il_selection; il_each bt_after; }
 
 t_09_privacy() {

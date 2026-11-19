@@ -262,7 +262,19 @@
 #                    read from the container's own log and filtered in the
 #                    same pipe on the target: no other log line is printed or
 #                    kept, and nothing after the <how> words (bridge lines
-#                    are secret)
+#                    are secret). Then `supervisor_container <c> <generation>`:
+#                    the container whose log that was, named as the
+#                    controller's journal names it (`<c> restarted: <gen>`;
+#                    Linux: Id StartedAt Status, macOS: name state started),
+#                    or `changing` when it restarted while its log was read
+#   cut-bridges      Linux only, test-only (BT-ON-FEW, BL-060): keep the first
+#                    --keep N (1..9) bridges of ~/.config/nice-dns/bridges.env,
+#                    renumbered, and the whole file as bridges.env.harness-cut
+#                    beside it (refused when that copy exists or the file holds
+#                    no more than N). Prints only the counts; the proxy reads
+#                    the cut file at its next start
+#   restore-bridges  put bridges.env.harness-cut back as bridges.env (prints
+#                    the count, or `none` when no cut copy is kept)
 #   mac-runtime-ssh  NOT USED since OD-8: on 2026-11-07 it broke the mac's
 #                    vmnet (interface creation failed) until InternetSharing
 #                    was restarted. target.sh reaches a gui/<uid> runtime
@@ -315,7 +327,7 @@ umask 077
 die() { printf 'target.sh: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network freeze-unbound thaw-unbound stop-proxy fresh-name command command-report freeze-service thaw-service pause-container unpause-container stop-container start-container crash-container stop-crash crash-report proxy-supervisor-lines mac-runtime-ssh mac-runtime-gui helper-report polkit-test-rule gui-report gui-session switch-report update-schedule'
+OPS='validate probe snapshot sever-upstream heal-upstream restore config health collect freeze-upstream thaw-upstream install-cell uninstall-cell quiesce-agents resume-agents build-proxy recreate-proxy install-controller fault-route heal-route controller-report thaw-on-request wedge-runtime heal-runtime bridges-refresh hold-bridge-refresh prune-generations install-agent set-tunables lifecycle-report watch-dns mark-state route-report route-apply route-onion arm-prepare arm-set capture-dns fault-network heal-network freeze-unbound thaw-unbound stop-proxy fresh-name command command-report freeze-service thaw-service pause-container unpause-container stop-container start-container crash-container stop-crash crash-report proxy-supervisor-lines mac-runtime-ssh mac-runtime-gui helper-report polkit-test-rule gui-report gui-session switch-report update-schedule cut-bridges restore-bridges'
 FAULT_ROUTES='cloudflare-onion cloudflare-exit quad9-exit'
 COMPONENTS='pi-hole unbound tor-haproxy tor-socat'
 UPSTREAM_COMPONENTS='tor-haproxy tor-socat'
@@ -330,10 +342,10 @@ if [ "$op" != validate ]; then
   [ $# -gt 0 ] && shift
   case "$alias_" in ''|-*) die "usage: target.sh $op ALIAS --targets FILE" ;; esac
 fi
-targets='' component='' c_workload='' c_count='' c_timeout=5000 c_pause=0 c_identity='' c_sleep='' has_sleep='' i_cell='' i_sha='' i_hsha='' i_route='' i_mode='' i_ptag='' i_times='' i_every=''
+targets='' component='' c_workload='' c_count='' c_timeout=5000 c_pause=0 c_identity='' c_sleep='' has_sleep='' i_cell='' i_sha='' i_hsha='' i_route='' i_mode='' i_ptag='' i_times='' i_every='' i_keep=''
 while [ $# -gt 0 ]; do
   case "$1" in
-    --targets|--component|--workload|--count|--timeout-ms|--pause-ms|--identity|--after-sleep|--cell|--source-sha|--hardened-sha|--route|--mode|--proxy-tag|--times|--every)
+    --targets|--component|--workload|--count|--timeout-ms|--pause-ms|--identity|--after-sleep|--cell|--source-sha|--hardened-sha|--route|--mode|--proxy-tag|--times|--every|--keep)
       [ $# -ge 2 ] || die "option $1 needs a value"
       case "$1" in
         --targets) targets="$2" ;;
@@ -352,6 +364,7 @@ while [ $# -gt 0 ]; do
         --proxy-tag) i_ptag="$2" ;;
         --times) i_times="$2" ;;
         --every) i_every="$2" ;;
+        --keep) i_keep="$2" ;;
       esac
       shift 2 ;;
     *) die "unknown option '$1'" ;;
@@ -384,6 +397,11 @@ if [ "$op" = crash-container ]; then
   [[ "$i_every" =~ ^[0-9]{2,3}$ ]] && [ "$i_every" -ge 20 ] && [ "$i_every" -le 300 ] || die "crash-container needs --every 20..300 (seconds)"
 else
   [ -z "$i_times$i_every" ] || die "--times/--every are only valid for crash-container"
+fi
+if [ "$op" = cut-bridges ]; then
+  [[ "$i_keep" =~ ^[1-9]$ ]] || die "cut-bridges needs --keep 1..9"
+else
+  [ -z "$i_keep" ] || die "--keep is only valid for cut-bridges"
 fi
 if [ "$op" = set-tunables ]; then case "$i_mode" in fast|default) ;; *) die "set-tunables needs --mode fast|default" ;; esac; fi
 if [ "$op" = command ]; then
@@ -803,6 +821,16 @@ mac_room() {
 started() {
   if [ "$plat" = macos ]; then ctl list --all | awk -v c="$1" '$1 == c && $5 == "running" { print $NF }'
   else ctl inspect "$1" --format '{{.Id}} {{.State.StartedAt}}' 2>/dev/null; fi
+}
+# container_gen <c>: the container's generation exactly as the controller
+# writes it (nd_platform_container_generation in lib/platform/*.sh).
+container_gen() {
+  if [ "$plat" = macos ]; then
+    ctl ls -a </dev/null 2>/dev/null | awk -v n="$1" 'NR == 1 { for (i = 1; i <= NF; i++) if ($i == "STATE") s = i; next }
+      $1 == n && s && $s == "running" { print $1 " " $s " " $NF; exit }'
+  else
+    ctl inspect -f '{{.Id}} {{.State.StartedAt}} {{.State.Status}}' "$1" </dev/null 2>/dev/null | head -n 1
+  fi
 }
 image_of() {
   if [ "$plat" = macos ]; then
@@ -2135,12 +2163,40 @@ case "$NICE_DNS_OP" in
     printf 'section\tsupervisor\n'
     for c in tor-haproxy tor-socat; do
       running "$c" || continue
+      g0=$(container_gen "$c")
       # Filtered in the pipe: only the spawn lines, cut after their launch
       # words. The log itself is never printed, kept or written to a file.
       ctl logs "$c" </dev/null 2>&1 |
         sed -n -E 's/^.*(tor-supervisor: spawned tor pid=[0-9]+ generation=[0-9]+ (direct \(no bridges\)|with [0-9]+ bridge\(s\))).*$/\1/p' |
         tail -n 20 | while IFS= read -r l; do printf 'supervisor_line\t%s\t%s\n' "$c" "$l"; done
+      # The container those lines came from (BL-060): a switch is judged on
+      # the spawn of the container it started, not on an older one's line.
+      g1=$(container_gen "$c")
+      if [ -n "$g1" ] && [ "$g0" = "$g1" ]; then printf 'supervisor_container\t%s\t%s\n' "$c" "$g1"
+      else printf 'supervisor_container\t%s\tchanging\n' "$c"; fi
     done | redact ;;
+  cut-bridges|restore-bridges)
+    [ "$plat" = linux ] || { echo "$NICE_DNS_OP is Linux only (BT-ON-FEW)" >&2; exit 2; }
+    bd="${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns"; bf="$bd/bridges.env"; bk="$bd/bridges.env.harness-cut"
+    # Only counts are printed: a bridge line is secret.
+    if [ "$NICE_DNS_OP" = cut-bridges ]; then
+      if [ ! -f "$bf" ] || [ -L "$bf" ]; then echo "no bridges.env file at $bf" >&2; exit 1; fi
+      if [ -e "$bk" ] || [ -L "$bk" ]; then echo "a cut copy is already kept ($bk); run restore-bridges first" >&2; exit 1; fi
+      n=$(grep -cE '^BRIDGE[0-9]+=' "$bf")
+      [ "$n" -gt "$NICE_DNS_KEEP" ] || { echo "bridges.env holds $n bridges, not more than $NICE_DNS_KEEP" >&2; exit 1; }
+      (umask 077 && cp -p "$bf" "$bk") || exit 1
+      t="$bf.harness-tmp.$$"
+      if (umask 077 && awk -v k="$NICE_DNS_KEEP" '/^BRIDGE[0-9]+=/ { if (++i <= k) { sub(/^BRIDGE[0-9]+=/, ""); printf "BRIDGE%d=%s\n", i, $0 }; next } { print }' "$bk" >"$t") && mv -f "$t" "$bf"; then
+        printf 'bridges_before\t%s\nbridges_kept\t%s\n' "$n" "$(grep -cE '^BRIDGE[0-9]+=' "$bf")"
+      else
+        rm -f "$t"; mv -f "$bk" "$bf"; echo "could not write the cut bridges.env; the file is unchanged" >&2; exit 1
+      fi
+    elif [ -f "$bk" ] && [ ! -L "$bk" ]; then
+      mv -f "$bk" "$bf" || exit 1
+      printf 'bridges_restored\t%s\n' "$(grep -cE '^BRIDGE[0-9]+=' "$bf")"
+    else
+      printf 'bridges_restored\tnone\n'
+    fi ;;
   helper-report)
     identity
     if [ "$plat" = macos ]; then h=/usr/local/libexec/nice-dns-helper; d=/usr/local/libexec/nice-dns; else h=/usr/libexec/nice-dns-helper; d=/usr/libexec/nice-dns; fi
@@ -2487,7 +2543,7 @@ case "$op" in
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;
-  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network|freeze-unbound|thaw-unbound|stop-proxy|command|freeze-service|thaw-service|pause-container|unpause-container|stop-container|start-container|crash-container|stop-crash|mac-runtime-ssh|mac-runtime-gui|polkit-test-rule|gui-session|update-schedule)
+  sever-upstream|heal-upstream|restore|freeze-upstream|thaw-upstream|install-cell|uninstall-cell|quiesce-agents|resume-agents|build-proxy|recreate-proxy|install-controller|fault-route|heal-route|thaw-on-request|wedge-runtime|heal-runtime|bridges-refresh|hold-bridge-refresh|prune-generations|install-agent|set-tunables|mark-state|route-apply|route-onion|arm-prepare|arm-set|capture-dns|fault-network|heal-network|freeze-unbound|thaw-unbound|stop-proxy|command|freeze-service|thaw-service|pause-container|unpause-container|stop-container|start-container|crash-container|stop-crash|mac-runtime-ssh|mac-runtime-gui|polkit-test-rule|gui-session|update-schedule|cut-bridges|restore-bridges)
     state_dir
     [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
       || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"
@@ -2503,6 +2559,8 @@ case "$op" in
       remote_run "NICE_DNS_OP=command NICE_DNS_MODE=$i_mode NICE_DNS_PROXY=${i_cell%/*} NICE_DNS_PIHOLE=${i_cell#*/} NICE_DNS_SOURCE_SHA=$i_sha"; rc=$?
     elif [ "$op" = capture-dns ]; then
       remote_run "NICE_DNS_OP=capture-dns NICE_DNS_COUNT=$c_count"; rc=$?
+    elif [ "$op" = cut-bridges ] || [ "$op" = restore-bridges ]; then
+      remote_run "NICE_DNS_OP=$op NICE_DNS_KEEP=${i_keep:-0}"; rc=$?
     elif [ "$op" = restore ]; then
       names=''
       # shellcheck disable=SC2013 # container names are single words

@@ -22,7 +22,7 @@ export CR_POLL CR_RECOVER_MAX CR_SETTLE_MAX CR_QUIET BT_FRESH_MAX BT_LINE_MAX AR
 
 # shellcheck source=tests/live/bridges-toggle.sh
 . "$NICE_DNS_ROOT/tests/live/bridges-toggle.sh"
-unset -f t_01_before t_02_install t_03_off t_04_refresh t_05_status_off t_06_on t_07_status_on t_08_after t_09_privacy t_10_receipt
+unset -f t_01_before t_02_install t_03_off t_04_refresh t_05_status_off t_06_on t_07_status_on t_07_then_on_few t_08_after t_09_privacy t_10_receipt
 
 BTD_LIVE="$NICE_DNS_ROOT/tests/live/bridges-toggle.sh"
 
@@ -70,7 +70,7 @@ t_dry_run_prints_every_step_for_both_platforms_and_touches_nothing() {
     "the mac install runs in the gui session, always resumes the agents and never moves the runtime (OD-8)"
   assert_not_match '^macos .*mac-runtime' "$out" "no runtime move on the mac"
   assert_not_match '^linux .*mac-runtime' "$out" "Linux does not"
-  for t in 'bridges off' 'direct \(no bridges\)' 'bridges-refresh' 'bridges	mode	off|bridges<TAB>mode<TAB>off' 'bridges on' 'with N bridge\(s\)' '600 s'; do
+  for t in 'bridges off' 'direct \(no bridges\)' 'bridges-refresh' 'bridges	mode	off|bridges<TAB>mode<TAB>off' 'bridges on' 'with N>=1 bridge\(s\)' 'cut-bridges --keep 2' 'restore-bridges' '600 s'; do
     assert_match "$t" "$out" "the plan names [$t]"
   done
   assert_eq "$BT_STEPS " \
@@ -108,10 +108,10 @@ t_a_well_behaved_target_passes_and_its_receipt_verifies() {
   assert_file "$r" "the receipt exists"
   bash "$NICE_DNS_ROOT/tests/reports/verify.sh" check "$r" >/dev/null 2>&1
   assert_rc 0 "$?" "the receipt verifies on its own"
-  for s in linux macos; do
-    assert_eq "BT-OFF BT-ON BT-REFRESH BT-STATUS-OFF BT-STATUS-ON " \
-      "$(awk -F '\t' -v p="$s" '$1 == "scenario" && index($3, p "/") == 1 { print $2 }' "$r" | sort | tr '\n' ' ')" "$s carries every scenario"
-  done
+  assert_eq "BT-OFF BT-ON BT-ON-FEW BT-REFRESH BT-STATUS-OFF BT-STATUS-ON " \
+    "$(awk -F '\t' '$1 == "scenario" && index($3, "linux/") == 1 { print $2 }' "$r" | sort | tr '\n' ' ')" "linux carries every scenario, BT-ON-FEW included"
+  assert_eq "BT-OFF BT-ON BT-REFRESH BT-STATUS-OFF BT-STATUS-ON " \
+    "$(awk -F '\t' '$1 == "scenario" && index($3, "macos/") == 1 { print $2 }' "$r" | sort | tr '\n' ' ')" "macos carries every scenario but the Linux-only one"
   assert_match '^limit	mac-runtime-domain	.*gui session' "$(cat "$r")" "the receipt names the gui-session install as a limit (BL-052)"
   # The evidence: both switches with exit, last line and one request id
   # carrying mode-change and acknowledged; both supervisor lines; both names.
@@ -121,7 +121,7 @@ t_a_well_behaved_target_passes_and_its_receipt_verifies() {
   assert_match '^supervisor	tor-[a-z]+	tor-supervisor: spawned tor pid=[0-9]+ generation=[0-9]+ direct \(no bridges\)$' "$s" "the direct launch"
   assert_match '^elapsed_s	[0-9]+$' "$s" "the elapsed seconds"
   s="$(cat "$CASE_DIR"/good/receipts/bridges-toggle/*/cells/linux-*/switch-on.tsv)"
-  assert_match '^supervisor	tor-[a-z]+	tor-supervisor: spawned tor pid=[0-9]+ generation=[0-9]+ with [0-9]+ bridge\(s\)$' "$s" "the launch with bridges"
+  assert_match '^supervisor	tor-[a-z]+	tor-supervisor: spawned tor pid=[0-9]+ generation=[0-9]+ with [1-9][0-9]* bridge\(s\)$' "$s" "the launch with bridges"
 }
 
 t_the_mac_install_never_moves_the_runtime_and_always_resumes() {
@@ -297,4 +297,54 @@ t_the_privacy_case_needs_a_report_to_scan_bl057() {
   assert_eq 0 "$(btd_privacy "$w/clean")" "BL-057: one clean report passes: $(cat "$CASE_DIR/privacy-clean.log")"
   printf 'line\tobfs4 cert=ABCDEFGHIJKLMNOPQRSTUVWXYZabcd iat-mode=0\n' >"$w/leak/bridges-toggle/lin1/switch-off.tsv"
   assert_eq 1 "$(btd_privacy "$w/leak")" "BL-057: a report holding cert= and 20 base64 characters fails"
+}
+
+# BL-060: a switch is judged on the spawn line of the container it started.
+t_a_switch_judges_the_spawn_of_the_container_it_started_bl060() {
+  btd_catches stale-gen bt_before bt_install bt_off
+}
+
+# BL-060: with bridges on, a launch with no bridge is no pass.
+t_a_switch_on_that_starts_no_bridge_fails_bl060() {
+  btd_catches zero-bridges bt_before bt_install bt_off bt_refresh bt_status_off bt_on
+}
+
+# BL-060 (BT-ON-FEW): on Linux, off then on with bridges.env cut to 2 bridges
+# comes back and says how long it took; the full bridges.env is put back.
+t_on_with_few_bridges_is_timed_and_the_set_put_back_bl060() {
+  local out s f r
+  out="$(
+    btd_world "$CASE_DIR/few"
+    for s in $BT_STEPS; do
+      ( il_each "$s" ) >"$CASE_DIR/few-$s.log" 2>&1 || { echo "failed:$s"; cat "$CASE_DIR/few-$s.log"; exit 0; }
+    done
+    ( bt_receipt ) >"$CASE_DIR/few-receipt.log" 2>&1 || { echo failed:receipt; cat "$CASE_DIR/few-receipt.log"; exit 0; }
+    echo passed
+  )"
+  assert_eq passed "$out" "BL-060: every step, the few-bridges one included, passes on a well-behaved fake"
+  f="$(cat "$CASE_DIR"/few/runs/*/bridges-toggle/lin1/on-few.tsv 2>/dev/null)"
+  assert_match '^bridges_kept	2$' "$f" "BL-060: bridges.env was cut to 2 bridges"
+  assert_match '^supervisor	tor-[a-z]+	tor-supervisor: spawned tor pid=[0-9]+ generation=[0-9]+ with 2 bridge\(s\)$' "$f" "and the proxy came back on those 2"
+  assert_match '^elapsed_s	[0-9]+$' "$f" "it says how long the on switch took"
+  assert_match '^within_bound	(yes|no)$' "$f" "and whether that was inside the restart bound"
+  assert_match '^bridges_restored	7$' "$f" "the full bridges.env was put back"
+  assert_eq 7 "$(cat "$CASE_DIR/few/fake/lin1/nb")" "the fake target holds its 7 bridges again"
+  assert_no_path "$CASE_DIR/few/fake/lin1/nb.bak" "and keeps no cut copy"
+  assert_no_path "$CASE_DIR/few/fake/mac1/nb.bak" "the mac is never cut (the scenario is Linux only)"
+  r="$(for r in "$CASE_DIR"/few/receipts/bridges-toggle/*/receipt.tsv; do printf '%s\n' "$r"; done | tail -1)"
+  assert_match '^scenario	BT-ON-FEW	linux/' "$(cat "$r")" "the receipt carries BT-ON-FEW for the Linux cell"
+  assert_not_match '^scenario	BT-ON-FEW	macos/' "$(cat "$r")" "and not for the mac"
+}
+
+# BL-060: when the few-bridges step fails, bt_after still puts bridges.env back.
+t_a_failed_few_step_still_gets_its_bridges_back_bl060() {
+  local out s
+  out="$(
+    btd_world "$CASE_DIR/fewfail"
+    printf 'few-servfail\n' >"$IL_FAKE_DIR/break"
+    for s in $BT_STEPS; do ( il_each "$s" ) >"$CASE_DIR/fewfail-$s.log" 2>&1 || echo "failed:$s"; done
+  )"
+  assert_eq "failed:bt_on_few" "$out" "BL-060: only the few-bridges step fails: $(cat "$CASE_DIR/fewfail-bt_on_few.log" 2>/dev/null | tail -n 3)"
+  assert_eq 7 "$(cat "$CASE_DIR/fewfail/fake/lin1/nb")" "bt_after put the 7 bridges back"
+  assert_no_path "$CASE_DIR/fewfail/fake/lin1/nb.bak" "and kept no cut copy"
 }

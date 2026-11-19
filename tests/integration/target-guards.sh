@@ -1294,3 +1294,83 @@ supervisor_line	tor-socat	tor-supervisor: spawned tor pid=40 generation=2 direct
   assert_match '^podman logs tor-socat$' "$(cat "$FAKE_LOG")" "read from the container's own log"
   assert_not_match '^podman (exec|cp|stop|start|restart|kill|rm)' "$(cat "$FAKE_LOG")" "and nothing else is done to it"
 }
+
+# BL-060 (BT-ON-FEW): cut-bridges and restore-bridges change the target's
+# bridges.env, so they need the run's snapshot and a valid --keep, and they
+# print counts only, never a bridge line.
+t_bridge_cut_ops_are_guarded_bl060() {
+  local v w
+  tg_setup
+  for v in "cut-bridges --keep 2" "restore-bridges"; do
+    : >"$FAKE_LOG"
+    read -r -a w <<<"$v"
+    tg "${w[0]}" lin1 --targets "$CASE_DIR/targets.env" "${w[@]:1}"
+    assert_nonzero "$TG_RC" "BL-060: ${w[0]} without a snapshot"
+    assert_match 'no restore snapshot' "$TG_OUT" "${w[0]}: the refusal names the snapshot"
+    assert_eq 0 "$(tg_sent)" "${w[0]}: nothing sent without a snapshot"
+  done
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  for v in "cut-bridges" "cut-bridges --keep 0" "cut-bridges --keep 10" "cut-bridges --keep 2;id" "restore-bridges --keep 2" "bridges-refresh --keep 2"; do
+    : >"$FAKE_LOG"
+    read -r -a w <<<"$v"
+    tg "${w[0]}" lin1 --targets "$CASE_DIR/targets.env" "${w[@]:1}"
+    assert_rc 2 "$TG_RC" "BL-060: [$v] refused: $TG_OUT"
+    assert_eq 0 "$(tg_sent)" "nothing sent for [$v]"
+  done
+  : >"$FAKE_LOG"
+  tg cut-bridges lin1 --targets "$CASE_DIR/targets.env" --keep 2
+  assert_rc 0 "$TG_RC" "cut-bridges after snapshot: $TG_OUT"
+  assert_match 'NICE_DNS_OP=cut-bridges NICE_DNS_KEEP=2 ' "$(cat "$FAKE_LOG")" "sent as data words"
+}
+
+# The real remote op, run here against a scratch bridges.env (never this
+# host's): the first N bridges kept and renumbered, other lines kept, the
+# whole file put back by restore-bridges, and no bridge line printed.
+t_bridge_cut_keeps_n_and_restore_puts_the_file_back_bl060() {
+  local cfg="$CASE_DIR/cfg" bf orig i
+  tg_setup
+  tg_remote_tools Linux
+  mkdir -p "$cfg/nice-dns" "$CASE_DIR/home"
+  bf="$cfg/nice-dns/bridges.env"
+  {
+    printf '# fetched 2026-11-19\n'
+    for i in 1 2 3 4 5; do printf 'BRIDGE%s=obfs4 192.0.2.%s:443 %040d cert=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%s iat-mode=0\n' "$i" "$i" "$i" "$i"; done
+  } >"$bf"
+  chmod 600 "$bf"
+  orig="$(cat "$bf")"
+  export XDG_CONFIG_HOME="$cfg" HOME="$CASE_DIR/home"
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "snapshot: $TG_OUT"
+  tg cut-bridges lin1 --targets "$CASE_DIR/targets.env" --keep 2
+  assert_rc 0 "$TG_RC" "BL-060: cut-bridges --keep 2: $TG_OUT"
+  assert_match '^bridges_before	5$' "$TG_OUT" "it counts the bridges before"
+  assert_match '^bridges_kept	2$' "$TG_OUT" "and after"
+  assert_not_match 'obfs4|cert=' "$TG_OUT" "no bridge line is printed"
+  assert_eq "# fetched 2026-11-19 BRIDGE1=obfs4 192.0.2.1 BRIDGE2=obfs4 192.0.2.2" \
+    "$(sed -E 's/^(BRIDGE[0-9]+=obfs4 [0-9.]+):.*/\1/' "$bf" | tr '\n' ' ' | sed 's/ $//')" "the first 2 bridges, renumbered, and the other lines"
+  assert_eq "$orig" "$(cat "$cfg/nice-dns/bridges.env.harness-cut")" "the whole file is kept beside it"
+  tg cut-bridges lin1 --targets "$CASE_DIR/targets.env" --keep 1
+  assert_nonzero "$TG_RC" "BL-060: a second cut is refused while a cut copy is kept"
+  assert_match 'already kept' "$TG_OUT" "and says why"
+  tg restore-bridges lin1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "restore-bridges: $TG_OUT"
+  assert_match '^bridges_restored	5$' "$TG_OUT" "it counts the bridges put back"
+  assert_eq "$orig" "$(cat "$bf")" "BL-060: bridges.env is the original, byte for byte"
+  assert_no_path "$cfg/nice-dns/bridges.env.harness-cut" "and no cut copy is left"
+  tg restore-bridges lin1 --targets "$CASE_DIR/targets.env"
+  assert_match '^bridges_restored	none$' "$TG_OUT" "a restore with nothing cut changes nothing"
+  assert_eq "$orig" "$(cat "$bf")" "bridges.env is still the original"
+}
+
+# BL-060: proxy-supervisor-lines names the container its lines came from, as
+# the controller's journal does.
+t_supervisor_lines_name_their_container_bl060() {
+  local script op
+  script="$(sed -n "/^remote_script() {/,/^SH\$/p" "$TG")"
+  op="$(printf '%s\n' "$script" | sed -n '/^  proxy-supervisor-lines)/,/;;$/p')"
+  assert_match "supervisor_container" "$op" "BL-060: the op prints the container generation"
+  assert_match 'container_gen "\$c"' "$op" "read before and after the log"
+  op="$(printf '%s\n' "$script" | sed -n '/^container_gen() {/,/^}/p')"
+  assert_match "inspect -f '\{\{\.Id\}\} \{\{\.State\.StartedAt\}\} \{\{\.State\.Status\}\}'" "$op" "Linux: the same fields as nd_platform_container_generation"
+  assert_match "inspect -f '\{\{\.Id\}\} \{\{\.State\.StartedAt\}\} \{\{\.State\.Status\}\}'" "$(sed -n '/^nd_platform_container_generation() {/,/^}/p' "$NICE_DNS_ROOT/lib/platform/linux.sh")" "which still reads those fields"
+}

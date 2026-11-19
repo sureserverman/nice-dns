@@ -25,6 +25,12 @@
 #   status-stuck-off  status --tsv shows off after the on switch
 #   status-exit2      status --tsv shows the right rows but exits 2
 #   after-blind       the third status read (bt_after's) shows no bridges rows
+#   stale-gen         a switch acknowledges a new container, but the spawn line
+#                     the supervisor op returns is the old container's (BL-060)
+#   zero-bridges      after on the proxy launches `with 0 bridge(s)` (BL-060)
+#   few-servfail      no fresh name answers once bridges.env is cut (BL-060)
+# bridges.env is the fake's bridge count (nb, 7); cut-bridges --keep N keeps
+# N of them and a copy (nb.bak), restore-bridges puts the copy back.
 # Nothing here touches the host.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -36,15 +42,16 @@ case "$op" in
   *) mkdir -p "$F/$alias_"; printf '%s\n' "$op" >>"$F/$alias_/oplog" ;;
 esac
 case "$op" in
-  quiesce-agents|resume-agents|mac-runtime-ssh|mac-runtime-gui|install-cell|bridges-refresh|proxy-supervisor-lines|fresh-name|controller-report|command) ;;
+  quiesce-agents|resume-agents|mac-runtime-ssh|mac-runtime-gui|install-cell|bridges-refresh|proxy-supervisor-lines|fresh-name|controller-report|command|cut-bridges|restore-bridges) ;;
   *) exec bash "$HERE/command-recovery-adapter.sh" "$@" ;;
 esac
 args=("$@")
 shift 2
-mode=""
+mode="" keep=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --mode) mode="$2"; shift 2 ;;
+    --keep) keep="$2"; shift 2 ;;
     --targets|--component|--cell|--source-sha) shift 2 ;;
     *) shift ;;
   esac
@@ -58,7 +65,7 @@ now() { date +%s; }
 identity() { printf 'machine_id\tfake-%s\nhostname\t%s\nplatform\t%s\n' "$alias_" "$alias_" "$plat"; }
 # As target.sh: a change needs a snapshot of the target in this run.
 case "$op" in
-  quiesce-agents|resume-agents|mac-runtime-ssh|mac-runtime-gui|install-cell|bridges-refresh|command)
+  quiesce-agents|resume-agents|mac-runtime-ssh|mac-runtime-gui|install-cell|bridges-refresh|command|cut-bridges|restore-bridges)
     [ -f "${ARTIFACT_DIR:?}/targets/$alias_/snapshot.tsv" ] || { echo "target.sh: no restore snapshot for $alias_ in this run" >&2; exit 2; } ;;
 esac
 case "$op" in
@@ -115,10 +122,22 @@ case "$op" in
     printf 'section\tsupervisor\n'
     if [ "$(get installed)" = 1 ]; then
       g="$(get sgen 1)"
-      how="$(get how 'with 3 bridge(s)')"
+      how="$(get how 'with 7 bridge(s)')"
       printf 'supervisor_line\ttor-%s\ttor-supervisor: spawned tor pid=%s generation=%s %s\n' "$(get proxy)" "$((100 + g))" "$g" "$how"
+      printf 'supervisor_container\ttor-%s\tg%s\n' "$(get proxy)" "$g"
       [ "$brk" != leak ] || printf 'supervisor_line\ttor-%s\ttor-supervisor: bridges: obfs4 192.0.2.1:443 cert=AAAAAAAAAAAAAAAAAAAAAAAA iat-mode=0\n' "$(get proxy)"
     fi ;;
+  cut-bridges)
+    identity
+    [ "$plat" = linux ] || { echo "target.sh: cut-bridges is Linux only" >&2; exit 2; }
+    [ ! -f "$S/nb.bak" ] || { echo "a cut copy of bridges.env is already kept for this run" >&2; exit 1; }
+    [ "$(get nb 7)" -gt "$keep" ] || { echo "bridges.env holds $(get nb 7) bridges, not more than $keep" >&2; exit 1; }
+    put nb.bak "$(get nb 7)"; printf 'bridges_before\t%s\n' "$(get nb.bak)"
+    put nb "$keep"; printf 'bridges_kept\t%s\n' "$keep" ;;
+  restore-bridges)
+    identity
+    if [ -f "$S/nb.bak" ]; then put nb "$(get nb.bak)"; rm -f "$S/nb.bak"; printf 'bridges_restored\t%s\n' "$(get nb)"
+    else printf 'bridges_restored\tnone\n'; fi ;;
   bridges-refresh)
     if [ "$(get mode on)" = off ] && [ "$brk" != refresh-runs ]; then
       journal "br-$(now)" bridges skipped "bridges off"
@@ -140,18 +159,24 @@ case "$op" in
         [ "$brk" != cli-fails ] || cmd_wrap 1 "nice-dns: the controller is still busy; the bridges mode is unchanged."
         put prevmode "$(get mode on)"
         put mode "$m"
-        id="bridges-$m-$(now)"
+        # A real switch takes seconds; two fake ones in a second get their own ids.
+        put swn "$(( $(get swn 0) + 1 ))"
+        id="bridges-$m-$(now)$(get swn)"
         [ "$brk" = no-mode-change ] || journal "$id" bridges mode-change "$m"
         journal "$id" service requested "proxy restart for tor-$(get proxy); container before: g$(get sgen 1)"
-        if [ "$brk" = ack-other-id ]; then journal "bridges-$m-1" service acknowledged "tor-$(get proxy) restarted"
-        elif [ "$brk" != no-ack ]; then journal "$id" service acknowledged "tor-$(get proxy) restarted"; fi
-        put sgen "$(( $(get sgen 1) + 1 ))"
+        ng="$(( $(get sgen 1) + 1 ))"
+        if [ "$brk" = ack-other-id ]; then journal "bridges-$m-1" service acknowledged "tor-$(get proxy) restarted: g$ng"
+        elif [ "$brk" != no-ack ]; then journal "$id" service acknowledged "tor-$(get proxy) restarted: g$ng"; fi
+        [ "$brk" = stale-gen ] || put sgen "$ng"
         if [ "$m" = off ]; then
-          if [ "$brk" = still-bridges ]; then put how 'with 3 bridge(s)'; else put how 'direct (no bridges)'; fi
+          if [ "$brk" = still-bridges ]; then put how "with $(get nb 7) bridge(s)"; else put how 'direct (no bridges)'; fi
         else
-          if [ "$brk" = still-direct ]; then put how 'direct (no bridges)'; else put how 'with 3 bridge(s)'; fi
+          if [ "$brk" = still-direct ]; then put how 'direct (no bridges)'
+          elif [ "$brk" = zero-bridges ]; then put how 'with 0 bridge(s)'
+          else put how "with $(get nb 7) bridge(s)"; fi
         fi
         put dark no
+        [ "$brk" != few-servfail ] || [ ! -f "$S/nb.bak" ] || put dark yes
         [ "$brk" != servfail ] || put dark yes
         [ "$brk" != servfail-once ] || [ "$m" != off ] || put dark yes
         if [ "$m" = off ]; then
