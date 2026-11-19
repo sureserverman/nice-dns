@@ -175,6 +175,43 @@ kickstart (lib/platform/macos.sh, `nd_platform_restart_unbound` and
 A per-container restart needs a fixed address or a stack that follows the
 address a restart gets (BL-038).
 
+## macOS install over ssh (2026-11-19)
+
+Backlog sweep Sub-plan 3, Task 2.3, on the mac (macOS 27.2.1, container CLI
+1.7.1, FileVault off, sudo without a password for the user). The install
+was run over plain ssh, outside the user's login session:
+`ssh mac '~/.local/bin/nice-dns reinstall --branch sweep-macos'`.
+
+| Run | Commit | Result |
+|---|---|---|
+| 15:26 UTC | b5050a8 | stopped in preparation: "Homebrew not found" (the ssh PATH held no Homebrew directory); nothing changed |
+| 15:43 UTC | 8914b88 | installed; DNS answered; but the fresh-datapath restart did nothing (the apiserver kept its 15:43:57 start) |
+| 17:01 UTC | 757dd8c | installed in 77 s; the apiserver restarted at 17:02:05, at the fresh-datapath step |
+
+After the 17:01 run: `dig @172.31.240.250 cloudflare.com` answered; the
+scoped-DNS anchor held its pass rules on `bridge100` and its block rules;
+`container ls -a` listed no `buildkit`; the start-container agent found
+the runtime ready and the stack healthy (17:02:17). Over ssh a direct
+`container system status` still prints "apiserver is not running and not
+registered with launchd"; the installer reaches the runtime through
+`launchctl asuser` (root-ops `runtime`).
+
+`container system df`, before the first run and after the last:
+
+| Type | Before (15:25) | After (17:02) |
+|---|---|---|
+| Images | 43, 33.81 GB, 32.37 GB reclaimable | 43, 33.84 GB, 32.8 GB reclaimable |
+| Containers | 4 (3 active), 2.18 GB, 1.05 GB reclaimable | 3 (3 active), 1.06 GB, 0 B reclaimable |
+| Local volumes | 2, 354.9 MB | 2, 354.9 MB |
+
+The builder's 1.05 GB went with it. The images are not pruned: the
+previous generation is kept for a rollback, and a prune would also remove
+the runtime's init image (README, "Disk use on macOS").
+
+Not shown: an ssh install that has to ask for a sudo password (this mac's
+user has a NOPASSWD rule), and a Mac with no one logged in (fixture case
+only).
+
 ## Known limits
 
 Found by the Stage 2 gate reviews and deferred (user decision 2026-10-06:
@@ -188,14 +225,17 @@ qualify what was soaked; any product fix would need a new 24 h soak):
   on the new `proxy_gen` state key (BL-036). Bundles from the 2026-11-18
   sweep on skip a state key they do not know, journal it once and go on;
   only a rollback to an older bundle still needs the state file deleted.
-- macOS: a slow Tor at login can be read as a bad bridge set and trigger a
-  rebuild (BL-037).
+- macOS: a slow Tor at login could be read as a bad bridge set and trigger
+  a rebuild (BL-037). Fixed in the 2026-11-18 sweep (Sub-plan 3, Stage 1):
+  the agent waits past the proxies' own cap and leaves a proxy that reported
+  its timeout to the controller.
 - An outage might make a healthy bridge look weak and keep it out for 30
   days; plausible, not observed (BL-031).
-- macOS: the root helper's `post` can stop early when the machine is
-  offline, before the scoped-DNS pf anchor is in place, and the agent's fast
-  path does not reassert the anchor, so a pf flush with the stack up
-  reopens the scoped leak until the next rebuild (BL-032, BL-033).
+- macOS: the root helper's `post` could stop early with no route to the
+  stack, before the scoped-DNS pf anchor was in place (BL-032). Fixed in the
+  2026-11-18 sweep (Sub-plan 3, Stage 1). The agent's fast path did already
+  run `post`, so every agent run reasserts the anchor; a pf flush with the
+  stack up stays open until the next agent run (BL-033).
 
 Also:
 
