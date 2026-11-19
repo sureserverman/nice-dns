@@ -269,6 +269,8 @@ platform, the proxy each target ran (tor-socat) with the standard Pi-hole.
 | Group | Date | Run | Commit | Result |
 |---|---|---|---|---|
 | install-lifecycle | 2026-11-19 | `20261119T222036Z-80f918ba` | 0df52e8 | 6/6 on both targets |
+| container-faults | 2026-11-19 | `20261119T223433Z-7180b627` | 4a0fb5c | 9/9; receipt assembled and verified by the group |
+| bridges-toggle | 2026-11-19 | `20261119T232058Z-73a63573` | 4a0fb5c | 11/11, BT-ON-FEW included; receipt assembled and verified by the group |
 
 install-lifecycle: an upgrade over the older install, a reinstall that kept
 the Tor, anchor and list marks, an uninstall, and a final install. During
@@ -281,6 +283,29 @@ each target holds one generation directory (read with `ls` on the
 generations directory; mint held 191 before the sweep, BL-061). Over ssh
 pkexec has no authentication agent and exits 127, so each root step ran
 through sudo, as `lib/root.sh` does by design.
+
+container-faults: every recovery was the controller's own, on its real
+timers. A frozen Pi-hole came back on both targets (a fresh name 299 s
+after the freeze on mint, 229 s on the mac; Pi-hole working 29 s after the
+restart on each). On mint a paused Unbound was repaired by the runtime in
+226 s, and 4 proxy crashes 75 s apart gave one crash-loop escalation
+("tor-socat restarted 3 times in 600 s ... the controller adds no restart")
+and a fresh name 404 s after the first crash. On the mac a stopped Unbound
+was rebuilt (containers-missing) and a fresh name answered 124 s after the
+stop.
+
+bridges-toggle: off and on came back on both targets (off 24 s and on 29 s
+on mint, 22 s each on the mac, each from the command to "DNS is
+answering"). BT-ON-FEW (mint only): with bridges.env cut to 2 of its 7
+bridges, off then on took 139 s, over the proxy's 120 s restart bound,
+which the scenario reports and does not gate. The extra time is the host's
+bridge selection, which runs first with fewer than 3 bridges (the restart
+was acknowledged 87 s after the request) and refilled the set: Tor came
+back with 7 bridges and a fresh name answered. `nice-dns bridges on` exited
+0 with "Bridges are on; the proxy restarted and DNS is answering", inside
+the 1-4 min its own wait message gives. bridges.env was then put back and
+the stack restarted onto it. mint ends this group with bridges on (it had
+been off since Sub-plan 4).
 
 ## Known limits
 
