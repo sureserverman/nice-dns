@@ -259,6 +259,29 @@ Automatic login (System Settings, Users & Groups; macOS allows it only with
 FileVault off) is the recommendation for DNS after an unattended reboot; it
 was not tested here, and it lets anyone at the Mac into the account.
 
+## Live pass of the backlog sweep
+
+Backlog sweep Sub-plan 5, Stage 1: the merged sweep (Sub-plans 1 to 4),
+installed from this checkout's committed HEAD on mint (Linux Mint 22.3,
+podman 5.8.1) and the mac (macOS 27.2.1, container CLI 1.7.1), one cell per
+platform, the proxy each target ran (tor-socat) with the standard Pi-hole.
+
+| Group | Date | Run | Commit | Result |
+|---|---|---|---|---|
+| install-lifecycle | 2026-11-19 | `20261119T222036Z-80f918ba` | 0df52e8 | 6/6 on both targets |
+
+install-lifecycle: an upgrade over the older install, a reinstall that kept
+the Tor, anchor and list marks, an uninstall, and a final install. During
+the uninstall the host resolver was sampled every 2 s: each sample was the
+stack or the state from before nice-dns, never anything else (mint 29
+samples, the mac 12), and the installer's log restores DNS before it
+removes the network (mint: "restored the resolver state from before
+nice-dns", then `dnsnet`, then "Uninstalled."). After the final install
+each target holds one generation directory (read with `ls` on the
+generations directory; mint held 191 before the sweep, BL-061). Over ssh
+pkexec has no authentication agent and exits 127, so each root step ran
+through sudo, as `lib/root.sh` does by design.
+
 ## Known limits
 
 Found by the Stage 2 gate reviews and deferred (user decision 2026-10-06:
