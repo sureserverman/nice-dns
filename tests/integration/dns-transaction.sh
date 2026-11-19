@@ -127,9 +127,10 @@ t_helper_blocks_scoped_dns_off_the_container_bridge() {
 }
 
 # BL-032: the helper runs under set -euo pipefail, so an assignment whose
-# capture fails ended it. An offline Mac has no route to the stack: `route`
-# exits 1, and post ended before its cache flush. A failing `pfctl -E` did the
-# same. Neither may end the pin.
+# capture fails ended it. With no route to the stack's address (no container
+# bridge; an offline Mac with the stack up keeps its connected route on the
+# bridge, live mac 2026-11-19) `route` exits 1, and post ended before its
+# cache flush. A failing `pfctl -E` did the same. Neither may end the pin.
 t_helper_post_finishes_when_the_mac_is_offline() {
   dt_select_platforms
   case " $DT_PLATS " in *" macos "*) ;; *) echo "macos not selected (--platforms)"; return 0 ;; esac
@@ -272,6 +273,9 @@ t_helper_reads_pf_status_whole_and_keeps_its_token() {
     assert_ne "" "$(ip_first "$FAKE_LOG" '^pfctl -E$')" "pf is enabled when it is off"
     assert_eq 4242 "$(cat "$tokdir/pf-token" 2>/dev/null)" "the token is recorded"
     assert_eq 700 "$(ip_mode "$tokdir")" "BL-043: the token directory is 0700"
+    assert_eq 600 "$(ip_mode "$tokdir/pf-token")" "the token file is 0600"
+    # An older install left the directory 0755 (Stage 1 Tier-2 I2).
+    chmod 755 "$tokdir"
     # pf on, with a status longer than a pipe buffer (pfctl is still writing
     # when grep -q would have exited).
     rm -f "$IP_BIN/pfctl"
@@ -294,6 +298,24 @@ STUB
     assert_eq "" "$(ip_first "$FAKE_LOG" '^pfctl -E$')" "BL-032: an enabled pf is not enabled again: $(cat "$FAKE_LOG")"
     assert_eq 4242 "$(cat "$tokdir/pf-token" 2>/dev/null)" "BL-032: and the recorded token is unchanged"
     assert_ne "" "$(ip_first "$FAKE_LOG" '^pfctl -a com\.apple/260\.nice-dns-scoped -f -$')" "the block is still loaded"
+    assert_eq 700 "$(ip_mode "$tokdir")" "BL-043: an existing 0755 directory is made 0700 with pf already on"
+  ) || exit 1
+  # The token's directory is a symlink: nothing is written or chmodded
+  # through it, and the pin still finishes.
+  (
+    local tokdir
+    dt_world "$(dt_ep_of macos)" fresh
+    tokdir="$FAKE_ROOT/var/db/nice-dns"
+    umask 022
+    mkdir -p "$CASE_DIR/elsewhere" "$(dirname "$tokdir")"; chmod 755 "$CASE_DIR/elsewhere"
+    ln -s "$CASE_DIR/elsewhere" "$tokdir"
+    : >"$FAKE_LOG"
+    dt_helper macos post
+    assert_rc 0 "$DT_RC" "post with a symlinked token directory: $DT_OUT"
+    assert_match 'is a symlink; the pf token is not recorded' "$DT_OUT" "and it says so"
+    assert_no_path "$CASE_DIR/elsewhere/pf-token" "no token is written through the link"
+    assert_eq 755 "$(ip_mode "$CASE_DIR/elsewhere")" "and the link's target is not chmodded"
+    assert_ne "" "$(ip_first "$FAKE_LOG" '^dscacheutil -flushcache$')" "the cache is still flushed"
   ) || exit 1
 }
 

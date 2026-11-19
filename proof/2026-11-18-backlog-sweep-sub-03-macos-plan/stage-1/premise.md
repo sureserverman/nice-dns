@@ -35,6 +35,7 @@ Assumption: the agent's `route -n get 172.31.240.250` names the container bridge
 Checked: on the mac: `route -n get 172.31.240.250 | grep interface`.
 Result: `interface: bridge100`. Whether `route` exits non-zero when the Mac is offline was not checked: it needs the mac's network taken down, and ssh is the only path to it.
 Verdict: holds (online); offline exit status not checkable here — the fixture fakes it, as the plan's Evidence claim says.
+Added at the Stage 1 gate (Tier-2 I1, 2026-11-19): `ssh mac 'netstat -rn -f inet | grep -E "^Destination|172\.31\.240|^default"'` printed `172.31.240.248/29  link#25  UC  bridge100` — the stack's subnet is a connected route on the container bridge, not one through the default gateway (`default 192.168.0.1 UGScg en1`). So an offline Mac with the stack up still routes to Pi-hole and `post` loads the block; `route` fails only with no bridge, where nothing is loaded by design. Outcome 1 holds on that reading; BL-032's "no route (offline)" names the no-bridge case.
 
 ## Premise 4
 Assumption: the agent's fast path calls the root helper (the plan said it never does; OD-5).

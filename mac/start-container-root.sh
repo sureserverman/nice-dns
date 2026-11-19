@@ -83,9 +83,13 @@ set_local_dns() {
 # state skips the rules. Without a bridge to the stack nothing is loaded: a
 # block could cut the stack off. A failure here never fails the pin.
 block_scoped_dns() {
-  local br tok info
-  # Under set -e a failed capture would end post before its cache flush: an
-  # offline Mac has no route at all (BL-032).
+  local br tok info tokdir
+  tokdir="$(dirname "$PF_TOKEN")"
+  # Under set -e a failed capture would end post before its cache flush
+  # (BL-032). The stack's subnet is a connected route on its bridge, so an
+  # offline Mac with the stack up still finds it (live mac 2026-11-19:
+  # 172.31.240.248/29 link#25 UC bridge100); `route` fails when there is no
+  # bridge at all.
   br="$(route -n get "$PIHOLE_IP" 2>/dev/null | awk '/interface:/ { print $2; exit }')" || br=""
   case "$br" in
     bridge[0-9]*) ;;
@@ -99,11 +103,16 @@ block_scoped_dns() {
     *'Status: Enabled'*) ;;
     *)
       tok="$(pfctl -E 2>&1 | sed -n 's/^Token : //p')" || tok=""
-      if [[ -n $tok ]]; then
-        { mkdir -p "$(dirname "$PF_TOKEN")" && chmod 700 "$(dirname "$PF_TOKEN")" && printf '%s\n' "$tok" >"$PF_TOKEN"; } 2>/dev/null \
+      if [[ -n $tok && -L $tokdir ]]; then
+        echo "$tokdir is a symlink; the pf token is not recorded" >&2
+      elif [[ -n $tok ]]; then
+        { mkdir -p "$tokdir" && (umask 077 && printf '%s\n' "$tok" >"$PF_TOKEN"); } 2>/dev/null \
           || echo "could not record the pf token in $PF_TOKEN" >&2
       fi ;;
   esac
+  # The token's directory is 0700 whoever made it: an older install left it
+  # 0755 (BL-043 item 5), and pf may already be on, so no token is written.
+  if [[ -d $tokdir && ! -L $tokdir ]]; then chmod 700 "$tokdir" 2>/dev/null || true; fi
   if ! printf 'pass out quick on %s proto { udp, tcp } to %s port { 53, 853 }\nblock drop out quick proto { udp, tcp } to %s port { 53, 853 }\n' \
       "$br" "$DNSNET_SUBNET" "$DNSNET_SUBNET" | pfctl -a "$PF_ANCHOR" -f - 2>/dev/null; then
     echo "could not load $PF_ANCHOR; scoped DNS is not blocked" >&2
