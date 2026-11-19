@@ -99,7 +99,10 @@ restart's `requested` and `acknowledged`; the controller's next pass adds
 `ready`), then a wait for DNS; the schedules are released on every exit. An
 unchanged mode is written again and restarts nothing. They never touch `bridges.env`,
 the bridge pool, so `on` uses the last good set again. Nothing reads the mode
-file as shell: it is parsed for the `TOR_BRIDGES` line only.
+file as shell: it is parsed for its `TOR_BRIDGES=` lines only, and a hand edit
+that left more than one means its last, everywhere, as systemd's
+`EnvironmentFile=` reads it. The controller also counts its cooldown from the
+proxy restart. An uninstall removes the mode file and keeps `bridges.env`.
 
 With bridges off, the ISP no longer sees obfs4 traffic. It sees plain
 connections to Tor guards: it can tell Tor is in use, though still not what is

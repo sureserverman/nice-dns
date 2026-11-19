@@ -201,7 +201,7 @@ curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install
 curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac.sh -o install-mac.sh && bash install-mac.sh uninstall
 ```
 
-Restores system DNS first, while the stack still answers. On Linux it then gives Mullvad back the DNS setting it had before nice-dns, unless that setting was changed since. Only after that does it remove quadlets/LaunchAgent, pods, containers, images and the network, the install records, and the bridges mode (`~/.config/nice-dns/bridges-mode.env`), so a later install starts with bridges on. If system DNS cannot be restored, nothing is stopped or removed: nice-dns keeps answering, and the message says what to fix before you run the uninstall again. Shared system tweaks (PPA pin, sysctl, AppArmor, Homebrew packages, Rosetta) are left in place.
+Restores system DNS first, while the stack still answers. On Linux it then gives Mullvad back the DNS setting it had before nice-dns, unless that setting was changed since. Only after that does it remove quadlets/LaunchAgent, pods, containers, images and the network, the install records, and the bridges mode (`~/.config/nice-dns/bridges-mode.env`), so a later install starts with bridges on. The bridge set (`bridges.env`) is kept for the next install. If system DNS cannot be restored, nothing is stopped or removed: nice-dns keeps answering, and the message says what to fix before you run the uninstall again. Shared system tweaks (PPA pin, sysctl, AppArmor, Homebrew packages, Rosetta) are left in place.
 
 ## License
 

@@ -834,7 +834,9 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
    the controller. Under the state lock it records the restart in the
    controller's state, so the next pass counts its cooldown from it and does
    not restart the stack again (BL-059); `nice-dns bridges on|off` records its
-   proxy restart the same way. On macOS the wait for the rebuild prints a
+   proxy restart the same way. A pass that finds a new boot (no pass yet since
+   the host started, or none ever) starts its clocks afresh and drops the
+   record; its startup allowance (120 s) then holds restarts instead. On macOS the wait for the rebuild prints a
    line every 30 s and is no longer than the readiness tries allow (BL-055).
 
 #### Invariants

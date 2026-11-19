@@ -353,7 +353,7 @@ fi
 # created: a missing set stops the proxy unit, as before the mode existed.
 # The same paths the quadlets read (%h/.config/nice-dns/...).
 BRIDGES_ENV="$HOME/.config/nice-dns/bridges.env"
-if [ "$(awk -F '=' '$1 == "TOR_BRIDGES" { v = $2 } END { print v }' "$HOME/.config/nice-dns/bridges-mode.env" 2>/dev/null)" = off ] && [ ! -e "$BRIDGES_ENV" ]; then
+if [ "$(awk -F '=' '$1 == "TOR_BRIDGES" && NF >= 2 { v = $2 } END { print v }' "$HOME/.config/nice-dns/bridges-mode.env" 2>/dev/null)" = off ] && [ ! -e "$BRIDGES_ENV" ]; then
   (umask 077 && : >"$BRIDGES_ENV")
 fi
 

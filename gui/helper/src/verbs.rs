@@ -1,8 +1,9 @@
 //! The verb tables and argument grammars, and the path grammar.
 //!
 //! The tables are plain data for both platforms and must equal the allow-list
-//! of `deb/root-ops` and `mac/root-ops` (plus `version` and `install-helper`,
-//! which root-ops gains in the next task). Every token is compared by exact
+//! of `deb/root-ops` and `mac/root-ops`, less deb's `remove-helper`: on Linux
+//! lib/root.sh sends that verb to sudo, never to the helper (OD-6 of the
+//! 2026-11-18 backlog sweep, DEC-025). Every token is compared by exact
 //! string equality; nothing is split or prefix-matched.
 
 use std::ffi::{OsStr, OsString};

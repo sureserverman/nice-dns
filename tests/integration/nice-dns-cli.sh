@@ -1298,6 +1298,9 @@ t_bridges_status_reads_the_last_line_BL_060() {
     printf 'TOR_BRIDGES=off\nTOR_BRIDGES=on\n' >"$(bt_mode_file)"
     ND_STATUS_NOW="$ST_NOW" cl_run "$CL_TREE/nice-dns" status --tsv
     assert_match "^bridges	mode	on$" "$CL_OUT" "BL-060 $u: off then on: status --tsv reads on"
+    printf 'TOR_BRIDGES=off\nTOR_BRIDGES\n' >"$(bt_mode_file)"
+    ND_STATUS_NOW="$ST_NOW" cl_run "$CL_TREE/nice-dns" status --tsv
+    assert_match "^bridges	mode	off$" "$CL_OUT" "BL-060 $u: off then a bare line: status --tsv still reads off"
   done
 }
 

@@ -1089,7 +1089,7 @@ nd_recovery_tick() {
 # nd_bridges_mode: on or off, from bridges-mode.env in the bridge directory
 # (read as data, never sourced, DEC-001). Absent or any other value is on.
 nd_bridges_mode() {
-  case "$(awk -F '=' '$1 == "TOR_BRIDGES" { v = $2 } END { print v }' "$(nd_platform_bridge_dir)/bridges-mode.env" 2>/dev/null)" in
+  case "$(awk -F '=' '$1 == "TOR_BRIDGES" && NF >= 2 { v = $2 } END { print v }' "$(nd_platform_bridge_dir)/bridges-mode.env" 2>/dev/null)" in
     off) printf 'off\n' ;;
     *) printf 'on\n' ;;
   esac

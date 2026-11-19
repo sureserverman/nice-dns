@@ -773,6 +773,10 @@ t_every_bridge_reader_takes_the_last_line_BL_060() {
   printf 'TOR_BRIDGES=off\nTOR_BRIDGES=on\n' >"$h/.config/nice-dns/bridges-mode.env"
   sh -c "$(printf '%s' "$cond" | sed "s#%h#$h#g")"; rc=$?
   assert_rc 0 "$rc" "BL-060 unit: off then on reads on, so the boot selection runs"
+  # A bare TOR_BRIDGES line (no =) is no assignment to systemd: every reader skips it.
+  printf 'TOR_BRIDGES=off\nTOR_BRIDGES\n' >"$h/.config/nice-dns/bridges-mode.env"
+  sh -c "$(printf '%s' "$cond" | sed "s#%h#$h#g")"; rc=$?
+  assert_rc 2 "$rc" "BL-060 unit: off then a bare line still reads off"
   bl_agent
   cfg="$CASE_DIR/ahome/.config/nice-dns"; mkdir -p "$cfg"
   bl_set "$cfg/bridges.env" 5
@@ -782,6 +786,9 @@ t_every_bridge_reader_takes_the_last_line_BL_060() {
   printf 'TOR_BRIDGES=off\nTOR_BRIDGES=on\n' >"$cfg/bridges-mode.env"
   out="$(bl_agent_run run)"
   assert_match '^container run .* -e TOR_BRIDGES=on ' "$out" "BL-060 agent: off then on starts it with bridges"
+  printf 'TOR_BRIDGES=off\nTOR_BRIDGES\n' >"$cfg/bridges-mode.env"
+  out="$(bl_agent_run run)"
+  assert_match '^container run .* -e TOR_BRIDGES=off ' "$out" "BL-060 agent: off then a bare line still starts it direct"
   (
     bl_env macos
     printf 'TOR_BRIDGES=on\nTOR_BRIDGES=off\n' >"$ND_BRIDGE_CONFIG_DIR/bridges-mode.env"
@@ -793,5 +800,7 @@ t_every_bridge_reader_takes_the_last_line_BL_060() {
     assert_rc 3 $? "BL-060 macOS evaluation: on then off is refused as bridges off"
     printf 'TOR_BRIDGES=off\nTOR_BRIDGES=on\n' >"$ND_BRIDGE_CONFIG_DIR/bridges-mode.env"
     assert_eq on "$(nd_bridges_mode)" "BL-060 controller: off then on reads on"
+    printf 'TOR_BRIDGES=off\nTOR_BRIDGES\n' >"$ND_BRIDGE_CONFIG_DIR/bridges-mode.env"
+    assert_eq off "$(nd_bridges_mode)" "BL-060 controller: off then a bare line still reads off"
   ) || exit 1
 }

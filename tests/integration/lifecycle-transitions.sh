@@ -519,7 +519,7 @@ t_macos_install_honours_the_bridges_mode() {
 # line; an uninstall that gave host DNS back removes the mode file, so a later
 # install starts with bridges on, and the config directory once it is empty.
 t_bridges_mode_last_line_and_uninstall_BL_060() {
-  local ep line cfg
+  local ep line cfg bl060_set
   (
     dt_world install-mac fresh
     printf 'TOR_BRIDGES=on\nTOR_BRIDGES=off\n' >"$IP_HOME/.config/nice-dns/bridges-mode.env"
@@ -549,10 +549,12 @@ t_bridges_mode_last_line_and_uninstall_BL_060() {
       cfg="$IP_HOME/.config/nice-dns"
       printf 'TOR_BRIDGES=off\n' >"$cfg/bridges-mode.env"
       printf 'mine\n' >"$cfg/owner-notes.txt"
+      bl060_set="$(cat "$cfg/bridges.env" 2>/dev/null || printf 'set\n' | tee "$cfg/bridges.env")"
       ip_install "$ep" uninstall
       assert_rc 0 "$IP_RC" "BL-060 $ep keep: uninstall: $IP_OUT"
       assert_no_path "$cfg/bridges-mode.env" "BL-060 $ep keep: the mode file goes"
       assert_eq mine "$(cat "$cfg/owner-notes.txt" 2>/dev/null)" "BL-060 $ep keep: the owner's file and its directory stay"
+      assert_eq "$bl060_set" "$(cat "$cfg/bridges.env" 2>/dev/null)" "BL-060 $ep keep: the bridge set is kept for the next install"
     ) || exit 1
   done
   (
