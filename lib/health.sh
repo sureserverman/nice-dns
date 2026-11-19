@@ -210,7 +210,9 @@ _nd_deadline() {
   if [ "$1" -lt "$l" ]; then printf '%s\n' "$1"; else printf '%s\n' "$l"; fi
 }
 
-_nd_first_line() { head -n 1 "$1" 2>/dev/null | cut -c1-200; }
+# _nd_first_line <stderr file>: its first line as a reason, podman's storage
+# warning left out (nd_platform_stderr, BL-054).
+_nd_first_line() { nd_platform_stderr "$1" | head -n 1 | cut -c1-200; }
 
 # ─── runtime ─────────────────────────────────────────────────────────────────
 
@@ -231,7 +233,7 @@ _nd_obs_runtime() {
     124) _nd_obs runtime indeterminate $(($(_nd_now_ms) - t0)) "deadline: listing containers gave no answer within ${dl}s"
        return 0 ;;
     *) _ND_H_RT=down
-       _nd_obs runtime unhealthy $(($(_nd_now_ms) - t0)) "runtime-down: $(tr '\n' ' ' <"$f.err" | cut -c1-200)"
+       _nd_obs runtime unhealthy $(($(_nd_now_ms) - t0)) "runtime-down: $(nd_platform_stderr "$f.err" | tr '\n' ' ' | cut -c1-200)"
        return 0 ;;
   esac
   _ND_H_RT=ok
@@ -291,7 +293,7 @@ _nd_obs_container() {
   case "$rc" in
     0) ;;
     124) _nd_obs "container:$c" indeterminate $(($(_nd_now_ms) - t0)) "deadline: the state of $c gave no answer within ${dl}s restarts ?"; return 0 ;;
-    *) e="$(head -n 1 "$_ND_H_TMP/cst.err" 2>/dev/null | tr -d '\000-\037\177' | cut -c1-120)"
+    *) e="$(nd_platform_stderr "$_ND_H_TMP/cst.err" | head -n 1 | tr -d '\000-\037\177' | cut -c1-120)"
        if [ "$rc" = 5 ]; then what="the restart count of $c"; else what="the state of $c"; fi
        _nd_obs "container:$c" indeterminate $(($(_nd_now_ms) - t0)) "unknown: $what is not readable (exit $rc${e:+: $e}) restarts ?"; return 0 ;;
   esac
@@ -319,15 +321,17 @@ EOF
   esac
 }
 
+# _nd_sha_checked <64|16> [file]: the SHA-256 of <file> (of stdin without one)
+# in hex, cut to that many characters; exit 1, nothing printed, unless the
+# tool gave that many hex characters: no sha256 tool, or one that failed, is
+# an unknown hash, never the hash of nothing (BL-021). The same function is in
+# lib/health.sh, health/nice-dns-health and lib/install.sh.
+_nd_sha_checked() { local n="$1" h; shift; if command -v sha256sum >/dev/null 2>&1; then h="$(sha256sum "$@" 2>/dev/null)"; else h="$(shasum -a 256 "$@" 2>/dev/null)"; fi || return 1; h="${h%%[![:xdigit:]]*}"; [ "${#h}" -ge "$n" ] || return 1; printf '%s\n' "${h:0:$n}"; }
+
 # nd_generation_hash <generation line>: its 16-hex hash, as the proxy
 # observation records it (and lib/recovery.sh start_route compares it with
 # the state's proxy_gen). Exit 1, nothing printed, when it cannot be hashed.
-nd_generation_hash() {
-  local h
-  if command -v sha256sum >/dev/null 2>&1; then h="$(printf '%s' "$1" | sha256sum | cut -c1-16)"
-  else h="$(printf '%s' "$1" | shasum -a 256 2>/dev/null | cut -c1-16)"; fi
-  case "$h" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) printf '%s\n' "$h" ;; *) return 1 ;; esac
-}
+nd_generation_hash() { printf '%s' "$1" | _nd_sha_checked 16; }
 
 # ─── DNS owner ───────────────────────────────────────────────────────────────
 
@@ -577,7 +581,7 @@ _nd_obs_unbound() {
   case "$rc" in
     0) _nd_obs unbound healthy $(($(_nd_now_ms) - t0)) "control and route answer" ;;
     124) _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "deadline: probe-route gave no verdict within ${dl}s" ;;
-    126|127) _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "probe-route cannot run in the image (exit $rc): $(tail -n 1 "$_ND_H_TMP/ub.err" 2>/dev/null | tr '\t\n' '  ')" ;;
+    126|127) _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "probe-route cannot run in the image (exit $rc): $(nd_platform_stderr "$_ND_H_TMP/ub.err" | tail -n 1 | tr '\t\n' '  ')" ;;
     *) if _nd_ub_exec_failed "$rc"; then
          _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "the runtime could not exec in unbound (exit $rc): $(grep -m 1 '^Error:' "$_ND_H_TMP/ub.err")"
        else

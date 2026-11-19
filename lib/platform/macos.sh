@@ -66,6 +66,10 @@ nd_platform_runtime_bin() {
   return 1
 }
 
+# nd_platform_stderr <file>: a command's stderr as a reason (BL-054; Linux
+# drops podman's storage-driver warning; Apple container prints none).
+nd_platform_stderr() { cat "$1" 2>/dev/null; return 0; }
+
 # _nd_mac_table <deadline> <out> [-a]: `container ls` rows as
 # "name<TAB>state" (the plain table; `container ps` does not exist). An
 # "Error:" line fails even when the CLI exits 0. Codes as for
@@ -208,6 +212,24 @@ nd_platform_container_generation() {
        END { exit !f }' "$3/gen"
 }
 
+# nd_platform_container_absent <container> <deadline> <tmp>: 0 a `container
+# ls -a` that answered does not list <container> as running (absent, or
+# stopped: the agent's rebuild recreates it, so its circuits are new either
+# way); 1 it runs; 2 no answer (one line of reason in <tmp>/absent.err; an
+# "Error:" banner with exit 0 is no answer, as in _nd_mac_table). BL-022.
+nd_platform_container_absent() {
+  local rc
+  _nd_mac_table "$2" "$3/abs" -a; rc=$?
+  case "$rc" in
+    0) awk -F '\t' -v n="$1" '$1 == n && $2 == "running" { f = 1 } END { exit !f }' "$3/abs" && return 1
+       return 0 ;;
+    124) printf 'deadline: container ls -a\n' ;;
+    3) printf 'no container CLI\n' ;;
+    *) { head -n 1 "$3/abs.err" 2>/dev/null; printf 'container ls -a exited %s\n' "$rc"; } | head -n 1 ;;
+  esac >"$3/absent.err"
+  return 2
+}
+
 # nd_platform_container_state <container> <deadline> <tmp>: one line
 # "status<TAB>health<TAB>restarts<TAB>exit_code<TAB>" (the detail is empty).
 # The status is the STATE column of `container ls -a`: Apple container keeps
@@ -296,7 +318,13 @@ nd_platform_repair_runtime() {
     runtime-down)
       bin="$(nd_platform_runtime_bin)" || return 3
       nd_bounded "$2" "$3/rep" "$3/rep.err" "$bin" system start ;;
-    containers-missing) nd_bounded "$2" "$3/rep" "$3/rep.err" launchctl kickstart "gui/$(id -u)/$_ND_MAC_AGENT" ;;
+    containers-missing)
+      local dl="$2" tmp="$3" rc=0
+      shift 3
+      nd_bounded "$dl" "$tmp/rep" "$tmp/rep.err" launchctl kickstart "gui/$(id -u)/$_ND_MAC_AGENT" || rc=$?
+      # The agent recreates whatever is missing; the note names what was (BL-054).
+      printf 'kickstart %s for %s (exit %s); ' "$_ND_MAC_AGENT" "${*:-the stack}" "$rc" >>"$tmp/rep.note"
+      return "$rc" ;;
     *) return 3 ;;
   esac
 }

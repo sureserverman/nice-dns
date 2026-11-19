@@ -503,8 +503,55 @@ rt_start_setup() {
   export ND_STATE_DIR ND_BOOT_ID
   # The proxy container's generation line, as the platform reads it; unset:
   # no proxy container is readable (the macOS agent creates it after Unbound).
-  RT_PGEN=""
+  RT_PGEN="" RT_ABSENT=absent
   nd_platform_container_generation() { [ -n "$RT_PGEN" ] && printf '%s\n' "$RT_PGEN"; }
+  # Whether the runtime says the proxy is absent (BL-022): absent, present, or
+  # anything else, a query that failed.
+  nd_platform_container_absent() {
+    case "$RT_ABSENT" in absent) return 0 ;; present) return 1 ;; esac
+    printf '%s\n' "$RT_ABSENT" >"$3/absent.err"; return 2
+  }
+}
+
+# rt_fake_runtime <linux|macos> <mode>: a podman (Linux) or container (macOS)
+# in $CASE_DIR/bin that answers only the proxy queries start_route makes, and
+# the adapter of that platform loaded over this shell's. Modes: hang (no
+# answer), absent (no such container; podman adds its storage warning), broken
+# (podman cannot load its configuration: exit 1 with an error; macOS: an
+# "Error:" banner with exit 0). The real adapter's query is used, bounded by
+# ND_ROUTE_PROXY_DEADLINE.
+rt_fake_runtime() {
+  mkdir -p "$CASE_DIR/bin"
+  printf '%s\n' "$2" >"$CASE_DIR/rt-mode"
+  cat >"$CASE_DIR/bin/podman" <<STUB
+#!/bin/sh
+m="\$(cat "$CASE_DIR/rt-mode")"
+w='time="x" level=warning msg="The storage '"'"'driver'"'"' option should be set in /usr/share/containers/storage.conf. A driver was picked automatically."'
+case "\$m" in
+  hang) sleep 30; exit 1 ;;
+  broken) echo "Failed to obtain podman configuration: lstat /nonexistent: no such file or directory" >&2; exit 1 ;;
+esac
+echo "\$w" >&2
+case "\$1 \$2" in
+  "container exists") exit 1 ;;
+  inspect*) echo "Error: no such object: \"\$5\"" >&2; exit 125 ;;
+esac
+exit 1
+STUB
+  cat >"$CASE_DIR/bin/container" <<STUB
+#!/bin/sh
+case "\$(cat "$CASE_DIR/rt-mode")" in
+  hang) sleep 30; exit 1 ;;
+  broken) echo "Error: XPC connection error: Connection invalid"; exit 0 ;;
+esac
+printf 'ID           IMAGE                                    OS     ARCH   STATE    IP                 CPUS  MEMORY  STARTED\n'
+printf 'pi-hole      pi-hole:latest                           linux  arm64  running  172.31.240.250/29  1     256 MB  2026-09-23T22:16:33Z\n'
+exit 0
+STUB
+  chmod 0755 "$CASE_DIR/bin/podman" "$CASE_DIR/bin/container"
+  export CONTAINER_BIN="$CASE_DIR/bin/container" ND_CONTAINER_FALLBACK=/nonexistent ND_ROUTE_PROXY_DEADLINE=2
+  # shellcheck source=lib/platform/macos.sh
+  if [ "$1" = macos ]; then . "$NICE_DNS_ROOT/lib/platform/macos.sh"; else . "$NICE_DNS_ROOT/lib/platform/linux.sh"; fi
 }
 
 # rt_recorded_proxy <generation line>: the controller's state records that
@@ -569,6 +616,65 @@ t_start_demotes_when_the_proxy_restarted() {
   assert_eq applied "$(rt_f result)" "demoted"
   assert_eq "cloudflare-exit	8" "$(_nd_route_file_info "$ND_ROUTE_DIR/forward-route.conf" | cut -f1,2)" "to the exit"
   assert_match "generation $(nd_generation_hash "$RT_PGEN")" "$(rt_f detail)" "the detail names the fresh generation"
+}
+
+# BL-022: a proxy whose generation cannot be read is fresh only when the
+# runtime said it is absent. A query that failed or timed out says nothing
+# about the proxy, so its onion (warm, as far as anyone knows) is kept; the
+# controller's next pass decides with real evidence.
+t_start_keeps_the_onion_when_the_proxy_cannot_be_asked_BL_022() {
+  local before
+  rt_start_setup
+  rt_call seed_route cloudflare-onion 7
+  rt_recorded_proxy "abc123 2026-09-29T20:00:00Z running"
+  RT_ABSENT="deadline: podman container exists"
+  before="$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")|$(rt_sha "$ND_ROUTE_DIR/desired.tsv")"
+  rt_call start_route
+  assert_rc 0 "$RT_RRC" "BL-022: an unanswered query: $RT_RES"
+  assert_eq kept "$(rt_f result)" "BL-022: the onion is kept"
+  assert_match 'could not be asked' "$(rt_f detail)" "BL-022: the detail says why"
+  assert_match 'deadline: podman container exists' "$(rt_f detail)" "BL-022: and names the failed query"
+  assert_eq "$before" "$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")|$(rt_sha "$ND_ROUTE_DIR/desired.tsv")" "BL-022: include and desired untouched"
+  assert_no_path "$ND_STATE_DIR/lock" "BL-022: the state lock is released"
+}
+
+t_start_on_a_real_runtime_that_does_not_answer_keeps_the_onion_BL_022() {
+  local plat mode before
+  for plat in linux macos; do
+    for mode in hang broken; do
+      (
+        rt_start_setup
+        ND_ROUTE_DIR="$CASE_DIR/route-$plat-$mode" ND_STATE_DIR="$CASE_DIR/state-$plat-$mode"
+        rt_fake_runtime "$plat" "$mode"
+        rt_call seed_route cloudflare-onion 7
+        assert_rc 0 "$RT_RRC" "BL-022 $plat $mode: an onion include: $RT_RES"
+        rt_recorded_proxy "abc123 2026-09-29T20:00:00Z running"
+        before="$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")"
+        PATH="$CASE_DIR/bin:$PATH" rt_call start_route
+        assert_rc 0 "$RT_RRC" "BL-022 $plat $mode: $RT_RES"
+        assert_eq kept "$(rt_f result)" "BL-022 $plat $mode: a runtime that cannot be asked keeps the onion: $RT_RES"
+        assert_eq "$before" "$(rt_sha "$ND_ROUTE_DIR/forward-route.conf")" "BL-022 $plat $mode: the include is untouched"
+      ) || exit 1
+    done
+  done
+}
+
+t_start_on_a_real_runtime_without_the_proxy_demotes_BL_022() {
+  local plat
+  for plat in linux macos; do
+    (
+      rt_start_setup
+      ND_ROUTE_DIR="$CASE_DIR/route-$plat" ND_STATE_DIR="$CASE_DIR/state-$plat"
+      rt_fake_runtime "$plat" absent
+      rt_call seed_route cloudflare-onion 7
+      assert_rc 0 "$RT_RRC" "BL-022 $plat: an onion include: $RT_RES"
+      rt_recorded_proxy "abc123 2026-09-29T20:00:00Z running"
+      PATH="$CASE_DIR/bin:$PATH" rt_call start_route
+      assert_rc 0 "$RT_RRC" "BL-022 $plat: $RT_RES"
+      assert_eq applied "$(rt_f result)" "BL-022 $plat: no such container is a fresh proxy, as the macOS rebuild needs: $RT_RES"
+      assert_eq "cloudflare-exit	8" "$(_nd_route_file_info "$ND_ROUTE_DIR/forward-route.conf" | cut -f1,2)" "BL-022 $plat: demoted to the exit"
+    ) || exit 1
+  done
 }
 
 t_start_refuses_a_malformed_desired() {

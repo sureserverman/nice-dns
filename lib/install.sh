@@ -491,9 +491,10 @@ _nd_inst_route_dir() {
 }
 
 # _nd_inst_route_call <function>: a lib/recovery.sh route function, run from
-# the source tree for this platform.
+# the source tree for this platform. Exit 90, saying so, when that library
+# does not load (BL-054); otherwise the function's status.
 _nd_inst_route_call() {
-  ND_PLATFORM="$ND_INST_PLATFORM" bash -c '. "$1/lib/recovery.sh" && "$2"' _ "${ND_INST_TREE:-$ND_INST_SRC}" "$1"
+  ND_PLATFORM="$ND_INST_PLATFORM" bash -c '. "$1/lib/recovery.sh" || { printf "nice-dns install: cannot load %s/lib/recovery.sh\n" "$1" >&2; exit 90; }; "$2"' _ "${ND_INST_TREE:-$ND_INST_SRC}" "$1"
 }
 
 # nd_install_check_route_dir: preparation, before anything changes. The
@@ -519,9 +520,12 @@ nd_install_check_route_dir() {
 
 # nd_install_seed_route: activation, before Unbound starts.
 nd_install_seed_route() {
-  local out
+  local out d
   if ! out="$(_nd_inst_route_call seed_default_route 2>&1)"; then
-    _nd_inst_err "cannot seed Unbound's route: $(printf '%s\n' "$out" | awk -F '\t' '$1 == "detail" { print $2 }')"
+    # No detail row (the library did not load, BL-054): the output is the reason.
+    d="$(printf '%s\n' "$out" | awk -F '\t' '$1 == "detail" { print $2 }')"
+    [ -n "$d" ] || d="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | head -n 1)"
+    _nd_inst_err "cannot seed Unbound's route: $d"
     return 1
   fi
   case "$(printf '%s\n' "$out" | awk -F '\t' '$1 == "result" { print $2 }')" in
@@ -571,6 +575,7 @@ nd_install_finish() {
   local d="$ND_INST_STATE/generations/$ND_INST_GEN" os
   _nd_inst_write_file "$d/activated" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
   _nd_inst_write_file "$ND_INST_STATE/current" "$ND_INST_GEN" || return 1
+  _nd_inst_forget_update_check
   _nd_inst_publish_command
   # The helper runs the kept source's root-ops (BL-063): when the source
   # could not be published, the helper from before goes back with it.
@@ -585,6 +590,21 @@ nd_install_finish() {
   _nd_inst_sudo_keepalive_stop
   nd_root_runner_stop
   echo "▸ Generation $ND_INST_GEN is active (previous: $ND_INST_PREV)."
+}
+
+# _nd_inst_forget_update_check: a cached update check (update-check.tsv,
+# nice-dns-update-check/1) made for another commit or branch than this install
+# is removed, so `status` says `unknown never-checked` until the next check
+# rather than `current` for a commit that is no longer installed (found by the
+# 2026-11-18 sweep's Sub-plan 2 demo on mint: `current` against d769e95 with
+# a8c1151 installed). A check of this very commit and branch is kept.
+_nd_inst_forget_update_check() {
+  local f
+  f="$( . "${ND_INST_TREE:-$ND_INST_SRC}/lib/status.sh" >/dev/null 2>&1 && _nd_st_paths "$ND_INST_PLATFORM" && printf '%s\n' "$ND_ST_STATE_DIR/update-check.tsv")" || return 0
+  [ -f "$f" ] || return 0
+  if [ "$(awk -F '\t' '$1 == "local_commit" { print $2; exit }' "$f")" = "$ND_INST_COMMIT" ] \
+     && [ "$(awk -F '\t' '$1 == "branch" { print $2; exit }' "$f")" = "${ND_INST_BRANCH:-}" ]; then return 0; fi
+  rm -f "$f"
 }
 
 # The `nice-dns` command and the source it uses when it runs off a checkout
@@ -606,10 +626,11 @@ _nd_inst_tree_hash() {
   (
     set -o pipefail
     cd "$1" || exit 1
-    set -- sha256sum
-    command -v sha256sum >/dev/null 2>&1 || set -- shasum -a 256
+    # Each file as sha256sum lists it ("<hash>  <path>"), so recorded trees
+    # still match; a file whose hash cannot be taken fails the tree (BL-021).
     # shellcheck disable=SC2086 # the item list is words
-    files="$(find $ND_INST_SOURCE_ITEMS -type f -print0 | LC_ALL=C sort -z | xargs -0 "$@")" || exit 1
+    files="$(find $ND_INST_SOURCE_ITEMS -type f -print0 | LC_ALL=C sort -z \
+      | while IFS= read -r -d '' p; do h="$(_nd_sha_checked 64 "$p")" || exit 1; printf '%s  %s\n' "$h" "$p"; done)" || exit 1
     # shellcheck disable=SC2086 # the item list is words
     links="$(find $ND_INST_SOURCE_ITEMS -type l -print | LC_ALL=C sort)" || exit 1
     [ -n "$files" ] || exit 1
@@ -620,10 +641,15 @@ _nd_inst_tree_hash() {
   ) 2>/dev/null
 }
 
-# _nd_inst_sha_stdin: the sha256 of stdin, hex.
-_nd_inst_sha_stdin() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi
-}
+# _nd_sha_checked <64|16> [file]: the SHA-256 of <file> (of stdin without one)
+# in hex, cut to that many characters; exit 1, nothing printed, unless the
+# tool gave that many hex characters: no sha256 tool, or one that failed, is
+# an unknown hash, never the hash of nothing (BL-021). The same function is in
+# lib/health.sh, health/nice-dns-health and lib/install.sh.
+_nd_sha_checked() { local n="$1" h; shift; if command -v sha256sum >/dev/null 2>&1; then h="$(sha256sum "$@" 2>/dev/null)"; else h="$(shasum -a 256 "$@" 2>/dev/null)"; fi || return 1; h="${h%%[![:xdigit:]]*}"; [ "${#h}" -ge "$n" ] || return 1; printf '%s\n' "${h:0:$n}"; }
+
+# _nd_inst_sha_stdin: the sha256 of stdin, hex; exit 1 when it cannot be taken.
+_nd_inst_sha_stdin() { _nd_sha_checked 64; }
 
 # _nd_inst_kept_commit <dir>: "<commit> <dirty>" when <dir> is the kept
 # source (physically) and its .source-commit, read as data (DEC-001), names a
@@ -1159,10 +1185,10 @@ nd_install_wait_ready() {
   addr="$(_nd_inst_dns_addr)"
   echo "Waiting for the DNS chain to come up at $addr (Tor bootstrap takes 1-4 min)..."
   while [ "$i" -lt "$ND_INST_READY_TRIES" ] && [ $((SECONDS - t0)) -lt "$limit" ]; do
-    if dig "@$addr" +time=3 +tries=1 +short "$ND_INST_PROBE_NAME" 2>/dev/null | grep -Eq '^[0-9.]+$' \
-        && _nd_inst_route_probe; then
-      echo "Chain is resolving, and Unbound resolves over its authenticated route."
-      return 0
+    if dig "@$addr" +time=3 +tries=1 +short "$ND_INST_PROBE_NAME" 2>/dev/null | grep -Eq '^[0-9.]+$'; then
+      _nd_inst_route_probe && { echo "Chain is resolving, and Unbound resolves over its authenticated route."; return 0; }
+      # A library that does not load will not load on the next try (BL-054).
+      [ "$?" -ne 90 ] || return 1
     fi
     i=$((i + 1))
     sleep 5
@@ -1177,7 +1203,10 @@ nd_install_wait_ready() {
 # from this tree, so the probe must exist.
 _nd_inst_route_probe() {
   local rc=0
-  _nd_inst_route_call _nd_route_resolves >/dev/null 2>&1 || rc=$?
+  local err
+  err="$(_nd_inst_route_call _nd_route_resolves 2>&1 >/dev/null)" || rc=$?
+  # A library that did not load is said, never read as a route (BL-054).
+  if [ "$rc" = 90 ]; then printf '%s\n' "$err" | grep 'cannot load ' >&2; return "$rc"; fi
   # A rolled-back generation may predate probe-route (exit 126/127): its Pi-hole
   # answer is then all there is to go on.
   if [ "${ND_INST_PROBE_OPTIONAL:-0}" = 1 ] && { [ "$rc" = 126 ] || [ "$rc" = 127 ]; }; then rc=0; fi
@@ -1442,9 +1471,12 @@ EOF
   done
 }
 
-# health_sha_file <file>: its sha256, hex (sha256sum on Linux, shasum on macOS).
+# health_sha_file <file>: its sha256, hex; exit 1, saying so, when it cannot
+# be taken (no sha256 tool answered, BL-021): the caller stops that step.
 health_sha_file() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+  _nd_sha_checked 64 "$1" && return 0
+  _nd_inst_err "cannot take the sha256 of $1 (no sha256 tool answered)"
+  return 1
 }
 
 # nd_install_verify_signatures: each signed image this install uses, checked

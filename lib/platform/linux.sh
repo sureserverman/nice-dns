@@ -25,6 +25,12 @@ nd_platform_route_dir() {
   printf '%s\n' "${ND_ROUTE_DIR:-${XDG_STATE_HOME:-${HOME:?HOME is unset}/.local/state}/nice-dns/unbound-route}"
 }
 
+# nd_platform_stderr <file>: a command's stderr as a reason: without podman's
+# storage-driver warning, which podman prints on every call where
+# storage.conf names no driver (mint, podman 5.8.1) and which hid the real
+# error (BL-054). Empty when that warning was all there was.
+nd_platform_stderr() { grep -v "level=warning msg=\"The storage 'driver' option" "$1" 2>/dev/null; return 0; }
+
 # nd_platform_unbound_exec <cmd...>: run cmd in the Unbound container as the
 # unbound user (the only uid the control socket admits).
 nd_platform_unbound_exec() {
@@ -55,7 +61,12 @@ nd_platform_runtime_list() {
   # missing (BL-053); its own container:<name> record says paused.
   nd_bounded "$1" "$2.raw" "$2.err" "$bin" ps -a --filter status=running --filter status=paused --format '{{.Names}}'
   rc=$?
-  case "$rc" in 0) ;; 124) return 124 ;; *) [ -s "$2.err" ] || printf 'podman ps exited %s\n' "$rc" >"$2.err"; return 4 ;; esac
+  case "$rc" in
+    0) ;;
+    124) return 124 ;;
+    *) nd_platform_stderr "$2.err" >"$2.err.1"; mv -f "$2.err.1" "$2.err"
+       [ -s "$2.err" ] || printf 'podman ps exited %s\n' "$rc" >"$2.err"; return 4 ;;
+  esac
   grep -E '^[A-Za-z0-9][A-Za-z0-9_.-]*$' "$2.raw" >"$2"
   return 0
 }
@@ -133,6 +144,27 @@ nd_platform_container_generation() {
   bin="$(nd_platform_runtime_bin)" || return 3
   nd_bounded "$2" "$3/gen" "$3/gen.err" "$bin" inspect -f '{{.Id}} {{.State.StartedAt}} {{.State.Status}}' "$1" || return 1
   head -n 1 "$3/gen"
+}
+
+# nd_platform_container_absent <container> <deadline> <tmp>: 0 podman says
+# there is no such container; 1 it exists; 2 the query failed or timed out
+# (one line of reason in <tmp>/absent.err). `podman container exists` exits 1
+# for an absent container and also when podman cannot load its configuration
+# (podman 5.8.1, mint 2026-11-19), so exit 1 is absent only when podman printed
+# nothing but its storage-driver warning (BL-022).
+nd_platform_container_absent() {
+  local bin rc
+  bin="$(nd_platform_runtime_bin)" || { printf 'no podman CLI\n' >"$3/absent.err"; return 2; }
+  nd_bounded "$2" "$3/abs" "$3/abs.err" "$bin" container exists "$1"; rc=$?
+  case "$rc" in
+    0) return 1 ;;
+    1) nd_platform_stderr "$3/abs.err" | grep -q . || return 0 ;;
+  esac
+  if [ "$rc" -eq 124 ]; then printf 'deadline: podman container exists %s\n' "$1"
+  else
+    { nd_platform_stderr "$3/abs.err"; printf 'podman container exists %s exited %s\n' "$1" "$rc"; } | head -n 1
+  fi >"$3/absent.err"
+  return 2
 }
 
 # nd_platform_container_state <container> <deadline> <tmp>: one line
@@ -268,9 +300,13 @@ nd_platform_repair_runtime() {
     [ "$(_nd_rep_left)" -gt 0 ] || { rc=124; break; }
     nd_bounded "$(_nd_rep_left 5)" "$tmp/rep" "$tmp/rep.err" systemctl --user reset-failed "$n.service"
     [ "$(_nd_rep_left)" -gt 0 ] || { rc=124; break; }
-    nd_bounded "$(_nd_rep_left)" "$tmp/rep" "$tmp/rep.err" systemctl --user start "$n.service" || rc=$?
+    b=0; nd_bounded "$(_nd_rep_left)" "$tmp/rep" "$tmp/rep.err" systemctl --user start "$n.service" || { b=$?; rc=$b; }
+    printf 'start %s.service (exit %s); ' "$n" "$b" >>"$tmp/rep.note"
   done
-  [ "$named" = 1 ] || nd_bounded "$(_nd_rep_left)" "$tmp/rep" "$tmp/rep.err" systemctl --user start pi-hole.service || rc=$?
+  if [ "$named" = 0 ]; then
+    b=0; nd_bounded "$(_nd_rep_left)" "$tmp/rep" "$tmp/rep.err" systemctl --user start pi-hole.service || { b=$?; rc=$b; }
+    printf 'start pi-hole.service, no missing name known (exit %s); ' "$b" >>"$tmp/rep.note"
+  fi
   if [ "$rc" -ne 0 ] && [ "$stuck" = 1 ] && [ "$(_nd_rep_left)" -gt 0 ]; then
     mark="$(nd_platform_state_dir)/pod-repair-at"; now="$(date +%s)"
     boot="${ND_BOOT_ID:-$(nd_platform_boot_id)}"

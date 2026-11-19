@@ -481,8 +481,9 @@ cmd_run() {
 #   * readiness is recorded on a later pass.
 # Before the pass, and outside the lock (an evaluation is slow), the bridges
 # are re-evaluated once an observed outage has outlasted the grace
-# (refresh_bridges_on_outage); a changed set is adopted by the service
-# restart.
+# (refresh_bridges_on_outage); a changed set the running proxy needs at once
+# is adopted by the refresh's restart under the state lock (BL-030), any
+# other at the proxy's next start.
 # NICE_DNS_RESTART_GRACE_SECS still sets the grace (ND_POLICY_GRACE_S).
 #
 # The scheduled pass has no environment of its own, so the policy timers can
@@ -520,7 +521,9 @@ export ND_POLICY_GRACE_S
 # outlasted the grace, re-evaluate the bridges (lib/recovery.sh
 # nd_bridges_refresh: the image's bridge-eval, applied only under its rules),
 # at most once per ND_BRIDGE_OUTAGE_REFRESH_S (3600), before the pass and
-# outside the state lock. A changed set is then adopted by the pass's service
+# outside the state lock. A changed set the running proxy needs at once is
+# adopted by the refresh's own restart under the state lock (BL-030); any
+# other waits for the proxy's next start, such as the pass's service
 # restart. Nothing here writes bridges.env directly: until Task 2.2 this
 # called the raw Moat fetcher, which replaced an evaluated set with an
 # unranked pool.
@@ -597,13 +600,32 @@ INSTALL_RECEIPT="$HEALTH_LIB_ROOT_INSTALLED/install.tsv"
 SCHEDULE_STOPPED="$HEALTH_LIB_ROOT_INSTALLED/schedule-stopped"
 # Kept within the state lock's 600 s lease (lib/state.sh).
 TICK_TIMEOUT_SECS=540
+# One bridge refresh (lib/recovery.sh nd_bridges_refresh): bridge-eval
+# (ND_BRIDGE_EVAL_S, 300), two waits for the state lock, the apply's and the
+# adoption's (ND_BRIDGE_LOCK_TRIES 60 x 0.5 s, 30 s each), the adoption
+# restart (ND_RECOVERY_SERVICE_S, 120) and the wait for its new start (as
+# long again), and ten bounded queries around them (Tor state, container
+# generations; ND_RECOVERY_CMD_DEADLINE, 15 s each): 750 s (BL-033). The
+# state lock is held only around the apply and the restart, each inside its
+# 600 s lease. Linux only: launchd has no run-time limit for the macOS job.
+BRIDGE_EVAL_SECS=300
+BRIDGE_LOCK_WAIT_SECS=60
+BRIDGE_RESTART_SECS=240
+BRIDGE_QUERY_SECS=150
+BRIDGE_TIMEOUT_SECS=$((BRIDGE_EVAL_SECS + BRIDGE_LOCK_WAIT_SECS + BRIDGE_RESTART_SECS + BRIDGE_QUERY_SECS))
 # The bound on one unattended update check (`nice-dns update --check` keeps
 # its own 55 s bound on git where timeout(1) exists).
 UPDATE_CHECK_SECS=60
 
-health_sha() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi
-}
+# _nd_sha_checked <64|16> [file]: the SHA-256 of <file> (of stdin without one)
+# in hex, cut to that many characters; exit 1, nothing printed, unless the
+# tool gave that many hex characters: no sha256 tool, or one that failed, is
+# an unknown hash, never the hash of nothing (BL-021). The same function is in
+# lib/health.sh, health/nice-dns-health and lib/install.sh.
+_nd_sha_checked() { local n="$1" h; shift; if command -v sha256sum >/dev/null 2>&1; then h="$(sha256sum "$@" 2>/dev/null)"; else h="$(shasum -a 256 "$@" 2>/dev/null)"; fi || return 1; h="${h%%[![:xdigit:]]*}"; [ "${#h}" -ge "$n" ] || return 1; printf '%s\n' "${h:0:$n}"; }
+
+# health_sha: the sha256 of stdin, hex; exit 1 when it cannot be taken.
+health_sha() { _nd_sha_checked 64; }
 
 # health_interpreter: the Bash the schedules run, checked by running it.
 health_interpreter() {
@@ -633,7 +655,9 @@ build_bundle() {
       echo "$SCRIPT_NAME: cannot install: $src/$f is missing or a symlink" >&2; return 1
     fi
   done
-  id="$(for f in $HEALTH_LIB_FILES health/nice-dns-health; do printf '%s\n' "$f"; health_sha <"$src/$f"; done | health_sha | cut -c1-16)"
+  # A file whose hash cannot be taken ends the loop and fails the pipeline
+  # (pipefail, line 27), so an id is never a hash over missing hashes (BL-021).
+  id="$(for f in $HEALTH_LIB_FILES health/nice-dns-health; do printf '%s\n' "$f"; health_sha <"$src/$f" || exit 1; done | _nd_sha_checked 16)" || id=""
   case "$id" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;; *) echo "$SCRIPT_NAME: cannot compute the bundle id" >&2; return 1 ;; esac
   dst="${HEALTH_LIB_ROOT_INSTALLED:?}/bundles"
   if [ -L "$HEALTH_LIB_ROOT_INSTALLED" ] || [ -L "$dst" ]; then echo "$SCRIPT_NAME: refusing to install into a symlinked $dst" >&2; return 1; fi
@@ -701,8 +725,9 @@ After=default.target
 [Service]
 Type=oneshot
 ExecStart=$interp $INSTALLED_BIN bridges-refresh
-# The evaluation takes about 150 s; it holds no controller lock.
-TimeoutStartSec=420
+# The evaluation (about 150 s) holds no controller lock; the adoption
+# restart, when one is due, runs under it (BL-030).
+TimeoutStartSec=$BRIDGE_TIMEOUT_SECS
 EOF
   cat >"$d/.$SYSTEMD_BR_TIMER.new" <<EOF || return 1
 [Unit]
@@ -1344,9 +1369,9 @@ cmd_tick() {
 }
 
 # bridges-refresh: evaluate the bridge pool with the proxy image's
-# bridge-eval and adopt a changed set: at once, through a proxy restart, when the
-# running proxy uses a bridge the set leaves out; otherwise when the proxy
-# restarts for another reason (lib/recovery.sh nd_bridges_refresh; the daily
+# bridge-eval and adopt a changed set: at once, through the adoption restart
+# under the state lock (BL-030), when the running proxy uses a bridge the set
+# leaves out; otherwise when the proxy restarts for another reason (lib/recovery.sh nd_bridges_refresh; the daily
 # schedule calls it).
 cmd_bridges_refresh() {
   local out rc v t c
@@ -1435,9 +1460,10 @@ Usage: $SCRIPT_NAME <command>
   self-check  Check that this copy's libraries load (no stack contact).
   bridges-refresh
               Evaluate the bridge pool (the proxy image's bridge-eval) and
-              adopt a changed set (daily schedule): at once, through a proxy
-              restart, when the running proxy uses a bridge the set leaves out;
-              otherwise when the proxy restarts for another reason.
+              adopt a changed set (daily schedule): at once, through an
+              adoption restart under the controller's state lock, when the
+              running proxy uses a bridge the set leaves out; otherwise, or
+              while the controller holds the lock, at the proxy's next start.
   update-check
               Run the published \`nice-dns update --check\` once, bounded to
               60 s (twice a day: 00:00/12:00 on Linux, 04:47/16:47 on macOS;

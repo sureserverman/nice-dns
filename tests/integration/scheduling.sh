@@ -620,3 +620,56 @@ t_quadlets_leave_chain_restarts_to_the_controller() {
     assert_match '^After=unbound\.service' "$unit" "$v: and starts after it"
   done
 }
+
+# BL-021: the bundle id is a hash of the bundle's files; with neither
+# sha256sum nor shasum it cannot be taken, and the install is refused rather
+# than naming a bundle by a hash of nothing.
+t_bundle_id_without_a_hash_tool_is_refused_BL_021() {
+  local plat
+  for plat in $(sc_platforms); do
+    (
+      sc_env "$plat"
+      rm -f "$CASE_DIR/bin-$plat/sha256sum" "$CASE_DIR/bin-$plat/shasum"
+      sc_cli "$SC_TREE/health/nice-dns-health" install
+      assert_nonzero "$SC_RC" "$plat: BL-021: the install is refused: $SC_OUT"
+      assert_match 'cannot compute the bundle id' "$SC_OUT" "$plat: BL-021: and says why"
+      assert_eq "" "$(sc_bundles 2>/dev/null)" "$plat: BL-021: no bundle is installed"
+      assert_no_path "$SC_BIN" "$plat: BL-021: nor the CLI"
+    ) || exit 1
+  done
+  assert_eq 1 "$(grep -h '^_nd_sha_checked()' "$NICE_DNS_ROOT/lib/health.sh" "$NICE_DNS_ROOT/lib/install.sh" "$NICE_DNS_ROOT/health/nice-dns-health" | sort -u | wc -l | tr -d ' ')" \
+    "BL-021: the three copies of _nd_sha_checked are one function"
+}
+
+# BL-033 (backlog sweep Sub-plan 2, Task 1.3): one bridge refresh runs
+# bridge-eval (ND_BRIDGE_EVAL_S), waits twice for the state lock (the apply
+# and the adoption, ND_BRIDGE_LOCK_TRIES x 0.5 s each) and may restart the
+# proxy: the service restart is bounded at ND_RECOVERY_SERVICE_S and its new
+# start waited for as long again (nd_recovery_restart_service). The refresh
+# unit's limit must cover them all, or systemd kills a refresh mid-adoption
+# (420 s was under the sum). The lock is held only around the apply and the
+# restart, each inside its 600 s lease, so the unit's limit is not the lease.
+# Around them run ten queries of ND_RECOVERY_CMD_DEADLINE each: the Tor state
+# (container, exec), the apply's generation (container, query), the pending
+# check before and under the lock (2 x container, query) and the restart's
+# own look-up (container, query).
+t_refresh_unit_limit_covers_its_bounds_BL_033() {
+  local eval tries svc dl sum lim usage
+  eval="$(sed -n 's/.*ND_BRIDGE_EVAL_S:-\([0-9][0-9]*\)}.*/\1/p' "$NICE_DNS_ROOT/lib/recovery.sh" | head -n 1)"
+  tries="$(sed -n 's/.*ND_BRIDGE_LOCK_TRIES:-\([0-9][0-9]*\)}.*/\1/p' "$NICE_DNS_ROOT/lib/recovery.sh" | head -n 1)"
+  svc="$(sed -n 's/.*ND_RECOVERY_SERVICE_S:-\([0-9][0-9]*\)}.*/\1/p' "$NICE_DNS_ROOT/lib/recovery.sh" | head -n 1)"
+  dl="$(sed -n 's/.*ND_RECOVERY_CMD_DEADLINE:-\([0-9][0-9]*\)}.*/\1/p' "$NICE_DNS_ROOT/lib/recovery.sh" | head -n 1)"
+  assert_match '^[0-9]+ [0-9]+ [0-9]+ [0-9]+$' "$eval $tries $svc $dl" "the bounds are read from lib/recovery.sh"
+  sum=$((eval + tries + 2 * svc + 10 * dl))
+  (
+    sc_env linux
+    sc_cli "$SC_TREE/health/nice-dns-health" install
+    assert_rc 0 "$SC_RC" "linux: install: $SC_OUT"
+    lim="$(sed -n 's/^TimeoutStartSec=\([0-9][0-9]*\)$/\1/p' "$XDG_CONFIG_HOME/systemd/user/nice-dns-health-bridges.service")"
+    assert_match '^[0-9]+$' "$lim" "linux: the refresh unit has a limit"
+    [ "$lim" -ge "$sum" ] || fail "BL-033 the refresh unit's TimeoutStartSec=$lim is under its bounds' sum $sum (eval $eval + 2 lock waits of $((tries / 2)) + restart and its wait 2 x $svc + 10 queries of $dl)"
+  ) || exit 1
+  usage="$(bash "$NICE_DNS_ROOT/health/nice-dns-health" help 2>&1)"
+  assert_match 'adoption restart' "$usage" "BL-033 the usage names the adoption restart"
+  assert_match 'state lock' "$usage" "BL-033 and that it runs under the state lock"
+}
