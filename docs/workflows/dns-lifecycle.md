@@ -6,13 +6,13 @@ Behavior contracts for the nice-dns stack. Sub-plan 01, Task 1.1 of the
 - Contract sources: the approved design and architecture (ARCH-01 to ARCH-09)
   in the vault at `Portfolio/containers/nice-dns/plans/2026-09-19-stability-latency-security-*.md`.
 - Baseline source: this repository at commit
-  `089a21082e3246f268ea143ca702403dd04ca91c`. Citations are `path:line` at that commit.
+  `2a904e3a19a5e64305f3ceaa439ff52f2978ecde`. Citations are `path:line` at that commit.
   The eight-cell baseline receipt measured b85bc9b. The document was first
   written against 337fb15; sub-plan 01 then landed product fixes (c8ecd70,
   fcc3f6c, fc5e6ec, b85bc9b), and the citations were re-derived. Sub-plan 02
   re-pins after each change to a cited file (Task 1.1: 04b98cf, Unbound
   anchor and control; Task 1.3: d6c1a1f, Pi-hole HealthCmd; Stage 1 gate: 80d6c18, control refusal; Task 2.1: 9e71d32, route include; Task 2.3: bc846b2, Unbound WORKDIR; Stage 2 gate: 94a9c60, route resolution check). Sub-plan 03 re-pins the same
-  way (Task 1.1: ba144fd, health observations and platform adapters; Task 1.2: e81697f, state directory and boot identity appended to the platform adapters; Task 1.3: 6bf29f3, acknowledged recovery; Stage 1 gate: 4b11779, one controller pass; 20589e8, route recorded on success; Task 2.1: 3a4b4d6, bundle and minute schedules; Task 2.2: d934ed5, bridge lifecycle; Task 2.3: b8b9bb8, shadow install and privacy-safe failure dump; 93a9122, macOS exec reports a missing executable as 127; 674635f, the macOS fallback always rebuilds; 8f10ffe, it rebuilds the whole stack; e6436ad, restart ladder; dca5b57, a stopped macOS container has no generation; Stage 2 gate: 969945e, bridge refresh ownership; 5de0e7d, policy timers from tunables.tsv; close-out: a4eea01, the ladder waits out the first restart's readiness; ca16537, quadlet health checks verify and only report, Wants= not Requires=; c55ea50, probe-route bounded; 778df19, a failed macOS kickstart withdraws its request; 5dff7b7, a Linux adapter comment; 0efca9c, the macOS proxy lookup honours the recovery deadline; pre-merge review: 16d65cb, a runtime fault the platform cannot repair escalates). Sub-plan 4 re-pins the same way (Task 1.1: 509a6de, shared installer preparation in lib/install.sh; 7019cf0, the macOS hardened pi-hole build has no --pull; fdf6179, a first install migrates podman before its builds; Task 1.2: ec2b51c, owned DNS receipts and transactional cutover; Task 1.3: 495241e, immutable release inputs; Stage 1 gate: 58e6472, restores that cannot half-fail; Task 2.1: 57db2a3, private admin credential, host-only DNS, least privilege; Task 2.2: 3148e14, instance state kept across the lifecycle; Task 2.3: 66f1666, legacy profile pins restored and the macOS stack started on a fresh datapath; Stage 2 gate: 3fab8dd, the macOS cache flushed after each resolver change; 7a403df, uninstall removes instance state only after DNS is given back; 66cd340, a macOS rollback stops the builder and restarts the runtime). Sub-plan 5 re-pins the same way (Task 1.2: 3c0308f, Unbound mounts the host route directory and the installers seed it; 0be8182, an unmountable route path fails in preparation; Task 1.3: eaa31a3, a fresh proxy falls back to an exit route; Task 1.4: adf3c1b, a fresh proxy starts Unbound on the exit route; Stage 1 gate: 0e2d2ba, Unbound starts once its route answers, a failed switch keeps the proxy generation, the quadlet is written by rename, the uninstall removes only its own route files; round 2: 6364176, the controller refuses the request id "suspend"; fc63139, a refused route probe ends Unbound's wait at once; Task 2.1: 4acf446, macOS scoped DNS stays on the container bridge; Task 2.2: 3637314, a refresh leaves out bridges that carry streams badly and adopts the set when the running proxy uses one; 34f1d0b, the controller remembers a weak bridge for 30 days; 733cfb1, that memory is written under the controller's pipefail; aa6b7e9, the Linux boot selection's skip really skips). The 2026-10-12 Mullvad findings plan re-pins the same way (Task 1.1: dacb3b4, the installers' comments no longer name the process-substitution one-liner; Stage 1 gate: 13ddba8, Linux builds without --dns, declared resolver literals, the installer drives Mullvad's DNS setting; round 1: 5162e17, Mullvad restore paths and the claims the switch made false; Stage 2 gate: c0af48f, per-device IPv6 hook and install drift; round 1: aeb5494, drift that fails closed; Task 3.1: no cited file changed after aeb5494, contract text written for Mullvad's DNS setting, the per-device IPv6 hook and install drift; Stage 3 gate round 1: 0a90f99, Ethernet and Wi-Fi profiles get ipv6.method disabled, recorded and given back; round 2: 0e4570d, the profile change given back on every path and NetworkManager not answering never read as an answer; round 3: 6ae55f9, no leftover undo list, an uninstall without NetworkManager completes). The 2026-11-05 bridge refresh fix re-pins the same way (774182a, bridge-eval runs as the container's root, not under keep-id). The 2026-11-05 restart policy plan re-pins the same way (Stage 1 gate round 1: d1b1f77, container observations, unit back-off, Pi-hole's check only reports; Stage 2 gate round 1: e3963df, the Pi-hole rule, the paused repair, the crash-loop hold; Stage 3: 0ab8019, awk patterns mawk runs, a frozen Pi-hole's pi.hole timeout counts, the macOS per-container restart not qualified; Stage 3 gate round 1: 5090f6d, only a pi.hole timeout holds Pi-hole's streak; close-out: ae4e67c, a crash loop holds the stack restart for at most 30 minutes). The 2026-11-05 status and update plan re-pins the same way (Stage 1 gate round 1: 8fda2a6, each pass keeps its observations; status reads files only; Task 2.3: 2438546, `nice-dns update` and WF-DNS-005; Stage 2 gate round 1: bc5faf3, the update contract). The 2026-11-05 bridges toggle plan re-pins the same way (Task 2.3: f6ed92f, the bridges mode, its switch and the refresh skipped while off; close-out: f4055a5, an ssh session gets the user runtime dir, a failed switch says how to apply it, the daily refresh stamps the last refresh). The 2026-11-05 privileged helper plan re-pins the same way (Task 1.3: 3f576e9, every root step of the installers moved into deb/root-ops and mac/root-ops, whose comments keep the reasons; Stage 1 gate round 1: 6092287, the version gates read as the user and the profile undo flag set at the profile step again; Task 2.2: 6a7055a, on Linux a root step goes through pkexec and nice-dns-helper once it is installed; Task 2.3: fc7c2bc, on macOS through the setuid helper for the user who installed it, removed by the uninstall's last root step; Task 2.4: aed2243, the helper's release asset fetched and checked in preparation; Task 2.6: 220d746, the macOS helper's setuid digit read on BSD stat; Stage 2 gate: 8578181, the helper-removal message names no sudo command; round 1: adbf114, the helper path's sudo fallback, the macOS uninstall's retry, updates cloned under HOME; 8074494, a host without pkexec installs no helper, a step's own exit 2 leaves root-ops as 124; residuals: 571b3ba, refusals on one line, no keepalive on the helper path; 4b5432d, helper 0.1.1 and the v1.0.1 assets). The 2026-11-05 Linux GUI plan re-pins the same way (Task 2.4: 8dc3ad2, the installer fetches, publishes and removes the GUI, and WF-DNS-005 cites the GUI's reading and actions; Stage 2 gate round 1: 97d6ea6, the GUI's files beside the kept source and its launcher removed wherever it was published; 0674abc, a reinstall clears a launcher published elsewhere; close-out: 92e2ab0, a different version is available, the launched window kept, WF-DNS-003 gains the GUI's install step). The 2026-11-05 macOS GUI plan re-pins the same way (Task 2.1: 740708d, a macOS install lands the menu-bar app from its release asset and an uninstall removes it; Task 2.4: WF-DNS-003 and WF-DNS-005 gain the macOS app; Stage 2 gate round 1: 7872dd3, a set-aside copy that cannot go back is kept; close-out: a26391c, a macOS schedule `nice-dns-health stop` unloaded reads stopped and is not re-loaded by a hold). The 2026-11-10 app switches plan re-pins the same way (Task 1.3: 2697fe6, the hardened base built from the tree, `nice-dns switch`, the four switch rows; Stage 1 gate: c2ee590, the controller's twice-daily update check, stop and start acting on every schedule, `update auto`; round 1: 904b217, the timed-out check's cache written by rename; Stage 2 gate: 7d87e84, the two selectors in both apps; round 1: 734931a, the macOS places named once; Task 3.4: d2e455f, WF-DNS-003 gains `nice-dns switch`, the kept source's `.source-commit` and the hardened base from the tree, WF-DNS-005 the twice-daily scheduled check, `update auto` and the selectors; Stage 3 gate round 1: 53f3e87, the kept source's record read before git; close-out: 11ee4f1, the Linux window holds its redraw while a selector's list or the switch question is open). The 2026-11-18 backlog sweep re-pins the same way (Task 3.4: 694f821, the download and pull retries, old generation records removed, the root-held root-ops put back by a rollback, a route include without its record, the uninstall giving host DNS back before it stops the stack, one reading of the bridges mode, the manual restart recorded for the controller; Stage 3 gate round 1: fb77fdf, a bare `TOR_BRIDGES` line skipped by every reader, in place; Sub-plan 2 Task 2.5: 624534f, the bridge adoption under the state lock, the two-refresh weak memory and `weak_blocked`, the 750 s refresh limit, an unknown state key skipped, a proxy that cannot be asked keeps its onion, hashes that are checked, journal reasons without podman's storage warning; Stage 2 gate round 1: 089a210, route exec reasons, the seed's load message, a stale update check dropped at install). `check-contracts` fails when a cited file changes
+  way (Task 1.1: ba144fd, health observations and platform adapters; Task 1.2: e81697f, state directory and boot identity appended to the platform adapters; Task 1.3: 6bf29f3, acknowledged recovery; Stage 1 gate: 4b11779, one controller pass; 20589e8, route recorded on success; Task 2.1: 3a4b4d6, bundle and minute schedules; Task 2.2: d934ed5, bridge lifecycle; Task 2.3: b8b9bb8, shadow install and privacy-safe failure dump; 93a9122, macOS exec reports a missing executable as 127; 674635f, the macOS fallback always rebuilds; 8f10ffe, it rebuilds the whole stack; e6436ad, restart ladder; dca5b57, a stopped macOS container has no generation; Stage 2 gate: 969945e, bridge refresh ownership; 5de0e7d, policy timers from tunables.tsv; close-out: a4eea01, the ladder waits out the first restart's readiness; ca16537, quadlet health checks verify and only report, Wants= not Requires=; c55ea50, probe-route bounded; 778df19, a failed macOS kickstart withdraws its request; 5dff7b7, a Linux adapter comment; 0efca9c, the macOS proxy lookup honours the recovery deadline; pre-merge review: 16d65cb, a runtime fault the platform cannot repair escalates). Sub-plan 4 re-pins the same way (Task 1.1: 509a6de, shared installer preparation in lib/install.sh; 7019cf0, the macOS hardened pi-hole build has no --pull; fdf6179, a first install migrates podman before its builds; Task 1.2: ec2b51c, owned DNS receipts and transactional cutover; Task 1.3: 495241e, immutable release inputs; Stage 1 gate: 58e6472, restores that cannot half-fail; Task 2.1: 57db2a3, private admin credential, host-only DNS, least privilege; Task 2.2: 3148e14, instance state kept across the lifecycle; Task 2.3: 66f1666, legacy profile pins restored and the macOS stack started on a fresh datapath; Stage 2 gate: 3fab8dd, the macOS cache flushed after each resolver change; 7a403df, uninstall removes instance state only after DNS is given back; 66cd340, a macOS rollback stops the builder and restarts the runtime). Sub-plan 5 re-pins the same way (Task 1.2: 3c0308f, Unbound mounts the host route directory and the installers seed it; 0be8182, an unmountable route path fails in preparation; Task 1.3: eaa31a3, a fresh proxy falls back to an exit route; Task 1.4: adf3c1b, a fresh proxy starts Unbound on the exit route; Stage 1 gate: 0e2d2ba, Unbound starts once its route answers, a failed switch keeps the proxy generation, the quadlet is written by rename, the uninstall removes only its own route files; round 2: 6364176, the controller refuses the request id "suspend"; fc63139, a refused route probe ends Unbound's wait at once; Task 2.1: 4acf446, macOS scoped DNS stays on the container bridge; Task 2.2: 3637314, a refresh leaves out bridges that carry streams badly and adopts the set when the running proxy uses one; 34f1d0b, the controller remembers a weak bridge for 30 days; 733cfb1, that memory is written under the controller's pipefail; aa6b7e9, the Linux boot selection's skip really skips). The 2026-10-12 Mullvad findings plan re-pins the same way (Task 1.1: dacb3b4, the installers' comments no longer name the process-substitution one-liner; Stage 1 gate: 13ddba8, Linux builds without --dns, declared resolver literals, the installer drives Mullvad's DNS setting; round 1: 5162e17, Mullvad restore paths and the claims the switch made false; Stage 2 gate: c0af48f, per-device IPv6 hook and install drift; round 1: aeb5494, drift that fails closed; Task 3.1: no cited file changed after aeb5494, contract text written for Mullvad's DNS setting, the per-device IPv6 hook and install drift; Stage 3 gate round 1: 0a90f99, Ethernet and Wi-Fi profiles get ipv6.method disabled, recorded and given back; round 2: 0e4570d, the profile change given back on every path and NetworkManager not answering never read as an answer; round 3: 6ae55f9, no leftover undo list, an uninstall without NetworkManager completes). The 2026-11-05 bridge refresh fix re-pins the same way (774182a, bridge-eval runs as the container's root, not under keep-id). The 2026-11-05 restart policy plan re-pins the same way (Stage 1 gate round 1: d1b1f77, container observations, unit back-off, Pi-hole's check only reports; Stage 2 gate round 1: e3963df, the Pi-hole rule, the paused repair, the crash-loop hold; Stage 3: 0ab8019, awk patterns mawk runs, a frozen Pi-hole's pi.hole timeout counts, the macOS per-container restart not qualified; Stage 3 gate round 1: 5090f6d, only a pi.hole timeout holds Pi-hole's streak; close-out: ae4e67c, a crash loop holds the stack restart for at most 30 minutes). The 2026-11-05 status and update plan re-pins the same way (Stage 1 gate round 1: 8fda2a6, each pass keeps its observations; status reads files only; Task 2.3: 2438546, `nice-dns update` and WF-DNS-005; Stage 2 gate round 1: bc5faf3, the update contract). The 2026-11-05 bridges toggle plan re-pins the same way (Task 2.3: f6ed92f, the bridges mode, its switch and the refresh skipped while off; close-out: f4055a5, an ssh session gets the user runtime dir, a failed switch says how to apply it, the daily refresh stamps the last refresh). The 2026-11-05 privileged helper plan re-pins the same way (Task 1.3: 3f576e9, every root step of the installers moved into deb/root-ops and mac/root-ops, whose comments keep the reasons; Stage 1 gate round 1: 6092287, the version gates read as the user and the profile undo flag set at the profile step again; Task 2.2: 6a7055a, on Linux a root step goes through pkexec and nice-dns-helper once it is installed; Task 2.3: fc7c2bc, on macOS through the setuid helper for the user who installed it, removed by the uninstall's last root step; Task 2.4: aed2243, the helper's release asset fetched and checked in preparation; Task 2.6: 220d746, the macOS helper's setuid digit read on BSD stat; Stage 2 gate: 8578181, the helper-removal message names no sudo command; round 1: adbf114, the helper path's sudo fallback, the macOS uninstall's retry, updates cloned under HOME; 8074494, a host without pkexec installs no helper, a step's own exit 2 leaves root-ops as 124; residuals: 571b3ba, refusals on one line, no keepalive on the helper path; 4b5432d, helper 0.1.1 and the v1.0.1 assets). The 2026-11-05 Linux GUI plan re-pins the same way (Task 2.4: 8dc3ad2, the installer fetches, publishes and removes the GUI, and WF-DNS-005 cites the GUI's reading and actions; Stage 2 gate round 1: 97d6ea6, the GUI's files beside the kept source and its launcher removed wherever it was published; 0674abc, a reinstall clears a launcher published elsewhere; close-out: 92e2ab0, a different version is available, the launched window kept, WF-DNS-003 gains the GUI's install step). The 2026-11-05 macOS GUI plan re-pins the same way (Task 2.1: 740708d, a macOS install lands the menu-bar app from its release asset and an uninstall removes it; Task 2.4: WF-DNS-003 and WF-DNS-005 gain the macOS app; Stage 2 gate round 1: 7872dd3, a set-aside copy that cannot go back is kept; close-out: a26391c, a macOS schedule `nice-dns-health stop` unloaded reads stopped and is not re-loaded by a hold). The 2026-11-10 app switches plan re-pins the same way (Task 1.3: 2697fe6, the hardened base built from the tree, `nice-dns switch`, the four switch rows; Stage 1 gate: c2ee590, the controller's twice-daily update check, stop and start acting on every schedule, `update auto`; round 1: 904b217, the timed-out check's cache written by rename; Stage 2 gate: 7d87e84, the two selectors in both apps; round 1: 734931a, the macOS places named once; Task 3.4: d2e455f, WF-DNS-003 gains `nice-dns switch`, the kept source's `.source-commit` and the hardened base from the tree, WF-DNS-005 the twice-daily scheduled check, `update auto` and the selectors; Stage 3 gate round 1: 53f3e87, the kept source's record read before git; close-out: 11ee4f1, the Linux window holds its redraw while a selector's list or the switch question is open). The 2026-11-18 backlog sweep re-pins the same way (Task 3.4: 694f821, the download and pull retries, old generation records removed, the root-held root-ops put back by a rollback, a route include without its record, the uninstall giving host DNS back before it stops the stack, one reading of the bridges mode, the manual restart recorded for the controller; Stage 3 gate round 1: fb77fdf, a bare `TOR_BRIDGES` line skipped by every reader, in place; Sub-plan 2 Task 2.5: 624534f, the bridge adoption under the state lock, the two-refresh weak memory and `weak_blocked`, the 750 s refresh limit, an unknown state key skipped, a proxy that cannot be asked keeps its onion, hashes that are checked, journal reasons without podman's storage warning; Stage 2 gate round 1: 089a210, route exec reasons, the seed's load message, a stale update check dropped at install; Sub-plan 3 Stage 1: 2a904e3, the macOS pin finishes offline and reads pf whole, every agent run reasserts the scoped block, a slow Tor waited out and the proxy's own timeout not blamed on the bridges, a scoped link-local server recorded). `check-contracts` fails when a cited file changes
   after this commit.
 - Checked by `bash tests/run.sh check-contracts docs/workflows/dns-lifecycle.md`.
   The check needs every workflow ID below, every operation ID in
@@ -123,7 +123,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   (pihole/etc/pihole.toml:12-14). The Linux quadlet sets
   `DNS1=127.0.0.1#5335` (deb/quadlet/pi-hole.container:39).
 - On macOS the installer and LaunchAgent override the upstream to
-  `172.31.240.251#5335` (lib/install.sh:3340-3341, mac/start-container.sh:527-528).
+  `172.31.240.251#5335` (lib/install.sh:3340-3341, mac/start-container.sh:547-548).
 - Pi-hole query logging is off in the shipped config
   (pihole/etc/pihole.toml:197). dnsmasq `log-queries` is commented out
   (pihole/etc/dnsmasq.conf:48). baseline: unverified at runtime for both
@@ -164,7 +164,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   file and renames it, after the route directory is checked and seeded, so
   the directory never holds a unit with an unfilled placeholder) and both
   macOS launch paths
-  (lib/install.sh:3353, mac/start-container.sh:539), the same directory
+  (lib/install.sh:3353, mac/start-container.sh:559), the same directory
   the controller manages (lib/platform/linux.sh:25,
   lib/platform/macos.sh:22). The installers seed it before Unbound first
   starts with an identity route, cloudflare-exit at generation 1, never the
@@ -177,7 +177,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   deb/persistent-podman.sh:126; deb/persistent-podman.sh:100-106 and
   deb/persistent-podman.sh:129 drop the line with a warning when the path
   cannot go into a unit), the macOS agent before it creates
-  Unbound (mac/start-container.sh:504, called at mac/start-container.sh:535)
+  Unbound (mac/start-container.sh:524, called at mac/start-container.sh:555)
   and the macOS installer's first run (lib/install.sh:3347). The launcher is
   written at install before any schedule (health/nice-dns-health:921,
   health/nice-dns-health:1285) and runs `route-start`, which acts only for an
@@ -268,7 +268,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
   [SEC-DNSSEC-SIGNED] [SEC-DNSSEC-UNSIGNED] [SEC-DNSSEC-BOGUS].
   Since Sub-plan 4 Task 2.2 /var/lib/unbound is the volume
   nice-dns-unbound-anchor on both platforms (deb/quadlet/unbound.container:21,
-  lib/install.sh:3352, mac/start-container.sh:538), so a new container keeps
+  lib/install.sh:3352, mac/start-container.sh:558), so a new container keeps
   the anchor's RFC 5011 state; until then each one re-seeded from the image.
 - Resolver management is a Unix socket, `/run/unbound/control.sock`, with
   `control-use-cert: no` and no TCP listener or key files
@@ -355,7 +355,7 @@ Sources: ARCH-04, ARCH-06, design "Data flow".
 - macOS: Apple `container` gives each container its own address on `dnsnet`.
   The configs hardcode .250/.251/.252 (mac/start-container.sh:24-26). The
   LaunchAgent refuses a stack whose addresses do not match
-  (mac/start-container.sh:265-273, mac/start-container.sh:749-757).
+  (mac/start-container.sh:285-293, mac/start-container.sh:769-777).
 
 ## WF-DNS-002 Recovery
 
@@ -620,7 +620,7 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   20260925T200235Z-e3b4de89).
 - The schedules still call `run`; Sub-plan 3 Task 2.1 moves them to `tick`.
 - On macOS the start-container agent and bridge-eval share a `mkdir` stack lock
-  (mac/start-container.sh:71, mac/start-container.sh:344, mac/start-container.sh:634).
+  (mac/start-container.sh:71, mac/start-container.sh:364, mac/start-container.sh:654).
   A holder whose stored PID fails `kill -0` is taken over. After a crash, a reused
   PID in that persistent state file blocks the start for up to 600 s. Two waiters
   can also both take over a dead holder. lib/state.sh now provides the
@@ -682,8 +682,8 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   unverified.
 - The macOS fast path exits when the addresses are correct, Pi-hole answers
   and, since Sub-plan 3 Task 2.3, the proxy image's verifying probe answers
-  through Tor (mac/start-container.sh:209-240, mac/start-container.sh:688-692).
-  Until then a warm cache satisfied it (mac/start-container.sh:681-687): live,
+  through Tor (mac/start-container.sh:229-260, mac/start-container.sh:708-712).
+  Until then a warm cache satisfied it (mac/start-container.sh:701-707): live,
   with Tor frozen, the controller's service fallback was answered "stack
   already healthy" twice and never restarted the proxy. A restart the
   controller decides always rebuilds: nd_platform_restart_proxy leaves
@@ -696,14 +696,20 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   also requires Unbound to resolve over its authenticated route
   (lib/install.sh:1183-1198).
 - A wedged datapath is detected by a probe between containers
-  (mac/start-container.sh:306-315). The fix is a runtime restart
-  (mac/start-container.sh:701-709).
-- The stack is rebuilt once only when Tor never bootstrapped
-  (mac/start-container.sh:794-804). If the chain is unhealthy but Tor did
-  bootstrap, the script exits without pinning DNS
-  (mac/start-container.sh:783-793). "Bootstrapped" is the image's line
-  `Tor bootstrapped successfully`, read from the container's log
-  (mac/start-container.sh:152-154). Since Sub-plan 5 Task 1.4 the proxy
+  (mac/start-container.sh:326-335). The fix is a runtime restart
+  (mac/start-container.sh:721-729).
+- The stack is rebuilt once only when Tor printed neither its bootstrap line
+  nor the proxy's own timeout warning
+  (mac/start-container.sh:820-830). If the chain is unhealthy but Tor did
+  bootstrap, or the proxy reported its timeout, the script exits without
+  pinning DNS (mac/start-container.sh:809-819). "Bootstrapped" is the image's line
+  `Tor bootstrapped successfully`, read from the container's whole log
+  (mac/start-container.sh:156-160). The agent waits 72 x 5 s for it, past the
+  proxies' own 300 s cap; a proxy's warning (tor-socat `Tor did not bootstrap
+  in time`, tor-haproxy `Tor did not bootstrap in 5 minutes`) ends the wait,
+  is logged and arms no bridge rotation; only a Tor that printed neither line
+  arms it (mac/start-container.sh:170-190, mac/start-container.sh:789-799)
+  (BL-037). Since Sub-plan 5 Task 1.4 the proxy
   images print it only once a SOCKS stream through Tor works, to the exit
   resolver or the onion (tor-socat 69efd1f, tor-haproxy 0aa5063: probes in
   the background, Tor's log kept on the data volume with the previous
@@ -894,15 +900,17 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   (lib/install.sh:893-935): Linux compares
   /etc/resolv.conf against the pin (deb/custom-dns-deb:393-402);
   macOS compares every service the record knows
-  (mac/start-container-root.sh:202-221). A service added after
+  (mac/start-container-root.sh:214-233). A service added after
   the install is not a refusal.
 - The record is taken once, before the first interruption, in a root-only
   directory, 0600, and kept across reinstalls, so it stays the state before
   nice-dns (deb/custom-dns-deb:404-450,
-  mac/start-container-root.sh:166-200). Linux records
+  mac/start-container-root.sh:178-212). Linux records
   resolv.conf (symlink target, file copy and mode, or missing),
   systemd-resolved's enabled and active state and the ipv6 sysctls; macOS
-  records each service's servers. An install from before records is
+  records each service's servers, each an address optionally scoped to an
+  interface (`fe80::1%en0`); any other line is refused
+  (mac/start-container-root.sh:137-146) (BL-043). An install from before records is
   `legacy`: its state before nice-dns is unknown [SEC-OWNED-RESTORE].
   Since the 2026-10-12 Mullvad findings plan a Linux first install also
   records each device's own `disable_ipv6` in `ipv6-devices.tsv` beside the
@@ -1008,7 +1016,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   controller and, on macOS, a debug monitor set up by hand
   (lib/install.sh:2607-2682,
   lib/install.sh:3189-3216;
-  deb/custom-dns-deb:459-563, mac/start-container-root.sh:223-256).
+  deb/custom-dns-deb:459-563, mac/start-container-root.sh:235-268).
   The Linux helper puts resolv.conf back first and whole (a new file or
   link renamed over it) while `dns=none` still holds NetworkManager off it;
   if that fails, nothing else changes, the host stays pinned and the record
@@ -1017,8 +1025,8 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   On macOS every change of the host resolver, the pin (`post`) and a
   restore (complete or not), ends with a flush of the system DNS cache:
   getaddrinfo otherwise kept failing names for about 80 s after the stack
-  answered them again (mac/start-container-root.sh:120-123,
-  mac/start-container-root.sh:280-287). Since Sub-plan 5 Task 2.1 the pin
+  answered them again (mac/start-container-root.sh:129-132,
+  mac/start-container-root.sh:292-299). Since Sub-plan 5 Task 2.1 the pin
   also keeps scoped DNS on the container bridge: every pinned service gets
   its own scoped resolver, and a query scoped to Wi-Fi or Ethernet left
   through that interface, in cleartext to the LAN gateway, for an address
@@ -1027,7 +1035,14 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   drop it on every other interface, then kills the states toward the subnet
   (a packet that matches a state skips the rules); without a bridge to the
   stack it loads nothing; a restore lifts the anchor
-  (mac/start-container-root.sh:76-114) [PRIV-NO-DIRECT].
+  (mac/start-container-root.sh:76-123) [PRIV-NO-DIRECT]. No failure there
+  ends the pin before its cache flush: no route (an offline Mac), a failing
+  `pfctl`, a token that cannot be written; pf's status is read whole before
+  it is searched, and the token directory is 0700 (BL-032). Every agent run
+  that keeps or builds the stack runs `post`, so the block follows a
+  renumbered bridge at the next run: the fast path
+  (mac/start-container.sh:708-712) and the full path's last step
+  (mac/start-container.sh:834), which a controller restart takes (BL-033).
   A setting another owner changed is left alone. A `legacy` record restores
   the distribution default: the systemd-resolved stub on Linux, `Empty`
   (DHCP) for each pinned macOS service. The recorded legacy profile pins get
@@ -1075,7 +1090,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   nothing; Linux pinned without a readiness check; macOS pinned before the
   controller installed.
 - The macOS helper boots out and re-bootstraps Mullvad on the agent's
-  `pre`/`post` (mac/start-container-root.sh:269-273). That is VPN state the
+  `pre`/`post` (mac/start-container-root.sh:281-285). That is VPN state the
   installer does not own (ARCH-06); the installer itself never calls `pre`.
 - Linux drives Mullvad's DNS setting since the 2026-10-12 Mullvad findings
   plan (BL-048, DEC-019; lib/install.sh:2345-2363). Connected Mullvad
@@ -1119,7 +1134,7 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   secret `nice-dns-pihole-webpassword` (lib/install.sh:420), which the
   quadlet mounts for uid 1000 (deb/quadlet/pi-hole.container:33-34).
   macOS mounts the directory read-only at /run/secrets at both launch
-  sites (lib/install.sh:3330-3343, mac/start-container.sh:517-530). Both
+  sites (lib/install.sh:3330-3343, mac/start-container.sh:537-550). Both
   images read it through `WEBPASSWORD_FILE` and refuse to start when it is
   missing, unreadable or empty (pihole/nd-start.sh:30-38; the
   hardened base's start.sh, pi-hole-hardened 4574d52). Uninstall removes
@@ -1161,12 +1176,12 @@ Sources: ARCH-06, ARCH-08, design "Installers and persistence".
   nice-dns-tor-<proxy> (deb/quadlet/tor-haproxy.container:20,
   deb/quadlet/tor-socat.container:16), on macOS
   ~/.local/state/nice-dns/tor-<proxy>, now mounted by the installer's run
-  too (lib/install.sh:3358, mac/start-container.sh:570). The root anchor:
+  too (lib/install.sh:3358, mac/start-container.sh:590). The root anchor:
   WF-DNS-001. The operator's Pi-hole lists (user decision: lists survive,
   configuration comes from the image): gravity.db on the volume
   nice-dns-pihole-lists (pihole/etc/pihole.toml:946,
   deb/quadlet/pi-hole.container:19, lib/install.sh:3333,
-  mac/start-container.sh:520). Each image keeps its build's gravity.db as a
+  mac/start-container.sh:540). Each image keeps its build's gravity.db as a
   seed; pihole/nd-start.sh uses the volume as it is while the seed ids
   match and otherwise carries the operator's rows into the new seed
   (pihole/nd-start.sh:47, pihole/merge-lists.sql), keeping the previous
@@ -1346,7 +1361,7 @@ Sources: ARCH-07, design "Bridge lifecycle".
     and prints `weak_blocked <n>`, exit 0 (lib/recovery.sh:1427-1435). The
     memory exists because the macOS agent
     deletes Tor's state when the bridge set changes
-    (mac/start-container.sh:148, mac/start-container.sh:563). When the
+    (mac/start-container.sh:148, mac/start-container.sh:583). When the
     running Tor is still configured with a left-out bridge (`listed=1`) and
     a set is pending, it adopts the set through the service restart
     (lib/recovery.sh:1451-1463). Since Sub-plan 2 of the 2026-11-18 sweep
@@ -1402,15 +1417,15 @@ Sources: ARCH-07, design "Bridge lifecycle".
   in its log (mac/bridge-eval.sh:162). It keeps the existing file on failure
   (mac/bridge-eval.sh:171-174).
 - The macOS LaunchAgent refetches only when the pool is missing or
-  incomplete (mac/start-container.sh:182-202, mac/start-container.sh:650-658).
+  incomplete (mac/start-container.sh:202-222, mac/start-container.sh:670-678).
   Until the Stage 2 gate it also refetched after a failed bootstrap, writing
   over a usable set without the controller's lock, base check or `.prev`;
   now it keeps the set, and re-selection is the controller's evaluated
   refresh.
   It recreates Tor only when the bridge fingerprint changed
-  (mac/start-container.sh:550-566). On a change it drops the guard sample
+  (mac/start-container.sh:570-586). On a change it drops the guard sample
   and keeps the cache (mac/start-container.sh:148-150). Tor's DataDirectory
-  persists (mac/start-container.sh:45, mac/start-container.sh:570).
+  persists (mac/start-container.sh:45, mac/start-container.sh:590).
 - The macOS installers run the fetcher without `--force`, and only while
   the bridges mode is on (lib/install.sh:3021-3026). They require at least
   three bridges (lib/install.sh:3050-3053); with the mode off they fetch and
@@ -1430,14 +1445,14 @@ Sources: ARCH-07, design "Bridge lifecycle".
   `[Service] EnvironmentFile=-` and `PodmanArgs=--env TOR_BRIDGES`
   (deb/quadlet/tor-socat.container:26, deb/quadlet/tor-socat.container:42,
   deb/quadlet/tor-haproxy.container:33, deb/quadlet/tor-haproxy.container:79);
-  the macOS agent loads it (mac/start-container.sh:114, mac/start-container.sh:649)
-  and passes it to the proxy (mac/start-container.sh:571).
+  the macOS agent loads it (mac/start-container.sh:114, mac/start-container.sh:669)
+  and passes it to the proxy (mac/start-container.sh:591).
 - With the mode off, the refresh journals `bridges skipped bridges off`
   and returns 3 (lib/recovery.sh:1400-1402). The daily run exits 0 for that
   (health/nice-dns-health:1390), and the outage path journals it too
   (health/nice-dns-health:542). The macOS evaluator starts no probe
   container (lib/platform/macos.sh:378), and the agent fetches no set
-  (mac/start-container.sh:184-188). Live, run 20261107T131054Z-8d4127f8
+  (mac/start-container.sh:204-208). Live, run 20261107T131054Z-8d4127f8
   (mint and the mac): both switches acknowledged and a fresh name answered
   within 39 s, and the refresh was skipped.
 
