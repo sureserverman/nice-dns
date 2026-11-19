@@ -1372,3 +1372,57 @@ t_mac_gate_fetch_retries_a_failed_connect_BL_067() {
     assert_eq "" "$(grep '^git clone' "$FAKE_LOG")" "BL-067 $ep: nothing after the gate ran"
   done
 }
+
+# BL-052: an install over ssh runs in the Background launchd domain, where
+# `container system status` does not see the runtime the start-container
+# agent runs in the user's login session (gui/<uid>), and `system start`
+# would start a second one there (on 2026-11-07 that wedged vmnet for two
+# hours). Outside a login session (`launchctl managername` not Aqua) every
+# runtime start and status goes through root-ops' installer-only `runtime`
+# verb, which reaches gui/<uid> with launchctl asuser (DEC-024); in a login
+# session the calls run directly, as before. With no login session for the
+# user at all, the install refuses before any change.
+t_macos_install_over_ssh_reaches_the_gui_runtime_BL_052() {
+  local dom ep
+  for ep in install-mac install-mac-hardened; do
+  for dom in Background Aqua; do
+    (
+      ip_env "$ep"
+      printf '%s\n' "$dom" >"$FAKE/managername"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "BL-052 $ep $dom: the install: $IP_OUT"
+      if [ "$dom" = Background ]; then
+        assert_eq "" "$(grep -E '^container system (start|status)' "$FAKE_LOG")" "BL-052 over ssh: no direct runtime start or status:
+$(grep -nE 'system (start|status)' "$FAKE_LOG")"
+        # The tree's root-ops in preparation, the staged build tree's later.
+        assert_match '^sudo bash [^ ]*/mac/root-ops runtime start$' "$(cat "$FAKE_LOG")" "BL-052 over ssh: the runtime is started through root-ops"
+        assert_match '^sudo bash [^ ]*/mac/root-ops runtime status$' "$(cat "$FAKE_LOG")" "BL-052 over ssh: its status is read through root-ops"
+        assert_match '^sudo launchctl asuser [0-9]+ sudo -n -u tester [^ ]*container system start$' "$(cat "$FAKE_LOG")" "BL-052 over ssh: root-ops reaches gui/<uid> as the user"
+        assert_eq "" "$(grep -E '^nice-dns-helper .* runtime ' "$FAKE_LOG")" "BL-052 over ssh: the helper is never asked (installer-only verb)"
+      else
+        assert_match '^container system start$' "$(cat "$FAKE_LOG")" "BL-052 in a login session: the runtime is started directly"
+        assert_eq "" "$(grep -E 'root-ops runtime ' "$FAKE_LOG")" "BL-052 in a login session: root-ops is not asked"
+      fi
+    ) || exit 1
+  done
+  done
+}
+
+t_macos_install_without_a_login_session_refuses_BL_052() {
+  local ep
+  for ep in install-mac install-mac-hardened; do
+  (
+    ip_env "$ep"
+    printf 'Background\n' >"$FAKE/managername"
+    : >"$FAKE/no_gui_session"
+    ip_install "$ep"
+    assert_nonzero "$IP_RC" "BL-052: with no login session the install fails: $IP_OUT"
+    assert_match 'must be logged in at the Mac' "$IP_OUT" "BL-052: and says a user must be logged in at the Mac"
+    ip_assert_untouched "BL-052 no login session"
+    assert_eq "" "$(grep -E 'container system start|root-ops (runtime|host-prereqs|install-helper)' "$FAKE_LOG")" "BL-052: nothing was started or installed:
+$(cat -n "$FAKE_LOG")"
+    assert_no_path "$IP_STATE/current" "BL-052: nothing is marked current"
+    assert_no_path "$IP_STATE/generations" "BL-052: no generation is prepared (Tier-1 I1)"
+  ) || exit 1
+  done
+}

@@ -72,22 +72,27 @@ fn list_verbs_needs_a_known_platform() {
     assert_eq!(helper(&["--list-verbs"]).status.code(), Some(2));
 }
 
+/// The root-ops verbs only the installer runs, through sudo (lib/root.sh):
+/// deb's remove-helper (OD-6 of the 2026-11-18 backlog sweep, DEC-025) and
+/// mac's runtime (BL-052).
+const INSTALLER_ONLY: &[(&str, &[&str])] = &[("deb", &["remove-helper"]), ("mac", &["runtime"])];
+
 #[test]
-fn list_verbs_equal_the_root_ops_allow_lists_plus_the_two_new_verbs() {
+fn list_verbs_equal_the_root_ops_allow_lists_less_the_installer_only_verbs() {
     for (platform, script) in [("deb", "deb/root-ops"), ("mac", "mac/root-ops")] {
         let ours: BTreeSet<String> =
             lines(&helper(&["--list-verbs", "--platform", platform])).into_iter().collect();
         let theirs = root_ops_labels(script);
         assert!(!theirs.is_empty(), "no labels read from {script}");
-        let missing: Vec<_> = theirs.difference(&ours).collect();
-        assert!(missing.is_empty(), "{platform}: in root-ops, not in the helper: {missing:?}");
-        let extra: Vec<_> = ours.difference(&theirs).cloned().collect();
-        // root-ops gains these two in the next task; after it the sets are equal.
-        let allowed = ["install-helper", "version"];
-        assert!(
-            extra.iter().all(|e| allowed.contains(&e.as_str())),
-            "{platform}: in the helper, not in root-ops: {extra:?}"
-        );
+        let only: BTreeSet<String> = INSTALLER_ONLY
+            .iter()
+            .find(|(p, _)| *p == platform)
+            .map(|(_, v)| v.iter().map(|s| s.to_string()).collect())
+            .unwrap_or_default();
+        let missing: BTreeSet<String> = theirs.difference(&ours).cloned().collect();
+        assert_eq!(missing, only, "{platform}: in root-ops, not in the helper");
+        let extra: Vec<_> = ours.difference(&theirs).collect();
+        assert!(extra.is_empty(), "{platform}: in the helper, not in root-ops: {extra:?}");
     }
 }
 

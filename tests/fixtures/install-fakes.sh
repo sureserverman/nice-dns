@@ -414,6 +414,14 @@ case "$me" in
     [ "$1" = -listallnetworkservices ] && printf 'An asterisk (*) denotes that a network service is disabled.\nWi-Fi\n'
     exit 0 ;;
   launchctl)
+    # The session's launchd domain ($FAKE/managername; Aqua, a login
+    # session, by default) and whether the user has a GUI login session at
+    # all ($FAKE/no_gui_session: launchctl print gui/<uid> fails as it does
+    # for a uid with none, 112) (BL-052).
+    case "$1" in
+      managername) cat "$FAKE/managername" 2>/dev/null || echo Aqua; exit 0 ;;
+      print) case "${2:-}" in gui/*) [ ! -f "$FAKE/no_gui_session" ] || exit 112 ;; esac ;;
+    esac
     if [ -n "${FAKE_ROOT:-}" ] && [ "$1" = load ]; then
       case "$*" in *org.nice-dns.start-container.plist)
         if [ ! -f "$FAKE/rollback_never_ready" ]; then

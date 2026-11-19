@@ -116,6 +116,9 @@ VARIANT="$ACTION"
 # Dependencies, the runtime, the build tree, the pulled images, bridges and
 # the prepare manifest. Nothing here interrupts the running stack or touches
 # host DNS; a failure exits and leaves it as it was.
+# Refuses before any change, before its generation is prepared, when no one
+# is logged in at the Mac (BL-052).
+nd_install_macos_check_session || exit 1
 nd_install_begin macos install-mac.sh standard "$VARIANT" "$BRANCH"
 # Refuses (exit 3) before any change when another owner took over host DNS.
 nd_install_check_owned

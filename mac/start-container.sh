@@ -684,7 +684,14 @@ tries=0
 until container system status >/dev/null 2>&1; do
   tries=$((tries + 1))
   if (( tries >= 10 )); then
-    log "container system never came up"
+    # `system status` fails both ways; an apiserver that still answers ls
+    # was started in another launchd domain, such as an install over ssh
+    # (BL-052).
+    if container ls >/dev/null 2>&1; then
+      log "container system answers but is not registered in this launchd domain ($(launchctl managername 2>/dev/null || echo unknown)): it was started from another session, such as an install over ssh; stop it there with 'container system stop' and run this agent again"
+    else
+      log "container system never came up"
+    fi
     exit 1
   fi
   log "container system not ready, retry $tries/10"

@@ -147,6 +147,7 @@ _check() {
     save-previous) _args 1; _owned_root "$1" >/dev/null || _die 2 "verb 'save-previous': '$1' is not a file nice-dns owns" ;;
     restore) _args 2; _owned_root "$1" >/dev/null || _die 2 "verb 'restore': '$1' is not a file nice-dns owns"
       case "$2" in absent|-) ;; *) _die 2 "verb 'restore': the second argument is 'absent' or '-', not '$2'" ;; esac ;;
+    runtime) _args 1; case "$1" in start|status) ;; *) _die 2 "verb 'runtime': the argument is 'start' or 'status', not '$1'" ;; esac ;;
     "") _die 2 "no verb given" ;;
     *) _die 2 "unknown verb '$VERB'" ;;
   esac
@@ -325,6 +326,29 @@ v_remove_helper() {
   if _r test -d "$ND_HELPER_DIR" </dev/null; then _r rmdir "$ND_HELPER_DIR" 2>/dev/null || true; fi
 }
 
+# runtime <start|status>: the user's container runtime in their login
+# session (gui/<uid>), where the start-container agent runs it, for an
+# install outside that session (ssh): there `container system status` does
+# not see it and `system start` would start a second runtime in the ssh
+# domain, which wedged vmnet on 2026-11-07, no DNS 11:11-13:01 UTC (BL-052).
+# launchctl asuser reaches the session; the CLI runs as the user, never as
+# root (DEC-024: the runtime is reached, never booted out or moved). The CLI
+# comes from a fixed list in the order the agent's PATH has it
+# (mac/start-container.sh, the plist); stdin passes through (system start's
+# first-run prompts). An
+# installer-only verb: lib/root.sh sends it to sudo, and the helper's table
+# does not have it (DEC-025).
+v_runtime() {
+  local bin="" p
+  for p in /opt/homebrew/bin/container /usr/local/bin/container; do
+    if [ -x "$R$p" ]; then bin="$R$p"; break; fi
+  done
+  # A test run has neither: the PATH's fake, which the fake sudo only logs.
+  if [ -z "$bin" ] && [ "$ND_ROOT_TEST" = 1 ]; then bin="$(command -v container || echo container)"; fi
+  [ -n "$bin" ] || _die 1 "runtime: no container CLI at /opt/homebrew/bin/container or /usr/local/bin/container"
+  _r launchctl asuser "$UID_OF" sudo -n -u "$U" "$bin" system "$1"
+}
+
 # version: the helper version this root-ops expects.
 v_version() { printf '%s\n' "$ND_HELPER_VERSION"; }
 
@@ -366,4 +390,5 @@ case "$VERB" in
   install-helper) v_install_helper "$1" ;;
   remove-helper) v_remove_helper ;;
   version) v_version ;;
+  runtime) v_runtime "$1" ;;
 esac

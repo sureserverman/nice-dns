@@ -1,10 +1,11 @@
 //! The verb tables and argument grammars, and the path grammar.
 //!
 //! The tables are plain data for both platforms and must equal the allow-list
-//! of `deb/root-ops` and `mac/root-ops`, less deb's `remove-helper`: on Linux
-//! lib/root.sh sends that verb to sudo, never to the helper (OD-6 of the
-//! 2026-11-18 backlog sweep, DEC-025). Every token is compared by exact
-//! string equality; nothing is split or prefix-matched.
+//! of `deb/root-ops` and `mac/root-ops`, less the installer-only verbs, which
+//! lib/root.sh sends to sudo, never to the helper: deb's `remove-helper`
+//! (OD-6 of the 2026-11-18 backlog sweep, DEC-025) and mac's `runtime`
+//! (BL-052). Every token is compared by exact string equality; nothing is
+//! split or prefix-matched.
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
