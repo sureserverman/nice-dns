@@ -149,24 +149,44 @@ prune_guard_state() {
   rm -f "${TOR_STATE_DIR}/tor/state"
 }
 
+# tor_bootstrapped [<log>]: 0 when the proxy's log says Tor bootstrapped. The
+# log is read whole first: under pipefail, `container logs | grep -q` failed
+# when grep stopped at an early marker and the rest of a long log hit a
+# closed pipe (BL-037).
 tor_bootstrapped() {
-  container logs "$TOR_CONTAINER" 2>&1 | grep -qi 'bootstrapped successfully'
+  local out="${1-}"
+  [[ $# -gt 0 ]] || out="$(container logs "$TOR_CONTAINER" 2>&1)" || true
+  grep -qi 'bootstrapped successfully' <<<"$out"
 }
 
 # Bootstrap is judged on tor's own output rather than on end-to-end DNS, so a
-# slow-but-working Tor is not mistaken for a bad bridge set.
+# slow-but-working Tor is not mistaken for a bad bridge set (BL-037). The
+# proxies give Tor 300 s, counted from a later moment than this wait, and then
+# print their own warning (tor-socat "Tor did not bootstrap in time",
+# tor-haproxy "Tor did not bootstrap in 5 minutes"); so the wait runs 72 x 5 s,
+# past their cap. Returns 0 bootstrapped; 2 the proxy reported its timeout
+# (the controller's recovery takes over; the bridges are not blamed); 1 Tor
+# printed neither line.
 wait_for_tor_bootstrap() {
-  local tries=0
-  until tor_bootstrapped; do
+  local tries=0 out cap
+  while :; do
+    out="$(container logs "$TOR_CONTAINER" 2>&1)" || true
+    if tor_bootstrapped "$out"; then
+      log "tor bootstrapped"
+      return 0
+    fi
+    cap="$(grep 'Tor did not bootstrap in' <<<"$out" | tail -n 1)" || true
+    if [[ -n $cap ]]; then
+      log "the proxy reports: $cap; leaving the bridges and the stack to the controller"
+      return 2
+    fi
     tries=$((tries + 1))
-    if (( tries >= 60 )); then
-      log "tor did not bootstrap within 300s"
+    if (( tries >= 72 )); then
+      log "tor did not bootstrap within 360s and the proxy printed no line about it"
       return 1
     fi
     sleep 5
   done
-  log "tor bootstrapped"
-  return 0
 }
 
 dns_healthy() {
@@ -763,14 +783,20 @@ fi
 # upstream or a cold cache must not be read as "bad bridges" — that
 # misdiagnosis is what made the old unconditional refetch rotate a working
 # set away every boot. Rotation is deferred to the next run so this one
-# still gets to recover on what it has.
+# still gets to recover on what it has. A proxy that reported its own
+# bootstrap timeout is the controller's to recover: its bridges are not
+# blamed and the stack is not rebuilt (BL-037).
 tor_ok=0
-if wait_for_tor_bootstrap; then
-  tor_ok=1
-else
-  touch "$BRIDGE_SENTINEL"
-  log "armed bridge rotation for next run"
-fi
+tor_why="tor is bootstrapped (a rebuild would discard a working tor)"
+tor_rc=0
+wait_for_tor_bootstrap || tor_rc=$?
+case "$tor_rc" in
+  0) tor_ok=1 ;;
+  2) tor_ok=1; tor_why="the proxy reported its bootstrap timeout" ;;
+  *)
+    touch "$BRIDGE_SENTINEL"
+    log "armed bridge rotation for next run" ;;
+esac
 
 # 5b) A chain fault is only worth a rebuild when tor is the thing that's
 # broken. rebuild_stack tears down and recreates every container, so running
@@ -788,7 +814,7 @@ if ! wait_for_chain; then
     # point at an address nothing is listening on — that is DNS loss with
     # none of the privacy benefit. Until the stack learns its own addresses
     # at runtime, exiting leaves the system resolver untouched.
-    log "chain unhealthy but tor is bootstrapped; not rebuilding (would discard a working tor)"
+    log "chain unhealthy but $tor_why; not rebuilding"
     log "not pinning DNS: pin target is hardcoded and container IPs are not stable"
     exit 1
   else

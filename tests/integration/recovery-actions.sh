@@ -888,6 +888,66 @@ RUN
   assert_match 'rotate=no' "$out" "a usable set after a clean bootstrap is reused"
 }
 
+# BL-037: the agent waited 60 x 5 s for Tor, while the proxies give Tor 300 s
+# from a later moment and then print their own warning (tor-socat "Tor did
+# not bootstrap in time", tor-haproxy "Tor did not bootstrap in 5 minutes").
+# A slow Tor was read as a bad bridge set: the sentinel was armed and the
+# stack rebuilt. The agent now waits 72 x 5 s; the proxy's own warning is
+# logged and leaves the bridges and the stack to the controller; only a Tor
+# that printed neither line arms the sentinel. Steps 5a and 5b of the agent
+# run as written, with stubs (sleep is a no-op: the short fixture interval).
+t_macos_agent_waits_out_a_slow_tor_BL_037() {
+  local sc="$NICE_DNS_ROOT/mac/start-container.sh" out m
+  sed -n '/^tor_bootstrapped() {/,/^}/p; /^wait_for_tor_bootstrap() {/,/^}/p' "$sc" >"$CASE_DIR/tor.sh"
+  sed -n '/^# 5a) /,/^# 6) /p' "$sc" >"$CASE_DIR/settle.sh"
+  assert_match 'wait_for_tor_bootstrap' "$(cat "$CASE_DIR/tor.sh")" "BL-037: the wait is a function of the agent"
+  assert_match 'BRIDGE_SENTINEL' "$(cat "$CASE_DIR/settle.sh")" "BL-037: steps 5a and 5b are blocks of the agent"
+  cat >"$CASE_DIR/settle-run.sh" <<'RUN'
+set -euo pipefail
+TOR_CONTAINER=tor-socat
+BRIDGE_SENTINEL="$W/sentinel"
+log() { printf 'log: %s\n' "$*"; }
+sleep() { :; }
+container() {
+  local n
+  n=$(( $(cat "$W/n" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$W/n"
+  case "$MODE" in
+    late) [ "$n" -lt 65 ] || echo "nice-dns: tor bootstrapped successfully" ;;
+    socat-cap) [ "$n" -lt 3 ] || echo "WARNING: Tor did not bootstrap in time, starting socat anyway." ;;
+    haproxy-cap) [ "$n" -lt 3 ] || echo "WARNING: Tor did not bootstrap in 5 minutes." ;;
+    silent) ;;
+  esac
+  # The log goes on after its marker, longer than a pipe buffer, as a real
+  # one does (a reader that stops at the marker must not fail the read).
+  i=0; while [ "$i" -lt 1500 ]; do echo "[notice] filler line $i of a long tor log ......"; i=$((i + 1)); done
+}
+wait_for_chain() { return 1; }
+rebuild_stack() { echo REBUILD; return 1; }
+. "$W/tor.sh"
+. "$W/settle.sh"
+echo reached-step-6
+RUN
+  for m in late socat-cap haproxy-cap silent; do
+    rm -f "$CASE_DIR/sentinel" "$CASE_DIR/n"
+    out="$(W="$CASE_DIR" MODE="$m" bash "$CASE_DIR/settle-run.sh" 2>&1)"
+    case "$m" in
+      late)
+        assert_no_path "$CASE_DIR/sentinel" "BL-037: a Tor that bootstraps at try 65 arms no sentinel: $out"
+        assert_match 'log: tor bootstrapped' "$out" "BL-037: and is waited for"
+        assert_not_match 'REBUILD' "$out" "BL-037: and the stack is not rebuilt" ;;
+      socat-cap|haproxy-cap)
+        assert_no_path "$CASE_DIR/sentinel" "BL-037: $m: the proxy's own warning arms no sentinel: $out"
+        assert_match 'Tor did not bootstrap in' "$out" "BL-037: $m: the agent logs the proxy's line"
+        assert_not_match 'REBUILD' "$out" "BL-037: $m: and does not rebuild the stack"
+        assert_eq 3 "$(cat "$CASE_DIR/n")" "BL-037: $m: and stops waiting at the warning" ;;
+      silent)
+        assert_file "$CASE_DIR/sentinel" "BL-037: a Tor that printed neither line arms the sentinel: $out"
+        assert_eq 72 "$(cat "$CASE_DIR/n")" "BL-037: after 72 tries"
+        assert_match 'REBUILD' "$out" "BL-037: and the one rebuild is tried, as before" ;;
+    esac
+  done
+}
+
 t_unbound_probe_route_is_bounded() {
   # nice-dns-unbound-start probe-route is the host-side readiness
   # corroboration (DEC-006) and, since the Sub-plan 3 close-out, Unbound's
