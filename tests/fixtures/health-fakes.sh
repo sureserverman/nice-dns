@@ -44,6 +44,11 @@ STUB
 me="$(basename "$0")"
 l="$me"; for a in "$@"; do l="$l $a"; done; printf '%s\n' "$l" >>"$FAKE_LOG"
 if [ -f "$FAKE/rt.hang" ]; then sleep "$(cat "$FAKE/hang_secs")" & wait; exit 1; fi
+# $FAKE/rt.warn: podman prints its storage-driver warning on every call, as
+# on a host whose storage.conf names no driver (mint, podman 5.8.1; BL-054).
+if [ -f "$FAKE/rt.warn" ] && [ "$me" = podman ]; then
+  echo 'time="2026-11-19T07:06:24Z" level=warning msg="The storage '"'"'driver'"'"' option should be set in /usr/share/containers/storage.conf. A driver was picked automatically."' >&2
+fi
 table() {
   printf 'ID           IMAGE                                    OS     ARCH   STATE    IP                 CPUS  MEMORY  STARTED\n'
   while IFS= read -r n; do

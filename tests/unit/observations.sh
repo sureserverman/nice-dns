@@ -1221,6 +1221,30 @@ t_the_first_escalation_dump_is_bounded() {
 
 # BL-053: podman ps leaves a paused container out, so a paused Unbound read as
 # containers-missing and the repair started a unit that already ran.
+# BL-054: podman prints its storage-driver warning on every call where
+# storage.conf names no driver (mint), and that line was taken as the reason a
+# runtime command failed.
+t_podmans_storage_warning_is_never_the_reason_BL_054() {
+  local w
+  ob_setup linux
+  w='time="x" level=warning msg="The storage '"'"'driver'"'"' option should be set in /usr/share/containers/storage.conf. A driver was picked automatically."'
+  printf '%s\n' "$w" >"$CASE_DIR/w.err"
+  { printf '%s\n' "$w"; echo 'Error: cannot open storage: database is locked'; } >"$CASE_DIR/we.err"
+  ob_lib 'nd_platform_stderr "'"$CASE_DIR"'/w.err"'
+  assert_eq "" "$OB_OUT" "BL-054: a stderr holding only the warning gives an empty reason"
+  ob_lib 'nd_platform_stderr "'"$CASE_DIR"'/we.err"'
+  assert_eq 'Error: cannot open storage: database is locked' "$OB_OUT" "BL-054: with a real error, the real error"
+  : >"$FAKE/rt.warn"
+  ob_observe; ob_expect runtime healthy '^running: ' "BL-054: the warning alone is no failure"
+  : >"$FAKE/rt.down"
+  ob_observe; ob_expect runtime unhealthy '^runtime-down: Error: cannot open storage' "BL-054: the runtime-down reason is the real error"
+  assert_not_match "storage 'driver'" "$(ob_reason runtime)" "BL-054: never the warning"
+  rm -f "$FAKE/rt.down"
+  printf 'pi-hole\nunbound\ntor-haproxy\n' >"$FAKE/running"; : >"$FAKE/state_unbound.fail"
+  ob_observe; ob_expect container:unbound indeterminate 'no such object' "BL-054: a failed inspect is named by its error"
+  assert_not_match "storage 'driver'" "$(ob_reason container:unbound)" "BL-054: not by the warning"
+}
+
 t_a_paused_container_is_listed_not_missing() {
   ob_setup linux
   printf 'unbound\n' >"$FAKE/paused"; printf 'paused healthy 0 0\n' >"$FAKE/state_unbound"

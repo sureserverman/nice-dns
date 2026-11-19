@@ -135,8 +135,10 @@ writes one failure dump. A missing container is started by name. If its unit las
 exited 125 or 126, podman could not start it, so the user service manager is
 re-executed first, and the pod restarts if that start still fails, at most once
 every 30 minutes. After three repairs with no healthy reading, whatever the routes
-say, the whole stack restarts at once and then every 30 minutes, and the passes
-between log the escalation. Every action is a row in `recovery.tsv`.
+say, the whole stack restarts at once and then every 30 minutes. Between two
+stack restarts, the passes inside the 5-minute cooldown after each one are
+silent no-ops; the passes after it log the escalation, once a pass, until the
+next restart is due. Every action is a row in `recovery.tsv`.
 
 ## Bridge refresh
 

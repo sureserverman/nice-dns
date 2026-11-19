@@ -438,7 +438,13 @@ nd_policy_decide() {
       elif [ "$healthy_now" != 1 ] && [ "$unhealthy_now" = 1 ] && [ "$s_rest" -ge "$maxr" ]; then
         # Past the ladder's cap the stack restart below covers Unbound as well.
         # Both would be due at the same moment, and Unbound's would reset the timer.
-        notes="${notes}Unbound failed $s_ubfail checks in a row; the stack restart covers it; "
+        # Say "covers it" only on the pass whose stack restart is due; the
+        # passes between say when it comes (BL-054).
+        if ! _nd_p_num "$s_rec" || [ $((now - s_rec)) -ge "$retry" ]; then
+          notes="${notes}Unbound failed $s_ubfail checks in a row; the stack restart covers it; "
+        else
+          notes="${notes}Unbound failed $s_ubfail checks in a row; held for the next stack restart, $retry s after the last ($((now - s_rec)) s so far); "
+        fi
       elif [ "$s_ubrest" -lt "$ubmax" ] || ! _nd_p_num "$s_rec" || [ $((now - s_rec)) -ge "$retry" ]; then
         ub_due=1
       else
@@ -482,7 +488,13 @@ nd_policy_decide() {
       elif [ "$in_startup" = 1 ] || [ "$in_cool" = 1 ]; then
         notes="${notes}Pi-hole failed $s_phfail checks in a row, inside the startup allowance or cooldown; "
       elif [ "$healthy_now" != 1 ] && [ "$unhealthy_now" = 1 ] && [ "$s_rest" -ge "$maxr" ]; then
-        notes="${notes}Pi-hole failed $s_phfail checks in a row; the stack restart covers it; "
+        # Say "covers it" only on the pass whose stack restart is due; the
+        # passes between say when it comes (BL-054).
+        if ! _nd_p_num "$s_rec" || [ $((now - s_rec)) -ge "$retry" ]; then
+          notes="${notes}Pi-hole failed $s_phfail checks in a row; the stack restart covers it; "
+        else
+          notes="${notes}Pi-hole failed $s_phfail checks in a row; held for the next stack restart, $retry s after the last ($((now - s_rec)) s so far); "
+        fi
       elif [ "$s_phrest" -lt "$phmax" ] || ! _nd_p_num "$s_rec" || [ $((now - s_rec)) -ge "$retry" ]; then
         ph_due=1
       else

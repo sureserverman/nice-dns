@@ -762,6 +762,19 @@ t_an_asset_whose_hash_cannot_be_taken_is_not_installed_BL_021() {
   done
 }
 
+# BL-054: _nd_inst_route_probe read a lib/recovery.sh that failed to load as a
+# route that did not resolve, and said nothing.
+t_the_route_probe_reports_a_library_that_does_not_load_BL_054() {
+  local out rc
+  mkdir -p "$CASE_DIR/tree/lib"
+  printf 'return 1\n' >"$CASE_DIR/tree/lib/recovery.sh"
+  out="$(ND_INST_TREE="$CASE_DIR/tree" ND_INST_PLATFORM=linux bash -c '. "$1/lib/install.sh" && _nd_inst_route_probe' _ "$NICE_DNS_ROOT" 2>&1)"; rc=$?
+  assert_nonzero "$rc" "BL-054: the probe fails: $out"
+  assert_match 'cannot load .*/lib/recovery.sh' "$out" "BL-054: and says the library did not load"
+  out="$(ND_INST_TREE="$CASE_DIR/tree" ND_INST_PLATFORM=linux ND_INST_PROBE_OPTIONAL=1 bash -c '. "$1/lib/install.sh" && _nd_inst_route_probe' _ "$NICE_DNS_ROOT" 2>&1)"; rc=$?
+  assert_nonzero "$rc" "BL-054: an optional probe still fails on it: $out"
+}
+
 t_helper_asset_lookup_failures_are_retried_three_times() {
   # Two failed lookups, then the download: the helper is staged.
   ip_asset_world install-deb

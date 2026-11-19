@@ -1068,6 +1068,29 @@ t_full_outage_past_the_cap_restarts_the_stack_every_half_hour() {
   assert_eq - "$(sp_key "$CASE_DIR/cur" outage_since)" "and the outage"
 }
 
+# BL-054: past the ladder's cap in a full outage, "the stack restart covers it"
+# was printed on every pass, also on the passes between two stack restarts,
+# when no stack restart was due.
+t_the_stack_restart_covers_unbound_only_when_it_is_due_BL_054() {
+  local i last
+  sp_ub_start
+  sp_obs "$CASE_DIR/out" healthy unhealthy unhealthy unhealthy unhealthy
+  sp_ub "$CASE_DIR/out" unhealthy "control: refused"
+  i=0
+  while [ "$SP_TARGET" != stack ] && [ "$i" -lt 150 ]; do sp_ub_pass "$CASE_DIR/out"; i=$((i + 1)); done
+  assert_eq stack "$SP_TARGET" "BL-054: the outage reaches the stack restart"
+  last="$SP_NOW"
+  # Past the cooldown, before the next stack restart is due.
+  while [ $((SP_NOW - last)) -le 600 ]; do sp_ub_pass "$CASE_DIR/out"; done
+  assert_eq escalate "$SP_ACTION" "BL-054: between stack restarts the pass escalates"
+  assert_not_match 'covers it' "$SP_REASON" "BL-054: and no stack restart covers Unbound now"
+  assert_match 'Unbound failed [0-9]+ checks in a row' "$SP_REASON" "BL-054: Unbound's failures are still named"
+  i=0
+  while [ "$SP_TARGET" != stack ] && [ "$i" -lt 60 ]; do sp_ub_pass "$CASE_DIR/out"; i=$((i + 1)); done
+  assert_eq stack "$SP_TARGET" "BL-054: the next stack restart"
+  assert_match 'the stack restart covers it' "$SP_REASON" "BL-054: covers Unbound on the pass it is due"
+}
+
 t_unbound_flapping_probe_cannot_defeat_the_restart_cap() {
   local i n=0
   sp_ub_start

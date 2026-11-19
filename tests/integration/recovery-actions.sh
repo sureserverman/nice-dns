@@ -80,6 +80,9 @@ case "$1" in
           if [ "$me" = container ]; then echo 'Error: failed to start process (cause: "internalError: "failed to find target executable /usr/local/bin/nice-dns-unbound-start"")' >&2; exit 1; fi
           echo 'Error: crun: executable file `/usr/local/bin/nice-dns-unbound-start` not found in $PATH: No such file or directory: OCI runtime attempted to invoke a command that was not found' >&2; exit 127
         fi
+        # "nodig": the tool runs but a program it needs is not in the image
+        # (unbound/start.sh probe_route, exit 127; BL-054).
+        if [ "$(cat "$FAKE/unbound_probe_rc" 2>/dev/null)" = nodig ]; then echo 'nice-dns-unbound-start: dig is not in the image' >&2; exit 127; fi
         exit "$(cat "$FAKE/unbound_probe_rc" 2>/dev/null || echo 0)" ;;
       test) exit "$(cat "$FAKE/cap_rc" 2>/dev/null || echo 0)" ;;
       cat) f="$ctl/$(basename "$2")"; [ -f "$f" ] || exit 1; cat "$f" ;;
@@ -657,6 +660,61 @@ t_unbound_without_probe_tool_is_ready_uncorroborated_on_both_platforms() {
       echo missing >"$FAKE/unbound_probe_rc"
       _nd_rec_readiness "$CASE_DIR/o-$plat" "$now"
       assert_match 'nd-1	tor	ready	.*uncorroborated' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: an Unbound image without the tool is ready, marked uncorroborated"
+    ) || exit 1
+  done
+}
+
+# BL-054: readiness named "no probe-route" whatever was missing; the image's
+# probe-route itself says which program it lacks.
+t_readiness_names_the_program_the_image_lacks_BL_054() {
+  local plat now
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      now="$(date +%s)"
+      { printf 'schema\tnice-dns-recovery-journal/1\n'; printf '%s\tnd-1\ttor\tacknowledged\tx\n' "$((now - 30))"; } >"$ND_STATE_DIR/recovery.tsv"
+      { printf 'schema\tnice-dns-observations/1\nobs\truntime\thealthy\t5\trunning: x\n'
+        printf 'obs\troute:cloudflare-exit\thealthy\t9\tp\n'; } >"$CASE_DIR/o-$plat"
+      echo nodig >"$FAKE/unbound_probe_rc"
+      _nd_rec_readiness "$CASE_DIR/o-$plat" "$now"
+      assert_match 'nd-1	tor	ready	.*uncorroborated: the Unbound image has no dig$' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: BL-054: the reason names the missing program"
+      assert_not_match 'no probe-route' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: BL-054: not the tool, which is there"
+    ) || exit 1
+  done
+}
+
+# BL-054: a route switch whose include never became visible in the container
+# was journalled as "apply_route exit 3", and its detail called it a failed
+# reload_keep_cache. The journal now carries the detail, which says timeout.
+t_a_visibility_timeout_is_journalled_as_a_timeout_BL_054() {
+  local out rc
+  ra_fake linux
+  ra_route_state
+  out="$(seed_route cloudflare-onion 1)"; assert_rc 0 $? "an onion include: $out"
+  # The fake container shows no include at all: the wait for it times out.
+  export ND_ROUTE_READBACK_SECONDS=1
+  printf 'schema\tnice-dns-decision/1\naction\tswitch-route\ntarget\tcloudflare-exit\nreason\ttest\n' >"$CASE_DIR/dec"
+  out="$(nd_recovery_apply "$CASE_DIR/dec" ra-31 2)"; rc=$?
+  assert_nonzero "$rc" "BL-054: the switch does not take: $out"
+  assert_match 'timeout' "$(ra_field detail "$out")" "BL-054: apply_route's detail says timeout"
+  assert_not_match 'reload_keep_cache failed' "$out" "BL-054: not a failed reload, which never ran"
+  assert_match 'ra-31	route:cloudflare-exit	not-acknowledged	apply_route exit [0-9]+: .*timeout' "$(cat "$ND_STATE_DIR/recovery.tsv")" "BL-054: and the journal says timeout"
+}
+
+# BL-054: the repair of a missing container did not say which one it started.
+t_a_missing_containers_repair_names_it_BL_054() {
+  local plat out
+  for plat in linux macos; do
+    (
+      ra_fake "$plat"
+      printf 'pi-hole\ntor-haproxy\n' >"$FAKE/running"; : >"$FAKE/start_brings_up"; : >"$FAKE_LOG"
+      out="$(repair_runtime containers-missing ra-32 unbound)"
+      assert_rc 0 $? "$plat: the repair: $out"
+      assert_match 'ra-32	runtime	requested	repair of containers-missing: .*unbound' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: BL-054: the request names the missing container"
+      assert_match 'ra-32	runtime	acknowledged	containers-missing \(unbound\)' "$(cat "$ND_STATE_DIR/recovery.tsv")" "$plat: BL-054: and so does the acknowledgement"
+      if [ "$plat" = linux ]; then
+        assert_match 'start unbound\.service' "$(cat "$ND_STATE_DIR/recovery.tsv")" "linux: BL-054: the unit it started"
+      fi
     ) || exit 1
   done
 }

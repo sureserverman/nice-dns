@@ -260,11 +260,20 @@ _nd_route_wait_visible() {
   done
 }
 
+# _nd_route_reload: 0 reloaded; 1 not, with why in _ND_RELOAD_WHY: a timeout
+# when the container never showed the new include (the reload did not run),
+# else the failed reload_keep_cache (BL-054).
 _nd_route_reload() {
   local out
-  _nd_route_wait_visible || return 1
-  out="$(_nd_route_x "${ND_RECOVERY_CMD_DEADLINE:-15}" nd_platform_unbound_exec unbound-control -c "$_ND_CTL" reload_keep_cache 2>&1)" || return 1
-  printf '%s\n' "$out" | grep -qx ok
+  _ND_RELOAD_WHY=""
+  if ! _nd_route_wait_visible; then
+    _ND_RELOAD_WHY="timeout: the container did not show the new include within ${ND_ROUTE_READBACK_SECONDS:-15} s; no reload was made"
+    return 1
+  fi
+  if out="$(_nd_route_x "${ND_RECOVERY_CMD_DEADLINE:-15}" nd_platform_unbound_exec unbound-control -c "$_ND_CTL" reload_keep_cache 2>&1)" \
+     && printf '%s\n' "$out" | grep -qx ok; then return 0; fi
+  _ND_RELOAD_WHY="reload_keep_cache failed: $(printf '%s\n' "$out" | head -n 1 | tr '\t' ' ')"
+  return 1
 }
 
 # _nd_route_resolves: resolution through the running route, bypassing the
@@ -361,7 +370,7 @@ _nd_route_rollback() {
   mv -f "$p" "$d/forward-route.conf" || { _nd_route_escalate "$2; cannot restore the previous route file"; return 3; }
   r="$(printf '%s\n' "$info" | cut -f1)"; g="$(printf '%s\n' "$info" | cut -f2)"; f="$(printf '%s\n' "$info" | cut -f3)"
   if ! _nd_route_reload || ! _nd_route_wait_runtime "$r" "$g" "${f%%@*}"; then
-    _nd_route_escalate "$2; restoring route $r generation $g did not take effect ($_ND_RT)"; return 3
+    _nd_route_escalate "$2; restoring route $r generation $g did not take effect (${_ND_RELOAD_WHY:-readback: $_ND_RT})"; return 3
   fi
   _nd_route_out restored "$r" "$g" "$f" "$2; restored route $r generation $g"
   return 1
@@ -372,7 +381,7 @@ _nd_route_rollback() {
 _nd_route_activate() {
   local why="" out
   if ! nd_route_checkpoint after-rename; then why="interrupted after the rename"
-  elif ! _nd_route_reload; then why="reload_keep_cache failed"
+  elif ! _nd_route_reload; then why="$_ND_RELOAD_WHY"
   elif ! nd_route_checkpoint after-reload; then why="interrupted after the reload"
   elif ! _nd_route_wait_runtime "$2" "$3" "$5"; then why="readback does not show route $2 generation $3 at $5 (got: $_ND_RT)"
   elif ! out="$(_nd_route_resolves)"; then why="route $2 did not resolve ($out)"
@@ -715,7 +724,7 @@ request_recovery() {
     nd_recovery_journal "$id" tor unsupported "$c has no $_ND_CTL_DIR (image without the acknowledged restart)"
     _nd_rec_out unsupported tor "$id" - - "$c does not offer the acknowledged restart"; rm -rf "$_ND_RX"; return 3
   elif [ "$rc" -ne 0 ]; then
-    nd_recovery_journal "$id" tor unreachable "exec in $c failed (exit $rc): $(head -n 1 "$_ND_RX/e")"
+    nd_recovery_journal "$id" tor unreachable "exec in $c failed (exit $rc): $(nd_platform_stderr "$_ND_RX/e" | head -n 1)"
     _nd_rec_out unreachable tor "$id" - - "cannot exec in $c (exit $rc)"; rm -rf "$_ND_RX"; return 4
   fi
   _nd_rec_x "$dl" nd_platform_proxy_exec "$c" cat "$_ND_CTL_DIR/tor-generation" || : >"$_ND_RX/o"
@@ -797,7 +806,7 @@ nd_recovery_restart_service() {
   nd_recovery_journal "$id" service requested "$(nd_platform_restart_scope) restart for ${c:-the missing proxy}; container before: $g0"
   nd_platform_restart_proxy "$c" "$svc" "$_ND_RX"; rc=$?
   if [ "$rc" -ne 0 ]; then
-    nd_recovery_journal "$id" service not-acknowledged "the service restart of $c exited $rc: $(head -n 1 "$_ND_RX/svc.err" 2>/dev/null)"
+    nd_recovery_journal "$id" service not-acknowledged "the service restart of $c exited $rc: $(nd_platform_stderr "$_ND_RX/svc.err" | head -n 1)"
     _nd_rec_out not-acknowledged service "$id" "$g0" - "service restart of $c exited $rc"; rm -rf "$_ND_RX"; return 1
   fi
   if _nd_rec_wait_generation "$c" "$g0" "$svc"; then
@@ -825,7 +834,7 @@ _nd_rec_restart_verified() {
   nd_recovery_journal "$id" "$comp" requested "restart; ${c:-the proxy} before: $g0"
   "$fn" "$svc" "$_ND_RX"; rc=$?
   if [ "$rc" -ne 0 ]; then
-    nd_recovery_journal "$id" "$comp" not-acknowledged "the restart exited $rc: $(head -n 1 "$_ND_RX/svc.err" 2>/dev/null)"
+    nd_recovery_journal "$id" "$comp" not-acknowledged "the restart exited $rc: $(nd_platform_stderr "$_ND_RX/svc.err" | head -n 1)"
     _nd_rec_out not-acknowledged "$comp" "$id" "$g0" - "restart of $comp exited $rc"; rm -rf "$_ND_RX"; return 1
   fi
   if _nd_rec_wait_generation "$c" "$g0" "$svc"; then
@@ -896,7 +905,7 @@ repair_runtime() {
     if [ "$fault" = containers-paused ]; then
       nd_recovery_journal "$id" runtime acknowledged "$fault: $pz running"
     else
-      nd_recovery_journal "$id" runtime acknowledged "$fault: the runtime answers$( [ "$fault" = containers-missing ] && printf ' and the stack runs')"
+      nd_recovery_journal "$id" runtime acknowledged "$fault${*:+ ($*)}: the runtime answers$( [ "$fault" = containers-missing ] && printf ' and the stack runs')"
     fi
     _nd_rec_out acknowledged runtime "$id" - - "$fault repaired"; return 0
   fi
@@ -928,7 +937,7 @@ nd_recovery_restart_tor() {
 # restart that the image cannot acknowledge falls back once to the service
 # restart; nothing is retried beyond that in one pass.
 nd_recovery_apply() {
-  local dec="$1" id="$2" rgen="$3" action target reason rc names
+  local dec="$1" id="$2" rgen="$3" action target reason rc names out
   action="$(_nd_rec_field action "$dec")"; target="$(_nd_rec_field target "$dec")"; reason="$(_nd_rec_field reason "$dec")"
   case "$action" in
     no-op) return 0 ;;
@@ -936,10 +945,13 @@ nd_recovery_apply() {
     switch-route)
       _nd_rec_lock_ok "$id" "route:$target" || return 5
       nd_recovery_journal "$id" "route:$target" requested "switch to $target (generation $rgen): $reason"
-      apply_route "$target" "$rgen"; rc=$?
+      out="$(apply_route "$target" "$rgen")"; rc=$?
+      printf '%s\n' "$out"
       case "$rc" in
         0) nd_recovery_journal "$id" "route:$target" acknowledged "route $target generation $rgen reads back and resolves" ;;
-        *) nd_recovery_journal "$id" "route:$target" not-acknowledged "apply_route exit $rc" ;;
+        # The last detail row says why (after a rollback, the rollback's, which
+        # carries the first failure; BL-054).
+        *) nd_recovery_journal "$id" "route:$target" not-acknowledged "apply_route exit $rc: $(printf '%s\n' "$out" | awk -F '\t' '$1 == "detail" { d = $2 } END { print d }')" ;;
       esac
       return "$rc" ;;
     restart-component)
@@ -1000,7 +1012,12 @@ _nd_rec_readiness() {
           _nd_rec_x "${ND_RECOVERY_CMD_DEADLINE:-15}" nd_platform_unbound_exec "$_ND_START" probe-route "${ND_ROUTE_PROBE_NAME:-.}"
           case $? in
             0) ok=1 det="; Unbound resolves over its route" ;;
-            126|127) ok=1 det="; uncorroborated: the Unbound image has no probe-route" ;;
+            # probe-route names a program it lacks ("<name>: dig is not in the
+            # image", unbound/start.sh); a runtime that found no tool at all
+            # says so in its own words (BL-054).
+            126|127) ok=1
+              det="$(sed -n 's/^[^:]*: \([A-Za-z0-9_.-]*\) is not in the image$/\1/p' "$_ND_RX/e" 2>/dev/null | head -n 1)"
+              det="; uncorroborated: the Unbound image has no ${det:-probe-route}" ;;
           esac
           rm -rf "$_ND_RX"
         fi ;;

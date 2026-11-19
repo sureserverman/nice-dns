@@ -210,7 +210,9 @@ _nd_deadline() {
   if [ "$1" -lt "$l" ]; then printf '%s\n' "$1"; else printf '%s\n' "$l"; fi
 }
 
-_nd_first_line() { head -n 1 "$1" 2>/dev/null | cut -c1-200; }
+# _nd_first_line <stderr file>: its first line as a reason, podman's storage
+# warning left out (nd_platform_stderr, BL-054).
+_nd_first_line() { nd_platform_stderr "$1" | head -n 1 | cut -c1-200; }
 
 # ─── runtime ─────────────────────────────────────────────────────────────────
 
@@ -231,7 +233,7 @@ _nd_obs_runtime() {
     124) _nd_obs runtime indeterminate $(($(_nd_now_ms) - t0)) "deadline: listing containers gave no answer within ${dl}s"
        return 0 ;;
     *) _ND_H_RT=down
-       _nd_obs runtime unhealthy $(($(_nd_now_ms) - t0)) "runtime-down: $(tr '\n' ' ' <"$f.err" | cut -c1-200)"
+       _nd_obs runtime unhealthy $(($(_nd_now_ms) - t0)) "runtime-down: $(nd_platform_stderr "$f.err" | tr '\n' ' ' | cut -c1-200)"
        return 0 ;;
   esac
   _ND_H_RT=ok
@@ -291,7 +293,7 @@ _nd_obs_container() {
   case "$rc" in
     0) ;;
     124) _nd_obs "container:$c" indeterminate $(($(_nd_now_ms) - t0)) "deadline: the state of $c gave no answer within ${dl}s restarts ?"; return 0 ;;
-    *) e="$(head -n 1 "$_ND_H_TMP/cst.err" 2>/dev/null | tr -d '\000-\037\177' | cut -c1-120)"
+    *) e="$(nd_platform_stderr "$_ND_H_TMP/cst.err" | head -n 1 | tr -d '\000-\037\177' | cut -c1-120)"
        if [ "$rc" = 5 ]; then what="the restart count of $c"; else what="the state of $c"; fi
        _nd_obs "container:$c" indeterminate $(($(_nd_now_ms) - t0)) "unknown: $what is not readable (exit $rc${e:+: $e}) restarts ?"; return 0 ;;
   esac
@@ -579,7 +581,7 @@ _nd_obs_unbound() {
   case "$rc" in
     0) _nd_obs unbound healthy $(($(_nd_now_ms) - t0)) "control and route answer" ;;
     124) _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "deadline: probe-route gave no verdict within ${dl}s" ;;
-    126|127) _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "probe-route cannot run in the image (exit $rc): $(tail -n 1 "$_ND_H_TMP/ub.err" 2>/dev/null | tr '\t\n' '  ')" ;;
+    126|127) _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "probe-route cannot run in the image (exit $rc): $(nd_platform_stderr "$_ND_H_TMP/ub.err" | tail -n 1 | tr '\t\n' '  ')" ;;
     *) if _nd_ub_exec_failed "$rc"; then
          _nd_obs unbound indeterminate $(($(_nd_now_ms) - t0)) "the runtime could not exec in unbound (exit $rc): $(grep -m 1 '^Error:' "$_ND_H_TMP/ub.err")"
        else

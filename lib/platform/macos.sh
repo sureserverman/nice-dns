@@ -66,6 +66,10 @@ nd_platform_runtime_bin() {
   return 1
 }
 
+# nd_platform_stderr <file>: a command's stderr as a reason (BL-054; Linux
+# drops podman's storage-driver warning; Apple container prints none).
+nd_platform_stderr() { cat "$1" 2>/dev/null; return 0; }
+
 # _nd_mac_table <deadline> <out> [-a]: `container ls` rows as
 # "name<TAB>state" (the plain table; `container ps` does not exist). An
 # "Error:" line fails even when the CLI exits 0. Codes as for
@@ -314,7 +318,13 @@ nd_platform_repair_runtime() {
     runtime-down)
       bin="$(nd_platform_runtime_bin)" || return 3
       nd_bounded "$2" "$3/rep" "$3/rep.err" "$bin" system start ;;
-    containers-missing) nd_bounded "$2" "$3/rep" "$3/rep.err" launchctl kickstart "gui/$(id -u)/$_ND_MAC_AGENT" ;;
+    containers-missing)
+      local dl="$2" tmp="$3" rc=0
+      shift 3
+      nd_bounded "$dl" "$tmp/rep" "$tmp/rep.err" launchctl kickstart "gui/$(id -u)/$_ND_MAC_AGENT" || rc=$?
+      # The agent recreates whatever is missing; the note names what was (BL-054).
+      printf 'kickstart %s for %s (exit %s); ' "$_ND_MAC_AGENT" "${*:-the stack}" "$rc" >>"$tmp/rep.note"
+      return "$rc" ;;
     *) return 3 ;;
   esac
 }

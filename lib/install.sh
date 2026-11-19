@@ -491,9 +491,10 @@ _nd_inst_route_dir() {
 }
 
 # _nd_inst_route_call <function>: a lib/recovery.sh route function, run from
-# the source tree for this platform.
+# the source tree for this platform. Exit 90, saying so, when that library
+# does not load (BL-054); otherwise the function's status.
 _nd_inst_route_call() {
-  ND_PLATFORM="$ND_INST_PLATFORM" bash -c '. "$1/lib/recovery.sh" && "$2"' _ "${ND_INST_TREE:-$ND_INST_SRC}" "$1"
+  ND_PLATFORM="$ND_INST_PLATFORM" bash -c '. "$1/lib/recovery.sh" || { printf "nice-dns install: cannot load %s/lib/recovery.sh\n" "$1" >&2; exit 90; }; "$2"' _ "${ND_INST_TREE:-$ND_INST_SRC}" "$1"
 }
 
 # nd_install_check_route_dir: preparation, before anything changes. The
@@ -1183,7 +1184,10 @@ nd_install_wait_ready() {
 # from this tree, so the probe must exist.
 _nd_inst_route_probe() {
   local rc=0
-  _nd_inst_route_call _nd_route_resolves >/dev/null 2>&1 || rc=$?
+  local err
+  err="$(_nd_inst_route_call _nd_route_resolves 2>&1 >/dev/null)" || rc=$?
+  # A library that did not load is said, never read as a route (BL-054).
+  if [ "$rc" = 90 ]; then printf '%s\n' "$err" | grep 'cannot load ' >&2; return "$rc"; fi
   # A rolled-back generation may predate probe-route (exit 126/127): its Pi-hole
   # answer is then all there is to go on.
   if [ "${ND_INST_PROBE_OPTIONAL:-0}" = 1 ] && { [ "$rc" = 126 ] || [ "$rc" = 127 ]; }; then rc=0; fi
