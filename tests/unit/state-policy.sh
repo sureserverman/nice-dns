@@ -1096,7 +1096,7 @@ t_the_stack_restart_covers_pihole_only_when_it_is_due_BL_054() {
   local i last
   sp_ub_start
   sp_obs "$CASE_DIR/out" healthy unhealthy unhealthy unhealthy unhealthy
-  sp_ph "$CASE_DIR/out" unhealthy
+  sp_ph "$CASE_DIR/out" unhealthy -
   i=0
   while [ "$SP_TARGET" != stack ] && [ "$i" -lt 150 ]; do sp_ub_pass "$CASE_DIR/out"; i=$((i + 1)); done
   assert_eq stack "$SP_TARGET" "BL-054: the outage reaches the stack restart"
