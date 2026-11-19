@@ -53,3 +53,12 @@ Assumption (Risk HIGH): reaching the runtime through `launchctl asuser` from ssh
 Checked: only the read-only `system status` and `system df` above, run through asuser. A `system start` through this path is first run in Task 2.3's live install.
 Result: both reads answered from the GUI-domain runtime; nothing was started.
 Verdict: holds for reads; the `system start` through the verb is first run live in Task 2.3, with the plan's Rollback ready.
+
+## Premise 7 (found by Task 2.3's first live run)
+Assumption: an install started over plain ssh (`ssh mac '~/.local/bin/nice-dns reinstall ...'`) finds Homebrew and the container CLI on PATH, as one started from Terminal does.
+Checked: on the mac, 2026-11-19 15:26 UTC, the live reinstall from sweep-macos at b5050a8; then `ssh mac 'echo "PATH=$PATH"; command -v brew; ls -l /opt/homebrew/bin/brew'`.
+Result: the install stopped in preparation with "Homebrew not found" (rc 1, nothing changed, the previous helper put back); PATH=/Users/user/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin — no Homebrew directory, while /opt/homebrew/bin/brew exists.
+Verdict: false — fixed in the product (both macOS entrypoints add Homebrew's directories when PATH lacks them, the LaunchAgent's order), with a fixture case that reproduces the ssh PATH (RED 20261119T152755Z-4af27718, green 20261119T153534Z-6ae00c31). The Stage 2 Outcome it serves ("an install over ssh works") is unchanged.
+
+## Limit (Task 2.3)
+The mac's sudoers holds `user ALL=(ALL) NOPASSWD: ALL` (sudo -n -l, 2026-11-19), so the live run cannot show an ssh install that has to ask for a sudo password; the `runtime` verb goes to plain sudo.

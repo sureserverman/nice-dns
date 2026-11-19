@@ -1459,3 +1459,25 @@ $(grep -n '^container builder' "$FAKE_LOG")"
     assert_eq 1 "$(grep -c '^container builder delete' "$FAKE_LOG")" "BL-024: the delete is tried once"
   ) || exit 1
 }
+
+# Task 2.3, live on the mac (2026-11-19 15:26 UTC): `ssh mac 'nice-dns
+# reinstall'` ran in a non-login shell whose PATH held no Homebrew
+# directory (/usr/bin:/bin:/usr/sbin:/sbin), and the install stopped at
+# "Homebrew not found" although /opt/homebrew/bin/brew was there. Both
+# macOS entrypoints now add Homebrew's directories when PATH lacks them,
+# in the LaunchAgent's order (ND_INST_BREW_DIRS: the fixture's stand-in).
+t_macos_install_over_plain_ssh_finds_homebrew_BL_052() {
+  local ep
+  for ep in install-mac install-mac-hardened; do
+    (
+      ip_env "$ep"
+      printf 'Background\n' >"$FAKE/managername"
+      mkdir -p "$IP_W/brew"
+      rm -f "$IP_BIN/brew"; ln -s "$IP_BIN/fakecmd" "$IP_W/brew/brew"
+      ND_INST_BREW_DIRS="$IP_W/brew" ip_install "$ep"
+      assert_rc 0 "$IP_RC" "BL-052 $ep: an ssh install with Homebrew off PATH finds it: $IP_OUT"
+      assert_not_match 'Homebrew not found' "$IP_OUT" "BL-052 $ep: and does not say it is missing"
+      assert_match '^brew ' "$(cat "$FAKE_LOG")" "BL-052 $ep: Homebrew is used"
+    ) || exit 1
+  done
+}
