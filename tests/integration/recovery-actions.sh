@@ -86,6 +86,14 @@ case "$1" in
         exit "$(cat "$FAKE/unbound_probe_rc" 2>/dev/null || echo 0)" ;;
       test) exit "$(cat "$FAKE/cap_rc" 2>/dev/null || echo 0)" ;;
       cat) f="$ctl/$(basename "$2")"; [ -f "$f" ] || exit 1; cat "$f" ;;
+      # $FAKE/reload_fails: podman's storage warning, then the control
+      # client's own error, as on mint (BL-054); otherwise "ok".
+      unbound-control)
+        if [ -f "$FAKE/reload_fails" ]; then
+          echo 'time="x" level=warning msg="The storage '"'"'driver'"'"' option should be set in /usr/share/containers/storage.conf. A driver was picked automatically."' >&2
+          echo 'error: reload failed: cannot open the route include' >&2; exit 1
+        fi
+        echo ok ;;
       sh)
         id="$5"
         printf '%s\n' "$id" >"$ctl/tor-restart-request"
@@ -699,6 +707,24 @@ t_a_visibility_timeout_is_journalled_as_a_timeout_BL_054() {
   assert_match 'timeout' "$(ra_field detail "$out")" "BL-054: apply_route's detail says timeout"
   assert_not_match 'reload_keep_cache failed' "$out" "BL-054: not a failed reload, which never ran"
   assert_match 'ra-31	route:cloudflare-exit	not-acknowledged	apply_route exit [0-9]+: .*timeout' "$(cat "$ND_STATE_DIR/recovery.tsv")" "BL-054: and the journal says timeout"
+}
+
+# BL-054 (Stage 2 gate, Tier-2 I1): the route layer folds an exec's stderr
+# into its reasons (reload, probe-route, check-route); podman's storage
+# warning came first there and became the reason.
+t_a_failed_reload_is_named_by_its_error_not_podmans_warning_BL_054() {
+  local out
+  ra_fake linux
+  out="$(seed_route cloudflare-onion 1)"; assert_rc 0 $? "an onion include: $out"
+  # The container sees the include the host wrote; only the reload fails.
+  cp "$ND_ROUTE_DIR/forward-route.conf" "$FAKE/ctl/forward-route.conf"
+  : >"$FAKE/reload_fails"
+  _nd_route_reload
+  assert_nonzero $? "BL-054: the reload fails"
+  assert_match '^reload_keep_cache failed: error: reload failed' "$_ND_RELOAD_WHY" "BL-054: named by the control client's error"
+  assert_not_match "storage 'driver'" "$_ND_RELOAD_WHY" "BL-054: never by podman's warning"
+  out="$(_nd_route_x 5 sh -c 'echo "time=\"x\" level=warning msg=\"The storage '"'"'driver'"'"' option should be set\"" >&2; echo "real error" >&2; exit 1' 2>&1)"
+  assert_eq 'real error' "$out" "BL-054: every route exec's stderr leaves without the warning"
 }
 
 # BL-054: the repair of a missing container did not say which one it started.

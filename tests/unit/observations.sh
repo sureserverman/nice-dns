@@ -1219,8 +1219,6 @@ t_the_first_escalation_dump_is_bounded() {
   unset ND_STATE_DIR ND_FAILURE_DUMP_S
 }
 
-# BL-053: podman ps leaves a paused container out, so a paused Unbound read as
-# containers-missing and the repair started a unit that already ran.
 # BL-054: podman prints its storage-driver warning on every call where
 # storage.conf names no driver (mint), and that line was taken as the reason a
 # runtime command failed.
@@ -1245,6 +1243,8 @@ t_podmans_storage_warning_is_never_the_reason_BL_054() {
   assert_not_match "storage 'driver'" "$(ob_reason container:unbound)" "BL-054: not by the warning"
 }
 
+# BL-053: podman ps leaves a paused container out, so a paused Unbound read as
+# containers-missing and the repair started a unit that already ran.
 t_a_paused_container_is_listed_not_missing() {
   ob_setup linux
   printf 'unbound\n' >"$FAKE/paused"; printf 'paused healthy 0 0\n' >"$FAKE/state_unbound"

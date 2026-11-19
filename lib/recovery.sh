@@ -200,7 +200,9 @@ _nd_route_x() {
   shift
   t="$(mktemp -d "${TMPDIR:-/tmp}/nice-dns-route.XXXXXX")" || return 4
   nd_bounded "$dl" "$t/o" "$t/e" "$@"; rc=$?
-  cat "$t/o"; cat "$t/e" >&2
+  # Its callers fold stderr into reasons (reload, probe-route, check-route):
+  # podman's storage warning never becomes one (BL-054).
+  cat "$t/o"; nd_platform_stderr "$t/e" >&2
   [ "$rc" -ne 124 ] || printf 'no answer within %ss\n' "$dl" >&2
   rm -rf "${t:?}"
   return "$rc"
@@ -626,8 +628,8 @@ start_route() {
 # (not created yet: the macOS agent creates the proxy after Unbound); exit 2,
 # the reason printed, when that could not be learnt: a query failed or timed
 # out, or a generation could not be hashed (BL-022). Each query is bounded by
-# ND_ROUTE_PROXY_DEADLINE seconds (10); a timeout ends the search, since the
-# runtime is not answering.
+# ND_ROUTE_PROXY_DEADLINE seconds (10); a timed-out absence query ends the
+# search, since the runtime is not answering.
 _nd_route_proxy_gen() {
   local c t out rc why="" dl="${ND_ROUTE_PROXY_DEADLINE:-10}"
   t="$(mktemp -d "${TMPDIR:-/tmp}/nd-route-start.XXXXXX")" || { printf 'no temporary directory\n'; return 2; }
@@ -637,7 +639,6 @@ _nd_route_proxy_gen() {
       if out="$(nd_generation_hash "$out")"; then rm -rf "${t:?}"; printf '%s\n' "$out"; return 0; fi
       why="${why:-$c: its generation cannot be hashed}"; continue
     fi
-    if [ "$rc" -eq 124 ]; then why="$c: deadline: the generation query"; break; fi
     nd_platform_container_absent "$c" "$dl" "$t"; rc=$?
     case "$rc" in
       0) ;;

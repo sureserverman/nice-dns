@@ -326,7 +326,7 @@ EOF
 # tool gave that many hex characters: no sha256 tool, or one that failed, is
 # an unknown hash, never the hash of nothing (BL-021). The same function is in
 # lib/health.sh, health/nice-dns-health and lib/install.sh.
-_nd_sha_checked() { local n="$1" h; shift; if command -v sha256sum >/dev/null 2>&1; then h="$(sha256sum "$@" 2>/dev/null)"; else h="$(shasum -a 256 "$@" 2>/dev/null)"; fi || return 1; h="${h%%[!0-9a-f]*}"; [ "${#h}" -ge "$n" ] || return 1; printf '%s\n' "${h:0:$n}"; }
+_nd_sha_checked() { local n="$1" h; shift; if command -v sha256sum >/dev/null 2>&1; then h="$(sha256sum "$@" 2>/dev/null)"; else h="$(shasum -a 256 "$@" 2>/dev/null)"; fi || return 1; h="${h%%[![:xdigit:]]*}"; [ "${#h}" -ge "$n" ] || return 1; printf '%s\n' "${h:0:$n}"; }
 
 # nd_generation_hash <generation line>: its 16-hex hash, as the proxy
 # observation records it (and lib/recovery.sh start_route compares it with

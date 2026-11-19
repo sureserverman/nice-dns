@@ -214,7 +214,7 @@ QF-BOOTSTRAP-FIXTURE	fault:FQ-BOOTSTRAP-DECLARED	integration	installers-interact
 QF-BOOTSTRAP-LIVE	fault:FQ-BOOTSTRAP-DECLARED	live	no-direct	t_1_capture	qualification
 QF-BRIDGE-WEAK-RUNNING	fault:FQ-BRIDGE-WEAK	integration	bridge-lifecycle	t_weak_running_bridge_is_dropped_and_the_proxy_recreated	qualification
 QF-BRIDGE-WEAK-IDLE	fault:FQ-BRIDGE-WEAK	integration	bridge-lifecycle	t_weak_bridge_not_running_is_filtered_without_restart	qualification
-QF-BRIDGE-WEAK-FLOOR	fault:FQ-BRIDGE-WEAK	integration	bridge-lifecycle	t_filter_never_leaves_fewer_than_three_bridges	qualification
+QF-BRIDGE-WEAK-FLOOR	fault:FQ-BRIDGE-WEAK	integration	bridge-lifecycle	t_filter_never_leaves_fewer_than_three_bridges_BL_031	qualification
 QF-BRIDGE-WEAK-NOSTATE	fault:FQ-BRIDGE-WEAK	integration	bridge-lifecycle	t_unreadable_tor_state_changes_nothing	qualification
 QF-COLD-START-CELLS	fault:FQ-COLD-START	live	qualification-cells	t_1_cells	qualification
 QF-NO-DIRECT-CELLS	fault:FQ-NO-DIRECT-CAPTURE	live	qualification-cells	t_1_cells	qualification

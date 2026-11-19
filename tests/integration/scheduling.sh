@@ -621,18 +621,6 @@ t_quadlets_leave_chain_restarts_to_the_controller() {
   done
 }
 
-# BL-033 (backlog sweep Sub-plan 2, Task 1.3): one bridge refresh runs
-# bridge-eval (ND_BRIDGE_EVAL_S), waits twice for the state lock (the apply
-# and the adoption, ND_BRIDGE_LOCK_TRIES x 0.5 s each) and may restart the
-# proxy: the service restart is bounded at ND_RECOVERY_SERVICE_S and its new
-# start waited for as long again (nd_recovery_restart_service). The refresh
-# unit's limit must cover them all, or systemd kills a refresh mid-adoption
-# (420 s was under the sum). The lock is held only around the apply and the
-# restart, each inside its 600 s lease, so the unit's limit is not the lease.
-# Around them run ten queries of ND_RECOVERY_CMD_DEADLINE each: the Tor state
-# (container, exec), the apply's generation (container, query), the pending
-# check before and under the lock (2 x container, query) and the restart's
-# own look-up (container, query).
 # BL-021: the bundle id is a hash of the bundle's files; with neither
 # sha256sum nor shasum it cannot be taken, and the install is refused rather
 # than naming a bundle by a hash of nothing.
@@ -653,6 +641,18 @@ t_bundle_id_without_a_hash_tool_is_refused_BL_021() {
     "BL-021: the three copies of _nd_sha_checked are one function"
 }
 
+# BL-033 (backlog sweep Sub-plan 2, Task 1.3): one bridge refresh runs
+# bridge-eval (ND_BRIDGE_EVAL_S), waits twice for the state lock (the apply
+# and the adoption, ND_BRIDGE_LOCK_TRIES x 0.5 s each) and may restart the
+# proxy: the service restart is bounded at ND_RECOVERY_SERVICE_S and its new
+# start waited for as long again (nd_recovery_restart_service). The refresh
+# unit's limit must cover them all, or systemd kills a refresh mid-adoption
+# (420 s was under the sum). The lock is held only around the apply and the
+# restart, each inside its 600 s lease, so the unit's limit is not the lease.
+# Around them run ten queries of ND_RECOVERY_CMD_DEADLINE each: the Tor state
+# (container, exec), the apply's generation (container, query), the pending
+# check before and under the lock (2 x container, query) and the restart's
+# own look-up (container, query).
 t_refresh_unit_limit_covers_its_bounds_BL_033() {
   local eval tries svc dl sum lim usage
   eval="$(sed -n 's/.*ND_BRIDGE_EVAL_S:-\([0-9][0-9]*\)}.*/\1/p' "$NICE_DNS_ROOT/lib/recovery.sh" | head -n 1)"

@@ -1091,6 +1091,26 @@ t_the_stack_restart_covers_unbound_only_when_it_is_due_BL_054() {
   assert_match 'the stack restart covers it' "$SP_REASON" "BL-054: covers Unbound on the pass it is due"
 }
 
+# BL-054 (Stage 2 gate, Tier-2 I3): the Pi-hole twin of the case above.
+t_the_stack_restart_covers_pihole_only_when_it_is_due_BL_054() {
+  local i last
+  sp_ub_start
+  sp_obs "$CASE_DIR/out" healthy unhealthy unhealthy unhealthy unhealthy
+  sp_ph "$CASE_DIR/out" unhealthy
+  i=0
+  while [ "$SP_TARGET" != stack ] && [ "$i" -lt 150 ]; do sp_ub_pass "$CASE_DIR/out"; i=$((i + 1)); done
+  assert_eq stack "$SP_TARGET" "BL-054: the outage reaches the stack restart"
+  last="$SP_NOW"
+  while [ $((SP_NOW - last)) -le 600 ]; do sp_ub_pass "$CASE_DIR/out"; done
+  assert_eq escalate "$SP_ACTION" "BL-054: between stack restarts the pass escalates"
+  assert_not_match 'covers it' "$SP_REASON" "BL-054: and no stack restart covers Pi-hole now"
+  assert_match 'Pi-hole failed [0-9]+ checks in a row' "$SP_REASON" "BL-054: Pi-hole's failures are still named"
+  i=0
+  while [ "$SP_TARGET" != stack ] && [ "$i" -lt 60 ]; do sp_ub_pass "$CASE_DIR/out"; i=$((i + 1)); done
+  assert_eq stack "$SP_TARGET" "BL-054: the next stack restart"
+  assert_match 'Pi-hole failed [0-9]+ checks in a row; the stack restart covers it' "$SP_REASON" "BL-054: covers Pi-hole on the pass it is due"
+}
+
 t_unbound_flapping_probe_cannot_defeat_the_restart_cap() {
   local i n=0
   sp_ub_start

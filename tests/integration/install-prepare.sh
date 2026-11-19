@@ -775,6 +775,33 @@ t_the_route_probe_reports_a_library_that_does_not_load_BL_054() {
   assert_nonzero "$rc" "BL-054: an optional probe still fails on it: $out"
 }
 
+# BL-054 (Stage 2 gate, Tier-2 I2): seeding the route printed only the
+# library's detail row, which a library that did not load never writes.
+t_seeding_the_route_reports_a_library_that_does_not_load_BL_054() {
+  local out rc
+  mkdir -p "$CASE_DIR/tree/lib"
+  printf 'return 1\n' >"$CASE_DIR/tree/lib/recovery.sh"
+  out="$(ND_INST_TREE="$CASE_DIR/tree" ND_INST_PLATFORM=linux bash -c '. "$1/lib/install.sh" && nd_install_seed_route' _ "$NICE_DNS_ROOT" 2>&1)"; rc=$?
+  assert_nonzero "$rc" "BL-054: the seed fails: $out"
+  assert_match "cannot seed Unbound's route: nice-dns install: cannot load .*/lib/recovery.sh" "$out" "BL-054: and names the library that did not load"
+}
+
+# Outside defect (master OD-2), found by the Sub-plan 2 demo: after a
+# reinstall from another branch, `status` read the update check cached for
+# the commit installed before as `current`.
+t_an_install_drops_an_update_check_of_another_commit() {
+  local ep c d
+  for ep in install-deb install-mac; do
+    dt_world "$ep" "$(dt_fresh_state "$ep")"
+    if [ "$(ip_platform "$ep")" = linux ]; then d="$IP_HOME/.local/state/nice-dns/controller"; else d="$IP_HOME/Library/Application Support/nice-dns/controller"; fi
+    mkdir -p "$d"; c="$d/update-check.tsv"
+    printf 'schema\tnice-dns-update-check/1\nchecked_at\t1\nbranch\tmain\nlocal_commit\t%040d\nremote_commit\t%040d\nresult\tcurrent\n' 1 1 >"$c"
+    ip_install "$ep" haproxy
+    assert_rc 0 "$IP_RC" "$ep: the install: $IP_OUT"
+    assert_no_path "$c" "$ep: a check made for another commit is dropped"
+  done
+}
+
 t_helper_asset_lookup_failures_are_retried_three_times() {
   # Two failed lookups, then the download: the helper is staged.
   ip_asset_world install-deb
