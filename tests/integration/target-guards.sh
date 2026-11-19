@@ -27,6 +27,8 @@ if [ -n "${FAKE_EXEC:-}" ]; then
   PATH="$FAKE_RBIN:$PATH" eval "$last"
   exit $?
 fi
+# FAKE_SLEEP: every call but the identity probe hangs that long (BL-060).
+case "$last" in *NICE_DNS_OP=probe*|*NICE_DNS_OP=snapshot*) ;; *) [ -z "${FAKE_SLEEP:-}" ] || exec sleep "$FAKE_SLEEP" ;; esac
 case "$last" in
   *NICE_DNS_OP=probe*|*NICE_DNS_OP=snapshot*)
     printf 'machine_id\t%s\nhostname\t%s\nplatform\t%s\n' "${FAKE_MACHINE_ID:-remote-machine-0001}" "${FAKE_REMOTE_HOST:-disposable-1}" "${FAKE_PLATFORM:-linux}"
@@ -1373,4 +1375,31 @@ t_supervisor_lines_name_their_container_bl060() {
   op="$(printf '%s\n' "$script" | sed -n '/^container_gen() {/,/^}/p')"
   assert_match "inspect -f '\{\{\.Id\}\} \{\{\.State\.StartedAt\}\} \{\{\.State\.Status\}\}'" "$op" "Linux: the same fields as nd_platform_container_generation"
   assert_match "inspect -f '\{\{\.Id\}\} \{\{\.State\.StartedAt\}\} \{\{\.State\.Status\}\}'" "$(sed -n '/^nd_platform_container_generation() {/,/^}/p' "$NICE_DNS_ROOT/lib/platform/linux.sh")" "which still reads those fields"
+}
+
+# BL-060: install-cell, uninstall-cell and command have an outer limit
+# (NICE_DNS_INSTALL_CELL_MAX 1800 s, NICE_DNS_COMMAND_MAX 900 s): a remote
+# call that never returns ends at it, says `timeout` and the op, and fails.
+t_install_and_command_ops_end_at_their_outer_limit_bl060() {
+  local sha v w t0 el
+  sha="$(git -C "$NICE_DNS_ROOT" rev-parse HEAD)"
+  tg_setup
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "snapshot: $TG_OUT"
+  for v in "install-cell --cell haproxy/standard --source-sha $sha" "uninstall-cell --cell haproxy/standard --source-sha $sha" "command --mode restart" "command --mode install --cell socat/standard --source-sha $sha"; do
+    read -r -a w <<<"$v"
+    t0="$(date +%s)"
+    TG_OUT="$(FAKE_SLEEP=60 NICE_DNS_INSTALL_CELL_MAX=2 NICE_DNS_COMMAND_MAX=2 timeout 60 bash "$TG" "${w[0]}" lin1 --targets "$CASE_DIR/targets.env" "${w[@]:1}" 2>&1)"
+    TG_RC=$?
+    el=$(( $(date +%s) - t0 ))
+    assert_nonzero "$TG_RC" "BL-060: [$v] against a target that never answers fails"
+    [ "$el" -lt 10 ] || fail "BL-060: [$v] took ${el}s; its 2 s limit should end it within 10 s"
+    assert_match "timeout: ${w[0]}" "$TG_OUT" "BL-060: [$v] says timeout and names the op"
+  done
+  for v in 0 abc 99999 "2;id"; do
+    TG_OUT="$(NICE_DNS_COMMAND_MAX="$v" bash "$TG" command lin1 --targets "$CASE_DIR/targets.env" --mode restart 2>&1)"
+    assert_rc 2 "$?" "BL-060: NICE_DNS_COMMAND_MAX=[$v] refused: $TG_OUT"
+  done
+  TG_OUT="$(NICE_DNS_INSTALL_CELL_MAX=abc bash "$TG" install-cell lin1 --targets "$CASE_DIR/targets.env" --cell haproxy/standard --source-sha "$sha" 2>&1)"
+  assert_rc 2 "$?" "BL-060: a bad NICE_DNS_INSTALL_CELL_MAX is refused: $TG_OUT"
 }

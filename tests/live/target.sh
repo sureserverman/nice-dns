@@ -45,7 +45,11 @@
 #                    entrypoint installs the tree it sits in (Sub-plan 4 Task
 #                    1.1), so no platform depends on GitHub main any more. The
 #                    installer's output is streamed back; it may carry bridge
-#                    lines, so keep it out of portable evidence.
+#                    lines, so keep it out of portable evidence. It and
+#                    uninstall-cell end at NICE_DNS_INSTALL_CELL_MAX (1..7200,
+#                    default 1800) seconds, `command` at NICE_DNS_COMMAND_MAX
+#                    (default 900): a call that never returns fails with
+#                    `timeout: <op>` (BL-060)
 #   helper-report    read-only (Sub-plan 5 Task 2.6): nice-dns-helper on the
 #                    target (present, owner uid, mode, --version), the sha256
 #                    of the root-held root-ops it runs, and on Linux the polkit
@@ -522,6 +526,16 @@ case "$freeze_max" in ''|*[!0-9]*) die "NICE_DNS_FREEZE_MAX_SECS must be an inte
 [ "$freeze_max" -ge 60 ] && [ "$freeze_max" -le 1800 ] || die "NICE_DNS_FREEZE_MAX_SECS must be 60..1800"
 INSTALL_ENV=''
 watch_secs="${NICE_DNS_WATCH_SECS:-1800}"
+# Outer limits of the calls with no bound of their own on the target (BL-060):
+# an install or uninstall cell, and the installed command.
+install_max="${NICE_DNS_INSTALL_CELL_MAX:-1800}" command_max="${NICE_DNS_COMMAND_MAX:-900}"
+case "$op" in
+  install-cell|uninstall-cell|command)
+    for _v in "NICE_DNS_INSTALL_CELL_MAX=$install_max" "NICE_DNS_COMMAND_MAX=$command_max"; do
+      case "${_v#*=}" in ''|*[!0-9]*) die "${_v%%=*} must be an integer (seconds)" ;; esac
+      [ "${_v#*=}" -ge 1 ] && [ "${_v#*=}" -le 7200 ] || die "${_v%%=*} must be 1..7200 (seconds)"
+    done ;;
+esac
 case "$watch_secs" in ''|*[!0-9]*) die "NICE_DNS_WATCH_SECS must be an integer" ;; esac
 [ "$watch_secs" -ge 10 ] && [ "$watch_secs" -le 3600 ] || die "NICE_DNS_WATCH_SECS must be 10..3600"
 if [ "$op" = mark-state ]; then
@@ -634,9 +648,20 @@ remote_run() {
     printf 'target.sh: could not build the remote payload; nothing was sent\n' >&2
     return 2
   fi
-  # shellcheck disable=SC2029 # $1 is checked NAME=value words, meant to expand here
-  ssh "${SSH_OPTS[@]}" "$T_SSH" "$1 /bin/sh -s" <"$payload"
-  rc=$?
+  if [ -n "${RR_LIMIT:-}" ]; then
+    # The outer limit (BL-060): a remote call that never returns ends here.
+    # Only the ssh client is stopped; what it started on the target may run on.
+    # shellcheck disable=SC2029 # $1 is checked NAME=value words, meant to expand here
+    timeout -k 10 "$RR_LIMIT" ssh "${SSH_OPTS[@]}" "$T_SSH" "$1 /bin/sh -s" <"$payload"
+    rc=$?
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+      printf 'target.sh: timeout: %s on %s did not return within %ss (its outer limit); the call failed\n' "$op" "$alias_" "$RR_LIMIT" >&2
+    fi
+  else
+    # shellcheck disable=SC2029 # $1 is checked NAME=value words, meant to expand here
+    ssh "${SSH_OPTS[@]}" "$T_SSH" "$1 /bin/sh -s" <"$payload"
+    rc=$?
+  fi
   rm -f "$payload"
   return "$rc"
 }
@@ -2552,11 +2577,11 @@ case "$op" in
     [ "$(kv machine_id "$(cat "$STATE/receipt.tsv")")" = "$PROBE_MID" ] \
       || die "snapshot for $alias_ is of machine $(kv machine_id "$(cat "$STATE/receipt.tsv")"), target now reports $PROBE_MID"
     if [ "$op" = install-cell ] || [ "$op" = uninstall-cell ]; then
-      remote_run "NICE_DNS_OP=$op $INSTALL_ENV"; rc=$?
+      RR_LIMIT="$install_max" remote_run "NICE_DNS_OP=$op $INSTALL_ENV"; rc=$?
     elif [ "$op" = mark-state ]; then
       remote_run "NICE_DNS_OP=mark-state NICE_DNS_RUN_ID=$RUN_ID"; rc=$?
     elif [ "$op" = command ]; then
-      remote_run "NICE_DNS_OP=command NICE_DNS_MODE=$i_mode NICE_DNS_PROXY=${i_cell%/*} NICE_DNS_PIHOLE=${i_cell#*/} NICE_DNS_SOURCE_SHA=$i_sha"; rc=$?
+      RR_LIMIT="$command_max" remote_run "NICE_DNS_OP=command NICE_DNS_MODE=$i_mode NICE_DNS_PROXY=${i_cell%/*} NICE_DNS_PIHOLE=${i_cell#*/} NICE_DNS_SOURCE_SHA=$i_sha"; rc=$?
     elif [ "$op" = capture-dns ]; then
       remote_run "NICE_DNS_OP=capture-dns NICE_DNS_COUNT=$c_count"; rc=$?
     elif [ "$op" = cut-bridges ] || [ "$op" = restore-bridges ]; then
