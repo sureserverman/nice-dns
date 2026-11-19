@@ -13,6 +13,10 @@
 #   tls-answers     a fresh name still answers under the wrong TLS name
 #   heal-fails      no fresh name answers after heal-route
 #   fault-fails     fault-route exits 1
+#   cold-before-heal  no fresh name answers until a heal-route ran (a cold or
+#                   dead upstream, which a TLS fault cannot be told from)
+#   control-fails   a fresh name fails under the route's own name (tls-control)
+#   cd-servfail     dnssec-failed.org is SERVFAIL at Unbound even with +cd
 # Nothing here touches the host.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -52,6 +56,8 @@ case "$op" in
     printf 'dnssec\tunbound\tsigned\tcloudflare.com\tNOERROR\t%s\n' "$sa"
     printf 'dnssec\tunbound\tunsigned\tneverssl.com\tNOERROR\t%s\n' "$ua"
     printf 'dnssec\tunbound\tbogus\tdnssec-failed.org\tSERVFAIL\tnoad\n'
+    c=NOERROR; is cd-servfail && c=SERVFAIL
+    printf 'dnssec\tunbound\tbogus-cd\tdnssec-failed.org\t%s\tnoad\n' "$c"
     if is tcp-8953; then printf 'control\ttcp_8953\tlistening\n'; else printf 'control\ttcp_8953\tnone\n'; fi
     if is control-tcp; then
       printf 'control\tinterface\t127.0.0.1\ncontrol\tsocket\tabsent\n'
@@ -60,14 +66,19 @@ case "$op" in
     fi
     printf 'control\tanswers\tyes\n' ;;
   fault-route|heal-route)
-    [ "$mode" = tls-name ] || { echo "the fake knows only --mode tls-name" >&2; exit 2; }
+    case "$mode" in tls-name|tls-control) ;; *) echo "the fake knows only --mode tls-name|tls-control" >&2; exit 2 ;; esac
     [ "$route" = cloudflare-onion ] || { echo "the running route is cloudflare-onion, not $route" >&2; exit 2; }
     if [ "$op" = fault-route ]; then
-      is fault-fails && { echo "unbound-control forward_add failed" >&2; exit 1; }
-      : >"$F/$alias_/faulted"
-      printf 'tls_name\tfaulted\t%s\nforwarder\t127.0.0.1@18531#nd-wrong-name.invalid\n' "$route"
+      if [ "$mode" = tls-control ]; then
+        rm -f "$F/$alias_/faulted"; : >"$F/$alias_/control"
+        printf 'tls_name\tcontrol\t%s\nforwarder\t127.0.0.1@18531#tor.cloudflare-dns.com\n' "$route"
+      else
+        is fault-fails && { echo "unbound-control forward_add failed" >&2; exit 1; }
+        rm -f "$F/$alias_/control"; : >"$F/$alias_/faulted"
+        printf 'tls_name\tfaulted\t%s\nforwarder\t127.0.0.1@18531#nd-wrong-name.invalid\n' "$route"
+      fi
     else
-      rm -f "$F/$alias_/faulted"
+      rm -f "$F/$alias_/faulted" "$F/$alias_/control"
       printf 'tls_name\thealed\t%s\nforwarder\t127.0.0.1@18531#tor.cloudflare-dns.com\n' "$route"
     fi ;;
   fresh-name)
@@ -75,6 +86,10 @@ case "$op" in
     n="nd-cr-$(date +%s)-$$.example.com"
     if [ -f "$F/$alias_/faulted" ]; then
       st=SERVFAIL; is tls-answers && st=NXDOMAIN
+    elif is cold-before-heal && ! grep -qx heal-route "$F/$alias_/oplog"; then
+      st=SERVFAIL
+    elif [ -f "$F/$alias_/control" ] && is control-fails; then
+      st=SERVFAIL
     elif is heal-fails && grep -qx heal-route "$F/$alias_/oplog"; then
       st=SERVFAIL
     else

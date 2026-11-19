@@ -112,6 +112,11 @@ t_a_well_behaved_target_passes_and_its_receipt_verifies_bl042() {
   s="$(cat "$CASE_DIR"/good/receipts/transport-live/*/cells/macos-*/tls-negative.tsv)"
   assert_match '^forwarder	[^	]+#nd-wrong-name\.invalid$' "$s" "the faulted forwarder carries the wrong name"
   assert_match '^faulted	[^	]+	SERVFAIL$' "$s" "a fresh name failed under it"
+  assert_match '^before	[^	]+	(NOERROR|NXDOMAIN)$' "$s" "a fresh name answered before the fault"
+  assert_match '^control_forwarder	[^	]+#tor\.cloudflare-dns\.com$' "$s" "the control set the route's own name"
+  assert_match '^control	[^	]+	(NOERROR|NXDOMAIN)$' "$s" "and a fresh name answered under it"
+  [ "$(printf '%s\n' "$s" | grep -n '^control	' | cut -d: -f1)" -lt "$(printf '%s\n' "$s" | grep -n '^faulted	' | head -1 | cut -d: -f1)" ] \
+    || fail "the control comes before the fault"
   assert_match '^healed	[^	]+	(NOERROR|NXDOMAIN)$' "$s" "and answered once healed"
 }
 
@@ -125,6 +130,11 @@ t_each_scenario_fails_on_the_target_it_exists_for_bl042() {
   tld_catches tls-answers tl_before tl_dnssec tl_control tl_tls_negative
   tld_catches heal-fails tl_before tl_dnssec tl_control tl_tls_negative
   tld_catches fault-fails tl_before tl_dnssec tl_control tl_tls_negative
+  # Stage 2 gate, I4 and S3: a SERVFAIL that is not the TLS name, and one that
+  # is not validation.
+  tld_catches cold-before-heal tl_before tl_dnssec tl_control tl_tls_negative
+  tld_catches control-fails tl_before tl_dnssec tl_control tl_tls_negative
+  tld_catches cd-servfail tl_before tl_dnssec
 }
 
 t_a_fault_is_always_healed_bl042() {

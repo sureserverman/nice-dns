@@ -1,0 +1,3 @@
+# schema	nice-dns-sample/0
+run_id	sample_id	utc_start	elapsed_us	workload	cache_class	target_id	platform	proxy	pihole	source_rev	images	resolver	transport	qname	qtype	outcome	rcode	timeout_ms
+run-fa-0	0	0-0-0T0:0:0.0Z	0	wake	after-wake	lin0	linux	haproxy	standard	abc0	pi-hole=sha0:ab	0.0.0.0#0	udp	N.example.com	A	ok	NOERROR	0

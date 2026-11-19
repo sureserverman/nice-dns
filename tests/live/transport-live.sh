@@ -8,13 +8,21 @@
 #                    unsigned one answer and dnssec-failed.org is SERVFAIL; at
 #                    Unbound's own listener the signed name carries `ad` and
 #                    the unsigned one does not (Pi-hole never passes `ad` on,
-#                    so validation is read there).
+#                    so validation is read there), and with checking disabled
+#                    (+cd) dnssec-failed.org's data arrives, so its SERVFAIL is
+#                    validation, not an outage.
 #   TL-CONTROL       nothing listens on TCP 8953 in the Unbound container, its
 #                    control interface is a Unix socket, and it answers.
-#   TL-TLS-NEGATIVE  target.sh fault-route --mode tls-name gives the running
-#                    route a wrong TLS name (same address and port) and a fresh
-#                    name must then be SERVFAIL, never answered; heal-route
-#                    brings answers back within TL_HEAL_MAX (600 s).
+#   TL-TLS-NEGATIVE  a fresh name answers first (TL_PRE_MAX, 120 s), so a later
+#                    SERVFAIL is not a cold or dead upstream; fault-route --mode
+#                    tls-control sets the route's own TLS name by the runtime
+#                    path the fault uses and a fresh name must still answer;
+#                    --mode tls-name then gives it a wrong name (same address
+#                    and port) and a fresh name must be SERVFAIL, never
+#                    answered; heal-route brings answers back within
+#                    TL_HEAL_MAX (600 s). The minute controller is not paused:
+#                    a tick that heals the route mid-fault makes a name
+#                    answer, a false FAIL, never a false PASS.
 # The TLS step heals whatever happens; a fault cut off in place leaves
 # fault-left, which tl_after heals. target.sh's own timer heals it after
 # NICE_DNS_FREEZE_MAX_SECS in any case.
@@ -40,7 +48,7 @@ tl_plan() {
     printf '%s %-15s %s\n' "$p" tl_before "snapshot the target, record the proxy it runs as the cell ($p/<proxy>/standard); nothing is installed"
     printf '%s %-15s %s\n' "$p" tl_dnssec "TL-DNSSEC: transport-report; through the client resolver a signed and an unsigned name answer, dnssec-failed.org is SERVFAIL; at Unbound the signed name has \`ad\`, the unsigned one not"
     printf '%s %-15s %s\n' "$p" tl_control "TL-CONTROL: no TCP 8953 listener in the Unbound container; the control interface is a Unix socket and answers"
-    printf '%s %-15s %s\n' "$p" tl_tls_negative "TL-TLS-NEGATIVE: fault-route --component unbound --route <running> --mode tls-name; a fresh name is SERVFAIL (${TL_FAULT_TRIES:-3} tries), never answered; heal-route; a fresh name answers within ${TL_HEAL_MAX:-600} s"
+    printf '%s %-15s %s\n' "$p" tl_tls_negative "TL-TLS-NEGATIVE: a fresh name answers; fault-route --component unbound --route <running> --mode tls-control and a fresh name still answers; --mode tls-name and a fresh name is SERVFAIL (${TL_FAULT_TRIES:-3} tries), never answered; heal-route; a fresh name answers within ${TL_HEAL_MAX:-600} s"
     if [ "$p" = macos ]; then
       printf '%s %-15s %s\n' "$p" tl_after "heal a fault left in place; a fresh name answers (target.sh reaches the runtime in the gui session, DEC-024)"
     else
@@ -71,6 +79,7 @@ IL_FIRST_STEPS=tl_before
 
 TL_FAULT_TRIES="${TL_FAULT_TRIES:-3}"
 TL_HEAL_MAX="${TL_HEAL_MAX:-600}"
+TL_PRE_MAX="${TL_PRE_MAX:-120}"
 TL_SECRETS='cert=[A-Za-z0-9+/]{20}|(^|[^0-9A-Fa-f])[0-9A-F]{40}([^0-9A-Fa-f]|$)|PRIVATE KEY|"sid":|pwhash|BRIDGE[0-9]+=|obfs4 [0-9]'
 
 # tl_row <file> <k1> <k2> <k3>: the rest of the first row starting k1 k2 k3.
@@ -87,6 +96,7 @@ tl_dnssec() {
   assert_match '^SERVFAIL	' "$(tl_row "$r" dnssec client bogus | cut -f2-)" "$a: dnssec-failed.org is SERVFAIL through the client resolver"
   assert_match '^NOERROR	ad$' "$(tl_row "$r" dnssec unbound signed | cut -f2-)" "$a: the signed name validates at Unbound (ad)"
   assert_match '^NOERROR	noad$' "$(tl_row "$r" dnssec unbound unsigned | cut -f2-)" "$a: the unsigned name answers without ad (it is unsigned)"
+  assert_match '^NOERROR	' "$(tl_row "$r" dnssec unbound bogus-cd | cut -f2-)" "$a: with checking disabled the bogus name's data arrives (its SERVFAIL is validation)"
   { awk -F '\t' '$1 == "dnssec"' "$r"; printf 'result\tpass\n'; } >"$f"
 }
 
@@ -110,14 +120,20 @@ tl_heal() {
 }
 
 tl_tls_negative() {
-  local a="$2" d f route row st i=0 bad=0 sf=0 rc=0
+  local a="$2" d f route row st i=0 bad=0 sf=0 rc=0 before="" control=""
   d="$(il_dir "$a")"; f="$d/tls-negative.tsv"
   cr_require "$a" tl_dnssec
   route="$(awk -F '\t' '$1 == "route" && $2 == "running" { print $3; exit }' "$d/transport.tsv")"
   assert_match '^[a-z0-9-]+$' "$route" "$a: the running route is known"
+  # A SERVFAIL under the fault means something only if names answer now.
+  before="$(cr_fresh "$a" "$(( $(date +%s) + TL_PRE_MAX ))")" \
+    || fail "$a: no fresh name answers before the fault within ${TL_PRE_MAX}s ($before); a SERVFAIL under it would prove nothing"
   printf '%s\n' "$route" >"$d/fault-left"
-  if il_t "$a" fault-route --component unbound --route "$route" --mode tls-name >"$d/fault.tsv" 2>>"$d/ops.log"; then
-    : >"$d/faulted.tsv"
+  : >"$d/faulted.tsv"
+  # The positive control: the route's own name, set by the fault's own path.
+  if il_t "$a" fault-route --component unbound --route "$route" --mode tls-control >"$d/tls-control.out" 2>>"$d/ops.log" \
+    && control="$(cr_fresh "$a" "$(( $(date +%s) + TL_PRE_MAX ))")" \
+    && il_t "$a" fault-route --component unbound --route "$route" --mode tls-name >"$d/fault.tsv" 2>>"$d/ops.log"; then
     while [ "$i" -lt "$TL_FAULT_TRIES" ]; do
       row="$(il_t "$a" fresh-name 2>>"$d/ops.log" | awk -F '\t' '$1 == "fresh_name"')"
       st="$(printf '%s\n' "$row" | cut -f3)"
@@ -129,13 +145,16 @@ tl_tls_negative() {
     rc=1
   fi
   # Healed whatever happened above.
-  tl_heal "$a" "$route" || fail "$a: heal-route failed; the route keeps its wrong TLS name until target.sh's timer: $(tail -n 3 "$d/ops.log")"
-  [ "$rc" = 0 ] || fail "$a: fault-route --mode tls-name failed: $(tail -n 3 "$d/ops.log")"
+  tl_heal "$a" "$route" || fail "$a: heal-route failed; the route keeps its changed TLS name until target.sh's timer: $(tail -n 3 "$d/ops.log")"
+  [ "$rc" = 0 ] || fail "$a: the control (--mode tls-control, then a fresh name: ${control:-none}) or the fault (--mode tls-name) failed: $(tail -n 3 "$d/ops.log")"
   assert_eq 0 "$bad" "$a: no fresh name is answered under the wrong TLS name"
   assert_ne 0 "$sf" "$a: a fresh name is SERVFAIL under the wrong TLS name"
   row="$(cr_fresh "$a" "$(( $(date +%s) + TL_HEAL_MAX ))")" || fail "$a: no answer within ${TL_HEAL_MAX}s of heal-route: $row"
   {
     printf 'route\t%s\n' "$route"
+    printf 'before\t%s\t%s\n' "$(printf '%s\n' "$before" | cut -f2)" "$(printf '%s\n' "$before" | cut -f3)"
+    awk -F '\t' '$1 == "forwarder" { print "control_forwarder\t" $2 }' "$d/tls-control.out"
+    printf 'control\t%s\t%s\n' "$(printf '%s\n' "$control" | cut -f2)" "$(printf '%s\n' "$control" | cut -f3)"
     awk -F '\t' '$1 == "forwarder"' "$d/fault.tsv"
     cat "$d/faulted.tsv"
     printf 'healed\t%s\t%s\n' "$(printf '%s\n' "$row" | cut -f2)" "$(printf '%s\n' "$row" | cut -f3)"
@@ -168,7 +187,8 @@ tl_reuse_dir() {
       [ "$ok" = 1 ] || continue
       il_same_product "$(il_cell_of "$d" source_sha)" "$1" || continue
       git -C "$NICE_DNS_ROOT" diff --quiet "$(il_cell_of "$d" source_sha)" HEAD -- \
-        tests/live/transport-live.sh tests/live/target.sh tests/manifests/transport-live.tsv tests/reports/verify.sh 2>/dev/null || continue
+        tests/live/transport-live.sh tests/live/command-recovery.sh tests/live/install-lifecycle.sh tests/live/fault-lib.sh \
+        tests/live/target.sh tests/manifests/transport-live.tsv tests/reports/verify.sh 2>/dev/null || continue
       printf '%s\n' "${d%/}"
       return 0
     done
