@@ -30,7 +30,9 @@
 #   zero-bridges      after on the proxy launches `with 0 bridge(s)` (BL-060)
 #   few-servfail      no fresh name answers once bridges.env is cut (BL-060)
 # bridges.env is the fake's bridge count (nb, 7); cut-bridges --keep N keeps
-# N of them and a copy (nb.bak), restore-bridges puts the copy back.
+# N of them and a copy (nb.bak), restore-bridges puts the copy back. An on
+# switch with fewer than 3 runs the host selection first, as the real fetch
+# unit does: it writes 5.
 # Nothing here touches the host.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -173,7 +175,10 @@ case "$op" in
         else
           if [ "$brk" = still-direct ]; then put how 'direct (no bridges)'
           elif [ "$brk" = zero-bridges ]; then put how 'with 0 bridge(s)'
-          else put how "with $(get nb 7) bridge(s)"; fi
+          else
+            [ "$(get nb 7)" -ge 3 ] || put nb 5
+            put how "with $(get nb 7) bridge(s)"
+          fi
         fi
         put dark no
         [ "$brk" != few-servfail ] || [ ! -f "$S/nb.bak" ] || put dark yes

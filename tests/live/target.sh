@@ -13,7 +13,9 @@
 #   sever-upstream   stop the Tor proxy container (--component tor-haproxy|tor-socat)
 #                    while Pi-hole and Unbound keep listening
 #   heal-upstream    start that container again
-#   restore          start every allow-listed container the snapshot saw running
+#   restore          start every allow-listed container the snapshot saw running;
+#                    on Linux also put back a bridges.env cut-bridges left
+#                    (bridges.env.harness-cut, a run killed in BT-ON-FEW)
 #   config           read-only effective configuration: image references and
 #                    digests, Pi-hole variant and upstreams, Unbound config,
 #                    proxy listeners/backends, health tooling, DNS owner.
@@ -48,8 +50,9 @@
 #                    lines, so keep it out of portable evidence. It and
 #                    uninstall-cell end at NICE_DNS_INSTALL_CELL_MAX (1..7200,
 #                    default 1800) seconds, `command` at NICE_DNS_COMMAND_MAX
-#                    (default 900): a call that never returns fails with
-#                    `timeout: <op>` (BL-060)
+#                    (default 900), build-proxy and arm-prepare at
+#                    NICE_DNS_BUILD_MAX (default 3600): a call that never
+#                    returns fails with `timeout: <op>` (BL-060)
 #   helper-report    read-only (Sub-plan 5 Task 2.6): nice-dns-helper on the
 #                    target (present, owner uid, mode, --version), the sha256
 #                    of the root-held root-ops it runs, and on Linux the polkit
@@ -527,15 +530,19 @@ case "$freeze_max" in ''|*[!0-9]*) die "NICE_DNS_FREEZE_MAX_SECS must be an inte
 INSTALL_ENV=''
 watch_secs="${NICE_DNS_WATCH_SECS:-1800}"
 # Outer limits of the calls with no bound of their own on the target (BL-060):
-# an install or uninstall cell, and the installed command.
-install_max="${NICE_DNS_INSTALL_CELL_MAX:-1800}" command_max="${NICE_DNS_COMMAND_MAX:-900}"
+# an install or uninstall cell, the installed command, and the image builds
+# and pulls of build-proxy and arm-prepare. Each op checks only its own.
 case "$op" in
-  install-cell|uninstall-cell|command)
-    for _v in "NICE_DNS_INSTALL_CELL_MAX=$install_max" "NICE_DNS_COMMAND_MAX=$command_max"; do
-      case "${_v#*=}" in ''|*[!0-9]*) die "${_v%%=*} must be an integer (seconds)" ;; esac
-      [ "${_v#*=}" -ge 1 ] && [ "${_v#*=}" -le 7200 ] || die "${_v%%=*} must be 1..7200 (seconds)"
-    done ;;
+  install-cell|uninstall-cell) op_limit_var=NICE_DNS_INSTALL_CELL_MAX op_limit="${NICE_DNS_INSTALL_CELL_MAX:-1800}" ;;
+  command) op_limit_var=NICE_DNS_COMMAND_MAX op_limit="${NICE_DNS_COMMAND_MAX:-900}" ;;
+  build-proxy|arm-prepare) op_limit_var=NICE_DNS_BUILD_MAX op_limit="${NICE_DNS_BUILD_MAX:-3600}" ;;
+  *) op_limit_var='' op_limit='' ;;
 esac
+if [ -n "$op_limit_var" ]; then
+  case "$op_limit" in ''|*[!0-9]*) die "$op_limit_var must be an integer (seconds)" ;; esac
+  [ "$op_limit" -ge 1 ] && [ "$op_limit" -le 7200 ] || die "$op_limit_var must be 1..7200 (seconds)"
+  command -v timeout >/dev/null 2>&1 || die "$op needs timeout(1) on this machine for its outer limit ($op_limit_var)"
+fi
 case "$watch_secs" in ''|*[!0-9]*) die "NICE_DNS_WATCH_SECS must be an integer" ;; esac
 [ "$watch_secs" -ge 10 ] && [ "$watch_secs" -le 3600 ] || die "NICE_DNS_WATCH_SECS must be 10..3600"
 if [ "$op" = mark-state ]; then
@@ -2489,6 +2496,11 @@ case "$NICE_DNS_OP" in
   restore)
     rc=0
     for c in $NICE_DNS_COMPONENTS; do ctl start "$c" || rc=1; done
+    # A bridges.env cut-bridges left behind (a run killed in BT-ON-FEW).
+    bk="${XDG_CONFIG_HOME:-$HOME/.config}/nice-dns/bridges.env.harness-cut"
+    if [ "$plat" = linux ] && [ -f "$bk" ] && [ ! -L "$bk" ]; then
+      mv -f "$bk" "${bk%.harness-cut}" && echo "restored bridges.env from the cut copy" || rc=1
+    fi
     exit $rc ;;
   *) echo "unknown op" >&2; exit 2 ;;
 esac
@@ -2577,11 +2589,11 @@ case "$op" in
     [ "$(kv machine_id "$(cat "$STATE/receipt.tsv")")" = "$PROBE_MID" ] \
       || die "snapshot for $alias_ is of machine $(kv machine_id "$(cat "$STATE/receipt.tsv")"), target now reports $PROBE_MID"
     if [ "$op" = install-cell ] || [ "$op" = uninstall-cell ]; then
-      RR_LIMIT="$install_max" remote_run "NICE_DNS_OP=$op $INSTALL_ENV"; rc=$?
+      RR_LIMIT="$op_limit" remote_run "NICE_DNS_OP=$op $INSTALL_ENV"; rc=$?
     elif [ "$op" = mark-state ]; then
       remote_run "NICE_DNS_OP=mark-state NICE_DNS_RUN_ID=$RUN_ID"; rc=$?
     elif [ "$op" = command ]; then
-      RR_LIMIT="$command_max" remote_run "NICE_DNS_OP=command NICE_DNS_MODE=$i_mode NICE_DNS_PROXY=${i_cell%/*} NICE_DNS_PIHOLE=${i_cell#*/} NICE_DNS_SOURCE_SHA=$i_sha"; rc=$?
+      RR_LIMIT="$op_limit" remote_run "NICE_DNS_OP=command NICE_DNS_MODE=$i_mode NICE_DNS_PROXY=${i_cell%/*} NICE_DNS_PIHOLE=${i_cell#*/} NICE_DNS_SOURCE_SHA=$i_sha"; rc=$?
     elif [ "$op" = capture-dns ]; then
       remote_run "NICE_DNS_OP=capture-dns NICE_DNS_COUNT=$c_count"; rc=$?
     elif [ "$op" = cut-bridges ] || [ "$op" = restore-bridges ]; then
@@ -2594,7 +2606,7 @@ case "$op" in
       done
       remote_run "NICE_DNS_OP=restore NICE_DNS_COMPONENTS='${names# }'"; rc=$?
     else
-      remote_run "NICE_DNS_OP=$op NICE_DNS_COMPONENT=$component NICE_DNS_FREEZE_MAX=$freeze_max NICE_DNS_ROUTE=$i_route NICE_DNS_MODE=$i_mode NICE_DNS_SOURCE_SHA=$i_sha NICE_DNS_PROXY_TAG=$i_ptag NICE_DNS_TIMES=$i_times NICE_DNS_EVERY=$i_every"; rc=$?
+      RR_LIMIT="$op_limit" remote_run "NICE_DNS_OP=$op NICE_DNS_COMPONENT=$component NICE_DNS_FREEZE_MAX=$freeze_max NICE_DNS_ROUTE=$i_route NICE_DNS_MODE=$i_mode NICE_DNS_SOURCE_SHA=$i_sha NICE_DNS_PROXY_TAG=$i_ptag NICE_DNS_TIMES=$i_times NICE_DNS_EVERY=$i_every"; rc=$?
     fi
     log_op "$rc"
     [ "$rc" -eq 0 ] || exit 1 ;;

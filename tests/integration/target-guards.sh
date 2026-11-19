@@ -1362,6 +1362,13 @@ t_bridge_cut_keeps_n_and_restore_puts_the_file_back_bl060() {
   tg restore-bridges lin1 --targets "$CASE_DIR/targets.env"
   assert_match '^bridges_restored	none$' "$TG_OUT" "a restore with nothing cut changes nothing"
   assert_eq "$orig" "$(cat "$bf")" "bridges.env is still the original"
+  # A run killed between the cut and its restore: the run's restore puts it back.
+  tg cut-bridges lin1 --targets "$CASE_DIR/targets.env" --keep 2
+  assert_rc 0 "$TG_RC" "cut again: $TG_OUT"
+  tg restore lin1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "restore: $TG_OUT"
+  assert_eq "$orig" "$(cat "$bf")" "BL-060: the run's restore puts the cut bridges.env back"
+  assert_no_path "$cfg/nice-dns/bridges.env.harness-cut" "and leaves no cut copy"
 }
 
 # BL-060: proxy-supervisor-lines names the container its lines came from, as
@@ -1381,15 +1388,17 @@ t_supervisor_lines_name_their_container_bl060() {
 # (NICE_DNS_INSTALL_CELL_MAX 1800 s, NICE_DNS_COMMAND_MAX 900 s): a remote
 # call that never returns ends at it, says `timeout` and the op, and fails.
 t_install_and_command_ops_end_at_their_outer_limit_bl060() {
-  local sha v w t0 el
+  local sha psha v w t0 el
   sha="$(git -C "$NICE_DNS_ROOT" rev-parse HEAD)"
   tg_setup
   tg snapshot lin1 --targets "$CASE_DIR/targets.env"
   assert_rc 0 "$TG_RC" "snapshot: $TG_OUT"
-  for v in "install-cell --cell haproxy/standard --source-sha $sha" "uninstall-cell --cell haproxy/standard --source-sha $sha" "command --mode restart" "command --mode install --cell socat/standard --source-sha $sha"; do
+  psha="$(git -C "$NICE_DNS_ROOT/../tor-haproxy" rev-parse HEAD)"
+  for v in "install-cell --cell haproxy/standard --source-sha $sha" "uninstall-cell --cell haproxy/standard --source-sha $sha" "command --mode restart" "command --mode install --cell socat/standard --source-sha $sha" \
+           "build-proxy --component tor-haproxy --source-sha $psha" "arm-prepare --component tor-haproxy --proxy-tag v2.14 --source-sha $sha"; do
     read -r -a w <<<"$v"
     t0="$(date +%s)"
-    TG_OUT="$(FAKE_SLEEP=60 NICE_DNS_INSTALL_CELL_MAX=2 NICE_DNS_COMMAND_MAX=2 timeout 60 bash "$TG" "${w[0]}" lin1 --targets "$CASE_DIR/targets.env" "${w[@]:1}" 2>&1)"
+    TG_OUT="$(FAKE_SLEEP=60 NICE_DNS_INSTALL_CELL_MAX=2 NICE_DNS_COMMAND_MAX=2 NICE_DNS_BUILD_MAX=2 timeout 60 bash "$TG" "${w[0]}" lin1 --targets "$CASE_DIR/targets.env" "${w[@]:1}" 2>&1)"
     TG_RC=$?
     el=$(( $(date +%s) - t0 ))
     assert_nonzero "$TG_RC" "BL-060: [$v] against a target that never answers fails"
@@ -1402,4 +1411,9 @@ t_install_and_command_ops_end_at_their_outer_limit_bl060() {
   done
   TG_OUT="$(NICE_DNS_INSTALL_CELL_MAX=abc bash "$TG" install-cell lin1 --targets "$CASE_DIR/targets.env" --cell haproxy/standard --source-sha "$sha" 2>&1)"
   assert_rc 2 "$?" "BL-060: a bad NICE_DNS_INSTALL_CELL_MAX is refused: $TG_OUT"
+  TG_OUT="$(NICE_DNS_BUILD_MAX=0 bash "$TG" build-proxy lin1 --targets "$CASE_DIR/targets.env" --component tor-haproxy --source-sha "$psha" 2>&1)"
+  assert_rc 2 "$?" "BL-060: a bad NICE_DNS_BUILD_MAX is refused: $TG_OUT"
+  # Each op checks only its own limit.
+  TG_OUT="$(NICE_DNS_INSTALL_CELL_MAX=abc bash "$TG" command lin1 --targets "$CASE_DIR/targets.env" --mode restart 2>&1)"
+  assert_rc 0 "$?" "a bad NICE_DNS_INSTALL_CELL_MAX does not block command: $TG_OUT"
 }

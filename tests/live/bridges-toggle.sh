@@ -46,7 +46,7 @@ bt_plan() {
     printf '%s %-13s %s\n' "$p" bt_on "nice-dns bridges on (exit 0, last line); one request id journals bridges mode-change on and service acknowledged; the latest spawn, of the container that row names, is with N>=1 bridge(s); a fresh name answers within 600 s"
     printf '%s %-13s %s\n' "$p" bt_status_on "nice-dns status --tsv shows bridges<TAB>mode<TAB>on"
     if [ "$p" = linux ]; then
-      printf '%s %-13s %s\n' "$p" bt_on_few "BT-ON-FEW: cut-bridges --keep 2; bridges off, then on: Tor launches with 2 bridge(s), a fresh name answers, the on switch's seconds are reported against the ${BT_FEW_BOUND:-120} s restart bound; restore-bridges; nice-dns restart"
+      printf '%s %-13s %s\n' "$p" bt_on_few "BT-ON-FEW: cut-bridges --keep 2; bridges off, then on (with fewer than 3 the proxy's start runs the host bridge selection first): Tor launches with N>=1 bridge(s), a fresh name answers, the on switch's seconds are reported against the ${BT_FEW_BOUND:-120} s restart bound; restore-bridges; nice-dns restart"
     else
       printf '%s %-13s %s\n' "$p" bt_on_few "nothing: BT-ON-FEW is Linux only"
     fi
@@ -158,7 +158,7 @@ bt_switch() {
   rows="$(bt_rows "$r" "$t0" "$ids")"
   rid="$(printf '%s\n' "$rows" | awk -F '\t' -v m="$m" '$3 == "bridges" && $4 == "mode-change" && $5 == m { i = $2 } END { print i }')"
   # The container the switch started: "<c> restarted: <generation>".
-  ag="$(printf '%s\n' "$rows" | awk -F '\t' -v i="$rid" 'i != "" && $2 == i && $3 == "service" && $4 == "acknowledged" && index($5, " restarted: ") { g = substr($5, index($5, " restarted: ") + 12) } END { print g }')"
+  ag="$(printf '%s\n' "$rows" | awk -F '\t' -v i="$rid" 'i != "" && $2 == i && $3 == "service" && $4 == "acknowledged" && index($5, "restarted: ") { g = substr($5, index($5, "restarted: ") + 11) } END { print g }')"
   # The spawn line: the CLI waited for the new start, so it is there or
   # comes within BT_LINE_MAX.
   end=$(( $(date +%s) + BT_LINE_MAX ))
@@ -271,9 +271,15 @@ bt_on() { bt_require "$2" bt_status_off; bt_budget bt_on; bt_switch "$1" "$2" on
 bt_status_on() { bt_require "$2" bt_on; bt_budget bt_status_on; bt_status "$2" on; }
 
 # BT-ON-FEW (BL-060, Linux only): with bridges.env cut to 2 bridges, off then
-# on comes back on those 2; the on switch's seconds are reported against the
-# restart bound (BT_FEW_BOUND), not failed on it. The full bridges.env is put
-# back and the stack restarted onto it; bt_after does both if this fails.
+# on comes back with bridges, and the on switch's seconds are reported against
+# the restart bound (BT_FEW_BOUND), not failed on it. With fewer than 3 the
+# proxy's start runs the host bridge selection first (nice-dns-fetch-bridges:
+# its ExecCondition skips it at 3 or more, and a skipped unit stays inactive,
+# so the proxy's Wants= starts it again; mint 2026-11-19 Result=exec-condition
+# ActiveState=inactive). That selection is the delay BL-060 names, and it may
+# rewrite bridges.env: the step records how many bridges Tor came back on
+# (on_bridges) rather than expecting 2. The original bridges.env is put back
+# and the stack restarted onto it; bt_after does both if this fails.
 bt_on_few() {
   local p="$1" a="$2" d el w rrc=0
   d="$(il_dir "$a")"
@@ -284,7 +290,6 @@ bt_on_few() {
   assert_eq 2 "$(bt_kv "$d/few-cut.tsv" bridges_kept)" "bridges.env holds 2 bridges for this step"
   bt_switch "$p" "$a" off few-off
   bt_switch "$p" "$a" on few-on
-  assert_match ' with 2 bridge\(s\)$' "$(grep '^supervisor	' "$d/switch-few-on.tsv")" "Tor came back on the 2 bridges"
   el="$(bt_kv "$d/switch-few-on.tsv" elapsed_s)"
   if [ "$el" -le "$BT_FEW_BOUND" ] 2>/dev/null; then w=yes; else w=no; fi
   il_t "$a" restore-bridges >"$d/few-restore.tsv" 2>>"$d/ops.log" || fail "restore-bridges: $(tail -n 3 "$d/ops.log" | tr '\n' ' ')"
@@ -292,6 +297,7 @@ bt_on_few() {
   {
     grep -E '^bridges_(before|kept)	' "$d/few-cut.tsv"
     grep -E '^(request_id|supervisor|container_match|fresh_name)	' "$d/switch-few-on.tsv"
+    printf 'on_bridges\t%s\n' "$(sed -n 's/^supervisor	.* with \([0-9][0-9]*\) bridge(s)$/\1/p' "$d/switch-few-on.tsv")"
     printf 'elapsed_s\t%s\nbound_s\t%s\nwithin_bound\t%s\n' "$el" "$BT_FEW_BOUND" "$w"
     grep '^bridges_restored	' "$d/few-restore.tsv"
     printf 'restart_exit\t%s\n' "$rrc"

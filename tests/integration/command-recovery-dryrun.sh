@@ -241,8 +241,9 @@ t_the_privacy_case_needs_a_report_to_scan_bl057() {
 }
 
 # BL-057, the class: every group-level privacy case in the live tree (a t_
-# case whose secret scan reads the group's evidence; a receipt case scans the
-# receipt it has just written and verified) counts its reports before it scans.
+# case with a `grep -rl` scan of the group's evidence, however its result is
+# asserted; a receipt case scans the receipt it has just written and
+# verified) counts its reports before it scans.
 t_every_live_privacy_case_counts_its_reports_first_bl057() {
   local bad
   bad="$(awk '
@@ -250,7 +251,7 @@ t_every_live_privacy_case_counts_its_reports_first_bl057() {
     /^[A-Za-z_][A-Za-z0-9_]*\(\) *\{/ { fn = $1; sub(/\(\).*/, "", fn); seen = 0 }
     /^[[:space:]]*#/ { next }
     /nd_reports_present / { seen = 1 }
-    /assert_eq "" "\$\(grep -rl/ && fn ~ /^t_/ && fn !~ /receipt/ && !seen { print FILENAME ":" FNR ": " fn }
+    /grep -rl/ && fn ~ /^t_/ && fn !~ /receipt/ && !seen { print FILENAME ":" FNR ": " fn }
   ' "$NICE_DNS_ROOT"/tests/live/*.sh)"
   assert_eq "" "$bad" "BL-057: each privacy case calls nd_reports_present before its scan"
   assert_ne "" "$(grep -l 'nd_reports_present' "$NICE_DNS_ROOT"/tests/live/*.sh)" "and the check finds the helper in use"
