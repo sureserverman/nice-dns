@@ -505,6 +505,7 @@ t_06_restore() { il_selection; il_each sa_restore; }
 
 t_07_privacy() {
   il_selection
+  nd_reports_present "$ARTIFACT_DIR/switch-autocheck"
   assert_eq "" "$(grep -rlE "$SA_SECRETS" "$ARTIFACT_DIR/switch-autocheck" --include='*.tsv' 2>/dev/null)" \
     "no report, sample or step record holds bridge material, a session or a hash"
 }

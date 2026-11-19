@@ -212,3 +212,46 @@ t_target_guards_cover_the_new_operations() {
   assert_rc 2 "$?" "a freeze needs the run's snapshot: $out"
   assert_match 'no restore snapshot' "$out" "and says so"
 }
+
+# BL-057: the privacy case judges evidence, so a run that left no report
+# fails it rather than passing an empty scan.
+# crd_privacy <dir>: the group's own t_09_privacy over <dir> as ARTIFACT_DIR,
+# in a subshell; prints its exit status.
+crd_privacy() {
+  (
+    ARTIFACT_DIR="$1"
+    # shellcheck source=tests/live/command-recovery.sh
+    . "$NICE_DNS_ROOT/tests/live/command-recovery.sh"
+    t_09_privacy
+  ) >"$CASE_DIR/privacy-${1##*/}.log" 2>&1
+  echo "$?"
+}
+
+t_the_privacy_case_needs_a_report_to_scan_bl057() {
+  local w="$CASE_DIR/priv"
+  mkdir -p "$w/none/command-recovery" "$w/blank/command-recovery/lin1" "$w/clean/command-recovery/lin1" "$w/leak/command-recovery/lin1"
+  assert_eq 1 "$(crd_privacy "$w/none")" "BL-057: an empty evidence directory fails the privacy case"
+  assert_match 'no report to scan' "$(cat "$CASE_DIR/privacy-none.log")" "and says why"
+  : >"$w/blank/command-recovery/lin1/before.tsv"
+  assert_eq 1 "$(crd_privacy "$w/blank")" "BL-057: an empty report (a failed op's redirect) is not evidence"
+  printf 'section\tlifecycle\nrcode\tNOERROR\n' >"$w/clean/command-recovery/lin1/before.tsv"
+  assert_eq 0 "$(crd_privacy "$w/clean")" "BL-057: one clean report passes: $(cat "$CASE_DIR/privacy-clean.log")"
+  printf 'line\tobfs4 cert=ABCDEFGHIJKLMNOPQRSTUVWXYZabcd iat-mode=0\n' >"$w/leak/command-recovery/lin1/before.tsv"
+  assert_eq 1 "$(crd_privacy "$w/leak")" "BL-057: a report holding cert= and 20 base64 characters fails"
+}
+
+# BL-057, the class: every group-level privacy case in the live tree (a t_
+# case whose secret scan reads the group's evidence; a receipt case scans the
+# receipt it has just written and verified) counts its reports before it scans.
+t_every_live_privacy_case_counts_its_reports_first_bl057() {
+  local bad
+  bad="$(awk '
+    FNR == 1 { fn = ""; seen = 0 }
+    /^[A-Za-z_][A-Za-z0-9_]*\(\) *\{/ { fn = $1; sub(/\(\).*/, "", fn); seen = 0 }
+    /^[[:space:]]*#/ { next }
+    /nd_reports_present / { seen = 1 }
+    /assert_eq "" "\$\(grep -rl/ && fn ~ /^t_/ && fn !~ /receipt/ && !seen { print FILENAME ":" FNR ": " fn }
+  ' "$NICE_DNS_ROOT"/tests/live/*.sh)"
+  assert_eq "" "$bad" "BL-057: each privacy case calls nd_reports_present before its scan"
+  assert_ne "" "$(grep -l 'nd_reports_present' "$NICE_DNS_ROOT"/tests/live/*.sh)" "and the check finds the helper in use"
+}

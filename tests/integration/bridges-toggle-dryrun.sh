@@ -271,3 +271,30 @@ t_a_step_past_the_run_budget_does_not_start() {
   assert_match 'run budget' "$(cat "$CASE_DIR/budget.log")" "and says why"
   assert_eq "" "$(grep -x install-cell "$CASE_DIR/budget/fake/lin1/oplog" 2>/dev/null)" "nothing was installed"
 }
+
+# BL-057: the privacy case judges evidence, so a run that left no report
+# fails it rather than passing an empty scan.
+# btd_privacy <dir>: the group's own t_09_privacy over <dir> as ARTIFACT_DIR,
+# in a subshell; prints its exit status.
+btd_privacy() {
+  (
+    ARTIFACT_DIR="$1"
+    # shellcheck source=tests/live/bridges-toggle.sh
+    . "$BTD_LIVE"
+    t_09_privacy
+  ) >"$CASE_DIR/privacy-${1##*/}.log" 2>&1
+  echo "$?"
+}
+
+t_the_privacy_case_needs_a_report_to_scan_bl057() {
+  local w="$CASE_DIR/priv"
+  mkdir -p "$w/none/bridges-toggle" "$w/blank/bridges-toggle/lin1" "$w/clean/bridges-toggle/lin1" "$w/leak/bridges-toggle/lin1"
+  assert_eq 1 "$(btd_privacy "$w/none")" "BL-057: an empty evidence directory fails the privacy case"
+  assert_match 'no report to scan' "$(cat "$CASE_DIR/privacy-none.log")" "and says why"
+  : >"$w/blank/bridges-toggle/lin1/switch-off.tsv"
+  assert_eq 1 "$(btd_privacy "$w/blank")" "BL-057: an empty report (a failed op's redirect) is not evidence"
+  printf 'mode\toff\ncli_exit\t0\n' >"$w/clean/bridges-toggle/lin1/switch-off.tsv"
+  assert_eq 0 "$(btd_privacy "$w/clean")" "BL-057: one clean report passes: $(cat "$CASE_DIR/privacy-clean.log")"
+  printf 'line\tobfs4 cert=ABCDEFGHIJKLMNOPQRSTUVWXYZabcd iat-mode=0\n' >"$w/leak/bridges-toggle/lin1/switch-off.tsv"
+  assert_eq 1 "$(btd_privacy "$w/leak")" "BL-057: a report holding cert= and 20 base64 characters fails"
+}

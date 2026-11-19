@@ -2,7 +2,18 @@
 # Shared network-loss steps (Sub-plan 5, Tasks 2.1 and 2.2): live/fault-network
 # runs one loss per target; live/soak runs two inside its 24 hours. Sourced
 # after tests/live/controller-lib.sh (cs_t; the group defines cs_dir). Defines
-# no cases.
+# no cases. Also sourced by tests/live/install-lifecycle.sh and
+# controller-lib.sh for nd_reports_present, which every privacy case calls.
+
+# nd_reports_present <dir>: an assertion that <dir> holds at least one
+# non-empty .tsv report. A privacy case calls it before its secret scan: an
+# empty scan of a run that reached no host would otherwise pass (BL-057). An
+# empty .tsv is what a failed report op's redirect leaves, so it is no report.
+nd_reports_present() {
+  local f
+  f="$(find "$1" -type f -name '*.tsv' -size +0 2>/dev/null | head -n 1)"
+  [ -n "$f" ] || fail "no report to scan in $1: the run left no evidence, so the privacy scan proves nothing"
+}
 
 NDF_LOSS_S="${NDF_LOSS_S:-120}"
 NDF_RETURN_S="${NDF_RETURN_S:-420}"

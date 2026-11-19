@@ -102,6 +102,7 @@ t_1_hardened_entrypoints() { il_selection; il_each il_hardened; }
 
 t_2_evidence_is_private() {
   il_selection
+  nd_reports_present "$ARTIFACT_DIR/install-hardened"
   assert_eq "" "$(grep -rlE 'cert=[A-Za-z0-9+/]{20}|(^|[^0-9A-Fa-f])[0-9A-F]{40}([^0-9A-Fa-f]|$)|PRIVATE KEY|"sid":|pwhash|BRIDGE[0-9]+=' "$ARTIFACT_DIR/install-hardened" --include='*.tsv' 2>/dev/null)" \
     "no report, sample or step record holds bridge material, a session or a hash"
 }

@@ -283,6 +283,7 @@ t_06_cleanup() { il_selection; il_each hi_cleanup; }
 
 t_07_privacy() {
   il_selection
+  nd_reports_present "$ARTIFACT_DIR/helper-install"
   assert_eq "" "$(grep -rlE 'cert=[A-Za-z0-9+/]{20}|(^|[^0-9A-Fa-f])[0-9A-F]{40}([^0-9A-Fa-f]|$)|PRIVATE KEY|"sid":|pwhash|BRIDGE[0-9]+=' "$ARTIFACT_DIR/helper-install" --include='*.tsv' 2>/dev/null)" \
     "no report, sample or step record holds bridge material, a session or a hash"
 }

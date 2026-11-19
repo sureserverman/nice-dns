@@ -371,6 +371,7 @@ t_08_after() { il_selection; il_each bt_after; }
 
 t_09_privacy() {
   il_selection
+  nd_reports_present "$ARTIFACT_DIR/bridges-toggle"
   assert_eq "" "$(grep -rlE "$BT_SECRETS" "$ARTIFACT_DIR/bridges-toggle" --include='*.tsv' 2>/dev/null)" \
     "no report, sample or step record holds bridge material, a session or a hash"
 }

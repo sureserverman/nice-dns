@@ -59,6 +59,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     for m in screenshot restart bridges-off bridges-on open launch running; do
       grep -q "gui-session needs --mode .*$m" "$here/target.sh" || { echo "dry run: gui-session has no mode $m" >&2; exit 1; }
     done
+    # shellcheck disable=SC2016 # a literal line of target.sh, matched as written
     grep -q '^    if \[ "\$plat" = macos \]; then$' "$here/target.sh" || { echo "dry run: target.sh has no macOS GUI branch" >&2; exit 1; }
     grep -q '^      install-git)' "$here/target.sh" || { echo "dry run: target.sh command has no mode install-git" >&2; exit 1; }
     grep -qx "live	gui-mac	tests/live/gui-mac.sh	live" "$here/../manifests/groups.tsv" || { echo "dry run: the group is not registered" >&2; exit 1; }
@@ -377,6 +378,7 @@ t_08_final() { il_selection; il_each gm_final; }
 
 t_09_privacy() {
   il_selection
+  nd_reports_present "$ARTIFACT_DIR/gui-mac"
   assert_eq "" "$(grep -rlE 'cert=[A-Za-z0-9+/]{20}|(^|[^0-9A-Fa-f])[0-9A-F]{40}([^0-9A-Fa-f]|$)|PRIVATE KEY|"sid":|pwhash|BRIDGE[0-9]+=' "$ARTIFACT_DIR/gui-mac" --include='*.tsv' 2>/dev/null)" \
     "no report, sample or step record holds bridge material, a session or a hash"
 }
