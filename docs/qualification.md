@@ -321,6 +321,32 @@ at runtime to `nd-wrong-name.invalid` (same address and port), three fresh
 names were SERVFAIL; healed, a fresh name answered (mint on
 cloudflare-exit, the mac on cloudflare-onion).
 
+## Compat route certificate
+
+Backlog sweep Sub-plan 5, Task 1.4 (BL-040), on mint, 2026-11-19. The
+legacy `:853` route (`cloudflare-legacy` in `routes/providers.tsv`, name
+`tor.cloudflare-dns.com`) was never proven live to present a certificate
+that verifies for its name. From inside the pod (the Unbound container's
+openssl; the proxy images carry no TLS client) a handshake to
+`127.0.0.1:853` asked for that name, with verification on:
+`openssl s_client -connect 127.0.0.1:853 -servername tor.cloudflare-dns.com
+-verify_hostname tor.cloudflare-dns.com -CAfile
+/etc/ssl/certs/ca-certificates.crt -verify_return_error`. mint ran tor-socat,
+then `nice-dns switch proxy haproxy` (23:34-23:37 UTC, "Switched: the proxy
+is now tor-haproxy, and DNS is answering"), then `nice-dns switch proxy
+socat` put it back (23:38-23:42 UTC).
+
+| Proxy | Time (UTC) | Subject | Names | Result |
+|---|---|---|---|---|
+| tor-socat | 23:34:34 | CN=cloudflare-dns.com, O=Cloudflare, Inc. | cloudflare-dns.com, *.cloudflare-dns.com, one.one.one.one, 1.1.1.1, 1.0.0.1 and six more addresses | verify=ok (return code 0, "Verification: OK") |
+| tor-haproxy | 23:37:57 | CN=cloudflare-dns.com, O=Cloudflare, Inc. | the same | verify=ok (return code 0, "Verification: OK") |
+
+`tor.cloudflare-dns.com` verifies through `*.cloudflare-dns.com`. The route
+stays (decision of 2026-11-19, owner: "Keep, prove once"): it fails closed,
+and installs seed identity routes, so it is only the image default. In
+haproxy's log over the switch window: no line at error level; one
+`[WARNING]`, haproxy's own "Server dns_resolvers/primary is UP".
+
 ## Known limits
 
 Found by the Stage 2 gate reviews and deferred (user decision 2026-10-06:
