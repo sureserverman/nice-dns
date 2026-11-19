@@ -1392,11 +1392,12 @@ t_macos_install_over_ssh_reaches_the_gui_runtime_BL_052() {
       ip_install "$ep"
       assert_rc 0 "$IP_RC" "BL-052 $ep $dom: the install: $IP_OUT"
       if [ "$dom" = Background ]; then
-        assert_eq "" "$(grep -E '^container system (start|status)' "$FAKE_LOG")" "BL-052 over ssh: no direct runtime start or status:
-$(grep -nE 'system (start|status)' "$FAKE_LOG")"
+        assert_eq "" "$(grep -E '^container system (start|status|stop)' "$FAKE_LOG")" "BL-052 over ssh: no direct runtime start, status or stop:
+$(grep -nE 'system (start|status|stop)' "$FAKE_LOG")"
         # The tree's root-ops in preparation, the staged build tree's later.
         assert_match '^sudo bash [^ ]*/mac/root-ops runtime start$' "$(cat "$FAKE_LOG")" "BL-052 over ssh: the runtime is started through root-ops"
         assert_match '^sudo bash [^ ]*/mac/root-ops runtime status$' "$(cat "$FAKE_LOG")" "BL-052 over ssh: its status is read through root-ops"
+        assert_match '^sudo bash [^ ]*/mac/root-ops runtime stop$' "$(cat "$FAKE_LOG")" "BL-052 over ssh: the fresh datapath stops it through root-ops (OD-6)"
         assert_match '^sudo launchctl asuser [0-9]+ sudo -n -u tester [^ ]*container system start$' "$(cat "$FAKE_LOG")" "BL-052 over ssh: root-ops reaches gui/<uid> as the user"
         assert_eq "" "$(grep -E '^nice-dns-helper .* runtime ' "$FAKE_LOG")" "BL-052 over ssh: the helper is never asked (installer-only verb)"
       else

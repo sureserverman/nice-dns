@@ -989,7 +989,7 @@ t_every_root_refusal_has_the_same_words_BL_055() {
 }
 
 
-# BL-052: root-ops' installer-only `runtime start|status` reaches the
+# BL-052: root-ops' installer-only `runtime start|status|stop` reaches the
 # user's container runtime in their login session (gui/<uid>) with launchctl
 # asuser and runs the CLI as the user, never as root (DEC-024: reached,
 # never booted out or moved); the CLI comes from a fixed list. Any other
@@ -1001,13 +1001,15 @@ t_root_ops_runtime_reaches_the_gui_session_BL_052() {
   mkdir -p "$w/bin" "$w/r/opt/homebrew/bin"
   printf '#!/bin/sh\nprintf "sudo %%s\\n" "$*" >>"%s/log"\n' "$w" >"$w/bin/sudo"; chmod 755 "$w/bin/sudo"
   printf '#!/bin/sh\nexit 0\n' >"$w/r/opt/homebrew/bin/container"; chmod 755 "$w/r/opt/homebrew/bin/container"
-  for a in start status; do
+  # stop: Task 2.3's live ssh reinstall, a direct `system stop` over ssh
+  # left the gui runtime running (OD-6).
+  for a in start status stop; do
     : >"$w/log"
     rc=0; out="$(ND_ROOT_TEST_SUDO="$w/bin/sudo" ND_INST_ROOT="$w/r" bash "$NICE_DNS_ROOT/mac/root-ops" runtime "$a" 2>&1)" || rc=$?
     assert_eq 0 "$rc" "BL-052: runtime $a: $out"
     assert_eq "sudo launchctl asuser $(id -u) sudo -n -u $u $w/r/opt/homebrew/bin/container system $a" "$(cat "$w/log")" "BL-052: runtime $a runs in gui/<uid> as the user"
   done
-  for a in "runtime stop" "runtime" "runtime start now" "runtime --help"; do
+  for a in "runtime restart" "runtime" "runtime start now" "runtime --help"; do
     : >"$w/log"
     rc=0
     # shellcheck disable=SC2086  # the words are the call

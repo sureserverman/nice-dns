@@ -147,7 +147,7 @@ _check() {
     save-previous) _args 1; _owned_root "$1" >/dev/null || _die 2 "verb 'save-previous': '$1' is not a file nice-dns owns" ;;
     restore) _args 2; _owned_root "$1" >/dev/null || _die 2 "verb 'restore': '$1' is not a file nice-dns owns"
       case "$2" in absent|-) ;; *) _die 2 "verb 'restore': the second argument is 'absent' or '-', not '$2'" ;; esac ;;
-    runtime) _args 1; case "$1" in start|status) ;; *) _die 2 "verb 'runtime': the argument is 'start' or 'status', not '$1'" ;; esac ;;
+    runtime) _args 1; case "$1" in start|status|stop) ;; *) _die 2 "verb 'runtime': the argument is 'start', 'status' or 'stop', not '$1'" ;; esac ;;
     "") _die 2 "no verb given" ;;
     *) _die 2 "unknown verb '$VERB'" ;;
   esac
@@ -326,11 +326,13 @@ v_remove_helper() {
   if _r test -d "$ND_HELPER_DIR" </dev/null; then _r rmdir "$ND_HELPER_DIR" 2>/dev/null || true; fi
 }
 
-# runtime <start|status>: the user's container runtime in their login
+# runtime <start|status|stop>: the user's container runtime in their login
 # session (gui/<uid>), where the start-container agent runs it, for an
 # install outside that session (ssh): there `container system status` does
 # not see it and `system start` would start a second runtime in the ssh
-# domain, which wedged vmnet on 2026-11-07, no DNS 11:11-13:01 UTC (BL-052).
+# domain, which wedged vmnet on 2026-11-07, no DNS 11:11-13:01 UTC (BL-052);
+# and a `system stop` from there leaves it running (live mac 2026-11-19: the
+# install's fresh-datapath restart did nothing; OD-6).
 # launchctl asuser reaches the session; the CLI runs as the user, never as
 # root (DEC-024: the runtime is reached, never booted out or moved). The CLI
 # comes from a fixed list in the order the agent's PATH has it

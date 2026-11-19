@@ -2896,17 +2896,19 @@ nd_install_macos_check_session() {
   return 1
 }
 
-# _nd_inst_mac_runtime <start|status>: the container runtime the
+# _nd_inst_mac_runtime <start|status|stop>: the container runtime the
 # start-container agent uses, in the user's login session (gui/<uid>). In
 # that session (`launchctl managername` Aqua: Terminal) the CLI runs as
 # before; outside it (ssh, Background) `system status` does not see that
-# runtime and `system start` would start one in the ssh domain (2026-11-07:
-# vmnet wedged, no DNS 11:11-13:01 UTC; BL-052), so both go through root-ops'
+# runtime, `system start` would start one in the ssh domain (2026-11-07:
+# vmnet wedged, no DNS 11:11-13:01 UTC; BL-052) and `system stop` leaves it
+# running (2026-11-19: the fresh-datapath restart did nothing; OD-6), so all
+# three go through root-ops'
 # `runtime` verb, which reaches gui/<uid> with launchctl asuser (BL-052,
 # DEC-024). `yes` answers start's first-run prompts; the group swallows the
 # SIGPIPE that hits it when the CLI exits, which would trip pipefail.
 _nd_inst_mac_runtime() {
-  case "${1:-}" in start|status) ;; *) return 2 ;; esac
+  case "${1:-}" in start|status|stop) ;; *) return 2 ;; esac
   if [ "$(launchctl managername 2>/dev/null)" = Aqua ]; then
     if [ "$1" = start ]; then { yes 2>/dev/null || true; } | "$CONTAINER_BIN" system "$1"; else "$CONTAINER_BIN" system "$1"; fi
   elif [ "$1" = start ]; then
@@ -2923,8 +2925,8 @@ nd_install_macos_upgrade_runtime() {
   if command -v container >/dev/null 2>&1; then
     # Stop the runtime before its binaries are replaced, so the
     # launchd-registered apiserver isn't left pointing at a path brew is
-    # about to rewrite. `container system start` below re-registers it.
-    container system stop >/dev/null 2>&1 || true
+    # about to rewrite. The start below re-registers it.
+    _nd_inst_mac_runtime stop >/dev/null 2>&1 || true
   fi
   # From the bottle fetched in preparation; no update: host DNS is pinned to
   # the stopped stack here (fails closed), so nothing may need the network.
@@ -3335,7 +3337,7 @@ _nd_inst_mac_builder_delete() {
 nd_install_macos_fresh_datapath() {
   local tries=0
   _nd_inst_mac_builder_delete
-  "$CONTAINER_BIN" system stop >/dev/null 2>&1 || true
+  _nd_inst_mac_runtime stop >/dev/null 2>&1 || true
   sleep 8
   # _nd_inst_mac_runtime answers the start's first-run prompts, as in
   # nd_install_macos_host_prereqs; the agent's copy runs after an install,
