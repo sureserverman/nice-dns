@@ -271,6 +271,7 @@ platform, the proxy each target ran (tor-socat) with the standard Pi-hole.
 | install-lifecycle | 2026-11-19 | `20261119T222036Z-80f918ba` | 0df52e8 | 6/6 on both targets |
 | container-faults | 2026-11-19 | `20261119T223433Z-7180b627` | 4a0fb5c | 9/9; receipt assembled and verified by the group |
 | bridges-toggle | 2026-11-19 | `20261119T232058Z-73a63573` | 4a0fb5c | 11/11, BT-ON-FEW included; receipt assembled and verified by the group |
+| transport-live | 2026-11-19 | `20261119T233236Z-8f43d2c3` | 07d87a4 | 7/7; scenario rows from both targets; receipt assembled and verified by the group |
 
 install-lifecycle: an upgrade over the older install, a reinstall that kept
 the Tor, anchor and list marks, an uninstall, and a final install. During
@@ -306,6 +307,19 @@ back with 7 bridges and a fresh name answered. `nice-dns bridges on` exited
 the 1-4 min its own wait message gives. bridges.env was then put back and
 the stack restarted onto it. mint ends this group with bridges on (it had
 been off since Sub-plan 4).
+
+transport-live: until this run no receipt carried a macOS transport
+security proof (BL-042); run `20261119T233236Z-8f43d2c3` carries one for
+each platform, on the stack each target ran (nothing installed). On both:
+through Pi-hole a signed and an unsigned name answer and
+dnssec-failed.org is SERVFAIL; at Unbound's listener the signed name
+carries `ad` and, with checking disabled (`+cd`), dnssec-failed.org's data
+arrives, so its SERVFAIL is validation. Nothing listens on TCP 8953 in the
+Unbound container; its control interface is the Unix socket
+/run/unbound/control.sock, and it answers. With the route's TLS name set
+at runtime to `nd-wrong-name.invalid` (same address and port), three fresh
+names were SERVFAIL; healed, a fresh name answered (mint on
+cloudflare-exit, the mac on cloudflare-onion).
 
 ## Known limits
 
