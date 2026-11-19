@@ -286,6 +286,9 @@ _nd_root_helper_mac() {
 
 nd_root_mac() {
   local h rc=0 any="" in=""
+  # The helper does not run runtime (installer-only, BL-052; gui/helper
+  # verbs.rs): sudo, with the caller's stdin (system start's prompts).
+  if [ "${1:-}" = runtime ]; then sudo bash "${ND_INST_TREE:?}"/mac/root-ops "$@"; return; fi
   case "${1:-}" in install-helper|agent) any=any ;; esac
   if h="$(_nd_root_helper_mac $any)"; then
     if [ "${1:-}" = restore ] && [ "${3:-}" = - ]; then in="$(mktemp)" || return 1; cat >"$in"; fi

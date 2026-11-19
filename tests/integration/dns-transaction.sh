@@ -126,6 +126,201 @@ t_helper_blocks_scoped_dns_off_the_container_bridge() {
   ) || exit 1
 }
 
+# BL-032: the helper runs under set -euo pipefail, so an assignment whose
+# capture fails ended it. With no route to the stack's address (no container
+# bridge; an offline Mac with the stack up keeps its connected route on the
+# bridge, live mac 2026-11-19) `route` exits 1, and post ended before its
+# cache flush. A failing `pfctl -E` did the same. Neither may end the pin.
+t_helper_post_finishes_when_the_mac_is_offline() {
+  dt_select_platforms
+  case " $DT_PLATS " in *" macos "*) ;; *) echo "macos not selected (--platforms)"; return 0 ;; esac
+  (
+    local f
+    dt_world "$(dt_ep_of macos)" fresh
+    dt_helper macos snapshot
+    for f in '^route -n get ' '^pfctl -E$'; do
+      printf '%s\n' "$f" >"$FAKE/fail"; : >"$FAKE_LOG"; rm -f "$FAKE/pf.rules"
+      dt_helper macos post
+      assert_rc 0 "$DT_RC" "BL-032: post exits 0 when '$f' fails: $DT_OUT"
+      assert_ne "" "$(ip_last "$FAKE_LOG" '^networksetup -setdnsservers ')" "BL-032: '$f' failing: the pin is made"
+      assert_ne "" "$(ip_first "$FAKE_LOG" '^dscacheutil -flushcache$')" "BL-032: '$f' failing: the cache is flushed: $(cat "$FAKE_LOG")"
+      assert_ne "" "$(ip_first "$FAKE_LOG" '^killall -HUP mDNSResponder$')" "BL-032: '$f' failing: mDNSResponder is reset"
+    done
+    rm -f "$FAKE/fail"
+    # The token cannot be written (here: a directory in its place): the pin
+    # still ends with its flush (Task 1.1 quick review).
+    mkdir -p "$FAKE_ROOT/var/db/nice-dns/pf-token"; : >"$FAKE_LOG"
+    dt_helper macos post
+    assert_rc 0 "$DT_RC" "BL-032: post exits 0 when the pf token cannot be written: $DT_OUT"
+    assert_ne "" "$(ip_first "$FAKE_LOG" '^dscacheutil -flushcache$')" "BL-032: and still flushes the cache"
+    assert_match 'could not record the pf token' "$DT_OUT" "BL-032: and says so"
+    rmdir "$FAKE_ROOT/var/db/nice-dns/pf-token"
+  ) || exit 1
+}
+
+# BL-033: the scoped-DNS block names the bridge `post` saw, and every agent
+# run that keeps or builds the stack reloads it. A login run or an unrequested
+# kickstart of a healthy stack takes the fast path, which runs the helper's
+# `post`; a controller restart leaves restart-requested
+# (lib/platform/macos.sh nd_platform_restart_proxy), so fast_path_ok refuses
+# and the run takes the full path, whose last step is `post`
+# (mac/start-container.sh). So a renumbered bridge is repaired at the next
+# run; the agent has no schedule of its own (RunAtLoad only). Without a bridge
+# to the stack nothing is loaded (a block could cut the stack off), and the
+# run says so.
+t_agent_fast_path_reasserts_the_scoped_dns_block() {
+  local sc="$NICE_DNS_ROOT/mac/start-container.sh" out
+  sed -n '/^if fast_path_ok; then$/,/^fi$/p' "$sc" >"$CASE_DIR/fast.sh"
+  assert_match 'fast_path_ok' "$(cat "$CASE_DIR/fast.sh")" "BL-033: the fast path is a block of the agent"
+  cat >"$CASE_DIR/fast-run.sh" <<'RUN'
+set -u
+VARIANT=haproxy
+log() { printf 'log: %s\n' "$*"; }
+fast_path_ok() { return 0; }
+run_root_helper() { printf 'helper %s\n' "$1"; }
+. "$W/fast.sh"
+echo 'fell through'
+RUN
+  out="$(W="$CASE_DIR" bash "$CASE_DIR/fast-run.sh" 2>&1)"
+  assert_eq 1 "$(printf '%s\n' "$out" | grep -c '^helper post$')" "BL-033: a healthy stack's run calls the helper's post once: $out"
+  assert_eq 1 "$(printf '%s\n' "$out" | grep -c '^helper ')" "BL-033: and no other helper call"
+  assert_not_match 'fell through' "$out" "BL-033: and ends there"
+  # The full path ends with the same `post`, at the top level, after it.
+  assert_eq 'run_root_helper post || log "post-start helper failed"' \
+    "$(grep '^run_root_helper ' "$sc" | tail -n 1)" "BL-033: the full path's last helper call is post"
+  assert_eq 'log "done"' "$(grep -vE '^[[:space:]]*(#|$)' "$sc" | tail -n 1)" "BL-033: and only its done line follows"
+  assert_eq 1 "$(( $(grep -n '^run_root_helper post' "$sc" | tail -n 1 | cut -d: -f1) > $(grep -n '^if fast_path_ok; then$' "$sc" | cut -d: -f1) ))" "BL-033: after the fast path"
+  dt_select_platforms
+  case " $DT_PLATS " in *" macos "*) ;; *) echo "macos not selected (--platforms)"; return 0 ;; esac
+  (
+    local load kill
+    dt_world "$(dt_ep_of macos)" fresh
+    dt_helper macos snapshot
+    dt_helper macos post
+    assert_match 'on bridge100 ' "$(cat "$FAKE/pf.rules" 2>/dev/null)" "BL-033: the first run names bridge100"
+    # The bridge was renumbered (repair-dnsnet restarts InternetSharing).
+    printf 'bridge101\n' >"$FAKE/bridge"; : >"$FAKE_LOG"
+    dt_helper macos post
+    assert_rc 0 "$DT_RC" "BL-033: post after the renumbering: $DT_OUT"
+    assert_match 'on bridge101 ' "$(cat "$FAKE/pf.rules" 2>/dev/null)" "BL-033: the next run names bridge101"
+    assert_not_match 'bridge100' "$(cat "$FAKE/pf.rules" 2>/dev/null)" "BL-033: and no longer bridge100"
+    load="$(ip_first "$FAKE_LOG" '^pfctl -a com\.apple/260\.nice-dns-scoped -f -$')"
+    kill="$(ip_first "$FAKE_LOG" '^pfctl -k 0\.0\.0\.0/0 -k 172\.31\.240\.248/29$')"
+    assert_ne "" "$load" "BL-033: the new rules are loaded"
+    assert_ne "" "$kill" "BL-033: the states of earlier queries are killed"
+    assert_eq 1 "$((kill > load))" "BL-033: after the new rules are loaded"
+    : >"$FAKE/bridge"; : >"$FAKE_LOG"
+    dt_helper macos post
+    assert_rc 0 "$DT_RC" "BL-033: post with no bridge exits 0: $DT_OUT"
+    assert_eq "" "$(ip_first "$FAKE_LOG" '^pfctl -a ')" "BL-033: and loads nothing"
+    assert_eq "" "$(ip_first "$FAKE_LOG" '^pfctl -k ')" "BL-033: and kills no states"
+    assert_match 'no container bridge' "$DT_OUT" "BL-033: and says so"
+  ) || exit 1
+}
+
+# BL-043 item 3: dns_of accepted only [0-9a-fA-F.:], so a scoped link-local
+# server (fe80::1%en0, as macOS writes a router's IPv6 DNS) was recorded as
+# Empty and lost at uninstall. A server may end in % and an interface name;
+# anything else on the line (a space, a ;) is still refused.
+t_helper_keeps_a_scoped_link_local_server_BL_043() {
+  local v
+  dt_select_platforms
+  case " $DT_PLATS " in *" macos "*) ;; *) echo "macos not selected (--platforms)"; return 0 ;; esac
+  (
+    local before rec
+    dt_world "$(dt_ep_of macos)" fresh
+    printf 'fe80::1%%en0\n192.168.1.1\n' >"$FAKE_ROOT/.netsvc/dns/Wi-Fi"
+    before="$(dt_dns_state)"
+    dt_helper macos snapshot
+    assert_rc 0 "$DT_RC" "snapshot: $DT_OUT"
+    rec="$(dt_receipt macos)"
+    assert_eq "$(printf 'service\tWi-Fi\tfe80::1%%en0 192.168.1.1')" "$(awk -F '\t' '$1 == "service" && $2 == "Wi-Fi"' "$rec")" "BL-043: the scoped server is recorded as it is"
+    dt_helper macos post
+    assert_rc 0 "$DT_RC" "post: $DT_OUT"
+    dt_pinned || fail "pinned after the pin: $(dt_dns_state)"
+    dt_helper macos restore
+    assert_rc 0 "$DT_RC" "restore: $DT_OUT"
+    assert_eq "$before" "$(dt_dns_state)" "BL-043: and it comes back at uninstall"
+  ) || exit 1
+  for v in 'fe80::1%en0;reboot' 'fe80::1% en0' 'fe80::1%' '%en0'; do
+    (
+      dt_world "$(dt_ep_of macos)" fresh
+      printf '%s\n' "$v" >"$FAKE_ROOT/.netsvc/dns/Wi-Fi"
+      dt_helper macos snapshot
+      assert_rc 0 "$DT_RC" "snapshot of '$v': $DT_OUT"
+      assert_eq "$(printf 'service\tWi-Fi\tEmpty')" "$(awk -F '\t' '$1 == "service" && $2 == "Wi-Fi"' "$(dt_receipt macos)")" "BL-043: '$v' is still refused"
+    ) || exit 1
+  done
+}
+
+# BL-032 and BL-043 item 5: `pfctl -s info | grep -q` let grep exit at its
+# first match; a pfctl still writing then dies of SIGPIPE, pipefail fails the
+# pipeline, an enabled pf reads as disabled and `pfctl -E` takes a second
+# reference over the recorded token. The status is read whole first. The
+# token directory is made 0700 (sudo runs the helper with umask 022).
+t_helper_reads_pf_status_whole_and_keeps_its_token() {
+  dt_select_platforms
+  case " $DT_PLATS " in *" macos "*) ;; *) echo "macos not selected (--platforms)"; return 0 ;; esac
+  (
+    local tokdir
+    dt_world "$(dt_ep_of macos)" fresh
+    tokdir="$FAKE_ROOT/var/db/nice-dns"
+    # pf off, no directory yet, the umask sudo gives the helper.
+    umask 022
+    : >"$FAKE_LOG"
+    dt_helper macos post
+    assert_rc 0 "$DT_RC" "post with pf off: $DT_OUT"
+    assert_ne "" "$(ip_first "$FAKE_LOG" '^pfctl -E$')" "pf is enabled when it is off"
+    assert_eq 4242 "$(cat "$tokdir/pf-token" 2>/dev/null)" "the token is recorded"
+    assert_eq 700 "$(ip_mode "$tokdir")" "BL-043: the token directory is 0700"
+    assert_eq 600 "$(ip_mode "$tokdir/pf-token")" "the token file is 0600"
+    # An older install left the directory 0755 and the token 0644 (Stage 1
+    # Tier-2 I2 and round-1 S3).
+    chmod 755 "$tokdir"; chmod 644 "$tokdir/pf-token"
+    # pf on, with a status longer than a pipe buffer (pfctl is still writing
+    # when grep -q would have exited).
+    rm -f "$IP_BIN/pfctl"
+    cat >"$IP_BIN/pfctl" <<'STUB'
+#!/bin/sh
+printf 'pfctl %s\n' "$*" >>"$FAKE_LOG"
+case "$*" in
+  "-s info")
+    echo "Status: Enabled for 0 days 00:01:00           Debug: Urgent"
+    i=0; while [ "$i" -lt 4000 ]; do echo "  filler $i ..................................................."; i=$((i + 1)); done ;;
+  -E) echo "Token : 9999" ;;
+  *"-f -") cat >"$FAKE/pf.rules" ;;
+esac
+exit 0
+STUB
+    chmod 755 "$IP_BIN/pfctl"
+    : >"$FAKE_LOG"
+    dt_helper macos post
+    assert_rc 0 "$DT_RC" "post with pf on: $DT_OUT"
+    assert_eq "" "$(ip_first "$FAKE_LOG" '^pfctl -E$')" "BL-032: an enabled pf is not enabled again: $(cat "$FAKE_LOG")"
+    assert_eq 4242 "$(cat "$tokdir/pf-token" 2>/dev/null)" "BL-032: and the recorded token is unchanged"
+    assert_ne "" "$(ip_first "$FAKE_LOG" '^pfctl -a com\.apple/260\.nice-dns-scoped -f -$')" "the block is still loaded"
+    assert_eq 700 "$(ip_mode "$tokdir")" "BL-043: an existing 0755 directory is made 0700 with pf already on"
+    assert_eq 600 "$(ip_mode "$tokdir/pf-token")" "BL-043: and an existing 0644 token 0600"
+  ) || exit 1
+  # The token's directory is a symlink: nothing is written or chmodded
+  # through it, and the pin still finishes.
+  (
+    local tokdir
+    dt_world "$(dt_ep_of macos)" fresh
+    tokdir="$FAKE_ROOT/var/db/nice-dns"
+    umask 022
+    mkdir -p "$CASE_DIR/elsewhere" "$(dirname "$tokdir")"; chmod 755 "$CASE_DIR/elsewhere"
+    ln -s "$CASE_DIR/elsewhere" "$tokdir"
+    : >"$FAKE_LOG"
+    dt_helper macos post
+    assert_rc 0 "$DT_RC" "post with a symlinked token directory: $DT_OUT"
+    assert_match 'is a symlink; the pf token is not recorded' "$DT_OUT" "and it says so"
+    assert_no_path "$CASE_DIR/elsewhere/pf-token" "no token is written through the link"
+    assert_eq 755 "$(ip_mode "$CASE_DIR/elsewhere")" "and the link's target is not chmodded"
+    assert_ne "" "$(ip_first "$FAKE_LOG" '^dscacheutil -flushcache$')" "the cache is still flushed"
+  ) || exit 1
+}
+
 t_helper_refuses_external_changes() {
   local plat
   dt_select_platforms
@@ -758,6 +953,7 @@ t_sudo_keepalive_skipped_when_the_helper_runs_root_steps() {
     pid="$(PATH="$w/bin:$PATH" ND_INST_SUDO_KEEPALIVE=0.1 ND_INST_PLATFORM="$plat" bash -c '
       . "$1/lib/install.sh"
       eval "$2() { echo /usr/libexec/nice-dns-helper; }"
+      launchctl() { echo Aqua; }
       _nd_inst_sudo_keepalive
       echo "${ND_INST_KEEPALIVE_PID:-none}"
       sleep 0.35
@@ -775,6 +971,19 @@ t_sudo_keepalive_skipped_when_the_helper_runs_root_steps() {
     assert_eq 1 "$(case "$pid" in none|'') echo 0 ;; *) echo 1 ;; esac)" "$plat, no helper: the keepalive starts: $pid"
     assert_match 'sudo -n -v' "$(cat "$w/log")" "$plat, no helper: it refreshes sudo"
   done
+  # macOS outside the login session (ssh): root-ops' `runtime` runs through
+  # sudo even with the helper, so the ticket is kept (Stage 2 gate review I1).
+  : >"$w/log"
+  pid="$(PATH="$w/bin:$PATH" ND_INST_SUDO_KEEPALIVE=0.1 ND_INST_PLATFORM=macos bash -c '
+    . "$1/lib/install.sh"
+    _nd_root_helper_mac() { echo /usr/local/libexec/nice-dns-helper; }
+    launchctl() { echo Background; }
+    _nd_inst_sudo_keepalive
+    echo "${ND_INST_KEEPALIVE_PID:-none}"
+    sleep 0.35
+    _nd_inst_sudo_keepalive_stop' _ "$NICE_DNS_ROOT" 2>&1)"
+  assert_eq 1 "$(case "$pid" in none|'') echo 0 ;; *) echo 1 ;; esac)" "macos over ssh, helper in use: the keepalive starts: $pid"
+  assert_match 'sudo -n -v' "$(cat "$w/log")" "macos over ssh, helper in use: it refreshes sudo"
 }
 
 # Live finding 2026-09-28 (mint): an older installer had pinned the Wi-Fi

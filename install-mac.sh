@@ -15,6 +15,22 @@ if [[ $EUID -eq 0 ]]; then
   exit 1
 fi
 
+# Over plain ssh a command runs in a non-login shell whose PATH holds no
+# Homebrew directory (live mac 2026-11-19: /usr/bin:/bin:/usr/sbin:/sbin),
+# so brew and the container CLI it installs were not found. Homebrew's
+# directories (the LaunchAgent's two, mac/start-container.sh) are appended
+# when missing, so the caller's own PATH, system tools included, keeps its
+# precedence. ND_INST_BREW_DIRS is the fixture tests' stand-in for that
+# list.
+# shellcheck disable=SC2086  # a space-separated list of directories
+for nd_brew_dir in ${ND_INST_BREW_DIRS:-/opt/homebrew/bin /usr/local/bin}; do
+  case ":$PATH:" in
+    *":$nd_brew_dir:"*) ;;
+    *) if [ -d "$nd_brew_dir" ]; then PATH="$PATH:$nd_brew_dir"; fi ;;
+  esac
+done
+export PATH
+
 case "$ACTION" in
   haproxy|socat|uninstall) ;;
   *) echo "Unknown arg '$ACTION'. Use 'haproxy', 'socat', or 'uninstall'." >&2; exit 1 ;;
@@ -116,6 +132,9 @@ VARIANT="$ACTION"
 # Dependencies, the runtime, the build tree, the pulled images, bridges and
 # the prepare manifest. Nothing here interrupts the running stack or touches
 # host DNS; a failure exits and leaves it as it was.
+# Refuses before any change, before its generation is prepared, when no one
+# is logged in at the Mac (BL-052).
+nd_install_macos_check_session || exit 1
 nd_install_begin macos install-mac.sh standard "$VARIANT" "$BRANCH"
 # Refuses (exit 3) before any change when another owner took over host DNS.
 nd_install_check_owned

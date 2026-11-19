@@ -83,18 +83,36 @@ set_local_dns() {
 # state skips the rules. Without a bridge to the stack nothing is loaded: a
 # block could cut the stack off. A failure here never fails the pin.
 block_scoped_dns() {
-  local br tok
-  br="$(route -n get "$PIHOLE_IP" 2>/dev/null | awk '/interface:/ { print $2; exit }')"
+  local br tok info tokdir
+  tokdir="$(dirname "$PF_TOKEN")"
+  # Under set -e a failed capture would end post before its cache flush
+  # (BL-032). The stack's subnet is a connected route on its bridge, so an
+  # offline Mac with the stack up still finds it (live mac 2026-11-19:
+  # 172.31.240.248/29 link#25 UC bridge100); `route` fails when there is no
+  # bridge at all.
+  br="$(route -n get "$PIHOLE_IP" 2>/dev/null | awk '/interface:/ { print $2; exit }')" || br=""
   case "$br" in
     bridge[0-9]*) ;;
     *) echo "no container bridge to $PIHOLE_IP (${br:-none}); scoped DNS is not blocked" >&2; return 0 ;;
   esac
-  if ! pfctl -s info 2>/dev/null | grep -q 'Status: Enabled'; then
-    tok="$(pfctl -E 2>&1 | sed -n 's/^Token : //p')"
-    if [[ -n $tok ]]; then
-      mkdir -p "$(dirname "$PF_TOKEN")" && printf '%s\n' "$tok" >"$PF_TOKEN"
-    fi
-  fi
+  # pf's status is read whole before it is searched: `| grep -q` exits at its
+  # first match, a pfctl still writing dies of SIGPIPE, and pipefail would
+  # then read an enabled pf as disabled and take a second reference.
+  info="$(pfctl -s info 2>/dev/null)" || info=""
+  case "$info" in
+    *'Status: Enabled'*) ;;
+    *)
+      tok="$(pfctl -E 2>&1 | sed -n 's/^Token : //p')" || tok=""
+      if [[ -n $tok && -L $tokdir ]]; then
+        echo "$tokdir is a symlink; the pf token is not recorded" >&2
+      elif [[ -n $tok ]]; then
+        { mkdir -p "$tokdir" && (umask 077 && printf '%s\n' "$tok" >"$PF_TOKEN"); } 2>/dev/null \
+          || echo "could not record the pf token in $PF_TOKEN" >&2
+      fi ;;
+  esac
+  # The token's directory is 0700 and the token 0600 whoever wrote them: an older
+  # install left 0755 and 0644 (BL-043 item 5), and with pf on nothing is rewritten.
+  if [[ -d $tokdir && ! -L $tokdir ]]; then chmod 700 "$tokdir" 2>/dev/null || true; [[ ! -f $PF_TOKEN || -L $PF_TOKEN ]] || chmod 600 "$PF_TOKEN" 2>/dev/null || true; fi
   if ! printf 'pass out quick on %s proto { udp, tcp } to %s port { 53, 853 }\nblock drop out quick proto { udp, tcp } to %s port { 53, 853 }\n' \
       "$br" "$DNSNET_SUBNET" "$DNSNET_SUBNET" | pfctl -a "$PF_ANCHOR" -f - 2>/dev/null; then
     echo "could not load $PF_ANCHOR; scoped DNS is not blocked" >&2
@@ -122,12 +140,15 @@ flush_dns_cache() {
   killall -HUP mDNSResponder 2>/dev/null || true
 }
 
-# dns_of <service>: its DNS servers, space-separated, or Empty.
+# dns_of <service>: its DNS servers, space-separated, or Empty. A server is
+# an address, optionally scoped to an interface (fe80::1%en0, as macOS
+# records a router's link-local IPv6 DNS; BL-043); any other line is refused.
+DNS_SERVER_RE='^[0-9a-fA-F.:]+(%[A-Za-z0-9]+)?$'
 dns_of() {
   local out
   out="$(networksetup -getdnsservers "$1" 2>/dev/null || true)"
-  if printf '%s\n' "$out" | grep -Eq '^[0-9a-fA-F.:]+$'; then
-    printf '%s\n' "$out" | grep -E '^[0-9a-fA-F.:]+$' | tr '\n' ' ' | sed 's/ $//'
+  if printf '%s\n' "$out" | grep -Eq "$DNS_SERVER_RE"; then
+    printf '%s\n' "$out" | grep -E "$DNS_SERVER_RE" | tr '\n' ' ' | sed 's/ $//'
   else
     echo Empty
   fi

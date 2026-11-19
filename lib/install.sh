@@ -916,10 +916,13 @@ _nd_inst_sudo_keepalive() {
   [ "$every" != 0 ] || return 0
   [ -z "${ND_INST_KEEPALIVE_PID:-}" ] || return 0
   # Root steps through the helper hold no sudo ticket: a refresh would only
-  # log a failed sudo (a password is required; COMMAND=validate).
+  # log a failed sudo (a password is required; COMMAND=validate). On macOS
+  # outside the login session (ssh) root-ops' `runtime` runs through sudo
+  # even then, so the ticket nd_install_macos_check_session took is kept
+  # (Stage 2 gate review I1).
   case "$ND_INST_PLATFORM" in
     linux) ! _nd_root_helper_deb >/dev/null 2>&1 || return 0 ;;
-    macos) ! _nd_root_helper_mac >/dev/null 2>&1 || return 0 ;;
+    macos) [ "$(launchctl managername 2>/dev/null)" != Aqua ] || ! _nd_root_helper_mac >/dev/null 2>&1 || return 0 ;;
   esac
   ( while sleep "$every"; do
       kill -0 "$parent" 2>/dev/null || exit 0
@@ -1297,14 +1300,14 @@ _nd_inst_rollback() {
   # as the forward path does before its stack (Tier-1, 2026-09-28).
   if [ "$ND_INST_PLATFORM" = macos ]; then nd_install_macos_fresh_datapath || true; fi
   # The runtime may be down (a failed restart in nd_install_macos_fresh_datapath).
-  if [ "$ND_INST_PLATFORM" = macos ] && ! "$CONTAINER_BIN" system status >/dev/null 2>&1; then
-    { yes 2>/dev/null || true; } | "$CONTAINER_BIN" system start >/dev/null 2>&1 || true
+  if [ "$ND_INST_PLATFORM" = macos ] && ! _nd_inst_mac_runtime status >/dev/null 2>&1; then
+    _nd_inst_mac_runtime start >/dev/null 2>&1 || true
     local up=0 i=0
     while [ "$i" -lt 10 ]; do
-      if "$CONTAINER_BIN" system status >/dev/null 2>&1; then up=1; break; fi
+      if _nd_inst_mac_runtime status >/dev/null 2>&1; then up=1; break; fi
       i=$((i + 1)); sleep 4
     done
-    [ "$up" = 1 ] || echo "! The container runtime did not start again; run 'container system start'." >&2
+    [ "$up" = 1 ] || echo "! The container runtime did not start again; run 'nice-dns restart' (the start agent starts it in your login session)." >&2
   fi
   if [ "$ND_INST_HAD_DEPLOY" = 0 ]; then
     # A first install: give back the DNS state recorded before it, or drop
@@ -2879,10 +2882,51 @@ nd_install_macos_host_prereqs() {
 
   # -- Bring up the runtime + default kernel --
   CONTAINER_BIN="${CONTAINER_BIN:-/opt/homebrew/bin/container}"
-  # First-time start prompts [Y/n] for the kata kernel download; feed `yes` so
-  # the install is non-interactive. The subshell swallows the SIGPIPE that
-  # hits `yes` when `container` exits, which would otherwise trip pipefail.
-  { yes 2>/dev/null || true; } | "$CONTAINER_BIN" system start >/dev/null
+  # First-time start prompts [Y/n] for the kata kernel download;
+  # _nd_inst_mac_runtime feeds `yes` so the install is non-interactive.
+  _nd_inst_mac_runtime start >/dev/null
+}
+
+# nd_install_macos_check_session: the runtime and the start-container agent
+# live in the user's login session (gui/<uid>). An install outside it (ssh)
+# reaches it through root-ops' `runtime` verb (_nd_inst_mac_runtime), so a
+# session must exist, and that verb runs through sudo even where the helper
+# runs every other root step (lib/root.sh): sudo must work now, so a
+# password it cannot ask for fails here, not in the cutover. Either refusal
+# comes before the install starts, before its generation is prepared
+# (BL-052; Stage 2 gate review I1).
+nd_install_macos_check_session() {
+  [ "$(launchctl managername 2>/dev/null)" = Aqua ] && return 0
+  if ! launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
+    _nd_inst_err "a user must be logged in at the Mac: the container runtime and the start-container agent run in $(id -un)'s login session (gui/$(id -u)), and there is none. Log in at the Mac (or turn on automatic login) and run the install again; refusing before the install starts"
+    return 1
+  fi
+  if ! sudo -n true 2>/dev/null && ! sudo -v; then
+    _nd_inst_err "outside the Mac's login session (ssh) the install reaches the container runtime through sudo, and sudo could not authenticate here. Run it over 'ssh -t' so sudo can ask, or from Terminal at the Mac; refusing before the install starts"
+    return 1
+  fi
+}
+
+# _nd_inst_mac_runtime <start|status|stop>: the container runtime the
+# start-container agent uses, in the user's login session (gui/<uid>). In
+# that session (`launchctl managername` Aqua: Terminal) the CLI runs as
+# before; outside it (ssh, Background) `system status` does not see that
+# runtime, `system start` would start one in the ssh domain (2026-11-07:
+# vmnet wedged, no DNS 11:11-13:01 UTC; BL-052) and `system stop` leaves it
+# running (2026-11-19: the fresh-datapath restart did nothing; OD-6), so all
+# three go through root-ops'
+# `runtime` verb, which reaches gui/<uid> with launchctl asuser (BL-052,
+# DEC-024). `yes` answers start's first-run prompts; the group swallows the
+# SIGPIPE that hits it when the CLI exits, which would trip pipefail.
+_nd_inst_mac_runtime() {
+  case "${1:-}" in start|status|stop) ;; *) return 2 ;; esac
+  if [ "$(launchctl managername 2>/dev/null)" = Aqua ]; then
+    if [ "$1" = start ]; then { yes 2>/dev/null || true; } | "$CONTAINER_BIN" system "$1"; else "$CONTAINER_BIN" system "$1"; fi
+  elif [ "$1" = start ]; then
+    { yes 2>/dev/null || true; } | nd_root_mac runtime "$1"
+  else
+    nd_root_mac runtime "$1" </dev/null
+  fi
 }
 
 # nd_install_macos_upgrade_runtime: the deferred `container` upgrade, in the
@@ -2892,13 +2936,13 @@ nd_install_macos_upgrade_runtime() {
   if command -v container >/dev/null 2>&1; then
     # Stop the runtime before its binaries are replaced, so the
     # launchd-registered apiserver isn't left pointing at a path brew is
-    # about to rewrite. `container system start` below re-registers it.
-    container system stop >/dev/null 2>&1 || true
+    # about to rewrite. The start below re-registers it.
+    _nd_inst_mac_runtime stop >/dev/null 2>&1 || true
   fi
   # From the bottle fetched in preparation; no update: host DNS is pinned to
   # the stopped stack here (fails closed), so nothing may need the network.
   HOMEBREW_NO_AUTO_UPDATE=1 brew upgrade --formula container
-  { yes 2>/dev/null || true; } | "$CONTAINER_BIN" system start >/dev/null
+  _nd_inst_mac_runtime start >/dev/null
 }
 
 # nd_install_macos_stage_tree: the build tree, a private copy under $HOME.
@@ -3272,9 +3316,25 @@ nd_install_macos_build_images() {
   fi
   _nd_inst_record_image pi-hole "pi-hole:$gen" || return 1
 
-  # Builder VM isn't needed once images are built; reclaim ~2 GB RAM. It will
-  # auto-start again on the next `container build`.
+  # The builder isn't needed once images are built: deleted, not only
+  # stopped, so its container and disk go too; the next `container build`
+  # creates it again (BL-024).
+  _nd_inst_mac_builder_delete
+}
+
+# _nd_inst_mac_builder_delete: deletes Apple's builder once per install
+# (after the builds; the fresh datapath step tries again only when the
+# builds never got that far, as in a rollback). A builder that cannot be
+# deleted never fails the install: it is stopped, and the install says it
+# was left (BL-024).
+ND_INST_BUILDER_DELETE_TRIED=0
+_nd_inst_mac_builder_delete() {
+  [ "$ND_INST_BUILDER_DELETE_TRIED" = 0 ] || return 0
+  ND_INST_BUILDER_DELETE_TRIED=1
+  "$CONTAINER_BIN" builder delete --force >/dev/null 2>&1 && return 0
   "$CONTAINER_BIN" builder stop >/dev/null 2>&1 || true
+  echo "  ! The container builder could not be deleted and was left (stopped); 'container builder delete --force' removes it." >&2
+  return 0
 }
 
 # nd_install_macos_fresh_datapath: the stack starts on a freshly started
@@ -3287,14 +3347,14 @@ nd_install_macos_build_images() {
 # and during an install no agent is loaded to do it.
 nd_install_macos_fresh_datapath() {
   local tries=0
-  "$CONTAINER_BIN" builder stop >/dev/null 2>&1 || true
-  "$CONTAINER_BIN" system stop >/dev/null 2>&1 || true
+  _nd_inst_mac_builder_delete
+  _nd_inst_mac_runtime stop >/dev/null 2>&1 || true
   sleep 8
-  # `yes` answers system start's first-run prompts, as in
+  # _nd_inst_mac_runtime answers the start's first-run prompts, as in
   # nd_install_macos_host_prereqs; the agent's copy runs after an install,
   # when there is nothing left to answer.
-  { yes 2>/dev/null || true; } | "$CONTAINER_BIN" system start >/dev/null || { _nd_inst_err "the container runtime did not start again"; return 1; }
-  until "$CONTAINER_BIN" system status >/dev/null 2>&1; do
+  _nd_inst_mac_runtime start >/dev/null || { _nd_inst_err "the container runtime did not start again"; return 1; }
+  until _nd_inst_mac_runtime status >/dev/null 2>&1; do
     tries=$((tries + 1))
     [ "$tries" -lt 10 ] || { _nd_inst_err "the container runtime is not up after its restart"; return 1; }
     sleep 4

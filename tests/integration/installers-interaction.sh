@@ -988,3 +988,67 @@ t_every_root_refusal_has_the_same_words_BL_055() {
   done
 }
 
+
+# BL-052: root-ops' installer-only `runtime start|status|stop` reaches the
+# user's container runtime in their login session (gui/<uid>) with launchctl
+# asuser and runs the CLI as the user, never as root (DEC-024: reached,
+# never booted out or moved); the CLI comes from a fixed list. Any other
+# argument is refused before anything runs, and the helper's verb table
+# does not gain the verb (DEC-025): lib/root.sh sends it to sudo.
+t_root_ops_runtime_reaches_the_gui_session_BL_052() {
+  local w="$CASE_DIR/rt" rc out a u
+  u="${USER:-$(id -un)}"
+  mkdir -p "$w/bin" "$w/r/opt/homebrew/bin"
+  printf '#!/bin/sh\nprintf "sudo %%s\\n" "$*" >>"%s/log"\n' "$w" >"$w/bin/sudo"; chmod 755 "$w/bin/sudo"
+  printf '#!/bin/sh\nexit 0\n' >"$w/r/opt/homebrew/bin/container"; chmod 755 "$w/r/opt/homebrew/bin/container"
+  # stop: Task 2.3's live ssh reinstall, a direct `system stop` over ssh
+  # left the gui runtime running (OD-6).
+  for a in start status stop; do
+    : >"$w/log"
+    rc=0; out="$(ND_ROOT_TEST_SUDO="$w/bin/sudo" ND_INST_ROOT="$w/r" bash "$NICE_DNS_ROOT/mac/root-ops" runtime "$a" 2>&1)" || rc=$?
+    assert_eq 0 "$rc" "BL-052: runtime $a: $out"
+    assert_eq "sudo launchctl asuser $(id -u) sudo -n -u $u $w/r/opt/homebrew/bin/container system $a" "$(cat "$w/log")" "BL-052: runtime $a runs in gui/<uid> as the user"
+  done
+  for a in "runtime restart" "runtime" "runtime start now" "runtime --help"; do
+    : >"$w/log"
+    rc=0
+    # shellcheck disable=SC2086  # the words are the call
+    out="$(ND_ROOT_TEST_SUDO="$w/bin/sudo" ND_INST_ROOT="$w/r" bash "$NICE_DNS_ROOT/mac/root-ops" $a 2>&1)" || rc=$?
+    assert_eq 2 "$rc" "BL-052: '$a' is refused: $out"
+    assert_eq "" "$(cat "$w/log")" "BL-052: '$a': nothing ran"
+  done
+  assert_eq "" "$(grep -n '"runtime"' "$NICE_DNS_ROOT/gui/helper/src/verbs.rs")" "BL-052: the helper's verb table has no runtime verb"
+  assert_match 'runtime' "$(awk '/^nd_root_mac\(\)/,/^}/' "$NICE_DNS_ROOT/lib/root.sh")" "BL-052: nd_root_mac names the verb it sends to sudo"
+}
+
+# BL-052: the agent runs in gui/<uid>. When `container system status` keeps
+# failing there but `container ls` reaches an apiserver, the runtime was
+# started in another launchd domain (an install over ssh); the agent's log
+# says so and how to put it right, not just that it never came up.
+t_agent_tells_another_domain_from_not_running_BL_052() {
+  local sc="$NICE_DNS_ROOT/mac/start-container.sh" out
+  sed -n '/^# 1) apiserver/,/^log "container system ready"$/p' "$sc" >"$CASE_DIR/up.sh"
+  assert_match 'container system status' "$(cat "$CASE_DIR/up.sh")" "BL-052: the runtime wait is a block of the agent"
+  cat >"$CASE_DIR/up-run.sh" <<'RUN'
+set -euo pipefail
+LOG=/dev/null
+log() { printf 'log: %s\n' "$*"; }
+sleep() { :; }
+launchctl() { echo Aqua; }
+container() {
+  case "$1 ${2:-}" in
+    "system status") return 1 ;;
+    "system start") return 0 ;;
+    "ls "*) [ "$LS" = ok ] ;;
+    *) return 0 ;;
+  esac
+}
+. "$W/up.sh"
+RUN
+  out="$(W="$CASE_DIR" LS=ok bash "$CASE_DIR/up-run.sh" 2>&1)"
+  assert_match 'not registered in this launchd domain' "$out" "BL-052: an apiserver that answers ls is named as in another domain: $out"
+  assert_match 'container system stop' "$out" "BL-052: and the log says how to put it right"
+  out="$(W="$CASE_DIR" LS=fail bash "$CASE_DIR/up-run.sh" 2>&1)"
+  assert_match 'container system never came up' "$out" "BL-052: no apiserver at all: never came up: $out"
+  assert_not_match 'another launchd domain|not registered in this' "$out" "BL-052: and not another domain"
+}

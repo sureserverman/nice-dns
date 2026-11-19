@@ -1372,3 +1372,135 @@ t_mac_gate_fetch_retries_a_failed_connect_BL_067() {
     assert_eq "" "$(grep '^git clone' "$FAKE_LOG")" "BL-067 $ep: nothing after the gate ran"
   done
 }
+
+# BL-052: an install over ssh runs in the Background launchd domain, where
+# `container system status` does not see the runtime the start-container
+# agent runs in the user's login session (gui/<uid>), and `system start`
+# would start a second one there (on 2026-11-07 that wedged vmnet for two
+# hours). Outside a login session (`launchctl managername` not Aqua) every
+# runtime start and status goes through root-ops' installer-only `runtime`
+# verb, which reaches gui/<uid> with launchctl asuser (DEC-024); in a login
+# session the calls run directly, as before. With no login session for the
+# user at all, the install refuses before any change.
+t_macos_install_over_ssh_reaches_the_gui_runtime_BL_052() {
+  local dom ep
+  for ep in install-mac install-mac-hardened; do
+  for dom in Background Aqua; do
+    (
+      ip_env "$ep"
+      printf '%s\n' "$dom" >"$FAKE/managername"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "BL-052 $ep $dom: the install: $IP_OUT"
+      if [ "$dom" = Background ]; then
+        assert_eq "" "$(grep -E '^container system (start|status|stop)' "$FAKE_LOG")" "BL-052 over ssh: no direct runtime start, status or stop:
+$(grep -nE 'system (start|status|stop)' "$FAKE_LOG")"
+        # The tree's root-ops in preparation, the staged build tree's later.
+        assert_match '^sudo bash [^ ]*/mac/root-ops runtime start$' "$(cat "$FAKE_LOG")" "BL-052 over ssh: the runtime is started through root-ops"
+        assert_match '^sudo bash [^ ]*/mac/root-ops runtime status$' "$(cat "$FAKE_LOG")" "BL-052 over ssh: its status is read through root-ops"
+        assert_match '^sudo bash [^ ]*/mac/root-ops runtime stop$' "$(cat "$FAKE_LOG")" "BL-052 over ssh: the fresh datapath stops it through root-ops (OD-6)"
+        assert_match '^sudo launchctl asuser [0-9]+ sudo -n -u tester [^ ]*container system start$' "$(cat "$FAKE_LOG")" "BL-052 over ssh: root-ops reaches gui/<uid> as the user"
+        assert_eq "" "$(grep -E '^nice-dns-helper .* runtime ' "$FAKE_LOG")" "BL-052 over ssh: the helper is never asked (installer-only verb)"
+      else
+        assert_match '^container system start$' "$(cat "$FAKE_LOG")" "BL-052 in a login session: the runtime is started directly"
+        assert_eq "" "$(grep -E 'root-ops runtime ' "$FAKE_LOG")" "BL-052 in a login session: root-ops is not asked"
+      fi
+    ) || exit 1
+  done
+  done
+}
+
+t_macos_install_without_a_login_session_refuses_BL_052() {
+  local ep
+  for ep in install-mac install-mac-hardened; do
+  (
+    ip_env "$ep"
+    printf 'Background\n' >"$FAKE/managername"
+    : >"$FAKE/no_gui_session"
+    ip_install "$ep"
+    assert_nonzero "$IP_RC" "BL-052: with no login session the install fails: $IP_OUT"
+    assert_match 'must be logged in at the Mac' "$IP_OUT" "BL-052: and says a user must be logged in at the Mac"
+    ip_assert_untouched "BL-052 no login session"
+    assert_eq "" "$(grep -E 'container system start|root-ops (runtime|host-prereqs|install-helper)' "$FAKE_LOG")" "BL-052: nothing was started or installed:
+$(cat -n "$FAKE_LOG")"
+    assert_no_path "$IP_STATE/current" "BL-052: nothing is marked current"
+    assert_no_path "$IP_STATE/generations" "BL-052: no generation is prepared (Tier-1 I1)"
+  ) || exit 1
+  done
+}
+
+# BL-024: after its builds a macOS install stopped Apple's builder, and the
+# stopped buildkit container stayed with its disk (live mac 2026-11-19:
+# `buildkit ... stopped`). A successful install now deletes it, once, after
+# its last build; a delete that fails never fails the install, and the
+# install says the builder was left.
+t_macos_install_deletes_the_builder_BL_024() {
+  local ep
+  for ep in install-mac install-mac-hardened; do
+    (
+      local build del
+      ip_env "$ep"
+      ip_install "$ep"
+      assert_rc 0 "$IP_RC" "BL-024 $ep: the install: $IP_OUT"
+      build="$(ip_last "$FAKE_LOG" '^container build ')"
+      del="$(ip_first "$FAKE_LOG" '^container builder delete --force$')"
+      assert_ne "" "$del" "BL-024 $ep: the builder is deleted:
+$(grep -n '^container builder' "$FAKE_LOG")"
+      assert_eq 1 "$((del > build))" "BL-024 $ep: after the last build (line $build)"
+      assert_eq "" "$(ip_lines "$FAKE_LOG" '^container builder ' | awk -F: -v d="$del" '$1 > d')" "BL-024 $ep: and no builder call follows it"
+      assert_eq 1 "$(grep -c '^container builder delete' "$FAKE_LOG")" "BL-024 $ep: deleted once"
+      assert_eq "" "$(grep '^container builder stop' "$FAKE_LOG")" "BL-024 $ep: never only stopped"
+    ) || exit 1
+  done
+  (
+    ip_env install-mac
+    printf '^container builder delete\n' >"$FAKE/fail"
+    ip_install install-mac
+    assert_rc 0 "$IP_RC" "BL-024: a builder that cannot be deleted does not fail the install: $IP_OUT"
+    assert_match 'builder could not be deleted and was left' "$IP_OUT" "BL-024: and the install says the builder was left"
+    assert_eq 1 "$(grep -c '^container builder delete' "$FAKE_LOG")" "BL-024: the delete is tried once"
+  ) || exit 1
+}
+
+# Task 2.3, live on the mac (2026-11-19 15:26 UTC): `ssh mac 'nice-dns
+# reinstall'` ran in a non-login shell whose PATH held no Homebrew
+# directory (/usr/bin:/bin:/usr/sbin:/sbin), and the install stopped at
+# "Homebrew not found" although /opt/homebrew/bin/brew was there. Both
+# macOS entrypoints now add Homebrew's directories when PATH lacks them,
+# in the LaunchAgent's order (ND_INST_BREW_DIRS: the fixture's stand-in).
+t_macos_install_over_plain_ssh_finds_homebrew_BL_052() {
+  local ep
+  for ep in install-mac install-mac-hardened; do
+    (
+      ip_env "$ep"
+      printf 'Background\n' >"$FAKE/managername"
+      mkdir -p "$IP_W/brew"
+      rm -f "$IP_BIN/brew"; ln -s "$IP_BIN/fakecmd" "$IP_W/brew/brew"
+      ND_INST_BREW_DIRS="$IP_W/brew" ip_install "$ep"
+      assert_rc 0 "$IP_RC" "BL-052 $ep: an ssh install with Homebrew off PATH finds it: $IP_OUT"
+      assert_not_match 'Homebrew not found' "$IP_OUT" "BL-052 $ep: and does not say it is missing"
+      assert_match '^brew ' "$(cat "$FAKE_LOG")" "BL-052 $ep: Homebrew is used"
+    ) || exit 1
+  done
+}
+
+# Stage 2 gate review I1: outside the login session root-ops' `runtime`
+# runs through sudo even where the helper runs every other root step, so
+# an ssh install whose sudo cannot authenticate (no NOPASSWD, no ticket, no
+# terminal to ask on) refuses before the install starts, not in the
+# cutover.
+t_macos_install_over_ssh_needs_sudo_up_front_BL_052() {
+  local ep
+  for ep in install-mac install-mac-hardened; do
+    (
+      ip_env "$ep"
+      printf 'Background\n' >"$FAKE/managername"
+      : >"$FAKE/sudo_needs_password"
+      ip_install "$ep"
+      assert_nonzero "$IP_RC" "BL-052 $ep: an ssh install without sudo fails: $IP_OUT"
+      assert_match 'sudo could not authenticate' "$IP_OUT" "BL-052 $ep: and says why"
+      ip_assert_untouched "BL-052 $ep no sudo"
+      assert_no_path "$IP_STATE/generations" "BL-052 $ep: no generation is prepared"
+      assert_eq "" "$(grep -E 'root-ops (runtime|host-prereqs|install-helper)' "$FAKE_LOG")" "BL-052 $ep: no root step ran"
+    ) || exit 1
+  done
+}

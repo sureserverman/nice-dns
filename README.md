@@ -91,6 +91,17 @@ curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install
 curl -fsSL https://raw.githubusercontent.com/sureserverman/nice-dns/main/install-mac.sh -o install-mac.sh && bash install-mac.sh
 ```
 
+<details>
+<summary>macOS after a reboot</summary>
+
+The stack runs in your login session, so after a reboot a Mac has no DNS
+until you log in (on macOS 27.2.1 the runtime did not start before login;
+docs/qualification.md, "macOS pre-login start"). Automatic login avoids the
+gap; macOS allows it only with FileVault off, and it lets anyone at the Mac
+into your account.
+
+</details>
+
 Re-running the installer prepares the new images first, then replaces the running stack, and puts the previous one back if anything fails. Tor state, the Pi-hole lists and the admin password are kept; only `uninstall` removes them.
 
 **Mullvad VPN (Linux).** The installer reads Mullvad's DNS setting, records
@@ -187,6 +198,20 @@ refreshes the Tor bridges once a day, leaving out bridges that carry
 queries badly (with `nice-dns bridges off`, the refresh is skipped), and
 checks for an update twice a day. See
 [health/README.md](health/README.md).
+
+<details>
+<summary>Disk use on macOS</summary>
+
+`container system df` shows what images, containers and volumes take. An
+install deletes the image builder when it is done. `container image prune -a`
+removes every image no container uses: the older generation kept for a
+rollback, and the runtime's init image, which every container start needs.
+After a prune, while DNS still answers, pull the init image that
+`container system property list` names under `[vminit]`
+(`container image pull ghcr.io/apple/containerization/vminit:<version>`)
+before you reinstall or restart nice-dns.
+
+</details>
 
 ## Uninstall
 

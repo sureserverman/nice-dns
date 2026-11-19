@@ -161,6 +161,8 @@ case "$me" in
     # $FAKE/sudo_needs_password: `sudo -n` fails, as on a host with no
     # NOPASSWD rule and no live ticket (lib/root.sh's fallback then refuses).
     if [ "${1:-}" = -n ] && [ -f "$FAKE/sudo_needs_password" ]; then echo "sudo: a password is required" >&2; exit 1; fi
+    # ...and `sudo -v` cannot ask for one: a test run has no terminal.
+    if [ "${1:-}" = -v ] && [ -f "$FAKE/sudo_needs_password" ]; then echo "sudo: a terminal is required to read the password" >&2; exit 1; fi
     # root-ops runs as this user in its test mode (Sub-plan 5): each root
     # step it takes comes back to this stub through ND_ROOT_TEST_SUDO and is
     # logged, and in a world run, as the direct sudo line it replaced.
@@ -414,6 +416,14 @@ case "$me" in
     [ "$1" = -listallnetworkservices ] && printf 'An asterisk (*) denotes that a network service is disabled.\nWi-Fi\n'
     exit 0 ;;
   launchctl)
+    # The session's launchd domain ($FAKE/managername; Aqua, a login
+    # session, by default) and whether the user has a GUI login session at
+    # all ($FAKE/no_gui_session: launchctl print gui/<uid> fails as it does
+    # for a uid with none, 112) (BL-052).
+    case "$1" in
+      managername) cat "$FAKE/managername" 2>/dev/null || echo Aqua; exit 0 ;;
+      print) case "${2:-}" in gui/*) [ ! -f "$FAKE/no_gui_session" ] || exit 112 ;; esac ;;
+    esac
     if [ -n "${FAKE_ROOT:-}" ] && [ "$1" = load ]; then
       case "$*" in *org.nice-dns.start-container.plist)
         if [ ! -f "$FAKE/rollback_never_ready" ]; then
@@ -653,7 +663,7 @@ ip_run() {
   IP_OUT="$(cd "$cwd" && env -i HOME="$IP_HOME" USER=tester LOGNAME=tester PATH="${IP_PATH_EXTRA:+$IP_PATH_EXTRA:}$IP_BIN" \
     TMPDIR="$IP_W/tmp" XDG_STATE_HOME="$IP_HOME/.local/state" XDG_CONFIG_HOME="$IP_HOME/.config" XDG_DATA_HOME="${IP_XDG_DATA_HOME:-}" \
     XDG_RUNTIME_DIR="$IP_W/run" FAKE="$FAKE" FAKE_LOG="$FAKE_LOG" FAKE_UNAME="$IP_UNAME" FAKE_ARCH="$IP_ARCH" \
-    ND_INST_ETC="$IP_W/etc" ND_INST_SUDO_KEEPALIVE=0 ND_INST_REQUIRE_SIGNATURES="${ND_INST_REQUIRE_SIGNATURES:-}" FAKE_ROOT="${FAKE_ROOT:-}" ND_INST_ROOT="${FAKE_ROOT:-}" ND_PERSIST_ROOT="${ND_PERSIST_ROOT:-}" ND_INST_HELPER_STAGED="${ND_INST_HELPER_STAGED:-}" ND_INST_ROOT_OWNER="${ND_INST_ROOT_OWNER:-}" bash "$@" 2>&1 </dev/null)"
+    ND_INST_ETC="$IP_W/etc" ND_INST_SUDO_KEEPALIVE=0 ND_INST_REQUIRE_SIGNATURES="${ND_INST_REQUIRE_SIGNATURES:-}" FAKE_ROOT="${FAKE_ROOT:-}" ND_INST_ROOT="${FAKE_ROOT:-}" ND_PERSIST_ROOT="${ND_PERSIST_ROOT:-}" ND_INST_HELPER_STAGED="${ND_INST_HELPER_STAGED:-}" ND_INST_ROOT_OWNER="${ND_INST_ROOT_OWNER:-}" ND_INST_BREW_DIRS="${ND_INST_BREW_DIRS:-$IP_W/no-brew}" bash "$@" 2>&1 </dev/null)"
   IP_RC=$?
 }
 ip_install() { ip_run "$IP_TREE/$1.sh" "${@:2}"; }
