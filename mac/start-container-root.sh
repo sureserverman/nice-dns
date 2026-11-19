@@ -131,12 +131,15 @@ flush_dns_cache() {
   killall -HUP mDNSResponder 2>/dev/null || true
 }
 
-# dns_of <service>: its DNS servers, space-separated, or Empty.
+# dns_of <service>: its DNS servers, space-separated, or Empty. A server is
+# an address, optionally scoped to an interface (fe80::1%en0, as macOS
+# records a router's link-local IPv6 DNS; BL-043); any other line is refused.
+DNS_SERVER_RE='^[0-9a-fA-F.:]+(%[A-Za-z0-9]+)?$'
 dns_of() {
   local out
   out="$(networksetup -getdnsservers "$1" 2>/dev/null || true)"
-  if printf '%s\n' "$out" | grep -Eq '^[0-9a-fA-F.:]+$'; then
-    printf '%s\n' "$out" | grep -E '^[0-9a-fA-F.:]+$' | tr '\n' ' ' | sed 's/ $//'
+  if printf '%s\n' "$out" | grep -Eq "$DNS_SERVER_RE"; then
+    printf '%s\n' "$out" | grep -E "$DNS_SERVER_RE" | tr '\n' ' ' | sed 's/ $//'
   else
     echo Empty
   fi

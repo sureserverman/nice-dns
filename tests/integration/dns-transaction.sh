@@ -217,6 +217,41 @@ RUN
   ) || exit 1
 }
 
+# BL-043 item 3: dns_of accepted only [0-9a-fA-F.:], so a scoped link-local
+# server (fe80::1%en0, as macOS writes a router's IPv6 DNS) was recorded as
+# Empty and lost at uninstall. A server may end in % and an interface name;
+# anything else on the line (a space, a ;) is still refused.
+t_helper_keeps_a_scoped_link_local_server_BL_043() {
+  local v
+  dt_select_platforms
+  case " $DT_PLATS " in *" macos "*) ;; *) echo "macos not selected (--platforms)"; return 0 ;; esac
+  (
+    local before rec
+    dt_world "$(dt_ep_of macos)" fresh
+    printf 'fe80::1%%en0\n192.168.1.1\n' >"$FAKE_ROOT/.netsvc/dns/Wi-Fi"
+    before="$(dt_dns_state)"
+    dt_helper macos snapshot
+    assert_rc 0 "$DT_RC" "snapshot: $DT_OUT"
+    rec="$(dt_receipt macos)"
+    assert_eq "$(printf 'service\tWi-Fi\tfe80::1%%en0 192.168.1.1')" "$(awk -F '\t' '$1 == "service" && $2 == "Wi-Fi"' "$rec")" "BL-043: the scoped server is recorded as it is"
+    dt_helper macos post
+    assert_rc 0 "$DT_RC" "post: $DT_OUT"
+    dt_pinned || fail "pinned after the pin: $(dt_dns_state)"
+    dt_helper macos restore
+    assert_rc 0 "$DT_RC" "restore: $DT_OUT"
+    assert_eq "$before" "$(dt_dns_state)" "BL-043: and it comes back at uninstall"
+  ) || exit 1
+  for v in 'fe80::1%en0;reboot' 'fe80::1% en0' 'fe80::1%' '%en0'; do
+    (
+      dt_world "$(dt_ep_of macos)" fresh
+      printf '%s\n' "$v" >"$FAKE_ROOT/.netsvc/dns/Wi-Fi"
+      dt_helper macos snapshot
+      assert_rc 0 "$DT_RC" "snapshot of '$v': $DT_OUT"
+      assert_eq "$(printf 'service\tWi-Fi\tEmpty')" "$(awk -F '\t' '$1 == "service" && $2 == "Wi-Fi"' "$(dt_receipt macos)")" "BL-043: '$v' is still refused"
+    ) || exit 1
+  done
+}
+
 # BL-032 and BL-043 item 5: `pfctl -s info | grep -q` let grep exit at its
 # first match; a pfctl still writing then dies of SIGPIPE, pipefail fails the
 # pipeline, an enabled pf reads as disabled and `pfctl -E` takes a second
