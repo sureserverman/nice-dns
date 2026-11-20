@@ -1,0 +1,15 @@
+# Stage 2 gate box 3: both targets answer after the measurements (2026-11-20T08:50:22Z, from the laptop, HEAD ea4c8f9)
+$ ssh mint 'dig @127.0.0.1 +time=5 +tries=2 +short cloudflare.com'
+104.16.133.229
+104.16.132.229
+rc=0
+$ ssh mac 'dig @172.31.240.250 +time=5 +tries=2 +short cloudflare.com'
+104.16.133.229
+104.16.132.229
+rc=0
+$ ssh mac 'container ls' (gui domain): the images that run; the baseline arm's are nd-arm-*:baseline (tests/live/target.sh:1385)
+ID IMAGE STATE
+tor-socat docker.io/sureserver/tor-socat:latest running
+unbound docker.io/library/unbound:latest running
+pi-hole docker.io/library/pi-hole:latest running
+nd-arm images running: 0

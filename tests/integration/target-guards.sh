@@ -1045,7 +1045,10 @@ t_wake_sample_is_guarded() {
 tg_wake_tools() {
   local r="$CASE_DIR/rbin"
   printf '#!/bin/sh\nprintf "sudo %%s\\n" "$*" >>"$FAKE_LOG"\n[ "$1" != -n ] || shift\nexec "$@"\n' >"$r/sudo"
-  printf '#!/bin/sh\nexit 0\n' >"$r/rtcwake"
+  # rtcwake: the target slept FAKE_SLEPT_S seconds (default: the -s it was
+  # asked for), seen by the fake date below as a clock that jumped that far.
+  printf '#!/bin/sh\ns=60; while [ $# -gt 0 ]; do [ "$1" != -s ] || s="$2"; shift; done\nprintf "%%s\\n" "${FAKE_SLEPT_S:-$s}" >"$FAKE_JUMP"\nexit 0\n' >"$r/rtcwake"
+  printf '#!/bin/sh\nif [ "$1" = +%%s ] && [ -f "$FAKE_JUMP" ]; then echo $(( $(/bin/date +%%s) + $(cat "$FAKE_JUMP") )); else exec /bin/date "$@"; fi\n' >"$r/date"
   printf '#!/bin/sh\nexit 0\n' >"$r/ping"
   printf '#!/bin/sh\nprintf ";; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1\\n"\n' >"$r/dig"
   printf '#!/bin/sh\ncase "$FAKE_ROUTE" in now) ;; after-up) [ -f "$FAKE_UP" ] || exit 0 ;; *) exit 0 ;; esac\necho "default via 192.0.2.1 dev wlp1s0 proto dhcp metric 600"\n' >"$r/ip"
@@ -1059,9 +1062,9 @@ esac
 exit 0
 FAKE
   chmod 755 "$r"/*
-  FAKE_ROUTE="$1" FAKE_UP="$CASE_DIR/wifi-up"
-  rm -f "$FAKE_UP"
-  export FAKE_ROUTE FAKE_UP
+  FAKE_ROUTE="$1" FAKE_UP="$CASE_DIR/wifi-up" FAKE_JUMP="$CASE_DIR/clock-jump"
+  rm -f "$FAKE_UP" "$FAKE_JUMP"
+  export FAKE_ROUTE FAKE_UP FAKE_JUMP
 }
 
 tg_wake() {
@@ -1112,6 +1115,49 @@ t_wake_without_a_route_brings_the_wifi_back_bl026() {
   tg_wake
   assert_rc 0 "$TG_RC" "default wait: $TG_OUT"
   assert_match ' NICE_DNS_WAKE_ROUTE_S=60 ' "$(cat "$FAKE_LOG")" "BL-026: 60 s by default"
+}
+
+# ─── Backlog sweep Sub-plan 5 Task 2.3: a wake sample is a whole sleep ──────
+# Live mac 2026-11-20: with wake on network (womp 1) the harness's own ssh
+# keepalive (ServerAliveInterval=30) woke the mac after 26 s and 4 s of a
+# 60 s sleep; the 26 s nap passed the clock-jump check as a wake. The
+# sleeping call sends no keepalive, has an outer limit instead, and a sleep
+# cut short is refused (exit 2, which tune-idle-wake retries) with no sample.
+t_wake_sample_is_a_whole_sleep_not_a_nap() {
+  local b line
+  tg_setup
+  RUN_ID=run-nap-1; export RUN_ID
+  tg_identity 'pi-hole=sha256:ab'
+  tg snapshot lin1 --targets "$CASE_DIR/targets.env"
+  assert_rc 0 "$TG_RC" "snapshot: $TG_OUT"
+  : >"$FAKE_LOG"
+  tg collect lin1 --targets "$CASE_DIR/targets.env" --workload wake --count 1 --identity "$CASE_DIR/identity.tsv" --after-sleep 60
+  line="$(grep 'NICE_DNS_OP=collect' "$FAKE_LOG")"
+  assert_match '-o ServerAliveInterval=0 ' "$line" "the sleeping call sends no ssh keepalive"
+  assert_not_match 'ServerAliveInterval=30' "$line" "and none at the default interval"
+  : >"$FAKE_LOG"
+  tg collect lin1 --targets "$CASE_DIR/targets.env" --workload cold --count 1 --identity "$CASE_DIR/identity.tsv"
+  assert_match '-o ServerAliveInterval=30 ' "$(grep 'NICE_DNS_OP=collect' "$FAKE_LOG")" "a call that does not sleep keeps its keepalive"
+  assert_match 'RR_LIMIT="\$c_limit" remote_run "NICE_DNS_OP=collect ' "$(cat "$TG")" "the sleeping call has an outer limit in place of the keepalive"
+  # Exec mode, Linux: a whole sleep gives the sample and says how long it was.
+  tg_remote_tools Linux
+  NICE_DNS_WAKE_ROUTE_S=2; export NICE_DNS_WAKE_ROUTE_S
+  tg_wake_tools now
+  tg_wake
+  assert_rc 0 "$TG_RC" "a whole sleep: $TG_OUT"
+  assert_match '^slept	60	asked	60$' "$TG_OUT" "the slept seconds are reported"
+  assert_eq 1 "$(printf '%s\n' "$TG_OUT" | grep -c '^run-nap-1	')" "one sample"
+  # A sleep cut short is no wake sample.
+  tg_wake_tools now
+  FAKE_SLEPT_S=5 tg_wake
+  assert_rc 2 "$TG_RC" "a nap: $TG_OUT"
+  assert_match 'the sleep was cut short: woke after 5s of 60s' "$TG_OUT" "names how short"
+  assert_eq 0 "$(printf '%s\n' "$TG_OUT" | grep -c '^run-nap-1	')" "no sample from a nap"
+  unset NICE_DNS_WAKE_ROUTE_S
+  # macOS measures its sleep from the clock jump and is held to the same bar.
+  b="$(tg_branch collect)"
+  assert_match 'slept=\$\(\(n - t\)\)' "$b" "macOS: the slept seconds are the clock jump since sleepnow"
+  assert_eq 1 "$(printf '%s\n' "$b" | grep -c 'the sleep was cut short')" "one bar for both platforms"
 }
 
 # ─── Sub-plan 4 Task 2.2: the wake class can time the first answer (BL-025) ──
@@ -1192,6 +1238,8 @@ FAKE
   assert_match 'the link took longer than the first-answer cap \(300s\); nothing was queried' "$TG_OUT" "I1: and named"
   assert_eq 0 "$(printf '%s\n' "$TG_OUT" | grep -c '^first_answer	')" "I1: no first_answer row is recorded for it"
   rm -f "$CASE_DIR/rbin/date"
+  # Back to the wake tools' own clock (a whole 60 s sleep), which the I1 date replaced.
+  tg_wake_tools now
   # Without --first-answer, stdout is byte-equal to the script before Task 2.2
   # (3f8b998), times and fresh names masked: tests/fixtures/wake-sample.golden
   # is that script's output on these fakes.

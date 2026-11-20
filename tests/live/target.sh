@@ -1171,16 +1171,29 @@ case "$NICE_DNS_OP" in
           [ $((n - p)) -lt 10 ] || break
           [ $((n - t)) -lt $((NICE_DNS_SLEEP_SECS + 120)) ] || { echo "the mac did not sleep" >&2; exit 2; }
         done
+        slept=$((n - t))
         gw() { route -n get default 2>/dev/null | awk '$1 == "gateway:" { print $2 }'; }
         pg() { ping -c 1 -t 1 "$1" </dev/null >/dev/null 2>&1; }
       else
         # The Wi-Fi profile active before the sleep, by UUID (a name may hold
         # spaces): a resume can leave the link down for hours (BL-026).
         wprof=$(nmcli -t -f UUID,TYPE connection show --active </dev/null 2>/dev/null | awk -F: '$2 == "802-11-wireless" { print $1; exit }')
+        t=$(date +%s)
         sudo -n rtcwake -m mem -s "$NICE_DNS_SLEEP_SECS" </dev/null >&2 || { echo "the target did not sleep" >&2; exit 2; }
+        slept=$(( $(date +%s) - t ))
         gw() { ip route show default 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }'; }
         pg() { ping -c 1 -W 1 "$1" </dev/null >/dev/null 2>&1; }
       fi
+      # A wake sample is a whole sleep, not a nap: anything that ends the
+      # sleep early (a packet on a Mac with wake on network, a key) would time
+      # a machine that never really slept (2026-11-20: 26 s of 60 passed the
+      # clock-jump check). Refused like a sleep that never happened, so
+      # tune-idle-wake retries it.
+      if [ "$slept" -lt $((NICE_DNS_SLEEP_SECS - 10)) ]; then
+        echo "the sleep was cut short: woke after ${slept}s of ${NICE_DNS_SLEEP_SECS}s" >&2
+        exit 2
+      fi
+      printf 'slept\t%s\tasked\t%s\n' "$slept" "$NICE_DNS_SLEEP_SECS" >&2
       # link_wait <secs>: 0 once the default gateway answers; 1 if there is a
       # default route but its gateway did not answer; 2 if there is no route.
       link_wait() {
@@ -2767,9 +2780,21 @@ case "$op" in
       [ -f "$STATE/snapshot.tsv" ] && [ -f "$STATE/receipt.tsv" ] \
         || die "no restore snapshot for $alias_ in this run; run 'target.sh snapshot $alias_' first"
     fi
+    c_limit=''
+    if [ -n "$c_sleep" ]; then
+      # A client keepalive is a packet to the sleeping target, and a Mac with
+      # wake on network (womp 1) wakes for it: on 2026-11-20 the 30 s
+      # keepalive ended 60 s sleeps after 26 s and 4 s. This call sends none;
+      # its outer limit is the target's own budget (the sleep and its 120 s
+      # grace, the route wait twice, the first-answer cap, the queries at
+      # their timeout and pause) and 300 s more.
+      command -v timeout >/dev/null 2>&1 || die "collect --after-sleep needs timeout(1) on this machine for its outer limit"
+      SSH_OPTS=("${SSH_OPTS[@]/#ServerAliveInterval=30/ServerAliveInterval=0}")
+      c_limit=$(( c_sleep + 120 + 2 * wake_route + ${c_fa:-0} + (c_count * (c_timeout + c_pause) + 999) / 1000 + 300 ))
+    fi
     preconnect_guards
     probe_identity probe
-    remote_run "NICE_DNS_OP=collect NICE_DNS_WORKLOAD=$c_workload NICE_DNS_COUNT=$c_count NICE_DNS_TIMEOUT_MS=$c_timeout NICE_DNS_PAUSE_MS=$c_pause NICE_DNS_RUN_ID=$RUN_ID$ID_ENV NICE_DNS_SLEEP_SECS=$c_sleep NICE_DNS_WAKE_ROUTE_S=$wake_route NICE_DNS_FIRST_ANSWER=$c_fa"
+    RR_LIMIT="$c_limit" remote_run "NICE_DNS_OP=collect NICE_DNS_WORKLOAD=$c_workload NICE_DNS_COUNT=$c_count NICE_DNS_TIMEOUT_MS=$c_timeout NICE_DNS_PAUSE_MS=$c_pause NICE_DNS_RUN_ID=$RUN_ID$ID_ENV NICE_DNS_SLEEP_SECS=$c_sleep NICE_DNS_WAKE_ROUTE_S=$wake_route NICE_DNS_FIRST_ANSWER=$c_fa"
     # 1 = collect.sh wrote rows with failed attempts; 2 = refused (nothing sent
     # or nothing written); anything else (ssh 255, ...) = the operation failed.
     case $? in 0) exit 0 ;; 1) exit 3 ;; 2) exit 2 ;; *) exit 1 ;; esac ;;

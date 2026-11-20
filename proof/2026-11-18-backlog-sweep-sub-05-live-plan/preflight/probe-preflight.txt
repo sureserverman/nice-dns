@@ -1,0 +1,43 @@
+# Sub-plan 5 Preflight probe output (taken 2026-11-19 21:58-22:22 UTC)
+
+## Handoff
+h-fde8a609221a1e375c34 verified (exit 0) and accepted (.claude/handoffs/h-fde8a609221a1e375c34.accepted.json)
+
+## Branch (OD-1)
+main at 710031f (= origin/main), `git status --porcelain` empty; `git checkout -b sweep-live main` -> Switched to a new branch 'sweep-live'
+plan-state init: revision 1, run_id 77d8e2eb-5776-43ab-90a0-b620f7f40af9
+
+## No test run in progress
+`pgrep -af 'tests/[r]un.sh'` printed nothing (exit 1)
+
+## Live targets
+`target.sh probe mint` rc=0: Linux Mint 22.3, podman 5.8.1; nice-dns-infra, unbound, pi-hole, tor-socat running
+`target.sh probe mac` rc=0: macOS 27.2.1, container CLI 1.7.1; unbound .251, tor-socat .252, pi-hole .250 running
+
+## VM
+`virsh domstate Ubuntu` printed `shut off`. Started it (`virsh start Ubuntu`, one 8 GB VM, 23 GB free on the laptop);
+the guest agent answered through vm.sh after ~20 s (`uname -r` 7.0.0-43-generic); domstate `running`. vm.sh is executable.
+
+## GitHub
+`gh auth status`: logged in (keyring); `gh workflow list`: `release  active  411513876`
+
+## Baseline: the dry-run twins (each under systemd-run --user, master OD-4 amendment of Sub-plan 1)
+integration install-lifecycle-dryrun rc=0 secs=152 12/12 run_id=20261119T220545Z-25eecc47
+integration container-faults-dryrun  rc=0 secs=33  7/7   run_id=20261119T220817Z-e6cd2ab5
+integration bridges-toggle-dryrun    rc=0 secs=59  14/14 run_id=20261119T220850Z-f70d9cda
+integration transport-live-dryrun    rc=0 secs=248 7/7   run_id=20261119T220950Z-b6a9511a
+
+## Calibration re-check
+review-scope: as authored `light`; recomputed `light` (no executable change planned: live evidence, docs/qualification.md prose that asserts measured behavior, one lock file, the registers; no risk-listed path). Unchanged.
+stage-scope Stage 1 timed: unit receipt-verifier 216 s (20261119T221404Z-410c37fe) + unit harness-contracts 105 s (20261119T221740Z-4d1bcd07) = 321 s, at the ~5 min line; both read the receipts this stage writes, so neither is narrowed. Unchanged.
+roster: recomputed from the Dispatch: fields, 0 of 11. Unchanged.
+
+## Decisions re-check
+register DEC-001..DEC-033. New since the master was written: DEC-030, DEC-031, DEC-032, DEC-033. DEC-033 (a wake with no default route yields no wake sample) binds Task 2.3; the others bind nothing this sub-plan does. DEC-005, 009, 012, 013, 014, 016, 017, 024: accepted, none superseded.
+
+## Dispatch
+roster: 0 of 11 tasks Dispatch: YES; probe: skipped - empty roster (and tier light)
+Review: skip annotations at 710031f - 0 tasks
+
+## Gate-selector probe
+no gate check invokes pytest or cargo; every group a Test or gate names is registered in tests/manifests/groups.tsv (unit/receipt-verifier, unit/harness-contracts, integration/release-inputs, live/install-lifecycle, live/container-faults, live/bridges-toggle, live/transport-live, live/tune-transport); stage qualification is in stages.tsv
