@@ -2786,10 +2786,11 @@ case "$op" in
       # wake on network (womp 1) wakes for it: on 2026-11-20 the 30 s
       # keepalive ended 60 s sleeps after 26 s and 4 s. This call sends none;
       # its outer limit is the target's own budget (the sleep and its 120 s
-      # grace, the route wait twice, the first-answer cap) and 300 s more.
+      # grace, the route wait twice, the first-answer cap, the queries at
+      # their timeout and pause) and 300 s more.
       command -v timeout >/dev/null 2>&1 || die "collect --after-sleep needs timeout(1) on this machine for its outer limit"
       SSH_OPTS=("${SSH_OPTS[@]/#ServerAliveInterval=30/ServerAliveInterval=0}")
-      c_limit=$(( c_sleep + 120 + 2 * wake_route + ${c_fa:-0} + 300 ))
+      c_limit=$(( c_sleep + 120 + 2 * wake_route + ${c_fa:-0} + (c_count * (c_timeout + c_pause) + 999) / 1000 + 300 ))
     fi
     preconnect_guards
     probe_identity probe

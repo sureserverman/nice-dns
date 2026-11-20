@@ -342,7 +342,7 @@ socat` put it back (23:38-23:42 UTC).
 | tor-haproxy | 23:37:57 | CN=cloudflare-dns.com, O=Cloudflare, Inc. | the same | verify=ok (return code 0, "Verification: OK") |
 
 `tor.cloudflare-dns.com` verifies through `*.cloudflare-dns.com`. The route
-stays (decision of 2026-11-19, owner: "Keep, prove once"): it fails closed,
+stays (decision of 2026-11-18, proven 2026-11-19, owner: "Keep, prove once"): it fails closed,
 and installs seed identity routes, so it is only the image default. In
 haproxy's log over the switch window: no line at error level; one
 `[WARNING]`, haproxy's own "Server dns_resolvers/primary is UP".
@@ -385,7 +385,7 @@ slept whole (`slept` 66-68 s, woken "due to ... rtc"). The 2026-10-01
 idle/wake samples that opened BL-025 ran with the same keepalive and may
 have been naps.
 
-| Wake | Slept (s) | Woke (UTC) | first_answer (s) | rcode | Route before / after | Proxy container |
+| Wake | Slept (s) | Link up (UTC) | first_answer (s) | rcode | Route before / after | Proxy container |
 |---|---|---|---|---|---|---|
 | 1 | 67 | 02:45:01 | 16.39 | NOERROR | cloudflare-onion 62 / cloudflare-onion 62 | same |
 | 2 | 66 | 02:46:42 | 11.80 | NOERROR | cloudflare-onion 62 / cloudflare-onion 62 | same |
@@ -398,8 +398,10 @@ have been naps.
 | 9 | 68 | 02:58:27 | 12.63 | NOERROR | cloudflare-exit 256 / cloudflare-exit 256 | same |
 | 10 | 67 | 03:00:08 | 10.02 | NOERROR | cloudflare-exit 256 / cloudflare-exit 256 | same |
 
-The run's ten `first_answer` rows, as written (time of the query that was
-answered, microseconds from the wake, outcome, rcode, name, cap in ms):
+The run's ten `first_answer` rows, as written (the wake, microseconds from
+the wake to the first answer, outcome, rcode, name, cap in ms). "Link up"
+in the table is the harness's `woke` line, written after the link wait
+(0 or 4 s after the wake):
 
 ```
 first_answer	2026-11-20T02:44:57.522121Z	16392028	ok	NOERROR	42d1b0896807c631.example.com	300000
@@ -460,7 +462,12 @@ and p99 rest on 90 samples (the comparator marks them exploratory). The
 636 ms -> 1.8 s against the frozen baseline (BL-035); in the same session
 with the same baseline the candidate is not slower, it is faster. The bar
 (DEC-016's no-regression rule, this plan): p50 and p95 no worse than the
-same-session baseline arm.
+same-session baseline arm. Both arms ran on the exit route (the baseline
+on its exit backup, the candidate on cloudflare-exit), so this compares
+the exit route only; the soak's regression came while the onion route
+carried about 93% of the time, and that is not measured here. The group's
+result was FAIL, on its option case alone; it was not rerun with
+`--proxies all`.
 
 The mac ended on the candidate's deployment (generation
 20261120T060851Z-nogit0000000, cloudflare-exit), answering.
@@ -511,9 +518,11 @@ any of these runs (BL-046: it fails closed).
 The bar (this plan): a disconnect-only fast path is worth building only if
 the first-rung arm's median beats the controller-alone arm's by 60 s or
 more over 5 cycles. These numbers show at least 49.3 s (over 120 s against
-70.7 s) on 3 cycles, a window too short to show more: the bar is not shown
-met, so no fast path is built (as the owner decided on 2026-10-12). What
-stays true: while Mullvad is disconnected, fresh names mostly fail until
+70.7 s) on 3 cycles, a window too short to show more, and arm b's rung also
+ran at each connect: the bar is neither shown met nor shown missed. The
+entry is closed on these numbers by the owner's decision (Sub-plan 5 OD-8,
+"Close on old numbers"), not by the bar, and no fast path is built (as the
+owner decided on 2026-10-12). What stays true: while Mullvad is disconnected, fresh names mostly fail until
 the tunnel is back, and fail closed.
 
 verdict: accepted
@@ -526,8 +535,9 @@ inside the pod to the onion route (`127.0.0.1:18531`, name
 `tor.cloudflare-dns.com`, certificate verified, `+time=60 +tries=1`), a new
 connection each time, timed end to end. A stall is a run of queries that
 waited over 20 s (Sub-plan 5 OD-7). The mac is not measured: its proxy logs
-before the plan's own reinstall are gone (OD-6), and mint already selects
-the onion route that BL-027 is about.
+before the plan's own reinstall are gone (OD-6). mint's controller had
+selected cloudflare-onion at 02:25:11 and did not switch route during the
+probe, so the probed route was also the one mint's clients used.
 
 | Measure | Value |
 |---|---|
@@ -665,9 +675,14 @@ Also:
   - The 24 h soak against the frozen baseline (different days, the onion
     route about 93% of the time): Linux cold p50 2934 -> 492 ms and
     timeouts 7/30 -> 4/864; macOS steady-state cold p50 297 -> 406 ms and
-    p95 636 ms -> 1.8 s, slower (BL-035). Warm is unchanged on both.
+    p95 636 ms -> 1.8 s, slower (BL-035). Warm is unchanged on both. The
+    same-session comparison of 2026-11-20 found the macOS candidate faster
+    on the exit route ("macOS steady cold latency, interleaved"); the
+    onion route's share of the soak's regression was not measured again.
 - Onion stalls of about a minute are not failed over: the controller probes
-  once a minute (backlog BL-027). They are the soak's remaining timeouts.
+  once a minute. They are the soak's remaining timeouts. A 6 h probe of the
+  onion route on mint on 2026-11-20 found no stall over 20 s ("Onion stall
+  lengths"), so BL-027 is closed under the 1 in 100 bar.
 - The restart that adopts a filtered bridge set was proven live on Linux
   only. On macOS the refreshes left out weak bridges that were not running,
   so no restart was needed.
