@@ -1504,3 +1504,70 @@ t_macos_install_over_ssh_needs_sudo_up_front_BL_052() {
     ) || exit 1
   done
 }
+
+# BL-068: every installer runtime stop (the fresh datapath, and before a
+# deferred `container` upgrade) is read back: the status is read after it
+# until it reports stopped. A runtime that keeps running ($FAKE/rt_stop_noop:
+# on 2026-11-19 a stop from ssh reached no runtime, OD-6) fails the step
+# instead of the stack starting on the old datapath, or brew replacing a
+# running runtime's binaries; the rollback brings the previous stack back.
+ip_bl068_stop_re() { if [ "$1" = Background ]; then echo '^sudo bash [^ ]*/mac/root-ops runtime stop$'; else echo '^container system stop$'; fi; }
+ip_bl068_read_re() { if [ "$1" = Background ]; then echo '^sudo bash [^ ]*/mac/root-ops runtime (status|start)$'; else echo '^container system (status|start)$'; fi; }
+t_macos_runtime_stop_is_read_back_BL_068() {
+  local dom ep
+  for ep in install-mac install-mac-hardened; do
+  for dom in Background Aqua; do
+    # (a) a reinstall reads the status after each stop, and passes.
+    (
+      local s next
+      dt_world "$ep" fresh
+      dt_installed "$ep"
+      printf '%s\n' "$dom" >"$FAKE/managername"
+      printf 'container\n' >"$FAKE/brew_outdated"
+      ip_install "$ep" socat
+      assert_rc 0 "$IP_RC" "BL-068 $ep $dom (a): the reinstall: $IP_OUT"
+      assert_eq 2 "$(ip_lines "$FAKE_LOG" "$(ip_bl068_stop_re "$dom")" | wc -l | tr -d ' ')" "BL-068 $ep $dom (a): two stops (the upgrade, the fresh datapath):
+$(grep -nE 'system (start|status|stop)|root-ops runtime' "$FAKE_LOG")"
+      for s in $(ip_lines "$FAKE_LOG" "$(ip_bl068_stop_re "$dom")" | cut -d: -f1); do
+        next="$(tail -n +"$((s + 1))" "$FAKE_LOG" | grep -E -m 1 "$(ip_bl068_read_re "$dom")")"
+        assert_match 'status$' "$next" "BL-068 $ep $dom (a): the stop at line $s is read back before the next start"
+      done
+      assert_match 'Container runtime restarted' "$IP_OUT" "BL-068 $ep $dom (a): the runtime restarted"
+      assert_no_path "$FAKE/rt_down" "BL-068 $ep $dom (a): and runs"
+    ) || exit 1
+    # (b) the fresh-datapath stop does not stop: the install fails at that
+    # step, runs no stack on it, and the rollback brings the previous one
+    # back (its own fresh datapath tolerates the same failure).
+    (
+      local dep0 s
+      dt_world "$ep" fresh
+      dt_installed "$ep"
+      dep0="$(dt_deploy_state)"
+      printf '%s\n' "$dom" >"$FAKE/managername"
+      : >"$FAKE/rt_stop_noop"
+      ip_install "$ep" socat
+      assert_nonzero "$IP_RC" "BL-068 $ep $dom (b): the reinstall fails: $IP_OUT"
+      assert_match 'container runtime did not stop, so the stack would start on the old datapath' "$IP_OUT" "BL-068 $ep $dom (b): and says the runtime did not stop"
+      s="$(ip_first "$FAKE_LOG" "$(ip_bl068_stop_re "$dom")")"
+      assert_ne "" "$s" "BL-068 $ep $dom (b): the stop ran"
+      assert_eq "" "$(tail -n +"$((s + 1))" "$FAKE_LOG" | grep -E '^container run .*:socat|^container run .* tor-socat')" "BL-068 $ep $dom (b): no new-generation container runs after the failed stop"
+      assert_match 'rolling back' "$IP_OUT" "BL-068 $ep $dom (b): it rolls back"
+      assert_eq "$dep0" "$(dt_deploy_state)" "BL-068 $ep $dom (b): the previous stack is back"
+      dt_pinned || fail "BL-068 $ep $dom (b): host DNS is pinned to it:
+$(dt_dns_state)"
+    ) || exit 1
+    # (c) before a deferred upgrade the stop does not stop: brew never runs.
+    (
+      dt_world "$ep" fresh
+      dt_installed "$ep"
+      printf '%s\n' "$dom" >"$FAKE/managername"
+      printf 'container\n' >"$FAKE/brew_outdated"
+      : >"$FAKE/rt_stop_noop"
+      ip_install "$ep" socat
+      assert_nonzero "$IP_RC" "BL-068 $ep $dom (c): the reinstall fails: $IP_OUT"
+      assert_match 'container runtime did not stop, so brew would replace' "$IP_OUT" "BL-068 $ep $dom (c): and says why"
+      assert_eq "" "$(grep -E '^(HOMEBREW_NO_AUTO_UPDATE=1 )?brew upgrade( --formula)? container' "$FAKE_LOG")" "BL-068 $ep $dom (c): brew upgrade never ran"
+    ) || exit 1
+  done
+  done
+}
