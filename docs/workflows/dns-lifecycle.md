@@ -556,8 +556,9 @@ Sources: ARCH-02, ARCH-03, ARCH-07, design "Health and recovery".
   the runtime in the login session; the controller never runs `container
   system start` itself, since run by hand over ssh that would start a
   second runtime in the ssh domain. The journal names the kickstart and its
-  exit status, and a failed kickstart is not acknowledged
-  (lib/platform/macos.sh:318-325, lib/recovery.sh:884,
+  exit status; the acknowledgement is the runtime answering again, not the
+  kickstart's status, so a kickstart that fails and leaves it down is not
+  acknowledged (lib/platform/macos.sh:318-325, lib/recovery.sh:884,
   lib/recovery.sh:913) (BL-068, DEC-024). Before 2026-11-20 it ran
   `container system start`. Rootless Podman has no daemon
   to restart, so Linux escalates runtime-down. Before the pre-merge review
