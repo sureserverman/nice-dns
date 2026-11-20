@@ -347,6 +347,24 @@ and installs seed identity routes, so it is only the image default. In
 haproxy's log over the switch window: no line at error level; one
 `[WARNING]`, haproxy's own "Server dns_resolvers/primary is UP".
 
+## Update schedule firing
+
+Backlog sweep Sub-plan 5, Task 2.1 (BL-066). Does the twice-daily update
+check fire by itself on a live host? Read only, after Stage 1 had
+reinstalled both targets (git-archive installs, so the check can only say
+`unknown`: it needs a clean commit). Nothing was started by hand.
+
+| Platform | Host | Slot | Fired | The scheduler's own record | What followed |
+|---|---|---|---|---|---|
+| linux | mint | 2026-11-20 00:24:19 UTC (the timer's slot, randomized delay) | fired=own | `LastTriggerUSec=Fri 2026-11-20 00:24:19 GMT`; journal: "systemd[1062]: Starting nice-dns-health-update.service - nice-dns update check (checks only; installs nothing)..." at 00:24:19 | checked_at 1795134259 (00:24:19 UTC); health.log "UPDATE-CHECK rc=1 unknown: the installed source was not a clean commit" (a git-archive install records no commit) |
+| macos | mac | 2026-11-20 04:47 GMT (StartCalendarInterval 04:47 and 16:47) | fired=own | unified log: "UserEventAgent[706] [com.apple.xpc.activity:calendarinterval] Running StartCalendarInterval: org.nice-dns.health-update" at 04:47:04.857; `launchctl print`: runs = 1, last exit code = 0; update.out.log and update.err.log written 04:47 | checked_at 1795150025 (04:47:05 UTC); health.log "UPDATE-CHECK rc=1 unknown: the installed source was not a clean commit" |
+
+On both platforms the schedule fired at its slot by itself, the check ran
+within a second and wrote `checked_at`; its result is `unknown` only
+because these installs record no commit. The Linux timer's slot moves
+inside its randomized delay (12:25:35 on 2026-11-19, 00:24:19 and the next
+at 12:28:19 on 2026-11-20).
+
 ## First answer after a macOS wake
 
 Backlog sweep Sub-plan 5, Task 2.3 (BL-025, BL-039 item 3), on the mac
