@@ -1,0 +1,499 @@
+# Task 2.1 — reinstall over plain ssh from the branch tree (2026-11-20)
+command: rsync -a --delete --exclude .git ./ mac:nd-bl068/nice-dns/ ; ssh mac 'cd nd-bl068/nice-dns && bash install-mac.sh socat'  (no -t, no launchctl asuser)
+tree: 013d653 (macos-ssh-followups)
+session: launchctl managername = Background
+result: PASS — install rc=0; 'Container runtime restarted' printed; no 'did not stop'
+stop read back: the fresh-datapath stop passed its read-back (a stop that left the runtime running fails with 'did not stop'); a successful stop prints no line of its own
+runtime restarted in the install: install began 2026-11-20T18:23:23Z; container-apiserver pid 89385 started Fri Nov 20 18:24:32 2026 (mac TZ GMT)
+after: launchctl list apiserver count 1; launchctl print gui/<uid>/com.apple.container.apiserver exit 0; container ls: pi-hole tor-socat unbound; dig @172.31.240.250 cloudflare.com -> 104.16.133.229; nice-dns-health status: Mode: active, org.nice-dns.health listed
+noted: two Pi-hole block lists failed to download in the build (a timeout, an HTTP 410); upstream lists, not this change
+bridge-material scan of the log (IP:port, 40-hex, cert=, ID=): 0 matches
+
+## installer output
+2026-11-20T18:23:23Z
+▸ Preparing generation 20261120T182324Z-nogit0000000 (source checkout, commit unknown; previous 20261120T101221Z-22550ad29aea, rollback available)
+  ! Image signatures were not verified (cosign is not installed); the images are pinned by digest from the reviewed release/images.lock.
+▸ Fetching nice-dns-gui (macos/arm64)
+==> Updating Homebrew...
+Updated 2 taps (homebrew/core and homebrew/cask).
+==> New Formulae
+php@8.5: General-purpose scripting language
+==> New Casks
+hyprmac: Tiling window manager
+supertab: Switcher panel for apps, windows, clipboard history and files
+==> Outdated Formulae
+ada-url
+c-ares
+ca-certificates
+coreutils
+fmt
+glib
+gnutls
+go
+hdrhistogram_c
+htop
+icu4c@78
+jemalloc
+jpeg-turbo
+libevent
+libnghttp2
+libnghttp3
+libngtcp2
+libpng
+libslirp
+libssh
+libuv
+llhttp
+lz4
+node
+openssl@3
+p11-kit
+python@3.14
+qemu
+readline
+simdjson
+sing-box
+snappy
+sqlite
+tmux
+tor
+utf8proc
+uv
+xcodegen
+==> Outdated Casks
+codex
+electrum
+element
+feather
+keepassxc
+keka
+mullvad-browser
+session
+simplex
+tor-browser
+xcodes-app
+
+You have 38 outdated formulae and 11 outdated casks installed.
+You can upgrade them with brew upgrade
+or list them with brew outdated.
+Launching container-apiserver...
+Testing access to container-apiserver...
+Verifying machine API server is running...
+unbound:pre-20261120T182324Z-nogit0000000
+pi-hole:pre-20261120T182324Z-nogit0000000
+tor-socat:pre-20261120T182324Z-nogit0000000
+  • Pi-hole admin password: kept from the previous install (/Users/user/.local/state/nice-dns/secrets/pihole/pihole_webpassword)
+[1/2] Fetching image [0s]
+[1/2] Fetching image [1s]
+[2/2] Unpacking image [2s]
+[2/2] Unpacking image [2s]
+tor-socat:20261120T182324Z-nogit0000000
+[1/2] Fetching image [0s]
+[2/2] Unpacking image [0s]
+[2/2] Unpacking image [0s]
+unbound-base:20261120T182324Z-nogit0000000
+[1/2] Fetching image [0s]
+[2/2] Unpacking image [0s]
+[2/2] Unpacking image [0s]
+pihole-base:20261120T182324Z-nogit0000000
+▸ Candidate pool already present at /Users/user/.config/nice-dns/bridges.env (7 entries)
+Using 7 obfs4 bridge(s) from bridges.env.
+keeping the existing record of the DNS state before nice-dns
+#1 [resolver] fetching image...docker.io/library/unbound-base:20261120T182324Z-nogit0000000
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile
+#2 transferring dockerfile: 2B 0.0s done
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 267B 0.0s done
+#3 DONE 0.0s
+
+#4 [internal] load build context
+#4 DONE 0.0s
+
+#5 oci-layout://docker.io/library/unbound-base:20261120T182324Z-nogit0000000@sha256:7e803dcf42a90e2de05dffe6f55fde1a0c3f26e1ad1439352625bc05bd2a7586
+#5 resolve docker.io/library/unbound-base:20261120T182324Z-nogit0000000@sha256:7e803dcf42a90e2de05dffe6f55fde1a0c3f26e1ad1439352625bc05bd2a7586 0.1s done
+#5 ...
+
+#4 [internal] load build context
+#4 transferring context: 29.41kB 0.0s done
+#4 DONE 0.0s
+
+#5 oci-layout://docker.io/library/unbound-base:20261120T182324Z-nogit0000000@sha256:7e803dcf42a90e2de05dffe6f55fde1a0c3f26e1ad1439352625bc05bd2a7586
+#5 sha256:4023527aadc7deb2512c4d55de6948e7a106d0f51860db86e7b7862ceb854d65 19.64kB / 19.64kB done
+#5 sha256:fbc7321ccca9046a723adf925c8588538ce6387491b53e124b090546e502cee7 756B / 756B done
+#5 sha256:4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1 32B / 32B done
+#5 sha256:e39123600c15ed193322433434fe800a940a5b8a1c8f25aa278ba15c3fbd023c 470B / 470B 0.0s done
+#5 sha256:1cd0ef4ed2bbc9d088b2a57e56bf248f8729895b81faf60d0b30f1b6998ebe66 470B / 470B 0.0s done
+#5 sha256:606368c0717bdb5b11678cb3c14139a37a7b96d0d7fbbc0f578f9e5822358f0b 2.16kB / 2.16kB 0.0s done
+#5 sha256:f0141a96d5e9d9d934bd246dd607ea9fc5dc310c48d70d0337e087fb733a0ff7 946B / 946B done
+#5 sha256:f1727cf4a4f8ef780d91cb2874dc3c501b30d556cf4573a306cbaa8a18dc7355 246.94kB / 246.94kB done
+#5 sha256:795fb94f47b692bfa20dee258bfbf91b53e71fc0fcf0598c54f9d878259995d3 217B / 217B done
+#5 sha256:d3531b7a4f217bdc3426c57bcff84c170f086f456a39689d4a615c6d026c4be0 4.19MB / 4.19MB 0.0s done
+#5 extracting sha256:d3531b7a4f217bdc3426c57bcff84c170f086f456a39689d4a615c6d026c4be0 0.0s done
+#5 sha256:8832d2cdc3ab716ed332bab0d2e35abf784a9fef69657c6623c31556e650d4f5 9.00MB / 9.00MB 0.1s done
+#5 extracting sha256:795fb94f47b692bfa20dee258bfbf91b53e71fc0fcf0598c54f9d878259995d3 done
+#5 extracting sha256:f1727cf4a4f8ef780d91cb2874dc3c501b30d556cf4573a306cbaa8a18dc7355 0.0s done
+#5 extracting sha256:f0141a96d5e9d9d934bd246dd607ea9fc5dc310c48d70d0337e087fb733a0ff7 done
+#5 extracting sha256:606368c0717bdb5b11678cb3c14139a37a7b96d0d7fbbc0f578f9e5822358f0b done
+#5 extracting sha256:1cd0ef4ed2bbc9d088b2a57e56bf248f8729895b81faf60d0b30f1b6998ebe66 done
+#5 extracting sha256:e39123600c15ed193322433434fe800a940a5b8a1c8f25aa278ba15c3fbd023c done
+#5 extracting sha256:4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1 done
+#5 extracting sha256:8832d2cdc3ab716ed332bab0d2e35abf784a9fef69657c6623c31556e650d4f5 0.1s done
+#5 DONE 0.3s
+
+#5 oci-layout://docker.io/library/unbound-base:20261120T182324Z-nogit0000000@sha256:7e803dcf42a90e2de05dffe6f55fde1a0c3f26e1ad1439352625bc05bd2a7586
+#5 extracting sha256:4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1 done
+#5 extracting sha256:fbc7321ccca9046a723adf925c8588538ce6387491b53e124b090546e502cee7 done
+#5 extracting sha256:4023527aadc7deb2512c4d55de6948e7a106d0f51860db86e7b7862ceb854d65 done
+#5 DONE 0.3s
+
+#6 [linux/arm64 1/8] ADD --chown=unbound:unbound etc/* /etc/unbound/
+#6 DONE 0.0s
+
+#7 [linux/arm64 2/8] COPY start.sh /usr/local/bin/nice-dns-unbound-start
+#7 DONE 0.0s
+
+#8 [linux/arm64 3/8] COPY route/forward-route.conf /etc/unbound/route/forward-route.conf
+#8 DONE 0.0s
+
+#9 [linux/arm64 4/8] COPY control.conf /usr/share/nice-dns/control.conf
+#9 DONE 0.0s
+
+#10 [linux/arm64 5/8] RUN rm -f /etc/unbound/unbound_server.key /etc/unbound/unbound_server.pem           /etc/unbound/unbound_control.key /etc/unbound/unbound_control.pem           /etc/unbound/root.key     && chmod 0555 /usr/local/bin/nice-dns-unbound-start     && chown -R root:root /etc/unbound/route /usr/share/nice-dns     && chmod 0755 /etc/unbound/route /usr/share/nice-dns     && chmod 0444 /etc/unbound/route/forward-route.conf /usr/share/nice-dns/control.conf     && /usr/local/bin/nice-dns-unbound-start build-seed     && mkdir -p /var/lib/unbound /run/unbound     && chown unbound:unbound /var/lib/unbound /run/unbound     && chmod 0700 /var/lib/unbound     && chmod 0750 /run/unbound
+#10 0.038 nice-dns-unbound-start: seed /usr/share/nice-dns/root-anchor.seed verified (DNSKEY tags: 38696 20326; builtin DS tags: none)
+#10 DONE 0.0s
+
+#11 [linux/arm64 6/8] RUN /app/post-install.sh
+#11 DONE 0.0s
+
+#12 exporting to oci image format
+#12 exporting layers 0.0s done
+#12 exporting manifest sha256:3a9d46d5c36b021796b6c104888f93c4e6ae1f1d667a473c92a445667ad999c4 done
+#12 exporting config sha256:ea6bdb85f6fd961422cfc892c445db36c523d0737027d4904cb20f607833ccb0 done
+#12 exporting manifest list sha256:d3199c318450f990bd298058c717d2257488a115ca11773bb93044c510b6b322 done
+#12 sending tarball 0.1s done
+#12 DONE 0.1s
+docker.io/library/unbound:20261120T182324Z-nogit0000000
+#1 [resolver] fetching image...docker.io/library/pihole-base:20261120T182324Z-nogit0000000
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile
+#2 transferring dockerfile: 2B done
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 882B done
+#3 DONE 0.0s
+
+#4 [internal] load build context
+#4 transferring context: 77.15kB 0.0s done
+#4 DONE 0.0s
+
+#5 oci-layout://docker.io/library/pihole-base:20261120T182324Z-nogit0000000@sha256:30f803ad5dd60ff96cc0a63008a2e9271af481c1b0399a182192b2e91152c1f9
+#5 resolve docker.io/library/pihole-base:20261120T182324Z-nogit0000000@sha256:30f803ad5dd60ff96cc0a63008a2e9271af481c1b0399a182192b2e91152c1f9 0.0s done
+#5 DONE 0.1s
+
+#5 oci-layout://docker.io/library/pihole-base:20261120T182324Z-nogit0000000@sha256:30f803ad5dd60ff96cc0a63008a2e9271af481c1b0399a182192b2e91152c1f9
+#5 sha256:59896c0f822dc7dab1c7050db296058bda0434e4eb6f9b3c75a1bdc7ab44fff0 121B / 121B done
+#5 sha256:c7c3314769ac385be3f0ae28a92d4a084ec62def2176173cbe949f3b20019001 2.15kB / 2.15kB 0.0s done
+#5 sha256:4382c1301497519545d2cc5ef29dce76cdad6fe6092cb0b77d6dffd4db1c4d04 237B / 237B 0.0s done
+#5 sha256:5f22442d5bb125bc0499ed0ba169887fbe7b99f7573b4c8b47e4494b27fe163f 332B / 332B done
+#5 sha256:69504a815dafc2db5b3cb0b04237c0218ba80d16aaef1019564e9b6ed32b6798 4.02kB / 4.02kB done
+#5 sha256:2e96eaddb603379e275734f8b8cbd88f4b267ca027ef7ea15b3d45be98b76b27 184B / 184B done
+#5 sha256:3eed00feacbea645176f1f2704e31e0346c890135a87bd489cf37b8f4eb17b3d 55.18kB / 55.18kB done
+#5 sha256:15f2315303567f820ee437f4ad374cd53dda741e802dc7b005a799542b1aeea7 18.39kB / 18.39kB 0.0s done
+#5 sha256:c3f0417d154478e4531aaae678d991e607500ca3394a968faf8fb5b170e04c02 1.42MB / 1.42MB 0.0s done
+#5 sha256:0638b74282ef8abc41684c851c66eea9a68ec58b2bb542f23c8309cfa75ce711 4.69MB / 4.69MB 0.1s done
+#5 sha256:4cf6e3dae7dacf547862193a349f2270e22c9576516f73d453c91d22826af1c8 13.00MB / 13.00MB 0.2s done
+#5 sha256:067dfb8b2a2b5e32d2e685507d4214e928c933042d58402b49c52a6acef9030c 20.57MB / 20.57MB 0.2s done
+#5 extracting sha256:067dfb8b2a2b5e32d2e685507d4214e928c933042d58402b49c52a6acef9030c
+#5 extracting sha256:067dfb8b2a2b5e32d2e685507d4214e928c933042d58402b49c52a6acef9030c 0.2s done
+#5 DONE 0.5s
+
+#5 oci-layout://docker.io/library/pihole-base:20261120T182324Z-nogit0000000@sha256:30f803ad5dd60ff96cc0a63008a2e9271af481c1b0399a182192b2e91152c1f9
+#5 extracting sha256:c3f0417d154478e4531aaae678d991e607500ca3394a968faf8fb5b170e04c02 0.0s done
+#5 extracting sha256:15f2315303567f820ee437f4ad374cd53dda741e802dc7b005a799542b1aeea7 done
+#5 extracting sha256:0638b74282ef8abc41684c851c66eea9a68ec58b2bb542f23c8309cfa75ce711 0.0s done
+#5 extracting sha256:3eed00feacbea645176f1f2704e31e0346c890135a87bd489cf37b8f4eb17b3d done
+#5 extracting sha256:2e96eaddb603379e275734f8b8cbd88f4b267ca027ef7ea15b3d45be98b76b27 done
+#5 extracting sha256:69504a815dafc2db5b3cb0b04237c0218ba80d16aaef1019564e9b6ed32b6798 done
+#5 extracting sha256:5f22442d5bb125bc0499ed0ba169887fbe7b99f7573b4c8b47e4494b27fe163f done
+#5 extracting sha256:c7c3314769ac385be3f0ae28a92d4a084ec62def2176173cbe949f3b20019001 done
+#5 extracting sha256:4382c1301497519545d2cc5ef29dce76cdad6fe6092cb0b77d6dffd4db1c4d04 done
+#5 extracting sha256:59896c0f822dc7dab1c7050db296058bda0434e4eb6f9b3c75a1bdc7ab44fff0 done
+#5 extracting sha256:4cf6e3dae7dacf547862193a349f2270e22c9576516f73d453c91d22826af1c8 0.1s done
+#5 DONE 0.7s
+
+#6 [linux/arm64 1/9] RUN apk -U --no-cache upgrade     && apk add --no-cache tini
+#6 0.372 Preupgrading:
+#6 0.372 (1/3) Upgrading libapk (3.0.8-r0 -> 3.0.9-r0)
+#6 0.398 (2/3) Upgrading apk-tools (3.0.8-r0 -> 3.0.9-r0)
+#6 0.420 (3/3) Upgrading apk-tools-bash-completion (3.0.8-r0 -> 3.0.9-r0)
+#6 0.440 Executing busybox-1.37.0-r31.trigger
+#6 0.450 Continuing with the main upgrade transaction:
+#6 0.798 ( 1/11) Upgrading alpine-release (3.24.3-r0 -> 3.24.4-r0)
+#6 0.820 ( 2/11) Upgrading libcrypto3 (3.5.9-r0 -> 3.5.9-r1)
+#6 0.860 ( 3/11) Upgrading libssl3 (3.5.9-r0 -> 3.5.9-r1)
+#6 0.888 ( 4/11) Upgrading zlib (1.3.2-r1 -> 1.4-r0)
+#6 0.913 ( 5/11) Upgrading krb5-libs (1.22.2-r1 -> 1.22.3-r0)
+#6 0.945 ( 6/11) Upgrading libxml2 (2.13.9-r2 -> 2.13.9-r3)
+#6 0.970 ( 7/11) Upgrading libexpat (2.9.0-r0 -> 2.10.0-r0)
+#6 0.997 ( 8/11) Upgrading git (2.54.0-r0 -> 2.54.1-r0)
+#6 1.076 ( 9/11) Upgrading git-bash-completion (2.54.0-r0 -> 2.54.1-r0)
+#6 1.098 (10/11) Upgrading git-init-template (2.54.0-r0 -> 2.54.1-r0)
+#6 1.118 (11/11) Upgrading tzdata (2026e-r0 -> 2026f-r0)
+#6 1.156 Executing busybox-1.37.0-r31.trigger
+#6 1.158 OK: 70.0 MiB in 93 packages
+#6 1.511 (1/1) Installing tini (0.19.0-r3)
+#6 1.529 Executing busybox-1.37.0-r31.trigger
+#6 1.531 OK: 70.0 MiB in 94 packages
+#6 DONE 1.6s
+
+#7 [linux/arm64 2/9] COPY --chown=pihole:pihole etc/* /etc/pihole/
+#7 DONE 0.0s
+
+#8 [linux/arm64 3/9] COPY --chown=pihole:pihole adlists-default.txt /tmp/adlists.txt
+#8 DONE 0.0s
+
+#9 [linux/arm64 4/9] COPY --chown=pihole:pihole custom-allowlist.txt /tmp/allowlist.txt
+#9 DONE 0.0s
+
+#10 [linux/arm64 5/9] RUN set -e     && mkdir -p /var/lib/nice-dns-pihole /usr/share/nice-dns/pihole     && chown pihole:pihole /var/lib/nice-dns-pihole && chmod 700 /var/lib/nice-dns-pihole     && grep -vE '^[[:space:]]*(#|$)' /tmp/adlists.txt > /etc/pihole/adlists.list     && chown pihole:pihole /etc/pihole/adlists.list     && pihole -g     && grep -vE '^[[:space:]]*(#|$)' /tmp/allowlist.txt | while IFS= read -r d; do          pihole-FTL sqlite3 -ni /var/lib/nice-dns-pihole/gravity.db            "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment)             VALUES (0, '$d', 1, 'Seeded at image build time (allowlist)');";        done     && rm /tmp/adlists.txt /tmp/allowlist.txt     && cp /var/lib/nice-dns-pihole/gravity.db /usr/share/nice-dns/pihole/gravity.seed.db     && sha256sum /usr/share/nice-dns/pihole/gravity.seed.db | cut -c1-64 >/usr/share/nice-dns/pihole/seed-id     && cp /usr/share/nice-dns/pihole/seed-id /var/lib/nice-dns-pihole/seed-id     && chown -R pihole:pihole /var/lib/nice-dns-pihole
+#10 0.074   [✓] DNS resolution is available
+#10 0.074 
+#10 0.074   [i] Migrating the list's cache directory to new location...  [✗] Migrating the list's cache directory to new location
+#10 0.076   [i] Creating new gravity database
+#10 0.082   [i] Migrating content of /etc/pihole/adlists.list into new database
+#10 0.089   [i] Neutrino emissions detected...
+#10 0.089   [i] Storing gravity database in /var/lib/nice-dns-pihole/gravity.db
+#10 0.089 
+#10 0.089   [i] Preparing new gravity database...  [✓] Preparing new gravity database
+#10 0.091   [i] Creating new gravity databases...  [✓] Creating new gravity databases
+#10 0.098   [✓] Pulling blocklist source list into range
+#10 0.100   [i] Using libz compression
+#10 0.100 
+#10 0.102   [i] Target: https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+#10 0.103   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 0.328   [✓] Parsed 76105 exact domains and 0 ABP-style domains (blocking, ignored 1 non-domain entries)
+#10 0.329       Sample of non-domain entries:
+#10 0.329         - fe80::1%lo0
+#10 0.329 
+#10 0.329   [i] Target: https://raw.githubusercontent.com/PolishFiltersTeam/KADhosts/master/KADhosts.txt
+#10 0.331   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 0.668   [✓] Parsed 51944 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 0.668 
+#10 0.669   [i] Target: https://raw.githubusercontent.com/FadeMind/hosts.extras/master/add.Spam/hosts
+#10 0.672   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 0.804   [✓] Parsed 57 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 0.805 
+#10 0.806   [i] Target: https://v.firebog.net/hosts/static/w3kbl.txt
+#10 0.808   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 0.994   [✓] Parsed 356 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 0.994 
+#10 0.995   [i] Target: https://v.firebog.net/hosts/AdguardDNS.txt
+#10 0.998   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 1.346   [✓] Parsed 190478 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 1.347 
+#10 1.347   [i] Target: https://v.firebog.net/hosts/Admiral.txt
+#10 1.349   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 1.514   [✓] Parsed 1653 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 1.514 
+#10 1.515   [i] Target: https://v.firebog.net/hosts/Easylist.txt
+#10 1.517   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 1.812   [✓] Parsed 51631 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 1.812 
+#10 1.813   [i] Target: https://v.firebog.net/hosts/Easyprivacy.txt
+#10 1.816   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 2.107   [✓] Parsed 43263 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 2.108 
+#10 2.109   [i] Target: https://v.firebog.net/hosts/Prigent-Ads.txt
+#10 2.111   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 2.330   [✓] Parsed 4269 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 2.330 
+#10 2.331   [i] Target: https://v.firebog.net/hosts/Prigent-Crypto.txt
+#10 2.334   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 2.547   [✓] Parsed 11490 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 2.548 
+#10 2.549   [i] Target: https://v.firebog.net/hosts/RPiList-Phishing.txt
+#10 2.552   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 2.868   [✓] Parsed 0 exact domains and 153858 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 2.868 
+#10 2.869   [i] Target: https://adaway.org/hosts.txt
+#10 2.870   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 3.200   [✓] Parsed 6540 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 3.200 
+#10 3.201   [i] Target: https://raw.githubusercontent.com/anudeepND/blacklist/master/adservers.txt
+#10 3.204   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 3.534   [✓] Parsed 42531 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 3.534 
+#10 3.535   [i] Target: https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext
+#10 3.537   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 3.934   [✓] Parsed 3555 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 3.934 
+#10 3.935   [i] Target: https://raw.githubusercontent.com/FadeMind/hosts.extras/master/UncheckyAds/hosts
+#10 3.939   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 4.121   [✓] Parsed 9 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 4.122 
+#10 4.123   [i] Target: https://raw.githubusercontent.com/FadeMind/hosts.extras/master/add.2o7Net/hosts
+#10 4.126   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 4.293   [✓] Parsed 2030 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 4.293 
+#10 4.294   [i] Target: https://raw.githubusercontent.com/FadeMind/hosts.extras/master/add.Risk/hosts
+#10 4.297   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 4.489   [✓] Parsed 2189 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 4.490 
+#10 4.491   [i] Target: https://raw.githubusercontent.com/bigdargon/hostsVN/master/hosts
+#10 4.494   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 6.627   [✓] Parsed 18607 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 6.627 
+#10 6.628   [i] Target: https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/spy.txt
+#10 6.631   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 6.762   [✓] Parsed 347 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 6.763 
+#10 6.763   [i] Target: https://hostfiles.frogeye.fr/firstparty-trackers-hosts.txt
+#10 6.766   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 7.052   [✓] Parsed 15012 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 7.052 
+#10 7.053   [i] Target: https://raw.githubusercontent.com/DandelionSprout/adfilt/master/Alternate%20versions%20Anti-Malware%20List/AntiMalwareHosts.txt
+#10 7.056   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 7.245   [✓] Parsed 11693 exact domains and 0 ABP-style domains (blocking, ignored 5 non-domain entries)
+#10 7.245       Sample of non-domain entries:
+#10 7.245         - dhl-commx
+#10 7.245         - ://[2604:2dc0:100:4ed8::]
+#10 7.245         - ://[2604:2dc0:104:da00::]
+#10 7.245         - ://[2600:3c06::f03c:95ff:fed9:ce5e]
+#10 7.245         - ://[2600:3c06::f03c:95ff:fedc:7282]
+#10 7.245 
+#10 7.246   [i] Target: https://osint.digitalside.it/Threat-Intel/lists/latestdomains.txt
+#10 7.249   [i] Status: Pending...  [✗] Status: Retrieval failed (exit_code=28 Msg: Connection timed out after 10006 milliseconds)
+#10 17.47   [✗] List download failed: no cached list available
+#10 17.49 
+#10 17.50   [i] Target: https://bitbucket.org/ethanr/dns-blacklists/raw/8575c9f96e5b4a1308f2f12394abd86d0927a4a0/bad_lists/Mandiant_APT1_Report_Appendix_D.txt
+#10 17.50   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 17.76   [✓] Parsed 2046 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 17.76 
+#10 17.76   [i] Target: https://phishing.army/download/phishing_army_blocklist_extended.txt
+#10 17.76   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 18.09   [✓] Parsed 146688 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 18.09 
+#10 18.09   [i] Target: https://gitlab.com/quidsup/notrack-blocklists/raw/master/notrack-malware.txt
+#10 18.10   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 18.26   [✓] Parsed 125 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 18.26 
+#10 18.26   [i] Target: https://raw.githubusercontent.com/Spam404/lists/master/main-blacklist.txt
+#10 18.26   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 18.42   [✓] Parsed 8140 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 18.42 
+#10 18.42   [i] Target: https://raw.githubusercontent.com/AssoEchap/stalkerware-indicators/master/generated/hosts
+#10 18.43   [i] Status: Pending...  [✓] Status: Retrieval successful
+#10 18.56   [✓] Parsed 929 exact domains and 0 ABP-style domains (blocking, ignored 0 non-domain entries)
+#10 18.56 
+#10 18.56   [i] Target: https://urlhaus.abuse.ch/downloads/hostfile/
+#10 18.56   [i] Status: Pending...  [✗] Status: Retrieval failed (exit_code=22 Msg: The requested URL returned error: 410)
+#10 18.70   [✗] List download failed: no cached list available
+#10 18.71 
+#10 18.72   [i] Building gravity tree...  [✓] Building gravity tree
+#10 18.89   [i] Building antigravity tree...  [✓] Building antigravity tree
+#10 18.89 
+#10 18.94   [i] Number of gravity domains: 845545 (664949 unique domains)
+#10 18.94   [i] Number of antigravity domains: 0 (0 unique domains)
+#10 18.94   [i] Number of exact denied domains: 0
+#10 18.94   [i] Number of regex denied filters: 0
+#10 18.95   [i] Number of exact allowed domains: 0
+#10 18.95   [i] Number of regex allowed filters: 0
+#10 18.95 
+#10 18.95   [i] Optimizing database...  [✓] Optimizing database
+#10 18.99   [i] Swapping databases...  [✓] Swapping databases
+#10 19.00   [✓] The old database remains available
+#10 19.00   [i] Cleaning up stray matter...  [✓] Cleaning up stray matter
+#10 19.00 
+#10 19.00   [✓] Done.
+#10 DONE 19.1s
+
+#11 [linux/arm64 6/9] RUN chmod 400 /etc/pihole/dns-servers.conf /etc/pihole/dnsmasq.conf     && find / -type f -iname '*apk*' -xdev -delete     && find / -type d -iname '*apk*' -print0 -xdev | xargs -0 rm -r --
+#11 DONE 0.1s
+
+#12 [linux/arm64 7/9] COPY --chmod=644 merge-lists.sql /usr/share/nice-dns/pihole/merge-lists.sql
+#12 DONE 0.0s
+
+#13 [linux/arm64 8/9] COPY --chmod=755 nd-start.sh /usr/local/bin/nd-start.sh
+#13 DONE 0.0s
+
+#14 exporting to oci image format
+#14 exporting layers
+#14 exporting layers 2.7s done
+#14 exporting manifest sha256:ad0754d047e5cc3b0238bf7ac20f6f6a5456201eb089a44b08b1d773d917bab7 done
+#14 exporting config sha256:21a906a90a5b7cc3bd9e6b94f391b3b934cac5c6daf35c1b5b99c238ddd46470 done
+#14 exporting manifest list sha256:c664de38e1210d0e4a67d5179829ea3edbe4d19ca13032c2fa99817e411fc9f1 done
+#14 sending tarball
+#14 sending tarball 0.4s done
+#14 DONE 3.0s
+docker.io/library/pi-hole:20261120T182324Z-nogit0000000
+unbound:latest
+pi-hole:latest
+docker.io/sureserver/tor-socat:latest
+[0/6] [0s]
+[1/6] Fetching image [0s]
+[2/6] Unpacking image [0s]
+[3/6] Fetching kernel [0s]
+[4/6] Fetching init image [0s]
+[5/6] Unpacking init image [0s]
+[6/6] Starting container [0s]
+[6/6] Starting container [0s]
+[0/6] [0s]
+[1/6] Fetching image [0s]
+[2/6] Unpacking image [0s]
+[3/6] Fetching kernel [0s]
+[4/6] Fetching init image [0s]
+[5/6] Unpacking init image [0s]
+[6/6] Starting container [0s]
+[6/6] Starting container [0s]
+  • Unbound keeps its route (/Users/user/.local/state/nice-dns/unbound-route).
+Launching container-apiserver...
+Testing access to container-apiserver...
+Verifying machine API server is running...
+  • Container runtime restarted, so the stack starts on a fresh network datapath.
+[0/6] [0s]
+[1/6] Fetching image [0s]
+[2/6] Unpacking image [0s]
+[3/6] Fetching kernel [0s]
+[4/6] Fetching init image [0s]
+[5/6] Unpacking init image [0s]
+[6/6] Starting container [0s]
+[6/6] Starting container [0s]
+[0/6] [0s]
+[1/6] Fetching image [0s]
+[2/6] Unpacking image [0s]
+[3/6] Fetching kernel [0s]
+[4/6] Fetching init image [0s]
+[5/6] Unpacking init image [0s]
+[6/6] Starting container [0s]
+[6/6] Starting container [0s]
+[0/6] [0s]
+[1/6] Fetching image [0s]
+[2/6] Unpacking image [0s]
+[3/6] Fetching kernel [0s]
+[4/6] Fetching init image [0s]
+[5/6] Unpacking init image [0s]
+[6/6] Starting container [0s]
+[6/6] Starting container [0s]
+Waiting for the DNS chain to come up at 172.31.240.250 (Tor bootstrap takes 1-4 min)...
+Chain is resolving, and Unbound resolves over its authenticated route.
+/var/folders/zz/zyxvpxvq6csfxvn_n0000000000000/T/tmp.4wfBY4U2AT: parsed OK
+/etc/sudoers.d/start-container: parsed OK
+Installed.
+  Entrypoint: /Users/user/.local/bin/nice-dns-health
+  Bundle:     /Users/user/Library/Application Support/nice-dns-health/bundles/30ca9acd277f4d6f (previous: f1390d5b45f2ffcf)
+  Schedule:   /Users/user/Library/LaunchAgents/org.nice-dns.health.plist /Users/user/Library/LaunchAgents/org.nice-dns.health-bridges.plist /Users/user/Library/LaunchAgents/org.nice-dns.health-update.plist (every minute: nice-dns-health tick; daily: bridges-refresh; twice a day: update-check)
+  Logs:       /Users/user/Library/Logs/nice-dns-health/
+LaunchAgent installed (variant=socat): start-container.
+  • The controller is installed and passes its self-check.
+▸ Generation 20261120T182324Z-nogit0000000 is active (previous: 20261120T101221Z-22550ad29aea).
+All done. DNS is set to 172.31.240.250 (pi-hole). Web UI: http://172.31.240.250
+The nice-dns menu-bar app: open /Users/user/Applications/nice-dns.app
+Manage the stack with /Users/user/.local/bin/nice-dns; to run it as nice-dns, add this line to your shell profile: export PATH="/Users/user/.local/bin:$PATH"
+install rc=0
+2026-11-20T18:25:05Z
