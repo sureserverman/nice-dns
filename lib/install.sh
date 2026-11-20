@@ -2907,6 +2907,22 @@ nd_install_macos_check_session() {
   fi
 }
 
+# nd_install_macos_check_uninstall: the uninstall's root steps (the DNS
+# restore, the teardown, remove-helper) go through nice-dns-helper while it
+# is usable for this tree at its version, else through sudo (lib/root.sh
+# nd_root_mac). Outside the login session (ssh) a sudo that cannot ask fails
+# them part-way: the restore, or past it the teardown. So that case refuses
+# before any change (BL-068).
+nd_install_macos_check_uninstall() {
+  [ "$(launchctl managername 2>/dev/null)" = Aqua ] && return 0
+  ND_INST_TREE="$ND_INST_SRC"
+  _nd_root_helper_mac >/dev/null 2>&1 && return 0
+  if ! sudo -n true 2>/dev/null && ! sudo -v; then
+    _nd_inst_err "outside the Mac's login session (ssh) the uninstall's root steps go through sudo (nice-dns-helper is not installed, or cannot run them for this tree), and sudo could not authenticate here. Run it over 'ssh -t' so sudo can ask, or from Terminal at the Mac; nothing was changed"
+    return 1
+  fi
+}
+
 # _nd_inst_mac_runtime <start|status|stop>: the container runtime the
 # start-container agent uses, in the user's login session (gui/<uid>). In
 # that session (`launchctl managername` Aqua: Terminal) the CLI runs as
