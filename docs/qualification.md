@@ -518,6 +518,36 @@ the tunnel is back, and fail closed.
 
 verdict: accepted
 
+## Onion stall lengths
+
+mint, 2026-11-20 02:27-08:27 UTC, tor-socat, bridges on, route
+cloudflare-onion. Every 10 s (start to start), one DNS-over-TLS query from
+inside the pod to the onion route (`127.0.0.1:18531`, name
+`tor.cloudflare-dns.com`, certificate verified, `+time=60 +tries=1`), a new
+connection each time, timed end to end. A stall is a run of queries that
+waited over 20 s (Sub-plan 5 OD-7). The mac is not measured: its proxy logs
+before the plan's own reinstall are gone (OD-6), and mint already selects
+the onion route that BL-027 is about.
+
+| Measure | Value |
+|---|---|
+| Queries | 2158 over 21600 s |
+| Answered NOERROR | 2156 |
+| Failed fast | 2 (471 ms and 328 ms, 05:38:35 and 07:43:32) |
+| Stalls (over 20 s) | 0 |
+| Stall lengths | none |
+| Slowest answer | 16.0 s (06:03:27), then 9.5, 7.7, 6.7, 6.2, 6.1 s |
+| Wall time p50 / p95 / p99 | 1.19 / 2.15 / 3.20 s |
+
+The share of the measured time spent in stalls is 0 of 21600 s. The two
+failures did not wait. Each matches one tor-socat journal line at the same
+second, `socks: connect request rejected or failed`: Tor turned the connect
+down at once, and the next query 10 s later answered. Counted as stalls,
+they would be 20 s of 21600 s, a share of 0.09%. Both readings are under
+the 1 in 100 bar (DEC-017), so no onion failover is filed.
+
+verdict: accepted
+
 ## Known limits
 
 Found by the Stage 2 gate reviews and deferred (user decision 2026-10-06:
