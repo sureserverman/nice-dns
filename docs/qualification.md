@@ -548,6 +548,87 @@ the 1 in 100 bar (DEC-017), so no onion failover is filed.
 
 verdict: accepted
 
+## The 1.1.1.1 query
+
+BL-059: a network-fault window on mint once recorded a query to
+1.1.1.1:53 while a bridge refresh ran. Traced on mint, 2026-11-20, with a
+packet capture (`target.sh capture-dns mint --count 3`, run
+20261120T083627Z-capcb7a, which refreshes the bridge pool once) and a
+kernel trace (bpftrace on `udp_send_skb`, `udp_v6_send_skb` and
+`tcp_connect`) of the process and cgroup behind every packet to port 53
+or 853.
+
+- With the network up, no packet went to 1.1.1.1 on either port. The
+  refresh (result `changed`) ran the proxy image's `bridge-eval`, which
+  resolved Moat and rdsys over DNS-over-HTTPS: one TCP connect to
+  1.1.1.1:443 per fetch. Its only port-53 traffic was obfs4 to a pool
+  bridge that listens on port 53. The capture's canary to 9.9.9.9:53 was
+  seen, so the capture worked.
+- With 1.1.1.1:443 dropped on the host (a test table, lifted after 24 s),
+  `bridge-eval -list-sources` sent 4 UDP queries to 1.1.1.1:53. The trace
+  names the sender: process `bridge-eval` in its own `podman run`
+  container, forwarded by that container's pasta. It also tried
+  9.9.9.9:443 and 8.8.8.8:443, and the fetch still returned its
+  candidates. The binary holds `1.1.1.1:53`, `9.9.9.9:53` and
+  `8.8.8.8:53` as its fallback resolvers.
+
+So the query of BL-059 is bridge-eval's own bootstrap resolver, used when
+its DNS-over-HTTPS lookup fails, as it does under a network fault. It is
+not `scripts/fetch-bridges.sh:108`, which Linux never runs. It is not
+aardvark's `DNS=1.1.1.1` (`deb/quadlet/nice-dns.network:5`) either: the
+sender is not on dnsnet. `release/bootstrap.tsv` (row `bridges`: "bridge-eval
+resolves Moat and rdsys with its own bootstrap resolver") and
+docs/workflows/dns-lifecycle.md ("Bridge fetch traffic is a declared
+bootstrap exception") declare it. It carries only the Moat and rdsys
+names, never a client query (DEC-001 holds). That row's phase column names
+the install's bridge selection; the daily refresh runs the same fetch.
+
+declared=yes
+
+## Proxy and Tor errors over a day
+
+The 24 h to 2026-11-20 08:42 UTC. Counted at level error or above: Tor
+`[err]`, socat `E`/`F`, haproxy `[ALERT]` and above. Each Tor log covers
+only its container's life: Tor writes `/app/data/tor.log` (and
+`tor.log.prev` from the start before), not the container log.
+
+| Target | Source | Covers | Error or above | Warnings |
+|---|---|---|---|---|
+| mint | tor-socat, journal | 24 h | 1 socat `E` | 161 socat `W` |
+| mint | Tor, `tor.log` + `.prev` | 2026-11-19 23:30 on | 0 | 94 |
+| mint | tor-haproxy, journal | 23:37-23:41 (Task 1.4) | 1 `[ALERT]` | 3 |
+| mac | tor-socat, `container logs` | 08:09 on | 0 | 19 socat `W` |
+| mac | Tor, `tor.log` + `.prev` | 2026-11-20 06:08 on | 0 | 6 |
+| mac | the agent's log | 2026-11-19 15:45 on | 0 proxy or Tor | - |
+
+- mint's socat `E` is one `Connection reset by peer` (02:00:15), a
+  single dropped connection. Its warnings are 106 `socks: connect request
+  rejected or failed` (fast refusals by Tor, as in the onion probe), 52
+  `exiting on signal 15` (child stops at restarts), 2 `Resource
+  temporarily unavailable` and 1 `EOF during read of socks reply`.
+- mint's haproxy `[ALERT]` is `Current worker exited with code 143
+  (Terminated)` at 23:41:40: the stop when Task 1.4 switched back to
+  socat, not a fault. Its three warnings are the primary server UP, the
+  master exiting and all workers exited. Task 1.4's own window
+  (`haproxy-window.log`, 24 lines) has no error line and one warning, the
+  primary server UP.
+- Every Tor warning on both targets is `Proxy Client: unable to connect OR
+  connection ... ("general SOCKS server failure")`: one pool bridge that
+  did not answer the obfs4 handshake.
+- The mac's logs are short: the plan's own reinstall replaced the
+  containers at 06:08 (OD-6), and its socat container log starts at a
+  restart at 08:09. The agent's log has 28 `network dnsnet already
+  exists` and 9 apiserver `XPC connection error` lines. Both come from the
+  runtime during the plan's install runs, not from the proxy or Tor.
+
+BL-002's target "first post-bootstrap primary connect within 2 s"
+measured the primary-and-backup `:853` design, which the controller's
+route selection replaced. The 24 h soak of 2026-10-06 (run
+20261005T060405Z-13de27b1, cold p50 about 0.5 s, both platforms) stands
+for it. Its other open target, "no new ERROR/CRITICAL in haproxy or Tor
+logs", is the table above: none in either Tor log, and no fault at
+haproxy's alert level.
+
 ## Known limits
 
 Found by the Stage 2 gate reviews and deferred (user decision 2026-10-06:
