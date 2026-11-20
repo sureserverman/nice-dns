@@ -347,6 +347,68 @@ and installs seed identity routes, so it is only the image default. In
 haproxy's log over the switch window: no line at error level; one
 `[WARNING]`, haproxy's own "Server dns_resolvers/primary is UP".
 
+## First answer after a macOS wake
+
+Backlog sweep Sub-plan 5, Task 2.3 (BL-025, BL-039 item 3), on the mac
+(macOS 27.2.1, tor-socat, standard Pi-hole), 2026-11-20 02:43-03:00 UTC,
+run `20261120T024347Z-wake6832`. Ten times `target.sh collect mac
+--workload wake --count 1 --after-sleep 60 --first-answer 300`: the mac
+sleeps 60 s and wakes by its own alarm; fresh names are asked through
+Pi-hole until one is answered, timed from the wake (the link wait
+included, DEC-014's row); the route and the proxy's container are read
+before the sleep and after the answer.
+
+The first try of this run (02:28) found a harness fault: the Mac wakes on
+network (`womp 1`), and target.sh's own ssh keepalive woke it after 26 s
+and 4 s of a 60 s sleep (power log: "due to ... E_RX_IP_PACKET"); the
+26 s nap passed as a wake. Fixed in c7a0557: the sleeping call sends no
+keepalive, and a sleep more than 10 s short is refused. Every wake below
+slept whole (`slept` 66-68 s, woken "due to ... rtc"). The 2026-10-01
+idle/wake samples that opened BL-025 ran with the same keepalive and may
+have been naps.
+
+| Wake | Slept (s) | Woke (UTC) | first_answer (s) | rcode | Route before / after | Proxy container |
+|---|---|---|---|---|---|---|
+| 1 | 67 | 02:45:01 | 16.39 | NOERROR | cloudflare-onion 62 / cloudflare-onion 62 | same |
+| 2 | 66 | 02:46:42 | 11.80 | NOERROR | cloudflare-onion 62 / cloudflare-onion 62 | same |
+| 3 | 67 | 02:48:23 | 7.99 | NOERROR | cloudflare-exit 256 / cloudflare-exit 256 | same |
+| 4 | 68 | 02:50:01 | 4.38 | NOERROR | cloudflare-exit 256 / cloudflare-exit 256 | same |
+| 5 | 68 | 02:51:36 | 12.27 | NOERROR | cloudflare-exit 256 / cloudflare-exit 256 | same |
+| 6 | 67 | 02:53:22 | 8.43 | NOERROR | cloudflare-exit 256 / cloudflare-exit 256 | same |
+| 7 | 67 | 02:54:55 | 26.81 | NOERROR | cloudflare-exit 256 / cloudflare-exit 256 | same |
+| 8 | 66 | 02:56:50 | 7.22 | NOERROR | cloudflare-exit 256 / cloudflare-exit 256 | same |
+| 9 | 68 | 02:58:27 | 12.63 | NOERROR | cloudflare-exit 256 / cloudflare-exit 256 | same |
+| 10 | 67 | 03:00:08 | 10.02 | NOERROR | cloudflare-exit 256 / cloudflare-exit 256 | same |
+
+The run's ten `first_answer` rows, as written (time of the query that was
+answered, microseconds from the wake, outcome, rcode, name, cap in ms):
+
+```
+first_answer	2026-11-20T02:44:57.522121Z	16392028	ok	NOERROR	42d1b0896807c631.example.com	300000
+first_answer	2026-11-20T02:46:42.512495Z	11795367	ok	NOERROR	7c7c83c342ef7d54.example.com	300000
+first_answer	2026-11-20T02:48:23.526983Z	7985825	ok	NOERROR	16a50bd21546d778.example.com	300000
+first_answer	2026-11-20T02:50:01.432677Z	4376226	ok	NOERROR	5131790ae5441cf1.example.com	300000
+first_answer	2026-11-20T02:51:36.479129Z	12269073	ok	NOERROR	f26d74155901e129.example.com	300000
+first_answer	2026-11-20T02:53:18.469659Z	8432621	ok	NOERROR	22c71a4ebb116ed2.example.com	300000
+first_answer	2026-11-20T02:54:55.531936Z	26812162	ok	NOERROR	22d43dc9d8d14567.example.com	300000
+first_answer	2026-11-20T02:56:50.551673Z	7218526	ok	NOERROR	5780dcf328114b8c.example.com	300000
+first_answer	2026-11-20T02:58:27.502728Z	12625998	ok	NOERROR	2cb1c3ca1bb036a3.example.com	300000
+first_answer	2026-11-20T03:00:08.527458Z	10015889	ok	NOERROR	bd22413080ae9f35.example.com	300000
+```
+
+Median 10.91 s, maximum
+26.81 s; every wake answered, none timed out. The bar (this plan): the
+wake is Tor's own if the median over 10 wakes is 20 s or less.
+
+BL-039 item 3 (a suspend respawn does not bump the generation the policy
+reads): across every wake the proxy kept its container (tor-socat,
+started 2026-11-19 23:26:59 UTC) and the route its generation; no wake
+respawned the proxy, so there was no respawn to miss. The route moved
+from cloudflare-onion to cloudflare-exit between wakes 2 and 3, a
+controller switch outside any wake.
+
+verdict: accepted
+
 ## Known limits
 
 Found by the Stage 2 gate reviews and deferred (user decision 2026-10-06:
