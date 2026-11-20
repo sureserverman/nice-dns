@@ -427,6 +427,46 @@ controller switch outside any wake.
 
 verdict: accepted
 
+## macOS steady cold latency, interleaved
+
+Backlog sweep Sub-plan 5, Task 2.4 (BL-035), on the mac (macOS 27.2.1,
+container CLI 1.7.1), 2026-11-20 05:50-06:12 UTC, run
+`20261120T055003Z-b87d457d`: `tests/run.sh live tune-transport --live
+--targets tests/live/targets.env --platforms macos --proxies socat
+--comparison baseline`. The group accepts only `--proxies all`, so its
+option case (t_0_options) failed; with `--platforms macos` the cell is
+macos/socat/standard either way, and the three measuring cases passed
+(interleaved comparison, private evidence, the candidate within the frozen
+limits). One cell, two arms swapped in strict alternation over 10 blocks,
+the same session (DEC-013):
+
+- baseline: b85bc9b's Unbound and Pi-hole images rebuilt on the mac, and
+  tor-socat v2.9, on that release's own legacy route (it starts on its exit
+  backup, tests/live/tune-transport.sh);
+- candidate: the merged sweep (e7780b8's product files, equal to main's)
+  with the proxy built from tor-socat 0e587fd, on the identity route
+  cloudflare-exit (generations 441-459, read back in every block).
+
+| Class | n per arm | p50 baseline | p50 candidate | p95 baseline | p95 candidate | Blocks better | Timeouts |
+|---|---|---|---|---|---|---|---|
+| cold (miss) | 90 | 385 ms | 86 ms | 594 ms | 194 ms | 10 of 10 | 0/90 each |
+| warm (hit) | 1000 | 4.38 ms | 4.35 ms | 4.78 ms | 4.76 ms | 5 of 10 | 0/1000 each |
+| after restart | 10 | 20.3 s | 17.0 s | 28.4 s | 22.6 s | 7 of 10 | 0/10 each |
+
+Cold p50 is 300 ms faster (95% interval 264-357 ms, p_not_better 0.000),
+and p95 too, against the frozen 636 ms target (pass). The candidate's p95
+and p99 rest on 90 samples (the comparator marks them exploratory). The
+2026-10-05 soak had macOS steady-state cold p50 297 -> 406 ms and p95
+636 ms -> 1.8 s against the frozen baseline (BL-035); in the same session
+with the same baseline the candidate is not slower, it is faster. The bar
+(DEC-016's no-regression rule, this plan): p50 and p95 no worse than the
+same-session baseline arm.
+
+The mac ended on the candidate's deployment (generation
+20261120T060851Z-nogit0000000, cloudflare-exit), answering.
+
+verdict: accepted
+
 ## Fresh names while Mullvad is disconnected
 
 Backlog sweep Sub-plan 5, Task 2.5 (BL-046). Not measured anew: on
