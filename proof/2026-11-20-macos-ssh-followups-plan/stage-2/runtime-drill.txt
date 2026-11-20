@@ -1,0 +1,102 @@
+# Task 2.2 — runtime-down drill over plain ssh (2026-11-20)
+tree on the mac: 013d653 (macos-ssh-followups, installed by Task 2.1)
+result: PASS
+- schedule held: nice-dns-health stop (18:26:20Z)
+- apiserver count before: 1
+- runtime stopped in gui/501 via OD-2's command: stop=0; container ls exit 1; apiserver count 0; DNS timed out
+- tick 1 by hand over plain ssh (Background), 18:26:47Z: action repair-runtime, target runtime-down, result acknowledged
+- journal: 'repair of runtime-down: kickstart org.nice-dns.start-container for runtime-down (exit 0); exit 0', acknowledged 2 s later: 'runtime-down: the runtime answers'
+- the agent (gui/501) ran at 18:27:05, 'container system ready' 18:27:10, rebuilt the stack on .250/.251/.252, 'chain resolving' 18:27:23
+- after (18:27:23Z, about 63 s after the stop, well within 600 s): pi-hole tor-socat unbound listed; dig @172.31.240.250 cloudflare.com -> 104.16.133.229; apiserver count 1 (unchanged); launchctl print gui/501/com.apple.container.apiserver exit 0; no second runtime
+- schedule restarted: nice-dns-health start; Mode: active, org.nice-dns.health loaded
+bridge-material scan (IP:port, 40-hex, cert=, ID=) of the raw records below: 0 matches
+
+## stop (ssh session 1)
++zsh:1> date -u +%FT%TZ
+2026-11-20T18:26:20Z
++zsh:1> launchctl managername
+Background
++zsh:1> /Users/user/.local/bin/nice-dns-health stop
+LaunchAgents unloaded.
+hold=0
++zsh:1> echo 'hold=0'
++zsh:1> launchctl list
++zsh:1> grep -c com.apple.container.apiserver
+1
+ls: /Users/user/.local/state/nice-dns/recovery.tsv: No such file or directory
++zsh:1> ls /Users/user/.local/state/nice-dns/recovery.tsv
+zsh:1: no such file or directory: /Users/user/.local/state/nice-dns/recovery.tsv
++zsh:1> id -u
++zsh:1> sudo -n launchctl asuser 501 sudo -n -u user /opt/homebrew/bin/container system stop
+2026-11-20T18:26:20+0000 info com.apple.container.cli: [ContainerCommands] checking if APIServer is alive
+2026-11-20T18:26:20+0000 info com.apple.container.cli: stopTimeoutSeconds=5 [ContainerCommands] stopping containers
+unbound
+tor-socat
+pi-hole
+2026-11-20T18:26:23+0000 info com.apple.container.cli: [ContainerCommands] waiting for containers to exit
+2026-11-20T18:26:23+0000 info com.apple.container.cli: label=gui/501/com.apple.container.apiserver [ContainerCommands] stopping service
+2026-11-20T18:26:23+0000 info com.apple.container.cli: label=gui/501/com.apple.container.container-network-vmnet.default [ContainerCommands] stopping service
+2026-11-20T18:26:23+0000 info com.apple.container.cli: label=gui/501/com.apple.container.container-core-images [ContainerCommands] stopping service
+2026-11-20T18:26:23+0000 info com.apple.container.cli: label=gui/501/com.apple.container.container-core-clusters [ContainerCommands] stopping service
+2026-11-20T18:26:23+0000 info com.apple.container.cli: label=gui/501/com.apple.container.cluster-hoststore [ContainerCommands] stopping service
+2026-11-20T18:26:23+0000 info com.apple.container.cli: label=gui/501/com.apple.container.container-network-vmnet.dnsnet [ContainerCommands] stopping service
+2026-11-20T18:26:23+0000 info com.apple.container.cli: label=gui/501/com.apple.container.machine-apiserver [ContainerCommands] stopping service
+stop=0
++zsh:1> echo 'stop=0'
++zsh:1> sleep 5
++zsh:1> /opt/homebrew/bin/container ls
+ls=1
++zsh:1> echo 'ls=1'
++zsh:1> launchctl list
++zsh:1> grep -c com.apple.container.apiserver
+0
++zsh:1> dig +short '+time=5' '+tries=1' @172.31.240.250 cloudflare.com
+;; connection timed out; no servers could be reached
+dig=9
++zsh:1> echo 'dig=9'
++zsh:1> date -u +%FT%TZ
+2026-11-20T18:26:34Z
+
+## controller tick (ssh session 2)
+journal lines before:       72
+== tick 1 2026-11-20T18:26:47Z
+action	repair-runtime
+target	runtime-down
+result	acknowledged
+generation	1171
+reason	runtime fault: runtime-down: Error: internalError: "failed to list containers" (cause: "interrupted: "XPC connection error: Connection invalid"") 
+tick rc=0
+== journal since the drill
+1795199225	nd-1795199225-1171	runtime	requested	repair of runtime-down: kickstart org.nice-dns.start-container for runtime-down (exit 0); exit 0
+1795199227	nd-1795199225-1171	runtime	acknowledged	runtime-down: the runtime answers
+2026-11-20T18:27:08Z
+
+## recovery (ssh session 3)
+back after 4 s from 18:27:19Z: containers=3 dns=104.16.133.229
+"id":"pi-hole" "id":"tor-socat" "id":"unbound" 
+apiserver count: 1
+gui apiserver print: 0
+LaunchAgents loaded.
+start=0
+Mode: active
+-	0	org.nice-dns.health-update
+93394	0	org.nice-dns.health
+-	0	org.nice-dns.health-bridges
+2026-11-20T18:27:23Z
+
+## agent log (~/Library/Logs/nice-dns.log, 2026-11-20 lines of the drill)
+20828:2026-11-20T18:27:05 starting nice-dns runtime (variant=socat)
+20830:2026-11-20T18:27:05 container system not ready, retry 1/10
+20834:2026-11-20T18:27:10 container system ready
+20836:2026-11-20T18:27:10 dnsnet already exists
+20837:2026-11-20T18:27:10 addresses: pi-hole= unbound= tor-socat= (want 172.31.240.250/172.31.240.251/172.31.240.252)
+20838:2026-11-20T18:27:10 addresses not as configured; rebuilding stack in allocation order
+20847:2026-11-20T18:27:10 dnsnet ready
+20857:2026-11-20T18:27:11 created container pi-hole at 172.31.240.250
+20865:2026-11-20T18:27:11 route-start ran before Unbound's start
+20875:2026-11-20T18:27:12 created container unbound at 172.31.240.251
+20885:2026-11-20T18:27:12 created container tor-socat at 172.31.240.252
+20886:2026-11-20T18:27:12 stack rebuilt on expected addresses
+20887:2026-11-20T18:27:23 tor bootstrapped
+20888:2026-11-20T18:27:23 chain resolving
+20889:2026-11-20T18:27:23 done

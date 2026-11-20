@@ -2907,6 +2907,22 @@ nd_install_macos_check_session() {
   fi
 }
 
+# nd_install_macos_check_uninstall: the uninstall's root steps (the DNS
+# restore, the teardown, remove-helper) go through nice-dns-helper while it
+# is usable for this tree at its version, else through sudo (lib/root.sh
+# nd_root_mac). Outside the login session (ssh) a sudo that cannot ask fails
+# them part-way: the restore, or past it the teardown. So that case refuses
+# before any change (BL-068).
+nd_install_macos_check_uninstall() {
+  [ "$(launchctl managername 2>/dev/null)" = Aqua ] && return 0
+  ND_INST_TREE="$ND_INST_SRC"
+  _nd_root_helper_mac >/dev/null 2>&1 && return 0
+  if ! sudo -n true 2>/dev/null && ! sudo -v; then
+    _nd_inst_err "outside the Mac's login session (ssh) the uninstall's root steps go through sudo (nice-dns-helper is not installed, or cannot run them for this tree), and sudo could not authenticate here. Run it over 'ssh -t' so sudo can ask, or from Terminal at the Mac; nothing was changed"
+    return 1
+  fi
+}
+
 # _nd_inst_mac_runtime <start|status|stop>: the container runtime the
 # start-container agent uses, in the user's login session (gui/<uid>). In
 # that session (`launchctl managername` Aqua: Terminal) the CLI runs as
@@ -2929,6 +2945,24 @@ _nd_inst_mac_runtime() {
   fi
 }
 
+# _nd_inst_mac_runtime_stop <what a running runtime would mean>: stops the
+# runtime, then reads its status until it reports stopped: up to 10 reads,
+# 2 s apart. The stop's own exit status is not the answer: a stop that
+# reached no runtime exited 0 and left it running (2026-11-19, from ssh;
+# OD-6). A runtime still running fails the step (BL-068).
+_nd_inst_mac_runtime_stop() {
+  local i=0 rc=0
+  _nd_inst_mac_runtime stop >/dev/null 2>&1 || rc=$?
+  while _nd_inst_mac_runtime status >/dev/null 2>&1; do
+    i=$((i + 1))
+    if [ "$i" -ge 10 ]; then
+      _nd_inst_err "the container runtime did not stop, so $1 (the stop exited $rc; the status still reads running after $i reads)"
+      return 1
+    fi
+    sleep 2
+  done
+}
+
 # nd_install_macos_upgrade_runtime: the deferred `container` upgrade, in the
 # interruption window.
 nd_install_macos_upgrade_runtime() {
@@ -2937,7 +2971,7 @@ nd_install_macos_upgrade_runtime() {
     # Stop the runtime before its binaries are replaced, so the
     # launchd-registered apiserver isn't left pointing at a path brew is
     # about to rewrite. The start below re-registers it.
-    _nd_inst_mac_runtime stop >/dev/null 2>&1 || true
+    _nd_inst_mac_runtime_stop "brew would replace the binaries of a running runtime" || return 1
   fi
   # From the bottle fetched in preparation; no update: host DNS is pinned to
   # the stopped stack here (fails closed), so nothing may need the network.
@@ -3348,7 +3382,7 @@ _nd_inst_mac_builder_delete() {
 nd_install_macos_fresh_datapath() {
   local tries=0
   _nd_inst_mac_builder_delete
-  _nd_inst_mac_runtime stop >/dev/null 2>&1 || true
+  _nd_inst_mac_runtime_stop "the stack would start on the old datapath" || return 1
   sleep 8
   # _nd_inst_mac_runtime answers the start's first-run prompts, as in
   # nd_install_macos_host_prereqs; the agent's copy runs after an install,

@@ -591,7 +591,9 @@ resolves Moat and rdsys with its own bootstrap resolver") and
 docs/workflows/dns-lifecycle.md ("Bridge fetch traffic is a declared
 bootstrap exception") declare it. It carries only the Moat and rdsys
 names, never a client query (DEC-001 holds). That row's phase column names
-the install's bridge selection; the daily refresh runs the same fetch.
+the install's bridge selection; the daily refresh runs the same fetch
+(since 2026-11-20 the purpose of both `bridges` rows names the refresh
+too).
 
 declared=yes
 

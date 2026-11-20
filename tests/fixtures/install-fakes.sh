@@ -177,6 +177,17 @@ case "$me" in
     fi
     # The root steps root-ops took, for the tests' accounting.
     [ -n "${ND_ROOT_TEST_IN:-}" ] && printf '%s\n' "$l" >>"$FAKE/root-inner.log"
+    # root-ops' runtime verb, `launchctl asuser <uid> sudo -n -u <user>
+    # <bin> system <x>`, acts on the same runtime state as the fake CLI, as
+    # it reaches the gui runtime (BL-052); logged here only (BL-068).
+    if [ "$1 ${2:-}" = "launchctl asuser" ] && [ "${9:-}" = system ]; then
+      case "${10:-}" in
+        start) rm -f "$FAKE/rt_down" ;;
+        stop) [ -f "$FAKE/rt_stop_noop" ] || : >"$FAKE/rt_down" ;;
+        status) [ ! -f "$FAKE/rt_down" ] || exit 1 ;;
+      esac
+      exit 0
+    fi
     # In a world ($FAKE_ROOT), the DNS helpers and commands on paths under
     # the fake root run, as this user; nothing else ever does.
     if [ -n "${FAKE_ROOT:-}" ]; then
@@ -232,6 +243,12 @@ case "$me" in
     if [ -f "$FAKE/rt_down" ]; then
       case "$1 $2" in "system start") rm -f "$FAKE/rt_down" ;; "image "*) echo "Error: the container system is not running" >&2; exit 1 ;; esac
     fi
+    # A stop stops it, unless it ignores stops ($FAKE/rt_stop_noop), and its
+    # status reads stopped while it is (BL-068).
+    case "$1 ${2:-}" in
+      "system stop") [ -f "$FAKE/rt_stop_noop" ] || : >"$FAKE/rt_down" ;;
+      "system status") [ ! -f "$FAKE/rt_down" ] || { echo "apiserver is not running" >&2; exit 1; } ;;
+    esac
     case "$1 $*" in exec*probe-route*)
       [ -f "$FAKE/probe_fail" ] && exit 1
       [ -n "${FAKE_ROOT:-}" ] && [ ! -f "$FAKE/dns_up" ] && exit 1

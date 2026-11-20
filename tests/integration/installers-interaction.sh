@@ -1052,3 +1052,87 @@ RUN
   assert_match 'container system never came up' "$out" "BL-052: no apiserver at all: never came up: $out"
   assert_not_match 'another launchd domain|not registered in this' "$out" "BL-052: and not another domain"
 }
+
+# BL-068: an uninstall over ssh (Background) whose root steps go through
+# sudo, because no nice-dns-helper is usable for the tree at its version
+# (lib/root.sh nd_root_mac), refuses before it changes anything when sudo
+# cannot authenticate: before, the DNS restore (or, past it, the teardown)
+# ran and failed part-way. Where sudo works, or the helper takes every root
+# step, the uninstall runs as before; in a login session sudo can ask, so
+# nothing is checked first.
+ii_bl068_world() {   # <entrypoint> [helper]
+  dt_world "$1" "$(dt_fresh_state "$1")"
+  if [ "${2:-}" = helper ]; then
+    ip_tree "$IP_HOME/src/nice-dns"
+    IP_TREE="$IP_HOME/src/nice-dns"
+    II_ASSET="$IP_HOME/staged/nice-dns-helper"
+    ip_fake_helper "$II_ASSET" "" mac
+    chmod -R go-w "$IP_HOME"
+    ND_INST_HELPER_STAGED="$II_ASSET" dt_installed "$1"
+  else
+    dt_installed "$1"
+  fi
+}
+t_macos_uninstall_over_ssh_checks_sudo_first_BL_068() {
+  local ep dns0 n first
+  for ep in install-mac install-mac-hardened; do
+    # (a) ssh, no helper, sudo cannot ask: refused before any change.
+    (
+      ii_bl068_world "$ep"
+      dns0="$(dt_dns_state)"
+      printf 'Background\n' >"$FAKE/managername"
+      : >"$FAKE/sudo_needs_password"
+      ip_install "$ep" uninstall
+      assert_nonzero "$IP_RC" "BL-068 $ep (a): the uninstall fails: $IP_OUT"
+      assert_match "ssh -t" "$IP_OUT" "BL-068 $ep (a): and says to run it over ssh -t"
+      assert_not_match 'nice-dns uninstalled' "$IP_OUT" "BL-068 $ep (a): and does not say it uninstalled"
+      assert_eq "" "$(grep -E 'root-ops |^nice-dns-helper |^launchctl unload|^container (stop|rm) ' "$FAKE_LOG")" "BL-068 $ep (a): no root step, agent unload or container stop ran:
+$(cat -n "$FAKE_LOG")"
+      assert_eq "$dns0" "$(dt_dns_state)" "BL-068 $ep (a): host DNS is as it was"
+      assert_file "$IP_STATE/current" "BL-068 $ep (a): the install record is kept"
+    ) || exit 1
+    # (b) ssh, no helper, sudo works: the uninstall completes.
+    (
+      ii_bl068_world "$ep"
+      printf 'Background\n' >"$FAKE/managername"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "BL-068 $ep (b): with sudo the ssh uninstall completes: $IP_OUT"
+      assert_match '^sudo bash [^ ]*/mac/root-ops teardown uninstall$' "$(cat "$FAKE_LOG")" "BL-068 $ep (b): the teardown ran through sudo"
+      assert_no_path "$IP_STATE/current" "BL-068 $ep (b): the install record is gone"
+    ) || exit 1
+    # (c) a login session (Aqua): no sudo probe before the first root step.
+    (
+      ii_bl068_world "$ep"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "BL-068 $ep (c): the uninstall in a login session: $IP_OUT"
+      first="$(grep -nE 'root-ops |^nice-dns-helper ' "$FAKE_LOG" | head -n 1 | cut -d: -f1)"
+      assert_ne "" "$first" "BL-068 $ep (c): a root step ran"
+      assert_eq "" "$(head -n "$((first - 1))" "$FAKE_LOG" | grep -E '^sudo (-n true|-v)$')" "BL-068 $ep (c): no sudo probe before it"
+    ) || exit 1
+    # (d) ssh, a usable helper, sudo cannot ask. On macOS the helper runs
+    # every root step of the uninstall, remove-helper included (MAC_VERBS,
+    # gui/helper/src/verbs.rs; nd_root_mac has no remove-helper exception,
+    # unlike nd_root_deb), so BL-068's "remove-helper goes through sudo"
+    # holds on Linux only: the uninstall completes and never asks sudo.
+    (
+      ii_bl068_world "$ep" helper
+      printf 'Background\n' >"$FAKE/managername"
+      : >"$FAKE/sudo_needs_password"
+      ip_install "$ep" uninstall
+      assert_rc 0 "$IP_RC" "BL-068 $ep (d): with a usable helper the ssh uninstall completes: $IP_OUT"
+      assert_eq "" "$(grep -E '^sudo (bash [^ ]*/root-ops |-n true$|-v$)' "$FAKE_LOG")" "BL-068 $ep (d): no root step went to sudo, nothing probed it"
+      assert_match '^nice-dns-helper --tree [^ ]* remove-helper$' "$(cat "$FAKE_LOG")" "BL-068 $ep (d): the helper removed itself"
+      # An older helper runs only the agent verbs: the teardown would go to
+      # sudo, so the same uninstall is refused before any change.
+      ii_bl068_world "$ep" helper
+      ip_fake_helper "$FAKE_ROOT/usr/local/libexec/nice-dns-helper" 0.0.9; chmod 4755 "$FAKE_ROOT/usr/local/libexec/nice-dns-helper"
+      dns0="$(dt_dns_state)"
+      printf 'Background\n' >"$FAKE/managername"
+      : >"$FAKE/sudo_needs_password"
+      ip_install "$ep" uninstall
+      assert_nonzero "$IP_RC" "BL-068 $ep (d) old helper: refused: $IP_OUT"
+      assert_eq "" "$(grep -E 'root-ops |^nice-dns-helper [^ ]+ [^ ]+ (agent|teardown|remove-helper)' "$FAKE_LOG")" "BL-068 $ep (d) old helper: no root step ran"
+      assert_eq "$dns0" "$(dt_dns_state)" "BL-068 $ep (d) old helper: host DNS is as it was"
+    ) || exit 1
+  done
+}

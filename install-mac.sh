@@ -121,6 +121,9 @@ fi
 ND_INST_PLATFORM=macos
 
 if [[ "$ACTION" == "uninstall" ]]; then
+  # Refuses before any change when its root steps need a sudo that cannot
+  # ask (ssh, no usable helper; BL-068).
+  nd_install_macos_check_uninstall || exit 1
   nd_install_macos_uninstall
   echo "nice-dns uninstalled."
   exit 0

@@ -309,15 +309,20 @@ nd_platform_wait_restarted() {
 nd_platform_runtime_repairs() { printf 'runtime-down containers-missing\n'; }
 
 # nd_platform_repair_runtime <fault> <deadline> <tmp>: 0 issued; 3 no repair.
-# A runtime that does not answer: `container system start` (what the
-# LaunchAgent itself does first). Missing containers: start the LaunchAgent
-# if it is not running (no -k), which recreates what is missing.
+# A runtime that does not answer, and missing containers: start the
+# LaunchAgent if it is not running (no -k). Its first step starts the
+# runtime in the login session (gui/<uid>), then it recreates what is
+# missing. The controller never starts the runtime itself: run by hand over
+# ssh, that start would bring up a second runtime in the ssh domain, which
+# wedged vmnet on 2026-11-07 (BL-052, BL-068; DEC-024).
 nd_platform_repair_runtime() {
-  local bin
   case "$1" in
     runtime-down)
-      bin="$(nd_platform_runtime_bin)" || return 3
-      nd_bounded "$2" "$3/rep" "$3/rep.err" "$bin" system start ;;
+      local rc=0
+      nd_platform_runtime_bin >/dev/null || return 3
+      nd_bounded "$2" "$3/rep" "$3/rep.err" launchctl kickstart "gui/$(id -u)/$_ND_MAC_AGENT" || rc=$?
+      printf 'kickstart %s for runtime-down (exit %s); ' "$_ND_MAC_AGENT" "$rc" >>"$3/rep.note"
+      return "$rc" ;;
     containers-missing)
       local dl="$2" tmp="$3" rc=0
       shift 3
