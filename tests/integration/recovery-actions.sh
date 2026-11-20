@@ -42,6 +42,8 @@ ctl="$FAKE/ctl"
 case "$1" in
   ps) cat "$FAKE/running" ;;
   ls)
+    # $FAKE/rt_down: the runtime does not answer until something starts it.
+    [ -f "$FAKE/rt_down" ] && { echo 'Error: XPC connection error: Connection invalid' >&2; exit 1; }
     printf 'ID           IMAGE            OS     ARCH   STATE    IP                 CPUS  MEMORY  STARTED\n'
     while IFS= read -r n; do
       [ -n "$n" ] && printf '%-12s %-16s linux  arm64  running  172.31.240.25x/29  1     256 MB  %s\n' "$n" "$n:latest" "$(cat "$FAKE/started")"
@@ -65,7 +67,7 @@ case "$1" in
   unpause)
     [ -f "$FAKE/unpause_fails" ] && { echo "Error: \"$2\" is not paused, can't unpause: container state improper" >&2; exit 125; }
     if [ -f "$FAKE/paused" ]; then grep -vxF "$2" "$FAKE/paused" >"$FAKE/paused.n"; mv "$FAKE/paused.n" "$FAKE/paused"; fi ;;
-  system) : >"$FAKE/system-started" ;;
+  system) : >"$FAKE/system-started"; rm -f "$FAKE/rt_down" ;;
   exec)
     if [ "$2" = --user ]; then a1="$1"; shift 3; set -- "$a1" "$@"; fi
     c="$2"; shift 2
@@ -136,7 +138,10 @@ STUB
   cat >"$b/launchctl" <<'STUB'
 #!/bin/sh
 l=launchctl; for a in "$@"; do l="$l $a"; done; printf '%s\n' "$l" >>"$FAKE_LOG"
-[ -f "$FAKE/launchctl_fails" ] && exit 5
+# $FAKE/launchctl_fails: exits with the code it holds, 5 when empty.
+if [ -f "$FAKE/launchctl_fails" ]; then rc="$(cat "$FAKE/launchctl_fails")"; exit "${rc:-5}"; fi
+# The start-container agent's first step starts the runtime (BL-068).
+[ "$1" = kickstart ] && rm -f "$FAKE/rt_down"
 if [ "$2" = -k ]; then [ -f "$FAKE/restart_changes" ] && echo "t$(date +%s)-new" >"$FAKE/started"
   [ -f "$FAKE/restart_brings_up" ] && ! grep -qx tor-haproxy "$FAKE/running" && echo tor-haproxy >>"$FAKE/running"
 else [ -f "$FAKE/start_brings_up" ] && printf 'pi-hole\nunbound\ntor-haproxy\n' >"$FAKE/running"; fi
@@ -344,10 +349,27 @@ t_runtime_repair_acts_only_on_its_fault() {
   ) || exit 1
   (
   ra_fake macos
+  # BL-068: a runtime that does not answer is started by the start-container
+  # agent, in its login session (gui/<uid>), never by a `container system
+  # start` from the controller, which run by hand over ssh would start a
+  # second runtime in the ssh domain (2026-11-07, BL-052).
+  : >"$FAKE/rt_down"
   out="$(repair_runtime runtime-down ra-10)"; rc=$?
-  assert_rc 0 "$rc" "macos: container system start, then the runtime answers: $out"
-  assert_match '^container system start$' "$(cat "$FAKE_LOG")" "macos: container system start"
-  assert_not_match 'launchctl' "$(cat "$FAKE_LOG")" "macos: no stack restart for a runtime fault"
+  assert_rc 0 "$rc" "macos: the agent is kicked, then the runtime answers: $out"
+  assert_eq 1 "$(grep -cE '^launchctl kickstart gui/[0-9]+/org.nice-dns.start-container$' "$FAKE_LOG")" "macos: one kickstart of the agent, without -k:
+$(cat "$FAKE_LOG")"
+  assert_eq "" "$(grep -E 'system start|kickstart -k' "$FAKE_LOG")" "macos: no container system start, no agent restart"
+  assert_match 'kickstart org\.nice-dns\.start-container for runtime-down \(exit 0\)' "$(awk -F '\t' '$4 == "requested" { print $5 }' "$ND_STATE_DIR/recovery.tsv")" "macos: the journal names the kickstart"
+  assert_match 'runtime acknowledged' "$(ra_journal)" "macos: acknowledged once the runtime answers"
+  # A kickstart that fails (113: no such service) leaves the runtime down:
+  # not acknowledged, and the journal holds the exit status.
+  : >"$FAKE/rt_down"; printf '113\n' >"$FAKE/launchctl_fails"; : >"$FAKE_LOG"
+  out="$(repair_runtime runtime-down ra-10b)"; rc=$?
+  assert_rc 1 "$rc" "macos: a failed kickstart is not acknowledged: $out"
+  assert_eq not-acknowledged "$(ra_field result "$out")" "macos: result"
+  assert_match 'for runtime-down \(exit 113\)' "$(awk -F '\t' '$2 == "ra-10b" && $4 == "requested" { print $5 }' "$ND_STATE_DIR/recovery.tsv")" "macos: the journal holds the exit status"
+  assert_eq "" "$(grep -E 'system start' "$FAKE_LOG")" "macos: and no container system start"
+  rm -f "$FAKE/launchctl_fails" "$FAKE/rt_down"; : >"$FAKE_LOG"
   printf 'pi-hole\n' >"$FAKE/running"; : >"$FAKE/start_brings_up"; : >"$FAKE_LOG"
   out="$(repair_runtime containers-missing ra-11)"; rc=$?
   assert_rc 0 "$rc" "macos: the agent recreates what is missing: $out"
