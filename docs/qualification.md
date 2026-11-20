@@ -409,6 +409,57 @@ controller switch outside any wake.
 
 verdict: accepted
 
+## Fresh names while Mullvad is disconnected
+
+Backlog sweep Sub-plan 5, Task 2.5 (BL-046). Not measured anew: on
+2026-11-20 the VM's Mullvad account had expired (2026-11-11 02:43 UTC;
+`mullvad status` stayed "Connecting", the daemon timing out on the relay),
+so no connect could be made. nice-dns main (710031f) was installed there by
+the README's line and answered. By the owner's decision (2026-11-20, "Close
+on old numbers") BL-046 is closed on the numbers already taken, which are
+old and short: 2026-10-12 in the same VM (nice-dns
+20261011T181512Z-2a5ed555dc5c, tor-haproxy, Mullvad 2026.3, custom DNS
+127.0.0.1, lockdown off), 3 cycles per arm of `mullvad disconnect`, 120 s,
+`mullvad connect`, 300 s, a fresh label every 5 s with `dig +time=3
++tries=1 @127.0.0.1`. Arm a is the controller alone; arm b added the first
+rung (the in-image Tor restart request) within 5 s of each transition,
+connect included, not of the disconnect only. Cycle a/2 was rerun (a2r)
+after a multitor test touched Tor during it.
+
+Time to the first fresh answer (s; "none" = no answer in the window):
+
+| Arm | Cycle | Transition | First fresh answer | Window |
+|---|---|---|---|---|
+| a | 1 | disconnect | none | 120 |
+| a | 1 | connect | 42.2 | 300 |
+| a | 2r | disconnect | 85.8 | 120 |
+| a | 2r | connect | 135.9 | 300 |
+| a | 3 | disconnect | none | 120 |
+| a | 3 | connect | 35.9 | 300 |
+| b | 1 | disconnect | 70.5 | 120 |
+| b | 1 | connect | 87.1 | 300 |
+| b | 2 | disconnect | 70.7 | 120 |
+| b | 2 | connect | 97.4 | 300 |
+| b | 3 | disconnect | 96.6 | 120 |
+| b | 3 | connect | 85.8 | 300 |
+
+Medians, disconnect: arm a over 120 s (two of three windows never
+answered), arm b 70.7 s. Connect: arm a 42.2 s, arm b 87.1 s (the restart
+costs a rebootstrap). On 2026-10-13/14 (anon-meta round 2, the controller
+alone) 0 of 40 fresh labels answered while disconnected in every run, and
+the first answer after connect came at 75-392 s. No DNS left the host in
+any of these runs (BL-046: it fails closed).
+
+The bar (this plan): a disconnect-only fast path is worth building only if
+the first-rung arm's median beats the controller-alone arm's by 60 s or
+more over 5 cycles. These numbers show at least 49.3 s (over 120 s against
+70.7 s) on 3 cycles, a window too short to show more: the bar is not shown
+met, so no fast path is built (as the owner decided on 2026-10-12). What
+stays true: while Mullvad is disconnected, fresh names mostly fail until
+the tunnel is back, and fail closed.
+
+verdict: accepted
+
 ## Known limits
 
 Found by the Stage 2 gate reviews and deferred (user decision 2026-10-06:
