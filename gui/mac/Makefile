@@ -4,16 +4,18 @@
 #                      build/nice-dns.app (ad-hoc signed)
 #   make check         run KitCheck
 #   make screenshot    the app's --screenshot hook, into build/screenshot.png
-#   make strings       copy ../share/actions.tsv into the kit's resources
-#   make strings-check fail when the kit's copy differs from ../share/actions.tsv
+#   make strings       copy ../share/actions.tsv and ../share/checks.tsv into the kit's resources
+#   make strings-check fail when the kit's copies differ from ../share
 #   make clean         remove build/ and .build/
 #
-# The copy is committed so `swift build` needs no make step; KitCheck checks it
-# against ../share/actions.tsv as well. VERSION (default 0.0.0) goes into the
+# The copies are committed so `swift build` needs no make step; KitCheck checks
+# them against ../share as well. VERSION (default 0.0.0) goes into the
 # app's Info.plist; the release job passes the tag without its v.
 
 SHARED_TABLE := ../share/actions.tsv
 KIT_TABLE    := Sources/NiceDNSKit/Resources/actions.tsv
+SHARED_CHECKS := ../share/checks.tsv
+KIT_CHECKS   := Sources/NiceDNSKit/Resources/checks.tsv
 APP          := build/nice-dns.app
 LOGO         := ../../docs/images/logo.png
 VERSION      ?= 0.0.0
@@ -57,15 +59,19 @@ screenshot: app
 
 strings:
 	cp $(SHARED_TABLE) $(KIT_TABLE)
+	cp $(SHARED_CHECKS) $(KIT_CHECKS)
 
 strings-check:
-	@if cmp -s $(SHARED_TABLE) $(KIT_TABLE); then \
-	  echo "strings-check: $(KIT_TABLE) equals $(SHARED_TABLE)"; \
-	else \
-	  echo "strings-check: $(KIT_TABLE) differs from $(SHARED_TABLE); run make strings" >&2; \
-	  diff $(SHARED_TABLE) $(KIT_TABLE) >&2; \
-	  exit 1; \
-	fi
+	@for pair in "$(SHARED_TABLE) $(KIT_TABLE)" "$(SHARED_CHECKS) $(KIT_CHECKS)"; do \
+	  set -- $$pair; \
+	  if cmp -s $$1 $$2; then \
+	    echo "strings-check: $$2 equals $$1"; \
+	  else \
+	    echo "strings-check: $$2 differs from $$1; run make strings" >&2; \
+	    diff $$1 $$2 >&2; \
+	    exit 1; \
+	  fi; \
+	done
 
 clean:
 	rm -rf build .build

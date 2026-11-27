@@ -11,12 +11,13 @@ let package = Package(
         .executable(name: "KitCheck", targets: ["KitCheck"]),
     ],
     targets: [
-        // The status parser, the command runner and the action table. The
-        // table is a committed copy of gui/share/actions.tsv: `make strings`
-        // refreshes it, `make strings-check` and KitCheck fail on drift.
+        // The status parser, the command runner, the action table and the
+        // check table. The tables are committed copies of gui/share/actions.tsv
+        // and gui/share/checks.tsv: `make strings` refreshes them,
+        // `make strings-check` and KitCheck fail on drift.
         .target(
             name: "NiceDNSKit",
-            resources: [.copy("Resources/actions.tsv")]
+            resources: [.copy("Resources/actions.tsv"), .copy("Resources/checks.tsv")]
         ),
         .executableTarget(
             name: "NiceDNSGUI",

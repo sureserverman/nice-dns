@@ -87,16 +87,19 @@ public enum Actions {
         return dirs.map { $0.appendingPathComponent(resourceBundleName) }
     }
 
-    /// The bundled table's text, exactly as committed.
-    public static func bundledText() throws -> String {
+    /// The text of the bundled `<name>.tsv`, exactly as committed.
+    public static func bundledResource(_ name: String) throws -> String {
         let candidates = resourceBundleCandidates()
         for c in candidates {
-            if let b = Bundle(url: c), let url = b.url(forResource: "actions", withExtension: "tsv") {
+            if let b = Bundle(url: c), let url = b.url(forResource: name, withExtension: "tsv") {
                 return try String(contentsOf: url, encoding: .utf8)
             }
         }
-        throw ActionError("actions.tsv not found: looked in " + candidates.map(\.path).joined(separator: ", "))
+        throw ActionError("\(name).tsv not found: looked in " + candidates.map(\.path).joined(separator: ", "))
     }
+
+    /// The bundled action table's text, exactly as committed.
+    public static func bundledText() throws -> String { try bundledResource("actions") }
 
     /// The bundled table, parsed.
     public static func loadBundled() throws -> [Action] {

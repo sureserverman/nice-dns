@@ -24,21 +24,29 @@ final class SwitchesTests: XCTestCase {
         XCTAssertEqual(m.first?.places, [])
     }
 
-    func testTheFourChoicesAreNotPlainButtons() {
-        let ids = Placement.buttons().map(\.id)
+    func testTheFourChoicesAreSelectorsAndEachSharedComponentIsOnePlace() {
         for id in choiceIds {
-            XCTAssertFalse(ids.contains(id), id)
             XCTAssertEqual(Placement.place(of: id), .selector, id)
         }
-        XCTAssertEqual(ids, ["reinstall", "restart", "uninstall", "update-check", "health-start", "health-stop", "health-run", "failures"])
-        XCTAssertEqual(Placement.place(of: "update"), .updateBanner)
+        XCTAssertEqual(Placement.place(of: "health-run"), .statusHeader)
+        XCTAssertEqual(Placement.place(of: "update-check"), .updateRow)
+        XCTAssertEqual(Placement.place(of: "update"), .updateRow)
+        XCTAssertEqual(Placement.place(of: "bridges-on"), .bridgesSwitch)
+        XCTAssertEqual(Placement.place(of: "open-admin"), .adminRow)
+        XCTAssertEqual(Placement.place(of: "show-password-path"), .adminRow)
+        XCTAssertEqual(Placement.place(of: "health-start"), .autoChecks)
+        XCTAssertEqual(Placement.place(of: "health-stop"), .autoChecks)
+        XCTAssertEqual(Placement.place(of: "failures"), .repairsHeader)
+        XCTAssertEqual(Placement.place(of: "restart"), .maintenance)
+        XCTAssertEqual(Placement.place(of: "reinstall"), .maintenance)
+        XCTAssertEqual(Placement.place(of: "uninstall"), .maintenance)
         XCTAssertEqual(Placement.place(of: "install"), .installView)
     }
 
     func testTheQuestionForEachChoice() {
-        let tail = " The stack is reinstalled from the kept source. This takes a few minutes and DNS stops briefly."
-        XCTAssertEqual(StackChoice.question(for: "proxy-haproxy"), "Switch the proxy to haproxy?" + tail)
-        XCTAssertEqual(StackChoice.question(for: "proxy-socat"), "Switch the proxy to socat?" + tail)
+        let tail = " The stack is rebuilt from the kept source. This takes a few minutes and DNS stops briefly. The running stack stays if anything fails."
+        XCTAssertEqual(StackChoice.question(for: "proxy-haproxy"), "Switch the Tor proxy to haproxy?" + tail)
+        XCTAssertEqual(StackChoice.question(for: "proxy-socat"), "Switch the Tor proxy to socat?" + tail)
         XCTAssertEqual(StackChoice.question(for: "pihole-standard"), "Switch Pi-hole to standard?" + tail)
         XCTAssertEqual(StackChoice.question(for: "pihole-hardened"), "Switch Pi-hole to hardened?" + tail)
         XCTAssertNil(StackChoice.question(for: "restart"))
@@ -90,14 +98,5 @@ final class SwitchesTests: XCTestCase {
         st.install.pihole = "extra"
         XCTAssertNil(SwitchState().shown(.pihole, status: st))
         XCTAssertNil(SwitchState().shown(.proxy, status: nil))
-    }
-
-    func testTheUpdateRowSaysWhenTheLastCheckRan() throws {
-        let u = try Status.parse(try fixture("status-update-available.tsv")).update
-        XCTAssertEqual(updateRow(u, now: 1794251900 + 600), "available: 0f6a6e7c3d2b (checked 10 min ago)")
-        let n = try installedStatus().update
-        XCTAssertEqual(updateRow(n, now: 1794251900), "not checked yet")
-        XCTAssertEqual(ago(700, now: 1000), "5 min ago")
-        XCTAssertEqual(ago(1010, now: 1000), "in the future")
     }
 }

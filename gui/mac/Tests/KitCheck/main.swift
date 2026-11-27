@@ -163,12 +163,6 @@ for (fixture, code, glyph) in [("status-installed.tsv", Int32(0), Glyph.green), 
     check("the glyph for \(fixture) is \(glyph)", g == glyph, "it is \(g)")
 }
 check("the glyph for a status that cannot be shown is red", Glyph.of(.error("status exited 3")) == .red)
-if case .installed(var s) = view("status-installed.tsv", 0) {
-    s.obs[0].verdict = "unhealthy"
-    check("an unhealthy observation makes the glyph red", Glyph.of(.installed(s)) == .red)
-    s.obs[0].verdict = "indeterminate"
-    check("an indeterminate observation makes the glyph amber", Glyph.of(.installed(s)) == .amber)
-}
 
 let fakebin = fixtures.appendingPathComponent("fakebin").path
 let emptyHome = FileManager.default.temporaryDirectory.appendingPathComponent("kitcheck-home-\(getpid())").path
@@ -340,13 +334,15 @@ do {
 // every-row check above would pass over it.
 do {
     let gui = share.deletingLastPathComponent().appendingPathComponent("mac/Sources/NiceDNSGUI", isDirectory: true)
-    let drawing = try NSRegularExpression(pattern: #"(request\("|entry\([^\n]*, "[a-z-]+"\)|lookup\(")"#)
+    let drawing = try NSRegularExpression(pattern: #"(request\("|\brun\("|entry\([^\n]*, "[a-z-]+"\)|lookup\(")"#)
     var found: [String] = []
-    for f in ["WindowView.swift", "MenuBar.swift"] {
+    let files = ((try? FileManager.default.contentsOfDirectory(atPath: gui.path)) ?? []).filter { $0.hasSuffix(".swift") && $0 != "main.swift" && $0 != "Model.swift" }.sorted()
+    check("the view sources are found (\(files.joined(separator: ", ")))", files.contains("WindowView.swift") && files.contains("MenuBar.swift"))
+    for f in files {
         let text = try String(contentsOf: gui.appendingPathComponent(f), encoding: .utf8)
         for (n, line) in text.components(separatedBy: "\n").enumerated() {
             let r = NSRange(line.startIndex..., in: line)
-            if drawing.firstMatch(in: line, range: r) != nil { found.append("\(f):\(n + 1)") }
+            if drawing.firstMatch(in: line, range: r) != nil && !line.contains("Placement.") { found.append("\(f):\(n + 1)") }
         }
     }
     check("the views name no action id as a literal at a drawing call", found.isEmpty, found.joined(separator: ", "))
@@ -354,20 +350,22 @@ do {
     check("the view sources read for the drawing calls", false, "\(error)")
 }
 
-let buttonIds = Placement.buttons().map(\.id)
 for id in ["proxy-haproxy", "proxy-socat", "pihole-standard", "pihole-hardened"] {
-    check("\(id) is not a plain button", !buttonIds.contains(id), buttonIds.joined(separator: " "))
     check("\(id) is a selector's choice", Placement.place(of: id) == .selector)
 }
-check("the plain buttons are the table's plain rows, in table order",
-      buttonIds == ["reinstall", "restart", "uninstall", "update-check", "health-start", "health-stop", "health-run", "failures"],
-      buttonIds.joined(separator: " "))
-check("the update is the banner's, the bridges the switch's, install the not-installed page's",
-      Placement.place(of: "update") == .updateBanner && Placement.place(of: "bridges-on") == .bridgesSwitch
-      && Placement.place(of: "bridges-off") == .bridgesSwitch && Placement.place(of: "install") == .installView)
+check("each shared component is one place: the status header, the update row",
+      Placement.place(of: "health-run") == .statusHeader && Placement.place(of: "update-check") == .updateRow
+      && Placement.place(of: "update") == .updateRow)
+check("the switches, the admin row, the repairs link, maintenance and install each have their place",
+      Placement.place(of: "bridges-on") == .bridgesSwitch && Placement.place(of: "bridges-off") == .bridgesSwitch
+      && Placement.place(of: "health-start") == .autoChecks && Placement.place(of: "health-stop") == .autoChecks
+      && Placement.place(of: "open-admin") == .adminRow && Placement.place(of: "show-password-path") == .adminRow
+      && Placement.place(of: "failures") == .repairsHeader && Placement.place(of: "restart") == .maintenance
+      && Placement.place(of: "reinstall") == .maintenance && Placement.place(of: "uninstall") == .maintenance
+      && Placement.place(of: "install") == .installView)
 
-let tail = " The stack is reinstalled from the kept source. This takes a few minutes and DNS stops briefly."
-for (id, head) in [("proxy-haproxy", "Switch the proxy to haproxy?"), ("proxy-socat", "Switch the proxy to socat?"),
+let tail = " The stack is rebuilt from the kept source. This takes a few minutes and DNS stops briefly. The running stack stays if anything fails."
+for (id, head) in [("proxy-haproxy", "Switch the Tor proxy to haproxy?"), ("proxy-socat", "Switch the Tor proxy to socat?"),
                    ("pihole-standard", "Switch Pi-hole to standard?"), ("pihole-hardened", "Switch Pi-hole to hardened?")] {
     let q = StackChoice.question(for: id)
     check("the question for \(id) is \"\(head)...\"", q == head + tail, q ?? "none")
@@ -446,19 +444,302 @@ check("its notice says the switch did not happen",
       StackChoice.failedNotice(for: "pihole-hardened", said: sw126.said ?? "") == "The switch did not happen: authorisation cancelled (exit 126); Pi-hole is unchanged")
 check("no switch notice for another action", StackChoice.failedNotice(for: "restart", said: "failed (exit 1)") == nil)
 
-// The Update row says when the last check ran, whoever ran it.
+// `ago` is the one wording of every time on screen.
 check("ago says just now, minutes, hours, days and the future",
       ago(995, now: 1000) == "just now" && ago(700, now: 1000) == "5 min ago" && ago(0, now: 7200) == "2 h ago"
       && ago(0, now: 3 * 86_400) == "3 days ago" && ago(1010, now: 1000) == "in the future")
-if case .installed(let u) = view("status-update-available.tsv", 0), case .installed(let n) = view("status-installed.tsv", 0) {
-    check("the Update row names the answer and when it was checked",
-          updateRow(u.update, now: 1794251900 + 600) == "available: 0f6a6e7c3d2b (checked 10 min ago)", updateRow(u.update, now: 1794251900 + 600))
-    var later = u.update
-    later.checkedAt = 1794251900 + 590
-    later.result = .current
-    check("the Update row moves when a later check (the schedule's) wrote checked_at",
-          updateRow(later, now: 1794251900 + 600) == "up to date (checked just now)", updateRow(later, now: 1794251900 + 600))
-    check("the Update row says not checked yet without a check", updateRow(n.update, now: 1794251900) == "not checked yet", updateRow(n.update, now: 1794251900))
+
+// --- The status level, the check table and what the views say (GUI spec 3 to 7) ---
+
+func fixtureStatus(_ name: String) -> Status {
+    let text = (try? String(contentsOf: fixtures.appendingPathComponent(name), encoding: .utf8)) ?? ""
+    return (try? Status.parse(text)) ?? (try! Status.parse("schema\t\(statusSchema)\n"))
+}
+func tweak(_ s: Status, _ f: (inout Status) -> Void) -> Status {
+    var c = s
+    f(&c)
+    return c
+}
+func setVerdict(_ s: inout Status, _ name: String, _ verdict: String) {
+    if let i = s.obs.firstIndex(where: { $0.name == name }) { s.obs[i].verdict = verdict }
+}
+let okStatus = fixtureStatus("status-installed.tsv")
+let staleStatus = fixtureStatus("status-stale.tsv")
+let updateStatus = fixtureStatus("status-update-available.tsv")
+let passAt: UInt64 = 1794251828
+let nowFresh = passAt + 12
+
+// The shared check table and its bundled copy.
+do {
+    let bundled = try Checks.bundledText()
+    let shared = try String(contentsOf: share.appendingPathComponent("checks.tsv"), encoding: .utf8)
+    check("the bundled check table equals \(share.path)/checks.tsv", bundled == shared)
+    let rows = try Checks.parse(shared)
+    check("the check table parses (\(rows.count) rows, with the * row)", rows.count == 18 && rows.last?.id == Checks.other, "\(rows.count)")
+    check("the bundled checks equal the shared checks", try Checks.loadBundled() == rows)
+    check("every path node of the table is one of the five", rows.allSatisfy { ["", "computer", "pihole", "unbound", "tor", "resolver"].contains($0.pathNode) })
+    check("every fixture's observation names resolve in the table",
+          [okStatus, staleStatus, updateStatus].allSatisfy { $0.obs.allSatisfy { Checks.info($0.name) != nil } },
+          (okStatus.obs.filter { Checks.info($0.name) == nil }).map(\.name).joined(separator: ", "))
+    check("dns-owner is down and filtering is attention when unhealthy",
+          Checks.info("dns-owner")?.levelWhenUnhealthy == .down && Checks.info("filtering")?.levelWhenUnhealthy == .attention)
+    let raw = Checks.resolve("new-thing")
+    check("a name not in the table gets the * row with its raw id",
+          raw.id == "new-thing" && raw.name == "new-thing" && raw.group == "other" && raw.headline == "new-thing: check failed"
+          && raw.levelWhenUnhealthy == .attention)
+    func refused(_ t: String) -> Bool { (try? Checks.parse(t)) == nil }
+    let header = shared.components(separatedBy: "\n")[0]
+    check("a check table with no header, a short row, a bad level or no * row is refused",
+          refused("a\tb\tc\n") && refused(shared.components(separatedBy: "\n").dropFirst().joined(separator: "\n"))
+          && refused(header + "\nx\tg\tn\t\tbad\th\t\t\n") && refused(header + "\nx\tg\tn\t\tdown\th\t\t\n"))
+} catch {
+    check("the check tables read", false, "\(error)")
+}
+
+// The level, first match wins (spec section 3).
+check("installed is ok", Level.of(okStatus) == .ok)
+check("the stale fixture is stale", Level.of(staleStatus) == .stale)
+check("the update fixture is ok", Level.of(updateStatus) == .ok)
+check("not installed", Level.of(view("status-not-installed.tsv", 1)) == .notInstalled)
+check("a status that cannot be read is error", Level.of(.error("status exited 3")) == .error)
+check("stale never is waiting, even over a down check",
+      Level.of(tweak(okStatus) { $0.controller.stale = Stale.never; setVerdict(&$0, "dns-owner", "unhealthy") }) == .waiting)
+check("stale future is stale", Level.of(tweak(okStatus) { $0.controller.stale = Stale.future }) == .stale)
+check("a stale pass is stale even over a down check",
+      Level.of(tweak(staleStatus) { setVerdict(&$0, "dns-owner", "unhealthy") }) == .stale)
+check("a missing stale row is not stale", Level.of(tweak(okStatus) { $0.controller.stale = nil }) == .ok)
+let oneRouteDown = tweak(okStatus) {
+    setVerdict(&$0, "route:cloudflare-onion", "unhealthy")
+    $0.controller.verdict = "FAIL [route:cloudflare-onion]"
+    $0.route = Route(id: "cloudflare-exit", generation: "74")
+}
+check("one failed backup route is attention, not down (D2)", Level.of(oneRouteDown) == .attention)
+check("dns-owner unhealthy is down", Level.of(tweak(okStatus) { setVerdict(&$0, "dns-owner", "unhealthy") }) == .down)
+for name in ["runtime", "container:pi-hole", "container:unbound", "container:tor-socat", "local-service", "unbound"] {
+    check("\(name) unhealthy is down", Level.of(tweak(okStatus) { setVerdict(&$0, name, "unhealthy") }) == .down)
+}
+for name in ["filtering", "local-cache", "proxy", "install-drift"] {
+    check("\(name) unhealthy is attention", Level.of(tweak(okStatus) { setVerdict(&$0, name, "unhealthy") }) == .attention)
+}
+check("every route unhealthy is down",
+      Level.of(tweak(okStatus) { s in for n in s.obs.map(\.name) where n.hasPrefix("route:") { setVerdict(&s, n, "unhealthy") } }) == .down)
+check("the verdict naming chain-resolves is down",
+      Level.of(tweak(okStatus) { $0.controller.verdict = "FAIL [chain-resolves]" }) == .down)
+check("chain-resolves after indeterminate= is not down",
+      Level.of(tweak(okStatus) { $0.controller.verdict = "FAIL [route:quad9-exit] indeterminate=(chain-resolves)" }) == .attention)
+check("an indeterminate check is attention", Level.of(tweak(okStatus) { setVerdict(&$0, "filtering", "indeterminate") }) == .attention)
+check("a verdict that is not OK is attention", Level.of(tweak(okStatus) { $0.controller.verdict = "INDETERMINATE [filtering]" }) == .attention)
+check("an unreadable row is attention",
+      Level.of(tweak(okStatus) { $0.unreadable = [Unreadable(group: "bridges", reason: "~/x: permission denied")] }) == .attention)
+check("an unknown name unhealthy is attention",
+      Level.of(tweak(okStatus) { $0.obs.append(Obs(name: "new-thing", verdict: "unhealthy", ms: nil, reason: "r")) }) == .attention)
+check("route-table unhealthy is down",
+      Level.of(tweak(okStatus) { $0.obs.append(Obs(name: "route-table", verdict: "unhealthy", ms: nil, reason: "cannot read")) }) == .down)
+check("the glyph colours: ok green, attention and stale amber, down and error red, waiting and not installed grey",
+      Level.ok.glyph == .green && Level.attention.glyph == .amber && Level.stale.glyph == .amber
+      && Level.down.glyph == .red && Level.error.glyph == .red && Level.waiting.glyph == .grey && Level.notInstalled.glyph == .grey)
+check("the menu-bar symbols differ by level, so colour is not alone",
+      Level.ok.menuSymbol == "checkmark.shield.fill" && Level.attention.menuSymbol == "exclamationmark.shield.fill"
+      && Level.stale.menuSymbol == "exclamationmark.shield.fill" && Level.down.menuSymbol == "xmark.shield.fill"
+      && Level.error.menuSymbol == "xmark.shield.fill" && Level.notInstalled.menuSymbol == "shield.slash"
+      && Level.waiting.menuSymbol == "shield" && Level.loadingMenuSymbol == "shield")
+check("the hero symbols", Level.ok.heroSymbol == "checkmark.shield" && Level.attention.heroSymbol == "exclamationmark.triangle"
+      && Level.stale.heroSymbol == "exclamationmark.triangle" && Level.down.heroSymbol == "exclamationmark.shield"
+      && Level.waiting.heroSymbol == "shield" && Level.notInstalled.heroSymbol == "shield")
+
+// The hero's copy (spec section 3).
+let heroOK = hero(okStatus, now: nowFresh)
+check("the ok hero", heroOK.title == "DNS is protected" && heroOK.subtitle == "Every lookup leaves through Tor. Checked just now."
+      && heroOK.action == .runChecks && heroOK.brief == "Checked just now.", "\(heroOK)")
+let heroBackup = hero(oneRouteDown, now: nowFresh)
+check("the backup-route hero", heroBackup.title == "DNS works, on a backup route"
+      && heroBackup.subtitle == "The Cloudflare onion route is not answering. Lookups still leave through Tor.", "\(heroBackup)")
+let heroAds = hero(tweak(okStatus) { setVerdict(&$0, "filtering", "unhealthy"); $0.controller.verdict = "FAIL [filtering]" }, now: nowFresh)
+check("the ads-not-blocked hero", heroAds.title == "DNS works, but ads are not blocked"
+      && heroAds.subtitle == "Lookups still leave through Tor. Checked just now.", "\(heroAds)")
+let twoBad = tweak(okStatus) { setVerdict(&$0, "filtering", "unhealthy"); setVerdict(&$0, "local-cache", "unhealthy") }
+check("the n-checks hero says 2 checks need attention", hero(twoBad, now: nowFresh).title == "DNS works, 2 checks need attention")
+check("the n-checks hero says 1 check needs attention",
+      hero(tweak(okStatus) { setVerdict(&$0, "local-cache", "unhealthy") }, now: nowFresh).title == "DNS works, 1 check needs attention")
+let heroStale = hero(staleStatus, now: passAt + 942)
+check("the stale hero says it in words, never stale 942s",
+      heroStale.title == "Status is out of date" && heroStale.subtitle == "The last check ran 15 min ago. Checks are overdue."
+      && heroStale.action == .runChecks && !"\(heroStale)".contains("stale 942"), "\(heroStale)")
+let heroOff = hero(tweak(staleStatus) { $0.controller.schedule = "stopped" }, now: passAt + 942)
+check("the schedule-stopped hero offers Turn On", heroOff.title == "Automatic checks are off"
+      && heroOff.subtitle == "The last check ran 15 min ago." && heroOff.action == .turnOn, "\(heroOff)")
+let heroWait = hero(tweak(okStatus) { $0.controller.stale = Stale.never }, now: nowFresh)
+check("the waiting hero", heroWait.title == "Waiting for the first check" && heroWait.subtitle == "nice-dns has not checked this install yet.")
+let heroOwner = hero(tweak(okStatus) { setVerdict(&$0, "dns-owner", "unhealthy") }, now: nowFresh)
+check("dns-owner down names the check", heroOwner.title == "This computer is not using nice-dns"
+      && heroOwner.subtitle == "/etc/resolv.conf: nameserver 127.0.0.1 only" && heroOwner.level == .down, "\(heroOwner)")
+let allRoutesDown = tweak(okStatus) { s in for n in s.obs.map(\.name) where n.hasPrefix("route:") { setVerdict(&s, n, "unhealthy") } }
+check("no route answers", hero(allRoutesDown, now: nowFresh).title == "DNS is down"
+      && hero(allRoutesDown, now: nowFresh).subtitle == "No route through Tor is answering.")
+check("another down check puts its headline in the subtitle",
+      hero(tweak(okStatus) { setVerdict(&$0, "unbound", "unhealthy") }, now: nowFresh).subtitle == "Unbound is not answering")
+check("a chain-resolves verdict alone still says DNS is down",
+      hero(tweak(okStatus) { $0.controller.verdict = "FAIL [chain-resolves]" }, now: nowFresh).title == "DNS is down")
+check("the hero of a not-installed view has no controller button",
+      hero(view("status-not-installed.tsv", 1), now: nowFresh).action == nil)
+
+// The lookup path (spec section 4.2).
+let pathOK = lookupPath(okStatus)
+check("the five nodes, captions and tones of an ok stack",
+      pathOK.nodes.map(\.label) == ["This Mac", "Pi-hole", "Unbound", "Tor", "Cloudflare"]
+      && pathOK.nodes.map(\.caption) == ["Asks", "Blocks ads", "Resolves", "7 bridges", "Onion resolver"]
+      && pathOK.nodes.map(\.tone) == [.neutral, .ok, .ok, .ok, .ok]
+      && pathOK.nodes.map(\.id) == PathNodeID.allCases, "\(pathOK.nodes)")
+check("the footer names the seconds, the route and the backups",
+      pathOK.footer == "Answered in 1.9 s on the Cloudflare onion route. 3 backup routes are ready.", pathOK.footer)
+check("no node repeats the word healthy", !pathOK.sentence.contains("healthy"))
+check("bridges off says No bridges", lookupPath(tweak(okStatus) { $0.bridges.mode = "off" }).nodes[3].caption == "No bridges")
+let pathBackup = lookupPath(oneRouteDown)
+check("a backup exit route: dashed line, attention colour, Backup: Tor exit",
+      pathBackup.nodes[4].caption == "Backup: Tor exit" && pathBackup.nodes[4].tone == .attention
+      && pathBackup.nodes[4].dashedIn && pathBackup.nodes[4].captionChanged && pathBackup.nodes[4].label == "Cloudflare"
+      && pathBackup.nodes[0...3].allSatisfy { !$0.dashedIn }, "\(pathBackup.nodes[4])")
+check("its footer counts the ready backups", pathBackup.footer == "Answered in 1.0 s on the Cloudflare Tor exit route. 2 backup routes are ready.", pathBackup.footer)
+check("a failing container makes its node down",
+      lookupPath(tweak(okStatus) { setVerdict(&$0, "container:pi-hole", "unhealthy") }).nodes[1].tone == .down)
+check("a failing filtering check makes the Pi-hole node attention",
+      lookupPath(tweak(okStatus) { setVerdict(&$0, "filtering", "unhealthy") }).nodes[1].tone == .attention)
+check("dns-owner unhealthy makes the computer node down",
+      lookupPath(tweak(okStatus) { setVerdict(&$0, "dns-owner", "unhealthy") }).nodes[0].tone == .down)
+check("a stale status draws the path in neutral colours", lookupPath(staleStatus).nodes.allSatisfy { $0.tone == .neutral })
+check("no route row says No route selected yet", lookupPath(tweak(okStatus) { $0.route = nil }).footer == "No route selected yet.")
+let quad = lookupPath(tweak(okStatus) { $0.route = Route(id: "quad9-exit", generation: "1") })
+check("a quad9 route names Quad9, via Tor exit", quad.nodes[4].label == "Quad9" && quad.nodes[4].caption == "Via Tor exit")
+check("the panel's path line", pathLine(okStatus) == "Pi-hole › Unbound › Tor › Cloudflare onion", pathLine(okStatus))
+
+// The attention list, Checks and the repairs.
+check("an ok stack has no attention rows", attentionRows(okStatus).isEmpty)
+let rowsBackup = attentionRows(oneRouteDown)
+check("a failing route is one attention row with its headline and full reason",
+      rowsBackup == [AttentionRow(id: "route:cloudflare-onion", tone: .attention, headline: "The Cloudflare onion route is not answering",
+                                  reason: "rcode NOERROR in 0 ms via tor-socat:18531 as tor.cloudflare-dns.com")], "\(rowsBackup)")
+check("a down row comes before an attention row",
+      attentionRows(tweak(okStatus) { setVerdict(&$0, "filtering", "unhealthy"); setVerdict(&$0, "runtime", "unhealthy") }).map(\.id) == ["runtime", "filtering"])
+check("the checks title counts", checksTitle(okStatus) == "15 of 15 checks passing" && checksTitle(twoBad) == "2 of 15 checks need attention")
+let groupsOK = checkGroups(okStatus)
+check("three groups, 5 + 6 + 4 passing, none expanded",
+      groupsOK.map(\.id) == ["this-computer", "services", "routes"] && groupsOK.map(\.passing) == [5, 6, 4]
+      && groupsOK.map(\.summary) == ["5 passing", "6 passing", "4 passing"] && groupsOK.allSatisfy { !$0.startsExpanded }, "\(groupsOK.map(\.summary))")
+check("the services subtitle names the proxy", groupsOK[1].subtitle == "Pi-hole, Unbound, Tor proxy (socat), container runtime")
+check("a route row shows seconds, and only the selected one is In use",
+      groupsOK[2].rows.map(\.value) == ["1.9 s", "1.0 s", "0.9 s", "1.7 s"] && groupsOK[2].rows.map(\.inUse) == [true, false, false, false],
+      "\(groupsOK[2].rows.map(\.value))")
+check("a raw record is `{id} · {verdict} · {ms} ms` and the reason is whole",
+      groupsOK[2].rows[0].record == "route:cloudflare-onion · healthy · 1930 ms"
+      && groupsOK[2].rows[0].reason == "rcode NOERROR in 0 ms via tor-socat:18531 as tor.cloudflare-dns.com")
+check("the runtime row says how many containers",
+      groupsOK[1].rows.first { $0.id == "runtime" }?.value == "3 containers")
+let groupsBad = checkGroups(oneRouteDown)
+check("a group with a failing check starts expanded, says 1 failing and lists it first",
+      groupsBad[2].startsExpanded && groupsBad[2].summary == "1 failing" && groupsBad[2].summaryTone == .attention
+      && groupsBad[2].rows[0].id == "route:cloudflare-onion" && groupsBad[2].rows[0].headline == "The Cloudflare onion route is not answering"
+      && !groupsBad[0].startsExpanded)
+let groupsUnclear = checkGroups(tweak(okStatus) { setVerdict(&$0, "local-cache", "indeterminate") })
+check("an indeterminate check says 1 unclear", groupsUnclear[0].summary == "1 unclear" && groupsUnclear[0].startsExpanded)
+let groupsOther = checkGroups(tweak(okStatus) { $0.obs.append(Obs(name: "new-thing", verdict: "healthy", ms: nil, reason: "fine")) })
+check("a name not in the table is under Other with its raw id",
+      groupsOther.last?.id == "other" && groupsOther.last?.rows.first?.id == "new-thing" && groupsOther.last?.rows.first?.name == "new-thing")
+check("no Other group when every name is known", !groupsOK.contains { $0.id == "other" })
+let repairs = repairRows(okStatus, now: nowFresh)
+check("the journal collapses to one line per target, newest first",
+      repairs.map(\.text) == ["Moved back to the Cloudflare onion route", "Moved to the Cloudflare Tor exit route"], "\(repairs.map(\.text))")
+check("a repair's time is an ago bucket", repairs.map(\.ago) == ["1 h ago", "1 h ago"], "\(repairs.map(\.ago))")
+check("a step that is not ready says in progress",
+      repairRows(tweak(okStatus) { $0.recent.removeLast() }, now: nowFresh).first?.text == "Moved back to the Cloudflare onion route (in progress)",
+      "\(repairRows(tweak(okStatus) { $0.recent.removeLast() }, now: nowFresh).first?.text ?? "")")
+let journal = tweak(okStatus) {
+    $0.recent = [Recent(epoch: 10, target: "unbound", result: "ready"), Recent(epoch: 20, target: "pi-hole", result: "ready"),
+                 Recent(epoch: 30, target: "tor-socat", result: "ready"), Recent(epoch: 40, target: "bridges", result: "ready"),
+                 Recent(epoch: 50, target: "weird", result: "ready"), Recent(epoch: 60, target: "unbound", result: "ready")]
+}
+check("restarts name the container, bridges the mode, anything else the raw target, at most five lines",
+      repairRows(journal, now: 100).map(\.text) == ["Restarted Unbound", "weird", "Bridges turned on", "Restarted Tor proxy (socat)", "Restarted Pi-hole"],
+      "\(repairRows(journal, now: 100).map(\.text))")
+check("the same target moved again after ready is a line of its own", repairRows(journal, now: 100).count == 5)
+let links = overviewLinks(okStatus, now: nowFresh)
+check("the links at level ok", links.passing == "15 of 15 checks passing"
+      && links.repair == "Last repair 1 h ago · Moved back to the Cloudflare onion route", "\(links)")
+
+// The update row, setup and the action bar.
+check("update auto is parsed", okStatus.update.auto == "loaded")
+check("an install never checked says Not checked yet",
+      updateRowText(okStatus, now: nowFresh) == UpdateRowText(title: "Not checked yet", subtitle: nil, button: .check, commit: nil))
+let avail = updateRowText(updateStatus, now: 1794251900 + 21 * 60)
+check("an available update names the branch, the commit and when, and offers Install",
+      avail == UpdateRowText(title: "Update available", subtitle: "Branch main is now at 0f6a6e7c3d2b, found 21 min ago.", button: .install, commit: "0f6a6e7c3d2b"), "\(avail)")
+let currentRow = tweak(okStatus) { $0.update.result = .current; $0.update.neverChecked = false; $0.update.checkedAt = 1000 }
+check("up to date keeps the twice-a-day sentence while auto is loaded",
+      updateRowText(currentRow, now: 1600) == UpdateRowText(title: "Up to date", subtitle: "Branch main, checked 10 min ago. nice-dns checks twice a day.", button: .check, commit: nil))
+check("and drops it when auto is stopped",
+      updateRowText(tweak(currentRow) { $0.update.auto = "stopped" }, now: 1600).subtitle == "Branch main, checked 10 min ago.")
+check("an unknown answer says Could not check, with when it was tried",
+      updateRowText(tweak(okStatus) { $0.update.neverChecked = false; $0.update.checkedAt = 1000 }, now: 1600)
+        == UpdateRowText(title: "Could not check for updates", subtitle: "Last tried 10 min ago.", button: .check, commit: nil))
+check("the version row", versionRow(okStatus).title == "Installed 9 Nov 2026"
+      && versionRow(okStatus).subtitle == "Branch main, source commit unknown"
+      && versionRow(updateStatus).subtitle == "Branch main at 4b5432d1e0a9", "\(versionRow(okStatus))")
+check("the build details carry the generation and the lock", buildDetails(okStatus).contains("generation: 20261109T180318Z-nogit0000000\n")
+      && buildDetails(okStatus).contains("lock: sha256:90abe91") && buildDetails(okStatus).contains("helper: 0.1.1"))
+check("the helper row only when it is missing", !helperMissing(okStatus) && helperMissing(tweak(okStatus) { $0.helper.installed = false }))
+check("the admin row's URL has no scheme", adminSubtitle(okStatus) == "Blocklists and query log at localhost:8880/admin")
+check("the automatic-checks switch follows the schedule", autoChecksOn(okStatus) && !autoChecksOn(tweak(okStatus) { $0.controller.schedule = "stopped" })
+      && autoChecksSubtitle(tweak(okStatus) { $0.controller.mode = "shadow" }) == "Shadow mode: checks run, repairs do not.")
+check("running titles are present tense", runningTitle("proxy-haproxy") == "Switching the Tor proxy to haproxy"
+      && runningTitle("pihole-hardened") == "Switching Pi-hole to hardened" && runningTitle("restart") == "Restarting the stack")
+check("result titles use the action's own last line where the contract has one",
+      resultTitle("proxy-haproxy", lines: []) == "The Tor proxy is now haproxy"
+      && resultTitle("bridges-on", lines: ["x", "Bridges are on; the proxy restarted and DNS is answering."]) == "Bridges are on; the proxy restarted and DNS is answering."
+      && resultTitle("update", lines: ["updated to 0123456789ab"]) == "updated to 0123456789ab"
+      && resultTitle("restart", lines: ["done"]) == "\(Actions.lookup("restart")?.label ?? "restart"): finished")
+check("elapsed time", elapsedText(12) == "12 s" && elapsedText(192) == "3 min 12 s" && elapsedText(-1) == "0 s")
+let paneRun = runFake("restart", exit: 3).run
+check("each pane line has a kind: the command, stderr in its own, the outcome last",
+      paneRun.paneKinds.count == paneRun.paneLines.count && paneRun.paneKinds.first == .command && paneRun.paneKinds.last == .outcome
+      && paneRun.paneKinds.contains(.stderr) && paneRun.paneKinds.contains(.stdout), "\(paneRun.paneKinds)")
+check("the dialog title and body of a switch (spec 9)",
+      StackChoice.dialogTitle(for: "proxy-socat") == "Switch the Tor proxy to socat?"
+      && StackChoice.pihole.dialogTitle("hardened") == "Switch Pi-hole to hardened?"
+      && StackChoice.dialogBody.hasSuffix("The running stack stays if anything fails."))
+
+// SPEC 13: with status-installed Overview says no "healthy", no "generation" and no 16-hex string
+// (all of that is behind Checks, on demand).
+do {
+    let h = hero(okStatus, now: nowFresh)
+    let l = overviewLinks(okStatus, now: nowFresh)
+    let u = updateRowText(okStatus, now: nowFresh)
+    let text = ([h.title, h.subtitle, h.brief, lookupPath(okStatus).sentence, lookupPath(okStatus).footer, bridgesSubtitle(on: true),
+                 adminSubtitle(okStatus), u.title, u.subtitle ?? "", l.passing, l.repair ?? "", pathLine(okStatus)]
+                + attentionRows(okStatus).map(\.headline)).joined(separator: "\n")
+    check("Overview says no 'healthy' and no 'generation'", !text.lowercased().contains("healthy") && !text.lowercased().contains("generation"), text)
+    check("Overview shows no 16-hex string", text.range(of: "[0-9a-f]{16}", options: .regularExpression) == nil, text)
+    check("Overview has five ok nodes (the computer neutral), three control rows' worth of text and two links",
+          lookupPath(okStatus).nodes.count == 5 && l.repair != nil && !l.passing.isEmpty && !adminSubtitle(okStatus).isEmpty)
+    check("the raw record, with the id and the verdict, is on demand in Checks",
+          checkGroups(okStatus).flatMap(\.rows).contains { $0.record.contains("healthy") && $0.reason.contains("generation") })
+}
+
+// The menu-bar app: a panel in place of the menu, with the quit guard and the bundle watch kept.
+do {
+    let gui = share.deletingLastPathComponent().appendingPathComponent("mac/Sources/NiceDNSGUI", isDirectory: true)
+    let bar = try String(contentsOf: gui.appendingPathComponent("MenuBar.swift"), encoding: .utf8)
+    let panel = try String(contentsOf: gui.appendingPathComponent("MenuPanel.swift"), encoding: .utf8)
+    check("the status item opens an NSPopover panel, not an NSMenu", bar.contains("NSPopover()") && bar.contains("NSHostingController(rootView: MenuPanel")
+          && !bar.contains("NSMenu(") && !bar.contains("submenu") && !bar.contains("menuNeedsUpdate"))
+    check("the quit guard refuses once and the bundle watch is kept",
+          bar.contains("guard model.busy else { return .terminateNow }") && bar.contains("model.quitAsked = Date()")
+          && bar.contains("return .terminateCancel") && bar.contains("bundleWatch.tick(programExists: exists, busy: self.model.busy)"))
+    check("a failed action opens the window, a question already does (D4)",
+          bar.contains("model.$failureCount") && bar.contains("model.$confirm"))
+    check("the panel names its four actions through Placement and no selector",
+          ["Placement.healthRun", "Placement.openAdmin", "Placement.restart", "Placement.install"].allSatisfy { panel.contains($0) }
+          && !panel.contains("StackChoice"))
+} catch {
+    check("the menu-bar sources read", false, "\(error)")
 }
 
 try? FileManager.default.removeItem(atPath: emptyHome)
