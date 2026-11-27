@@ -374,7 +374,7 @@ final class AppModel: ObservableObject {
         paneElapsed = Int(Date().timeIntervalSince(paneStarted ?? Date()))
         paneResult = r.said ?? ""
         paneOK = r.end.map { succeeded(id: r.id, end: $0) } ?? false
-        paneResultTitle = resultTitle(r.id, lines: r.outputLines)
+        paneResultTitle = resultTitle(r.id, lines: r.lastStdoutLine.map { [$0] } ?? [])
         paneDetail = paneOK ? paneResult : (StackChoice.failedNotice(for: r.id, said: paneResult) ?? paneResult)
         // A failed switch puts its selector back now; one that worked waits for the read.
         switches.ended(r.id, succeeded: paneOK)

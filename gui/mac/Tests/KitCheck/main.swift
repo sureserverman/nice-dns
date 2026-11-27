@@ -429,7 +429,9 @@ for (id, words) in [("proxy-haproxy", "switch proxy haproxy"), ("proxy-socat", "
                     ("pihole-standard", "switch pihole standard"), ("pihole-hardened", "switch pihole hardened")] {
     let (rec, run) = runFake(id)
     check("action \(id) runs `nice-dns \(words)` and exits 0",
-          rec == words && run.exitStatus == 0 && run.paneText.contains("Switched: ") && succeeded(id: id, end: run.end!),
+          rec == words && run.exitStatus == 0 && run.paneText.contains("Switched: ") && succeeded(id: id, end: run.end!)
+            // The answer is stdout's last line, though the fake writes stderr after it.
+            && resultTitle(id, lines: run.lastStdoutLine.map { [$0] } ?? []).hasPrefix("Switched: "),
           "recorded '\(rec)', exit \(run.exitStatus)")
 }
 let (_, sw3) = runFake("proxy-socat", exit: 3)

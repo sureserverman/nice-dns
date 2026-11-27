@@ -81,6 +81,9 @@ public final class ActionRun {
     /// What each `paneLines` entry is, so the drawer can colour it.
     public private(set) var paneKinds: [PaneKind] = []
     public private(set) var outputLines: [String] = []
+    /// stdout's last line that says something: the action's answer
+    /// (docs/cli-contract.md). stderr is read apart and can land after it.
+    public private(set) var lastStdoutLine: String?
     public private(set) var end: CommandEvent?
     private var running: RunningCommand?
 
@@ -121,6 +124,7 @@ public final class ActionRun {
                     let shown = text.split(separator: "\r", omittingEmptySubsequences: true).last.map(String.init) ?? ""
                     outputLines.append(shown)
                     if outputLines.count > ActionRun.keep { outputLines.removeFirst() }
+                    if stream == .stdout && !shown.trimmingCharacters(in: .whitespaces).isEmpty { lastStdoutLine = shown }
                     appendPane(shown, stream == .stderr ? .stderr : .stdout)
                     onChange(self)
                 default:

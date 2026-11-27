@@ -19,5 +19,7 @@ if [ "$*" = "update --check" ] && [ "$code" = 10 ]; then echo "available 0123456
 elif [ "${1:-}" = switch ] && [ "$code" = 0 ]; then
   # switch's answer (docs/cli-contract.md).
   if [ "${2:-}" = proxy ]; then echo "Switched: the proxy is now tor-${3:-}, and DNS is answering."; else echo "Switched: Pi-hole is now the ${3:-} one, and DNS is answering."; fi
+  # A stderr note after the answer: the answer is still stdout's last line.
+  sleep 0.2; echo "fake nice-dns: a note after the answer" >&2
 else echo "fake nice-dns: done"; fi
 exit "$code"

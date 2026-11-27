@@ -60,6 +60,9 @@ pub struct LogPane {
     buffer: gtk::TextBuffer,
     view: gtk::TextView,
     lines: std::cell::RefCell<Vec<String>>,
+    /// stdout's last line that says something: an action's answer
+    /// (docs/cli-contract.md). stderr is read apart and can land after it.
+    last_stdout: std::cell::RefCell<Option<String>>,
 }
 
 impl LogPane {
@@ -113,7 +116,7 @@ impl LogPane {
         widget.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         widget.append(&head);
         widget.append(&scroller);
-        let pane = LogPane { widget, buffer, view, lines: Default::default() };
+        let pane = LogPane { widget, buffer, view, lines: Default::default(), last_stdout: Default::default() };
         pane.restyle(false);
         pane
     }
@@ -129,6 +132,7 @@ impl LogPane {
     /// A new action: the old output goes, the command line is shown.
     pub fn start(&self, argv: &[String]) {
         self.lines.borrow_mut().clear();
+        self.last_stdout.borrow_mut().take();
         self.buffer.set_text("");
         self.append(&format!("$ {}", argv.join(" ")), None);
     }
@@ -151,12 +155,20 @@ impl LogPane {
         }
         lines.push(text.to_string());
         drop(lines);
+        if stream == Stream::Stdout && !text.trim().is_empty() {
+            *self.last_stdout.borrow_mut() = Some(text.to_string());
+        }
         self.append(text, tag);
     }
 
     /// The latest output line that says something.
     pub fn last_line(&self) -> Option<String> {
         self.lines.borrow().iter().rev().find(|l| !l.trim().is_empty()).cloned()
+    }
+
+    /// The action's answer: the last line on stdout that says something.
+    pub fn last_stdout_line(&self) -> Option<String> {
+        self.last_stdout.borrow().clone()
     }
 
     /// The last output line starting with `prefix`.

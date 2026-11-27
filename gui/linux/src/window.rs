@@ -706,7 +706,7 @@ impl Ui {
         // The bar says how it ended: a result, or "did not finish" with the
         // drawer open (a failure is no toast).
         if log_pane::succeeded(id, &end) {
-            let title = action_bar::result_title(id, self.pane.last_line().as_deref());
+            let title = action_bar::result_title(id, self.pane.last_stdout_line().as_deref());
             self.bar.finished(true, &title, &format!("Finished in {}. {said}", self.bar.took()));
         } else {
             self.bar.finished(false, &action_bar::failed_title(id), &said);
