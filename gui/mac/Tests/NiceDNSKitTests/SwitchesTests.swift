@@ -36,9 +36,9 @@ final class SwitchesTests: XCTestCase {
     }
 
     func testTheQuestionForEachChoice() {
-        let tail = " The stack is reinstalled from the kept source. This takes a few minutes and DNS stops briefly."
-        XCTAssertEqual(StackChoice.question(for: "proxy-haproxy"), "Switch the proxy to haproxy?" + tail)
-        XCTAssertEqual(StackChoice.question(for: "proxy-socat"), "Switch the proxy to socat?" + tail)
+        let tail = " The stack is rebuilt from the kept source. This takes a few minutes and DNS stops briefly. The running stack stays if anything fails."
+        XCTAssertEqual(StackChoice.question(for: "proxy-haproxy"), "Switch the Tor proxy to haproxy?" + tail)
+        XCTAssertEqual(StackChoice.question(for: "proxy-socat"), "Switch the Tor proxy to socat?" + tail)
         XCTAssertEqual(StackChoice.question(for: "pihole-standard"), "Switch Pi-hole to standard?" + tail)
         XCTAssertEqual(StackChoice.question(for: "pihole-hardened"), "Switch Pi-hole to hardened?" + tail)
         XCTAssertNil(StackChoice.question(for: "restart"))

@@ -1,0 +1,19 @@
+id	group	name	path_node	level_when_unhealthy	headline_when_unhealthy	value_when_healthy	notes
+dns-owner	this-computer	System DNS uses nice-dns	computer	down	This computer is not using nice-dns	reason, shortened	Platform adapter: resolv.conf on Linux, networksetup and scutil on macOS.
+local-service	this-computer	Pi-hole answers on this computer	pihole	down	Pi-hole is not answering		
+filtering	this-computer	Ads are blocked	pihole	attention	Ads are not being blocked		Probe: doubleclick.net is sinkholed to 0.0.0.0.
+local-cache	this-computer	Cached answers work	pihole	attention	Pi-hole is not answering from its cache		A cached answer is not upstream health; never use it for the hero.
+install-drift	this-computer	Install matches its record		attention	The install no longer matches its record		Linux only. Unhealthy reasons start with install-security-drift: show the reason in full.
+runtime	services	Container runtime		down	The containers are not running	count of containers from the reason	
+container:pi-hole	services	Pi-hole	pihole	down	Pi-hole is not running		
+container:unbound	services	Unbound	unbound	down	Unbound is not running		
+container:tor-socat	services	Tor proxy (socat)	tor	down	The Tor proxy is not running		Only one of tor-socat and tor-haproxy is present.
+container:tor-haproxy	services	Tor proxy (HAProxy)	tor	down	The Tor proxy is not running		
+proxy	services	Tor proxy generation	tor	attention	The Tor proxy could not be read		A hash that changes when the proxy restarts; indeterminate when unreadable.
+unbound	services	Unbound answers	unbound	down	Unbound is not answering		Unhealthy reasons start with control: or route:.
+route:cloudflare-onion	routes	Cloudflare onion	resolver	attention	The Cloudflare onion route is not answering	obs ms as seconds	The route the controller promotes to once it is sustained.
+route:cloudflare-exit	routes	Cloudflare Tor exit	resolver	attention	The Cloudflare Tor exit route is not answering	obs ms as seconds	The seeded route (ND_ROUTE_SEED), usable while the onion is cold.
+route:quad9-exit	routes	Quad9 Tor exit	resolver	attention	The Quad9 Tor exit route is not answering	obs ms as seconds	
+route:cloudflare-legacy	routes	Cloudflare onion, legacy port	resolver	attention	The legacy Cloudflare route is not answering	obs ms as seconds	Class compat in routes/providers.tsv.
+route-table	routes	Route table	resolver	down	The route table cannot be read		Printed only when routes/providers.tsv cannot be read; then no route:<id> rows exist.
+*	other	the raw id		attention	the raw id, then: check failed		Any name not listed. The contract lets new observations appear; never drop them.

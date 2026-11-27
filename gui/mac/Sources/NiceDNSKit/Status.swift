@@ -121,6 +121,8 @@ public struct Update: Equatable {
     public var neverChecked = false
     public var checkedAt: UInt64?
     public var remoteCommit: String?
+    /// `update auto`: `loaded` or `stopped`, the twice-a-day check's schedule.
+    public var auto: String?
 }
 
 public struct Helper: Equatable {
@@ -139,6 +141,12 @@ public struct Recent: Equatable {
     public var epoch: UInt64?
     public var target: String
     public var result: String
+
+    public init(epoch: UInt64?, target: String, result: String) {
+        self.epoch = epoch
+        self.target = target
+        self.result = result
+    }
 }
 
 /// A `<group> unreadable <reason>` row.
@@ -231,6 +239,7 @@ public struct Status: Equatable {
                     s.update.neverChecked = f.count > 3 && f[3] == "never-checked"
                 case "checked_at": s.update.checkedAt = UInt64(val)
                 case "remote_commit": s.update.remoteCommit = val
+                case "auto": s.update.auto = val
                 default: break
                 }
             case "helper":

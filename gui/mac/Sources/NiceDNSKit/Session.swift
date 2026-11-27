@@ -70,32 +70,23 @@ public func updateRow(_ u: Update, now: UInt64) -> String {
     return line + (u.checkedAt.map { " (checked \(ago($0, now: now)))" } ?? "")
 }
 
-/// The menu-bar glyph's colour.
+/// The menu-bar glyph's colour: a view of `Level` (the symbol is
+/// `Level.menuSymbol`, so the state does not rest on colour alone).
 public enum Glyph: String, Equatable {
     case grey, green, amber, red
 
-    /// Grey: not installed. Amber: the controller is stale (its verdict is
-    /// old), its verdict is not OK, an observation is indeterminate, or a file
-    /// status reads cannot be read. Red: the status cannot be shown, the
-    /// controller says FAIL, or an observation is unhealthy. Green otherwise.
+    /// `Level.glyph` of the view: grey for not installed and waiting, amber
+    /// for attention and stale, red for down and for a status that cannot be
+    /// shown, green for ok.
     public static func of(_ view: StatusView) -> Glyph {
-        switch view {
-        case .notInstalled: return .grey
-        case .error: return .red
-        case .unreadable(let s): return of(s) == .red ? .red : .amber
-        case .installed(let s): return of(s)
-        }
+        Level.of(view).glyph
     }
+}
 
-    static func of(_ s: Status) -> Glyph {
-        // A stale pass's verdict is old (the window greys it): stale is amber.
-        // A missing or unreadable `stale` row is not read as stale.
-        if s.controller.stale.map({ $0 != .no }) ?? false { return .amber }
-        let verdict = s.controller.verdict ?? "unknown"
-        if verdict.hasPrefix("FAIL") || s.obs.contains(where: { $0.verdict == "unhealthy" }) { return .red }
-        if verdict != "OK" || s.obs.contains(where: { $0.verdict != "healthy" }) { return .amber }
-        return .green
-    }
+/// What a line of an action's pane is: the command line, a line of the
+/// command's stdout or stderr, or the outcome said under them.
+public enum PaneKind: Equatable {
+    case command, stdout, stderr, outcome
 }
 
 /// One action, run as a subprocess and streamed into a pane: the command
@@ -104,6 +95,8 @@ public enum Glyph: String, Equatable {
 public final class ActionRun {
     public let id: String
     public private(set) var paneLines: [String] = []
+    /// What each `paneLines` entry is, so the drawer can colour it.
+    public private(set) var paneKinds: [PaneKind] = []
     public private(set) var outputLines: [String] = []
     public private(set) var end: CommandEvent?
     private var running: RunningCommand?
@@ -132,20 +125,20 @@ public final class ActionRun {
             }
             argv = v
         } catch {
-            paneLines.append(label)
+            appendPane(label, .command)
             return finish(.failed("\(error)"), queue, onChange, later: true)
         }
-        paneLines.append("$ " + argv.joined(separator: " "))
+        appendPane("$ " + argv.joined(separator: " "), .command)
         do {
             running = try CommandRunner.spawn(argv, environment: CommandPaths.childEnvironment(environment), queue: queue) { [self] ev in
                 switch ev {
-                case .line(_, let text):
+                case .line(let stream, let text):
                     guard end == nil else { return }
                     // A progress bar redraws with \r: keep the last state of the line.
                     let shown = text.split(separator: "\r", omittingEmptySubsequences: true).last.map(String.init) ?? ""
                     outputLines.append(shown)
                     if outputLines.count > ActionRun.keep { outputLines.removeFirst() }
-                    paneLines.append(shown)
+                    appendPane(shown, stream == .stderr ? .stderr : .stdout)
                     onChange(self)
                 default:
                     finish(ev, queue, onChange, later: false)
@@ -171,6 +164,11 @@ public final class ActionRun {
         }
     }
 
+    private func appendPane(_ text: String, _ kind: PaneKind) {
+        paneLines.append(text)
+        paneKinds.append(kind)
+    }
+
     public var paneText: String { paneLines.map { $0 + "\n" }.joined() }
 
     /// `later`: called on the caller's thread before anything ran, so the
@@ -179,7 +177,7 @@ public final class ActionRun {
         let deliver = { [self] in
             guard end == nil else { return }
             end = ev
-            paneLines.append(outcome(id: id, end: ev, lines: outputLines))
+            appendPane(outcome(id: id, end: ev, lines: outputLines), .outcome)
             running = nil
             onChange(self)
         }

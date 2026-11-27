@@ -94,8 +94,8 @@ public struct StackChoice: Equatable {
     public let title: String
     public let choices: [String]
 
-    public static let proxy = StackChoice(kind: .proxy, title: "Proxy", choices: ["haproxy", "socat"])
-    public static let pihole = StackChoice(kind: .pihole, title: "Pi-hole", choices: ["standard", "hardened"])
+    public static let proxy = StackChoice(kind: .proxy, title: "Tor proxy", choices: ["haproxy", "socat"])
+    public static let pihole = StackChoice(kind: .pihole, title: "Pi-hole image", choices: ["standard", "hardened"])
     public static let all = [proxy, pihole]
 
     public static func of(_ kind: Kind) -> StackChoice {
@@ -127,14 +127,36 @@ public struct StackChoice: Equatable {
         return v.flatMap { choices.contains($0) ? $0 : nil }
     }
 
-    /// The question asked before `choice` is switched to (DEC-018).
-    public func question(_ choice: String) -> String {
-        let head: String
+    /// The row's subtitle in Setup.
+    public var subtitle: String {
         switch kind {
-        case .proxy: head = "Switch the proxy to \(choice)?"
-        case .pihole: head = "Switch Pi-hole to \(choice)?"
+        case .proxy: return "HAProxy is the default. socat is lighter."
+        case .pihole: return "Hardened is a smaller build: about 109 MB instead of 700 MB."
         }
-        return head + " The stack is reinstalled from the kept source. This takes a few minutes and DNS stops briefly."
+    }
+
+    /// The footer under both selectors.
+    public static let footer = "Changing either one rebuilds the stack: a few minutes, with a short DNS gap. The running stack stays if anything fails."
+
+    /// The dialog's title before `choice` is switched to (DEC-018).
+    public func dialogTitle(_ choice: String) -> String {
+        switch kind {
+        case .proxy: return "Switch the Tor proxy to \(choice)?"
+        case .pihole: return "Switch Pi-hole to \(choice)?"
+        }
+    }
+
+    /// The dialog's body.
+    public static let dialogBody = "The stack is rebuilt from the kept source. This takes a few minutes and DNS stops briefly. The running stack stays if anything fails."
+
+    /// The question asked before `choice` is switched to: title, then body.
+    public func question(_ choice: String) -> String {
+        dialogTitle(choice) + " " + StackChoice.dialogBody
+    }
+
+    /// The dialog title for action `id`; nil when `id` is not a choice.
+    public static func dialogTitle(for id: String) -> String? {
+        choice(of: id).map { $0.selector.dialogTitle($0.choice) }
     }
 
     /// The question for action `id`; nil when `id` is not a choice.
