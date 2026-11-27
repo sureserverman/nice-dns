@@ -154,7 +154,7 @@ fn actions_one_at_a_time_the_controls_are_disabled_while_it_runs_and_back_after_
     let p = probe("restart", 3, None, true);
     assert_eq!(p.code, Some(0), "{}", p.out);
     let controls: u32 = field(p.at("before"), "controls").parse().unwrap();
-    assert!(controls >= 10, "{}", p.out);
+    assert!(controls >= 14, "{}", p.out);
     assert_eq!(field(p.at("before"), "disabled"), "0", "{}", p.out);
     assert_eq!(field(p.at("during"), "disabled"), controls.to_string(), "every control is disabled while it runs: {}", p.out);
     assert_eq!(field(p.at("after"), "disabled"), "0", "the controls come back after a failure: {}", p.out);
@@ -190,11 +190,12 @@ fn actions_a_check_that_finds_an_update_offers_to_install_it() {
 }
 
 #[test]
-fn actions_a_stale_controller_shows_the_label_and_greys_its_rows() {
+fn actions_a_stale_controller_says_so_in_the_level_and_dims_its_rows() {
     let p = probe("health-run", 0, Some("status-stale.tsv"), true);
     assert_eq!(p.code, Some(0), "{}", p.out);
     let before = p.at("before");
-    assert!(before.contains("stale=stale 942s"), "{before}");
+    assert!(before.contains("level=stale"), "{before}");
+    assert!(!before.contains("stale 942s"), "{before}");
     assert!(field(before, "greyed").parse::<u32>().unwrap() > 0, "{before}");
 }
 

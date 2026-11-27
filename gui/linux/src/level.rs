@@ -243,15 +243,6 @@ impl Level {
         }
     }
 
-    pub fn tint(self) -> Tint {
-        match self {
-            Level::Ok => Tint::Ok,
-            Level::Attention | Level::Stale => Tint::Attention,
-            Level::Down | Level::Error => Tint::Down,
-            Level::Waiting | Level::NotInstalled => Tint::Neutral,
-        }
-    }
-
     /// The results are old: the path is neutral and the rows are dimmed.
     pub fn old_results(self) -> bool {
         matches!(self, Level::Waiting | Level::Stale)

@@ -3,11 +3,11 @@
 
 
 mod actions;
-#[allow(dead_code)] // drawn by the window from step 2
 mod level;
 mod log_pane;
 mod model;
 mod runner;
+mod theme;
 mod window;
 
 use std::cell::{Cell, RefCell};
@@ -25,7 +25,7 @@ use libadwaita as adw;
 use model::View;
 
 const USAGE: &str =
-    "usage: nice-dns-gui [--check | --version | --screenshot <png> | --run-action <id> --exit | --probe <id>]";
+    "usage: nice-dns-gui [--check | --version | --screenshot <png> [--view overview|checks|setup] | --run-action <id> --exit | --probe <id>]";
 
 /// The status command's argv: `<nice-dns> status --tsv`, the command found
 /// as `runner::resolve` finds it (PATH first, then where the installer put it).
@@ -133,10 +133,11 @@ fn run_window() -> ExitCode {
     app.run_with_args::<&str>(&[])
 }
 
-/// `--screenshot <png>`: read the status once, show the window, render it
-/// into `png` and exit (0, or 1 with the reason on stderr). A hook for tests
-/// and proofs; it needs a display (Xvfb will do).
-fn run_screenshot(png: PathBuf) -> ExitCode {
+/// `--screenshot <png> [--view <name>]`: read the status once, show the
+/// window (on view `overview`, `checks` or `setup`), render it into `png` and
+/// exit (0, or 1 with the reason on stderr). A hook for tests and proofs; it
+/// needs a display (Xvfb will do).
+fn run_screenshot(png: PathBuf, view: Option<String>) -> ExitCode {
     if let Err(code) = display_or_exit() {
         return code;
     }
@@ -147,6 +148,9 @@ fn run_screenshot(png: PathBuf) -> ExitCode {
         let ui = window::Ui::new(app);
         let (page, status) = window::read_page();
         ui.show(page, status);
+        if let Some(v) = &view {
+            ui.select_view(v);
+        }
         ui.window.present();
         let (app, c, png) = (app.clone(), Rc::clone(&c), png.clone());
         // Give the window a frame or two to lay out before rendering it.
@@ -169,7 +173,9 @@ fn probe_pick(ui: Rc<window::Ui>, app: adw::Application, c: Rc<Cell<i32>>, id: S
     if id == "bridges-on" || id == "bridges-off" {
         walk(ui.window.upcast_ref(), &mut |w| {
             if let Some(sw) = w.downcast_ref::<adw::SwitchRow>() {
-                sw.set_active(id == "bridges-on");
+                if sw.widget_name() == "bridges" {
+                    sw.set_active(id == "bridges-on");
+                }
             }
         });
     } else if let Some((sel, idx)) = window::selector_for(&id) {
@@ -356,30 +362,28 @@ fn walk(w: &gtk4::Widget, f: &mut dyn FnMut(&gtk4::Widget)) {
     }
 }
 
-/// What a test reads off the window: the controls (action buttons and the
-/// bridges switch) and how many are disabled, the switch, the open dialog, the
-/// stale labels and how many rows are greyed.
+/// What a test reads off the window: the controls (action buttons, the
+/// bridges and automatic-checks switches and the selectors) and how many are
+/// disabled, the bridges switch, the open dialog, the status level and how
+/// many parts are dimmed (old results).
 fn probe_report(ui: &window::Ui, when: &str) -> String {
     let (mut controls, mut disabled, mut greyed) = (0, 0, 0);
     let mut switch = "none".to_string();
-    let mut stale = Vec::new();
     walk(ui.window.upcast_ref(), &mut |w| {
         let name = w.widget_name();
-        if name == "bridges" || name.starts_with("selector-") || actions::lookup(&name).is_some() {
+        if name == "bridges" || name == "auto-checks" || name.starts_with("selector-") || actions::lookup(&name).is_some() {
             controls += 1;
             if !w.is_sensitive() {
                 disabled += 1;
             }
         }
         if let Some(sw) = w.downcast_ref::<adw::SwitchRow>() {
-            switch = if sw.is_active() { "on" } else { "off" }.into();
-        } else if w.is::<adw::ActionRow>() && !w.is_sensitive() {
-            greyed += 1;
-        }
-        if let Some(l) = w.downcast_ref::<gtk4::Label>() {
-            if l.has_css_class("warning") && l.text().starts_with("stale") {
-                stale.push(l.text().to_string());
+            if name == "bridges" {
+                switch = if sw.is_active() { "on" } else { "off" }.into();
             }
+        }
+        if w.has_css_class("nd-dim") {
+            greyed += 1;
         }
     });
     let (proxy, pihole) = (selector_value(ui, "proxy"), selector_value(ui, "pihole"));
@@ -387,8 +391,8 @@ fn probe_report(ui: &window::Ui, when: &str) -> String {
     let dialog = alert.as_ref().and_then(|d| d.heading()).map_or("none".to_string(), |h| h.replace(' ', "_"));
     let body = alert.as_ref().map_or(String::new(), |d| d.body().to_string());
     format!(
-        "{when}: controls={controls} disabled={disabled} switch={switch} proxy={proxy} pihole={pihole} greyed={greyed} stale={} dialog={dialog} page={} body={body}",
-        if stale.is_empty() { "none".into() } else { stale.join(",") },
+        "{when}: controls={controls} disabled={disabled} switch={switch} proxy={proxy} pihole={pihole} greyed={greyed} level={} dialog={dialog} page={} body={body}",
+        ui.level_summary(),
         ui.page_summary()
     )
 }
@@ -444,6 +448,10 @@ fn run_probe(id: String) -> ExitCode {
         let ui = window::Ui::new(app);
         let (page, status) = window::read_page();
         ui.show(page, status);
+        // The selectors are in Setup: a list only opens on a view that is shown.
+        if window::selector_for(&id).is_some() {
+            ui.select_view("setup");
+        }
         ui.window.present();
         let (app, c, id) = (app.clone(), Rc::clone(&c), id.clone());
         glib::timeout_add_local_once(Duration::from_millis(500), move || {
@@ -486,7 +494,10 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         ["--check"] => ExitCode::from(run_check()),
-        ["--screenshot", png] => run_screenshot(PathBuf::from(png)),
+        ["--screenshot", png] => run_screenshot(PathBuf::from(png), None),
+        ["--screenshot", png, "--view", view @ ("overview" | "checks" | "setup")] => {
+            run_screenshot(PathBuf::from(png), Some(view.to_string()))
+        }
         ["--run-action", id, "--exit"] => run_action(id.to_string()),
         // Like --run-action: only actions that run a command.
         ["--probe", id] if actions::lookup(id).and_then(|a| a.program).is_some() => run_probe(id.to_string()),
