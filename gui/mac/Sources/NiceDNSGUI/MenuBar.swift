@@ -1,13 +1,16 @@
-// The menu-bar item: a glyph coloured from the status, and a menu with the
-// actions, the bridges switch, the two selectors, Open window and Quit.
+// The menu-bar item: a symbol that varies by level (so the state does not
+// rest on colour alone), coloured from the status, that opens a panel (an
+// NSPopover hosting MenuPanel), and the window the panel's Open nice-dns and
+// every question or failure bring up.
 import AppKit
 import Combine
 import NiceDNSKit
 import SwiftUI
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
     let model = AppModel()
     private var item: NSStatusItem!
+    private var popover: NSPopover!
     private var window: NSWindow?
     private var watch: Set<AnyCancellable> = []
     private var bundleWatch = BundleWatch()
@@ -17,21 +20,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        let menu = NSMenu()
-        menu.delegate = self
-        item.menu = menu
+        item.button?.target = self
+        item.button?.action = #selector(togglePanel(_:))
+        popover = NSPopover()
+        popover.behavior = .transient
+        popover.delegate = self
+        let host = NSHostingController(rootView: MenuPanel(model: model, close: { [weak self] in self?.popover.performClose(nil) },
+                                                           openWindow: { [weak self] in self?.openWindow() }))
+        // The popover is as tall as the panel's content.
+        host.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = host
         model.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.drawGlyph() }
             .store(in: &watch)
-        // A question asked from the menu needs the window to be asked in.
+        // A question asked from the panel needs the window to be asked in.
         model.$confirm
             .receive(on: RunLoop.main)
             .sink { [weak self] c in if c != nil { self?.openWindow() } }
             .store(in: &watch)
+        // D4: an action started from the panel opens the window only when it
+        // needs a question (above) or fails; the failed bar and its output are there.
+        model.$failureCount
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.openWindow() }
+            .store(in: &watch)
         drawGlyph()
         // An accessory app has no main menu to carry key equivalents: ⌘1, ⌘2 and
-        // ⌘3 pick the window's views while it is the key window.
+        // ⌘3 pick the window's views while it is the key window, ⌘O and ⌘Q act
+        // while the panel is open.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in self?.handleKey(e) ?? e }
         model.startRefreshing()
         // An uninstall removes the bundle under the running app: quit then,
@@ -45,8 +63,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     private func handleKey(_ e: NSEvent) -> NSEvent? {
         guard e.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-              let ch = e.charactersIgnoringModifiers, let n = Int(ch), (1...ViewTab.allCases.count).contains(n),
-              window?.isKeyWindow == true, model.status != nil else { return e }
+              let ch = e.charactersIgnoringModifiers else { return e }
+        if popover.isShown {
+            switch ch {
+            case "o": popover.performClose(nil); openWindow(); return nil
+            case "q": popover.performClose(nil); NSApp.terminate(nil); return nil
+            default: return e
+            }
+        }
+        guard let n = Int(ch), (1...ViewTab.allCases.count).contains(n), window?.isKeyWindow == true, model.status != nil else { return e }
         model.view = ViewTab.allCases[n - 1]
         return nil
     }
@@ -65,94 +90,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         return .terminateCancel
     }
 
+    /// The status item: the symbol of the level, in its colour; the hero's title is
+    /// its tooltip and its accessibility description.
     private func drawGlyph() {
         let g = model.glyph
+        let title = model.hero.title
         let config = NSImage.SymbolConfiguration(paletteColors: [NSColor(g.color)])
-        let image = NSImage(systemSymbolName: "shield.lefthalf.filled", accessibilityDescription: "nice-dns: \(g.rawValue)")?
+        let image = NSImage(systemSymbolName: model.menuSymbol, accessibilityDescription: title)?
             .withSymbolConfiguration(config)
         item?.button?.image = image
-        item?.button?.toolTip = "nice-dns: \(summary)"
+        item?.button?.toolTip = title
+        item?.button?.setAccessibilityLabel(title)
     }
 
-    private var summary: String {
-        switch model.page {
-        case .loading: return "reading the status"
-        case .missing(let p): return "command not found at \(p)"
-        case .status(.notInstalled): return "not installed"
-        case .status(.error(let m)): return m
-        case .status(.unreadable): return "a file cannot be read"
-        case .status(.installed(let s)):
-            let stale = s.controller.stale.map { "\($0)" } ?? "unknown"
-            return "controller \(s.controller.verdict ?? "unknown"), \(stale)"
-        }
-    }
+    // MARK: The panel
 
-    // MARK: The menu, built each time it opens
-
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        menu.removeAllItems()
-        let head = NSMenuItem(title: "nice-dns: \(summary)", action: nil, keyEquivalent: "")
-        head.isEnabled = false
-        menu.addItem(head)
-        if model.status?.update.result == .available {
-            menu.addItem(entry("A different version is available…", Placement.update))
+    @objc private func togglePanel(_ sender: Any?) {
+        guard let button = item.button else { return }
+        if popover.isShown {
+            popover.performClose(sender)
+        } else {
+            // Fresh status on open, so the panel is not up to 5 s old.
+            model.refresh()
+            NSApp.activate(ignoringOtherApps: true)
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
         }
-        menu.addItem(.separator())
-        if model.installed {
-            let b = entry("Tor bridges", model.bridgesOn ? Placement.bridgesOff : Placement.bridgesOn)
-            b.state = model.bridgesOn ? .on : .off
-            menu.addItem(b)
-            for c in StackChoice.all {
-                menu.addItem(choiceItem(c))
-            }
-        }
-        if model.installed {
-            // A described stack: the plain buttons; every other row has its
-            // own place (Placement).
-            for id in [Placement.reinstall, Placement.restart, Placement.uninstall, Placement.updateCheck,
-                       Placement.healthStart, Placement.healthStop, Placement.healthRun, Placement.failures] {
-                if let a = Actions.lookup(id) { menu.addItem(entry(a.label + (a.needsConfirm ? "…" : ""), a.id)) }
-            }
-        } else if model.notInstalled && model.keptSource, let a = Actions.lookup(Placement.install) {
-            menu.addItem(entry(a.label, a.id))
-        }
-        menu.addItem(.separator())
-        let open = NSMenuItem(title: "Open window", action: #selector(openWindow), keyEquivalent: "o")
-        open.target = self
-        menu.addItem(open)
-        let quit = NSMenuItem(title: "Quit nice-dns", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        menu.addItem(quit)
-    }
-
-    private func entry(_ title: String, _ id: String) -> NSMenuItem {
-        let m = NSMenuItem(title: title, action: model.busy ? nil : #selector(choose(_:)), keyEquivalent: "")
-        m.target = self
-        m.representedObject = id
-        return m
-    }
-
-    /// A selector as a submenu of its two choices, the shown one checked.
-    /// Unknown when the status names neither: then a disabled item.
-    private func choiceItem(_ c: StackChoice) -> NSMenuItem {
-        guard let shown = model.shown(c) else {
-            return NSMenuItem(title: "\(c.title): unknown", action: nil, keyEquivalent: "")
-        }
-        let item = NSMenuItem(title: c.title, action: nil, keyEquivalent: "")
-        let sub = NSMenu(title: c.title)
-        for choice in c.choices {
-            let e = entry(choice, c.id(choice))
-            e.state = choice == shown ? .on : .off
-            sub.addItem(e)
-        }
-        item.submenu = sub
-        return item
-    }
-
-    @objc private func choose(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String else { return }
-        // The output is in the window: show it for every action.
-        openWindow()
-        model.request(id)
     }
 
     // MARK: The window
@@ -170,6 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             w.delegate = self
             window = w
         }
+        popover.performClose(nil)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
     }

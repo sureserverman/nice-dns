@@ -27,12 +27,15 @@ public struct Hero: Equatable {
     public var subtitle: String
     /// nil on the pages that have no controller to ask (not installed, error, loading).
     public var action: HeroAction?
+    /// The subtitle in the panel's narrow header: at level ok only "Checked {ago}."
+    public var brief: String
 
-    public init(level: Level, title: String, subtitle: String, action: HeroAction?) {
+    public init(level: Level, title: String, subtitle: String, action: HeroAction?, brief: String? = nil) {
         self.level = level
         self.title = title
         self.subtitle = subtitle
         self.action = action
+        self.brief = brief ?? subtitle
     }
 
     /// The hero while the first read is under way.
@@ -69,7 +72,8 @@ public func hero(_ s: Status, now: UInt64) -> Hero {
     switch level {
     case .ok:
         return Hero(level: level, title: "DNS is protected",
-                    subtitle: sentence("Every lookup leaves through Tor.", checked.map { "Checked \($0)." }), action: .runChecks)
+                    subtitle: sentence("Every lookup leaves through Tor.", checked.map { "Checked \($0)." }), action: .runChecks,
+                    brief: checked.map { "Checked \($0)." })
     case .attention:
         let bad = notHealthy(s)
         let onion = s.obs.first { $0.name == "route:cloudflare-onion" }
@@ -512,6 +516,9 @@ public func bridgesSubtitle(on: Bool) -> String {
     on ? "Hides Tor use from your internet provider. Switching restarts Tor, about a minute."
        : "Off. Your provider can see that Tor is in use. Switching restarts Tor, about a minute."
 }
+
+/// The cost line under the panel's bridges switch.
+public let bridgesCostLine = "Switching restarts Tor, about a minute"
 
 /// The switch row's tooltip.
 public func bridgesTooltip(_ s: Status, now: UInt64) -> String {

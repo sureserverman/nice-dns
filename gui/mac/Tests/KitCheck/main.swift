@@ -550,7 +550,7 @@ check("the hero symbols", Level.ok.heroSymbol == "checkmark.shield" && Level.att
 // The hero's copy (spec section 3).
 let heroOK = hero(okStatus, now: nowFresh)
 check("the ok hero", heroOK.title == "DNS is protected" && heroOK.subtitle == "Every lookup leaves through Tor. Checked just now."
-      && heroOK.action == .runChecks, "\(heroOK)")
+      && heroOK.action == .runChecks && heroOK.brief == "Checked just now.", "\(heroOK)")
 let heroBackup = hero(oneRouteDown, now: nowFresh)
 check("the backup-route hero", heroBackup.title == "DNS works, on a backup route"
       && heroBackup.subtitle == "The Cloudflare onion route is not answering. Lookups still leave through Tor.", "\(heroBackup)")
@@ -705,6 +705,42 @@ check("the dialog title and body of a switch (spec 9)",
       StackChoice.dialogTitle(for: "proxy-socat") == "Switch the Tor proxy to socat?"
       && StackChoice.pihole.dialogTitle("hardened") == "Switch Pi-hole to hardened?"
       && StackChoice.dialogBody.hasSuffix("The running stack stays if anything fails."))
+
+// SPEC 13: with status-installed Overview says no "healthy", no "generation" and no 16-hex string
+// (all of that is behind Checks, on demand).
+do {
+    let h = hero(okStatus, now: nowFresh)
+    let l = overviewLinks(okStatus, now: nowFresh)
+    let u = updateRowText(okStatus, now: nowFresh)
+    let text = ([h.title, h.subtitle, h.brief, lookupPath(okStatus).sentence, lookupPath(okStatus).footer, bridgesSubtitle(on: true),
+                 adminSubtitle(okStatus), u.title, u.subtitle ?? "", l.passing, l.repair ?? "", pathLine(okStatus)]
+                + attentionRows(okStatus).map(\.headline)).joined(separator: "\n")
+    check("Overview says no 'healthy' and no 'generation'", !text.lowercased().contains("healthy") && !text.lowercased().contains("generation"), text)
+    check("Overview shows no 16-hex string", text.range(of: "[0-9a-f]{16}", options: .regularExpression) == nil, text)
+    check("Overview has five ok nodes (the computer neutral), three control rows' worth of text and two links",
+          lookupPath(okStatus).nodes.count == 5 && l.repair != nil && !l.passing.isEmpty && !adminSubtitle(okStatus).isEmpty)
+    check("the raw record, with the id and the verdict, is on demand in Checks",
+          checkGroups(okStatus).flatMap(\.rows).contains { $0.record.contains("healthy") && $0.reason.contains("generation") })
+}
+
+// The menu-bar app: a panel in place of the menu, with the quit guard and the bundle watch kept.
+do {
+    let gui = share.deletingLastPathComponent().appendingPathComponent("mac/Sources/NiceDNSGUI", isDirectory: true)
+    let bar = try String(contentsOf: gui.appendingPathComponent("MenuBar.swift"), encoding: .utf8)
+    let panel = try String(contentsOf: gui.appendingPathComponent("MenuPanel.swift"), encoding: .utf8)
+    check("the status item opens an NSPopover panel, not an NSMenu", bar.contains("NSPopover()") && bar.contains("NSHostingController(rootView: MenuPanel")
+          && !bar.contains("NSMenu(") && !bar.contains("submenu") && !bar.contains("menuNeedsUpdate"))
+    check("the quit guard refuses once and the bundle watch is kept",
+          bar.contains("guard model.busy else { return .terminateNow }") && bar.contains("model.quitAsked = Date()")
+          && bar.contains("return .terminateCancel") && bar.contains("bundleWatch.tick(programExists: exists, busy: self.model.busy)"))
+    check("a failed action opens the window, a question already does (D4)",
+          bar.contains("model.$failureCount") && bar.contains("model.$confirm"))
+    check("the panel names its four actions through Placement and no selector",
+          ["Placement.healthRun", "Placement.openAdmin", "Placement.restart", "Placement.install"].allSatisfy { panel.contains($0) }
+          && !panel.contains("StackChoice"))
+} catch {
+    check("the menu-bar sources read", false, "\(error)")
+}
 
 try? FileManager.default.removeItem(atPath: emptyHome)
 
