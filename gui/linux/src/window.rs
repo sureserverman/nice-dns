@@ -1825,13 +1825,13 @@ mod tests {
     fn window_dns_owner_unhealthy_is_down_and_names_the_check() {
         let text = INSTALLED.replacen(
             "obs\tdns-owner\thealthy\t7\t/etc/resolv.conf: nameserver 127.0.0.1 only",
-            "obs\tdns-owner\tunhealthy\t7\t/etc/resolv.conf: nameserver 9.9.9.9",
+            "obs\tdns-owner\tunhealthy\t7\t/etc/resolv.conf: nameserver 192.0.2.53",
             1,
         );
         let b = body_for(&text);
         assert_eq!(b.level, Level::Down);
         assert_eq!(b.header.title, "This computer is not using nice-dns");
-        assert_eq!(b.header.subtitle, "/etc/resolv.conf: nameserver 9.9.9.9");
+        assert_eq!(b.header.subtitle, "/etc/resolv.conf: nameserver 192.0.2.53");
         assert_eq!(b.badge, 1);
     }
 

@@ -1075,7 +1075,7 @@ mod tests {
                 Level::Attention,
             ),
             ("an indeterminate check", obs_is(INSTALLED, "proxy", "indeterminate", "unreadable"), Level::Attention),
-            ("dns-owner unhealthy", obs_is(INSTALLED, "dns-owner", "unhealthy", "/etc/resolv.conf: nameserver 9.9.9.9"), Level::Down),
+            ("dns-owner unhealthy", obs_is(INSTALLED, "dns-owner", "unhealthy", "/etc/resolv.conf: nameserver 192.0.2.53"), Level::Down),
             ("container down", obs_is(INSTALLED, "container:unbound", "unhealthy", "exited"), Level::Down),
             ("unbound down", obs_is(INSTALLED, "unbound", "unhealthy", "control: no answer"), Level::Down),
             ("verdict names chain-resolves", INSTALLED.replacen("controller\tverdict\tOK", "controller\tverdict\tFAIL [chain-resolves]", 1), Level::Down),
@@ -1188,9 +1188,9 @@ mod tests {
 
     #[test]
     fn hero_down_variants() {
-        let h = hero_of(&obs_is(INSTALLED, "dns-owner", "unhealthy", "/etc/resolv.conf: nameserver 9.9.9.9"));
+        let h = hero_of(&obs_is(INSTALLED, "dns-owner", "unhealthy", "/etc/resolv.conf: nameserver 192.0.2.53"));
         assert_eq!(h.title, "This computer is not using nice-dns");
-        assert_eq!(h.subtitle, "/etc/resolv.conf: nameserver 9.9.9.9");
+        assert_eq!(h.subtitle, "/etc/resolv.conf: nameserver 192.0.2.53");
         assert_eq!(h.tint, Tint::Down);
 
         let mut all = INSTALLED.to_string();
