@@ -15,12 +15,12 @@ struct ActionBar: View {
             HStack(spacing: 12) {
                 icon
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                    titleLine
                     detail
                 }
                 Spacer(minLength: 12)
                 if model.outputOpen && !model.paneRows.isEmpty {
-                    Button("Copy") { copyToPasteboard(model.paneText) }.buttonStyle(.borderless)
+                    Button("Copy") { copyToPasteboard(model.paneText) }.buttonStyle(FlatButtonStyle())
                 }
                 Button(model.outputOpen ? "Hide Output" : "Show Output") { model.outputOpen.toggle() }
                 if !model.busy {
@@ -35,8 +35,21 @@ struct ActionBar: View {
                 OutputDrawer(model: model)
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Palette.window)
         .accessibilityElement(children: .contain)
+    }
+
+    /// The title; while it runs, "· {elapsed}" follows it on the same line.
+    @ViewBuilder private var titleLine: some View {
+        HStack(spacing: 0) {
+            Text(title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+            if model.busy, let start = model.paneStarted {
+                TimelineView(.periodic(from: start, by: 1)) { ctx in
+                    Text(" · \(elapsedText(Int(ctx.date.timeIntervalSince(start))))").monospacedDigit()
+                }
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+        }
     }
 
     private var failed: Bool { !model.busy && !model.paneOK }
@@ -60,20 +73,12 @@ struct ActionBar: View {
 
     @ViewBuilder private var detail: some View {
         if model.busy {
-            HStack(spacing: 6) {
-                if let start = model.paneStarted {
-                    TimelineView(.periodic(from: start, by: 1)) { ctx in
-                        Text(elapsedText(Int(ctx.date.timeIntervalSince(start)))).monospacedDigit()
-                    }
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-                }
-                if !model.paneLatest.isEmpty {
-                    Text(model.paneLatest).font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.tail)
-                }
+            if !model.paneLatest.isEmpty {
+                Text(model.paneLatest).font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.tail)
             }
         } else {
-            Text(failed ? model.paneDetail : "Finished in \(elapsedText(model.paneElapsed)) · \(model.paneResult)")
+            Text(failed ? model.paneDetail : "Finished in \(elapsedText(model.paneElapsed)). \(model.paneResult)")
                 .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(2).textSelection(.enabled)
         }
     }

@@ -18,6 +18,11 @@ enum Palette {
         }))
     }
 
+    /// The window, the cards on it and the switcher bar: three fills, so a card
+    /// reads as a card in both appearances (tokens.json: window, card, toolbar).
+    static let window = dynamic(0xFAFAFB, 0x232427)
+    static let card = dynamic(0xFFFFFF, 0x2E2F33)
+    static let toolbar = dynamic(0xFAFAFB, 0x2B2C30)
     /// The brand green: the tint of the window and the suggested button.
     static let accent = dynamic(0x0A7A5C, 0x4FD6A8)
     /// The text on a suggested button.

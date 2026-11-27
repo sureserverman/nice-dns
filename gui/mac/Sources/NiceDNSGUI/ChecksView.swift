@@ -68,83 +68,111 @@ struct ChecksView: View {
     }
 }
 
-/// One group: title, subtitle and its count at the end; opened, its rows.
+/// The disclosure chevron, in a column of its own so it centres on the title.
+struct Chevron: View {
+    let open: Bool
+    var body: some View {
+        Image(systemName: open ? "chevron.down" : "chevron.right")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .frame(width: 14)
+    }
+}
+
+/// One group: a chevron column, title and subtitle, and its count at the end,
+/// aligned to the card's row padding; opened, its rows.
 struct GroupView: View {
     @ObservedObject var model: AppModel
     let group: CheckGroupModel
 
+    private var open: Bool { model.groupOpen[group.id] ?? group.startsExpanded }
+
     var body: some View {
-        DisclosureGroup(isExpanded: Binding(get: { model.groupOpen[group.id] ?? group.startsExpanded },
-                                            set: { model.groupOpen[group.id] = $0 })) {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(group.rows.enumerated()), id: \.element.id) { i, r in
-                    Divider().padding(.leading, 0)
-                    CheckRowView(row: r)
+        VStack(alignment: .leading, spacing: 0) {
+            Button { model.groupOpen[group.id] = !open } label: {
+                HStack(alignment: .center, spacing: 10) {
+                    Chevron(open: open)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(group.title).font(.system(size: 14, weight: .medium))
+                        Text(group.subtitle).font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 12)
+                    // The words carry the count besides the colour.
+                    Text(group.summary).font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.text(group.summaryTone))
                 }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 13)
+                .contentShape(Rectangle())
             }
-            .padding(.top, 8)
-        } label: {
-            HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(group.title).font(.system(size: 14, weight: .medium))
-                    Text(group.subtitle).font(.system(size: 12)).foregroundStyle(.secondary)
+            .buttonStyle(.plain)
+            .accessibilityValue(open ? "expanded" : "collapsed")
+            if open {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(group.rows, id: \.id) { r in
+                        Divider()
+                        CheckRowView(model: model, row: r)
+                    }
                 }
-                Spacer(minLength: 12)
-                // The words carry the count besides the colour.
-                Text(group.summary).font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.text(group.summaryTone))
+                .padding(.leading, 42)
+                .padding(.trailing, 18)
+                .padding(.bottom, 6)
             }
-            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 13)
-        .accessibilityElement(children: .contain)
     }
 }
 
 /// A check: its friendly name and a short value; failing, the level icon and
 /// the headline. Opened, the raw record in monospace.
 struct CheckRowView: View {
+    @ObservedObject var model: AppModel
     let row: CheckRowModel
-    @State private var open = false
+    private var open: Bool { model.rowOpen.contains(row.id) }
 
     var body: some View {
-        DisclosureGroup(isExpanded: $open) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(row.record).font(.system(size: 12, design: .monospaced))
-                Text(row.reason).font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary)
-            }
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(10)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Palette.inset))
-            .padding(.vertical, 6)
-        } label: {
-            HStack(alignment: .top, spacing: 8) {
-                if !row.healthy {
-                    Image(systemName: row.tone.symbol).foregroundStyle(Palette.icon(row.tone))
-                        .accessibilityLabel(row.tone == .down ? "Failing" : "Needs attention")
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 8) {
-                        Text(row.name).font(.system(size: 14))
-                        if row.inUse {
-                            Text("In use").font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(Palette.text(.ok))
-                                .padding(.horizontal, 8).padding(.vertical, 2)
-                                .background(Capsule().fill(Palette.tint(.ok)))
+        VStack(alignment: .leading, spacing: 0) {
+            Button { if open { model.rowOpen.remove(row.id) } else { model.rowOpen.insert(row.id) } } label: {
+                HStack(alignment: .center, spacing: 8) {
+                    Chevron(open: open)
+                    if !row.healthy {
+                        Image(systemName: row.tone.symbol).foregroundStyle(Palette.icon(row.tone))
+                            .accessibilityLabel(row.tone == .down ? "Not working" : "Needs attention")
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 8) {
+                            Text(row.name).font(.system(size: 14))
+                            if row.inUse {
+                                Text("In use").font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(Palette.text(.ok))
+                                    .padding(.horizontal, 8).padding(.vertical, 2)
+                                    .background(Capsule().fill(Palette.tint(.ok)))
+                            }
+                        }
+                        if let h = row.headline {
+                            Text(h).font(.system(size: 12)).foregroundStyle(Palette.text(row.tone))
                         }
                     }
-                    if let h = row.headline {
-                        Text(h).font(.system(size: 12)).foregroundStyle(Palette.text(row.tone))
+                    Spacer(minLength: 8)
+                    if let v = row.value {
+                        Text(v).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     }
                 }
-                Spacer(minLength: 8)
-                if let v = row.value {
-                    Text(v).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                }
+                .padding(.vertical, 9)
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .accessibilityHint("Shows the raw record of this check")
+            .accessibilityValue(open ? "expanded" : "collapsed")
+            if open {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(row.record).font(.system(size: 12, design: .monospaced))
+                    Text(row.reason).font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary)
+                }
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Palette.inset))
+                .padding(.bottom, 8)
+            }
         }
-        .padding(.vertical, 8)
     }
 }

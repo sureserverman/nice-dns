@@ -757,7 +757,7 @@ fn footer(s: &Status) -> String {
     let me = s.obs.iter().find(|o| o.name == format!("route:{}", sel.id));
     let backups = routes(s).filter(|o| o.name != format!("route:{}", sel.id) && health(o) == Health::Healthy).count();
     let ready = match backups {
-        0 => "No backup routes are ready.".to_string(),
+        0 => "0 backup routes are ready.".to_string(),
         1 => "1 backup route is ready.".to_string(),
         k => format!("{k} backup routes are ready."),
     };
@@ -1307,7 +1307,7 @@ mod tests {
         }
         let (nodes, footer) = path_of(&all);
         assert_eq!(nodes[4].state, NodeState::Down);
-        assert!(footer.starts_with("The Cloudflare onion route is selected but not answering. No backup routes are ready."), "{footer}");
+        assert!(footer.starts_with("The Cloudflare onion route is selected but not answering. 0 backup routes are ready."), "{footer}");
     }
 
     #[test]

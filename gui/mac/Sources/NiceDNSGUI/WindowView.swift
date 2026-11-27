@@ -41,7 +41,7 @@ struct WindowView: View {
         }
         .frame(minWidth: 680, minHeight: 560)
         // Drawn by the view itself, so the screenshot hook has it too.
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Palette.window)
         .overlay(alignment: .bottom) {
             Toast(model: model).padding(.bottom, model.barVisible ? 70 : 0)
         }
@@ -97,7 +97,7 @@ struct SwitcherBar: View {
             Spacer()
         }
         .padding(.vertical, 10)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Palette.toolbar)
     }
 
     private func label(_ tab: ViewTab) -> String {

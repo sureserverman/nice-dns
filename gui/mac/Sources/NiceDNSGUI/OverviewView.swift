@@ -48,10 +48,13 @@ struct OverviewView: View {
             Divider()
             ControlRow(title: "Pi-hole admin", subtitle: adminSubtitle(status)) {
                 HStack(spacing: 8) {
-                    Button("Show Password File") { model.request(Placement.showPasswordPath) }.buttonStyle(.borderless)
+                    Button("Show Password File") { model.request(Placement.showPasswordPath) }
+                        .buttonStyle(FlatButtonStyle()).disabled(model.busy)
                     Button { model.request(Placement.openAdmin) } label: {
                         Label("Open", systemImage: "arrow.up.right.square").labelStyle(TrailingIconLabelStyle())
                     }
+                    .disabled(model.busy)
+                    .accessibilityLabel("Open the Pi-hole admin page")
                 }
             }
             Divider()
@@ -129,7 +132,7 @@ struct AttentionCard: View {
                         .font(.system(size: 15))
                         .foregroundStyle(Palette.icon(r.tone))
                         .frame(width: 20)
-                        .accessibilityLabel(r.tone == .down ? "Failing" : "Needs attention")
+                        .accessibilityLabel(r.tone == .down ? "Not working" : "Needs attention")
                     VStack(alignment: .leading, spacing: 3) {
                         Text(r.headline).font(.system(size: 14, weight: .medium))
                         Text(r.reason)

@@ -90,6 +90,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var switches = SwitchState()
     /// The Checks groups the person opened or closed, while the window is open.
     @Published var groupOpen: [String: Bool] = [:]
+    /// The checks opened to their raw record, while the window is open.
+    @Published var rowOpen: Set<String> = []
     /// A switch question answered Not now or dismissed puts its selector back.
     @Published var confirm: Confirm? {
         didSet {

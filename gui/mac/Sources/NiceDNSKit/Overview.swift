@@ -87,14 +87,14 @@ public func hero(_ s: Status, now: UInt64) -> Hero {
                         subtitle: sentence("Lookups still leave through Tor.", checked.map { "Checked \($0)." }), action: .runChecks)
         }
         let n = bad.count
-        let title: String
-        if n > 0 {
-            title = "DNS works, \(n) \(plural(n, "check needs", "checks need")) attention"
-        } else if !s.unreadable.isEmpty {
-            title = "DNS works, some files could not be read"
-        } else {
-            title = "DNS works, but the last check was not clean"
+        if n == 0 {
+            // The verdict is not OK, or a file could not be read, but no single check is to blame.
+            let v = s.controller.verdict
+            let why = (v != nil && v != "OK" && v != "unknown") ? "The controller said \(v!)." : "Some files could not be read."
+            return Hero(level: level, title: "DNS works, but the last check was not clean",
+                        subtitle: sentence(why, checked.map { "Checked \($0)." }), action: .runChecks)
         }
+        let title = "DNS works, \(n) \(plural(n, "check needs", "checks need")) attention"
         return Hero(level: level, title: title, subtitle: checked.map { "Checked \($0)." } ?? "", action: .runChecks)
     case .stale:
         let last: String
@@ -122,7 +122,7 @@ public func hero(_ s: Status, now: UInt64) -> Hero {
         if let o = bad.first(where: { Checks.state(of: $0) == .down }) {
             return Hero(level: level, title: "DNS is down", subtitle: Checks.resolve(o.name).headline, action: .runChecks)
         }
-        return Hero(level: level, title: "DNS is down", subtitle: "Lookups through nice-dns are not resolving.", action: .runChecks)
+        return Hero(level: level, title: "DNS is down", subtitle: "The lookup chain is not resolving.", action: .runChecks)
     case .error, .notInstalled:
         // Not reached for a status that was read; the pages say their own.
         return level == .error ? .error("") : .notInstalled
@@ -146,7 +146,7 @@ public enum PathNodeID: String, CaseIterable, Equatable {
     /// The SF Symbol of the node (BUILD-MACOS).
     public var symbol: String {
         switch self {
-        case .computer: return "desktopcomputer"
+        case .computer: return "display"
         case .pihole: return "line.3.horizontal.decrease.circle"
         case .unbound: return "server.rack"
         case .tor: return "circle.circle"
@@ -232,13 +232,13 @@ public func lookupPath(_ s: Status) -> LookupPath {
     let onionDown = s.obs.first { $0.name == "route:cloudflare-onion" }?.verdict != "healthy"
         && s.obs.contains { $0.name == "route:cloudflare-onion" }
     let backup = onionDown && selected != nil && selected != "cloudflare-onion"
-    let exitBackup = backup && (selected?.hasSuffix("-exit") ?? false)
+    let exitBackup = backup
 
     var nodes: [PathNode] = []
     func changed(_ t: Tone, _ normal: String) -> (String, Bool) {
         switch t {
         case .attention: return ("Needs attention", true)
-        case .down: return ("Down", true)
+        case .down: return ("Not answering", true)
         default: return (normal, false)
         }
     }
@@ -256,7 +256,7 @@ public func lookupPath(_ s: Status) -> LookupPath {
     switch (s.bridges.mode, s.bridges.count) {
     case ("off", _): bridgeCaption = "No bridges"
     case (_, let n?): bridgeCaption = "\(n) \(plural(Int(n), "bridge", "bridges"))"
-    default: bridgeCaption = "Bridges on"
+    default: bridgeCaption = "Bridges"
     }
     let (torCaption, torChanged) = changed(tor, bridgeCaption)
     nodes.append(PathNode(id: .tor, label: "Tor", caption: torCaption, tone: tor, captionChanged: torChanged, dashedIn: false))
@@ -273,28 +273,33 @@ public func lookupPath(_ s: Status) -> LookupPath {
     if backup && res != .down { res = .attention }
     if old { res = .neutral }
     let label = selected.map(routeProvider) ?? "Resolver"
-    var caption = selected.map(routeCaption) ?? "No route yet"
+    var caption = selected.map(routeCaption) ?? "Not selected yet"
     var captionChanged = false
     if exitBackup && !old {
-        caption = "Backup: Tor exit"
+        caption = selected == "cloudflare-legacy" ? "Backup: legacy port" : "Backup: Tor exit"
         captionChanged = true
     } else if res == .down {
-        (caption, captionChanged) = ("Down", true)
+        (caption, captionChanged) = ("Not answering", true)
     }
     nodes.append(PathNode(id: .resolver, label: label, caption: caption, tone: res, captionChanged: captionChanged,
                           dashedIn: exitBackup && !old))
 
     let footer: String
     if let sel = selected {
-        let ms = selectedObs?.ms.map { String(format: "%.1f", Double($0) / 1000) }
+        let name = routeName(sel)
         let ready = routes.filter { $0.name != "route:\(sel)" && $0.verdict == "healthy" }.count
-        let backups: String
-        switch ready {
-        case 0: backups = "No backup route is ready."
-        case 1: backups = "1 backup route is ready."
-        default: backups = "\(ready) backup routes are ready."
+        let backups = ready == 1 ? "1 backup route is ready." : "\(ready) backup routes are ready."
+        if let o = selectedObs, o.verdict == "healthy" {
+            if let ms = o.ms {
+                footer = "Answered in \(String(format: "%.1f", Double(ms) / 1000)) s on the \(name) route. \(backups)"
+            } else {
+                footer = "Answered on the \(name) route. \(backups)"
+            }
+        } else if selectedObs != nil {
+            footer = "The \(name) route is selected but not answering. \(backups)"
+        } else {
+            footer = "The \(name) route is selected. \(backups)"
         }
-        footer = (ms.map { "Answered in \($0) s on the \(routeName(sel)) route. " } ?? "The \(routeName(sel)) route is selected. ") + backups
     } else {
         footer = "No route selected yet."
     }
@@ -303,7 +308,12 @@ public func lookupPath(_ s: Status) -> LookupPath {
 
 /// The panel's one-line path: "Pi-hole › Unbound › Tor › Cloudflare onion".
 public func pathLine(_ s: Status) -> String {
-    ["Pi-hole", "Unbound", "Tor", s.route.map { routeName($0.id) } ?? "no route yet"].joined(separator: " › ")
+    pathParts(s).joined(separator: " › ")
+}
+
+/// The words of the panel's path line, one per hop.
+public func pathParts(_ s: Status) -> [String] {
+    ["Pi-hole", "Unbound", "Tor", s.route.map { routeName($0.id) } ?? "no route yet"]
 }
 
 // MARK: Attention list and Checks
@@ -335,6 +345,7 @@ public func attentionRows(_ s: Status) -> [AttentionRow] {
 /// "14 of 15 checks passing" or "1 of 15 checks need attention".
 public func checksTitle(_ s: Status) -> String {
     let total = s.obs.count
+    if total == 0 { return "No checks recorded yet" }
     let bad = notHealthy(s).count
     if bad == 0 { return "\(total) of \(total) checks passing" }
     return "\(bad) of \(total) checks need attention"
@@ -346,7 +357,7 @@ public func checksSubtitle(_ s: Status, now: UInt64) -> String {
 
 /// Overview's links, shown at level ok: the passing count and the newest repair.
 public func overviewLinks(_ s: Status, now: UInt64) -> (passing: String, repair: String?) {
-    let passing = "\(s.obs.count) of \(s.obs.count) checks passing"
+    let passing = checksTitle(s)
     guard let r = repairRows(s, now: now).first else { return (passing, nil) }
     return (passing, "Last repair \(r.ago) · \(r.text)")
 }
@@ -438,7 +449,7 @@ public func checkGroups(_ s: Status) -> [CheckGroupModel] {
             subtitle = "Four ways out. One is in use, the others are backups."
         default:
             title = "Other"
-            subtitle = "Checks this app has no name for yet"
+            subtitle = "Checks this version of the window does not know"
         }
         let summary: String
         let sumTone: Tone
@@ -485,7 +496,8 @@ public func repairRows(_ s: Status, now: UInt64) -> [RepairRow] {
     }
     var rows: [RepairRow] = []
     var routeMoves: [String] = []
-    for g in groups {
+    let lastBridges = groups.lastIndex { $0.target == "bridges" }
+    for (idx, g) in groups.enumerated() {
         var text: String
         if g.target.hasPrefix("route:") {
             let id = String(g.target.dropFirst("route:".count))
@@ -497,9 +509,10 @@ public func repairRows(_ s: Status, now: UInt64) -> [RepairRow] {
             }
             routeMoves.append(id)
         } else if g.target == "bridges" {
-            text = "Bridges turned \(s.bridges.mode == "off" ? "off" : "on")"
-        } else if let i = Checks.info("container:\(g.target)") ?? Checks.info(g.target).flatMap({ $0.group == "services" ? $0 : nil }) {
-            text = "Restarted \(i.name)"
+            // The journal does not say which way, so only the newest line can name the mode `status` reports now.
+            if idx == lastBridges, let m = s.bridges.mode { text = "Bridges turned \(m)" } else { text = "Bridges changed" }
+        } else if let n = restartedName(g.target) {
+            text = "Restarted \(n)"
         } else {
             text = g.target
         }
@@ -507,6 +520,15 @@ public func repairRows(_ s: Status, now: UInt64) -> [RepairRow] {
         rows.append(RepairRow(text: text, ago: g.latest.epoch.map { ago($0, now: now) } ?? "unknown", epoch: g.latest.epoch))
     }
     return Array(rows.reversed().prefix(5))
+}
+
+/// The friendly name of a container or service the journal says was restarted.
+func restartedName(_ target: String) -> String? {
+    let id = target.hasPrefix("container:") ? String(target.dropFirst("container:".count)) : target
+    if id.hasPrefix("tor-") && Checks.info("container:\(id)") != nil { return "Tor proxy" }
+    if let i = Checks.info("container:\(id)") { return i.name }
+    if id == "tor" || id == "proxy" { return "Tor proxy" }
+    return nil
 }
 
 // MARK: Controls
@@ -524,8 +546,8 @@ public let bridgesCostLine = "Switching restarts Tor, about a minute"
 public func bridgesTooltip(_ s: Status, now: UInt64) -> String {
     switch s.bridges.lastRefresh {
     case .at(let e)?: return "Bridges last refreshed \(ago(e, now: now))"
-    case .never?: return "Bridges last refreshed never"
-    case nil: return "Bridges last refreshed unknown"
+    case .never?: return "Bridges have not been refreshed yet"
+    case nil: return ""
     }
 }
 
@@ -573,18 +595,29 @@ public struct UpdateRowText: Equatable {
 
 public func updateRowText(_ s: Status, now: UInt64) -> UpdateRowText {
     let u = s.update
-    let branch = s.install.branch ?? "unknown"
+    let branch = s.install.branch
     let checked = u.checkedAt.map { ago($0, now: now) }
+    let twice = u.auto == "stopped" ? "" : " nice-dns checks twice a day."
     switch u.result {
     case .current?:
-        var sub = "Branch \(branch)" + (checked.map { ", checked \($0)." } ?? ".")
-        if u.auto != "stopped" { sub += " nice-dns checks twice a day." }
-        return UpdateRowText(title: "Up to date", subtitle: sub, button: .check, commit: nil)
+        let lead: String
+        switch (branch, checked) {
+        case (let b?, let c?): lead = "Branch \(b), checked \(c)."
+        case (let b?, nil): lead = "Branch \(b)."
+        case (nil, let c?): lead = "Checked \(c)."
+        case (nil, nil): lead = ""
+        }
+        return UpdateRowText(title: "Up to date", subtitle: (lead + twice).trimmingCharacters(in: .whitespaces), button: .check, commit: nil)
     case .available?:
         let commit = u.remoteCommit.map(shortCommit)
-        var sub = "Branch \(branch) is now at "
-        sub += commit ?? "a newer commit"
-        sub += checked.map { ", found \($0)." } ?? "."
+        let found = checked.map { ", found \($0)" } ?? ""
+        let sub: String
+        switch (branch, commit) {
+        case (let b?, let c?): sub = "Branch \(b) is now at \(c)\(found)."
+        case (nil, let c?): sub = "The branch is now at \(c)\(found)."
+        case (let b?, nil): sub = "Branch \(b) has a different version\(found)."
+        case (nil, nil): sub = "The branch has a different version\(found)."
+        }
         return UpdateRowText(title: "Update available", subtitle: sub, button: .install, commit: commit)
     default:
         if u.neverChecked { return UpdateRowText(title: "Not checked yet", subtitle: nil, button: .check, commit: nil) }
@@ -595,9 +628,9 @@ public func updateRowText(_ s: Status, now: UInt64) -> UpdateRowText {
 
 // MARK: Setup
 
-private let monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+private let monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 
-/// "9 Nov 2026" from a generation id like `20261109T180318Z-nogit0000000`; nil when it has no date.
+/// "9 November 2026" from a generation id like `20261109T180318Z-nogit0000000`; nil when it has no date.
 public func generationDate(_ generation: String?) -> String? {
     guard let g = generation, g.count >= 8 else { return nil }
     let d = Array(g.prefix(8))
@@ -608,12 +641,18 @@ public func generationDate(_ generation: String?) -> String? {
 
 /// Setup > Version: "Installed {date}" and "Branch {branch} at {12 hex}".
 public func versionRow(_ s: Status) -> (title: String, subtitle: String) {
+    (versionRowParts(s).title, versionRowParts(s).subtitle)
+}
+
+/// The version row with the commit it names, which the window draws in monospace.
+public func versionRowParts(_ s: Status) -> (title: String, subtitle: String, commit: String?) {
     let title = generationDate(s.install.generation).map { "Installed \($0)" } ?? "Installed"
     let branch = s.install.branch ?? "unknown"
     var sub = "Branch \(branch)"
-    if let c = s.install.sourceCommit, c != "unknown", !c.isEmpty { sub += " at \(shortCommit(c))" }
+    var commit: String?
+    if let c = s.install.sourceCommit, c != "unknown", !c.isEmpty { commit = shortCommit(c); sub += " at \(shortCommit(c))" }
     else { sub += ", source commit unknown" }
-    return (title, sub)
+    return (title, sub, commit)
 }
 
 /// The text "Copy build details" puts on the pasteboard.
@@ -649,11 +688,11 @@ public func runningTitle(_ id: String) -> String {
     case "uninstall": return "Uninstalling nice-dns"
     case "install": return "Installing nice-dns"
     case "update": return "Installing the update"
-    case "update-check": return "Checking for an update"
+    case "update-check": return "Checking for updates"
     case "health-start": return "Turning on automatic checks"
     case "health-stop": return "Turning off automatic checks"
     case "health-run": return "Running checks"
-    case "failures": return "Reading the failures"
+    case "failures": return "Reading recent failures"
     default: return Actions.lookup(id)?.label ?? id
     }
 }
@@ -661,25 +700,37 @@ public func runningTitle(_ id: String) -> String {
 /// The title of a finished action: the action's own last line where the
 /// contract defines one, else "{label}: finished".
 public func resultTitle(_ id: String, lines: [String]) -> String {
-    if let p = StackChoice.choice(of: id) {
-        return p.selector.kind == .proxy ? "The Tor proxy is now \(p.choice)" : "Pi-hole is now \(p.choice)"
-    }
     let last = lines.last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })?.trimmingCharacters(in: .whitespaces)
     if let l = last {
         if (id == "bridges-on" || id == "bridges-off") && l.hasPrefix("Bridges are") { return l }
         if id == "update" && l.hasPrefix("updated to") { return l }
         if id == "update-check" && l == "current" { return l }
+        if StackChoice.choice(of: id) != nil && l.hasPrefix("Switched:") { return l }
     }
     return "\(Actions.lookup(id)?.label ?? id): finished"
 }
 
-/// "{label} did not finish".
+/// "{label} did not finish", with the sentence-case label the window's own buttons use.
 public func failedTitle(_ id: String) -> String {
-    "\(Actions.lookup(id)?.label ?? id) did not finish"
+    let label: String
+    switch id {
+    case "install": label = "Install"
+    case "reinstall": label = "Reinstall"
+    case "restart": label = "Restart"
+    case "uninstall": label = "Uninstall"
+    case "update-check": label = "Check for update"
+    case "update": label = "Update"
+    case "health-run": label = "Run checks"
+    case "failures": label = "Show failures"
+    default: label = runningTitle(id)
+    }
+    return "\(label) did not finish"
 }
 
-/// Seconds as "12 s" or "3 min 12 s".
+/// A time taken: "12 s", "2 min 48 s", "1 h 5 min" (as the Linux bar says it).
 public func elapsedText(_ seconds: Int) -> String {
     let s = max(0, seconds)
-    return s < 60 ? "\(s) s" : "\(s / 60) min \(s % 60) s"
+    if s < 60 { return "\(s) s" }
+    if s < 3600 { return s % 60 == 0 ? "\(s / 60) min" : "\(s / 60) min \(s % 60) s" }
+    return (s % 3600) / 60 == 0 ? "\(s / 3600) h" : "\(s / 3600) h \((s % 3600) / 60) min"
 }

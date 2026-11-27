@@ -20,8 +20,7 @@ struct MenuPanel: View {
             header
                 .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 12)
             if let s = model.status {
-                Text(pathLine(s))
-                    .font(.system(size: 13, weight: .medium))
+                pathText(s)
                     .padding(.horizontal, 12).padding(.vertical, 8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(RoundedRectangle(cornerRadius: 8).fill(Palette.tint(.neutral)))
@@ -36,7 +35,7 @@ struct MenuPanel: View {
                 }
                 bridges
                 PanelRow(title: "Run Checks Now", enabled: !model.busy) { model.request(Placement.healthRun) }
-                PanelRow(title: "Open Pi-hole Admin", symbol: "arrow.up.right.square") {
+                PanelRow(title: "Open Pi-hole Admin", symbol: "arrow.up.right.square", enabled: !model.busy) {
                     model.request(Placement.openAdmin)
                     close()
                 }
@@ -84,6 +83,17 @@ struct MenuPanel: View {
             }
             Spacer(minLength: 0)
         }
+    }
+
+    /// The path as one line: regular labels, accent chevrons between them.
+    private func pathText(_ s: Status) -> Text {
+        let parts = pathParts(s)
+        var t = Text(parts[0]).font(.system(size: 13))
+        for p in parts.dropFirst() {
+            t = t + Text("  ›  ").font(.system(size: 13, weight: .semibold)).foregroundColor(Palette.accentText)
+                + Text(p).font(.system(size: 13))
+        }
+        return t
     }
 
     private var bridges: some View {

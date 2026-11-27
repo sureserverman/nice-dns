@@ -658,7 +658,7 @@ let journal = tweak(okStatus) {
                  Recent(epoch: 50, target: "weird", result: "ready"), Recent(epoch: 60, target: "unbound", result: "ready")]
 }
 check("restarts name the container, bridges the mode, anything else the raw target, at most five lines",
-      repairRows(journal, now: 100).map(\.text) == ["Restarted Unbound", "weird", "Bridges turned on", "Restarted Tor proxy (socat)", "Restarted Pi-hole"],
+      repairRows(journal, now: 100).map(\.text) == ["Restarted Unbound", "weird", "Bridges turned on", "Restarted Tor proxy", "Restarted Pi-hole"],
       "\(repairRows(journal, now: 100).map(\.text))")
 check("the same target moved again after ready is a line of its own", repairRows(journal, now: 100).count == 5)
 let links = overviewLinks(okStatus, now: nowFresh)
@@ -680,7 +680,7 @@ check("and drops it when auto is stopped",
 check("an unknown answer says Could not check, with when it was tried",
       updateRowText(tweak(okStatus) { $0.update.neverChecked = false; $0.update.checkedAt = 1000 }, now: 1600)
         == UpdateRowText(title: "Could not check for updates", subtitle: "Last tried 10 min ago.", button: .check, commit: nil))
-check("the version row", versionRow(okStatus).title == "Installed 9 Nov 2026"
+check("the version row", versionRow(okStatus).title == "Installed 9 November 2026"
       && versionRow(okStatus).subtitle == "Branch main, source commit unknown"
       && versionRow(updateStatus).subtitle == "Branch main at 4b5432d1e0a9", "\(versionRow(okStatus))")
 check("the build details carry the generation and the lock", buildDetails(okStatus).contains("generation: 20261109T180318Z-nogit0000000\n")
@@ -692,11 +692,33 @@ check("the automatic-checks switch follows the schedule", autoChecksOn(okStatus)
 check("running titles are present tense", runningTitle("proxy-haproxy") == "Switching the Tor proxy to haproxy"
       && runningTitle("pihole-hardened") == "Switching Pi-hole to hardened" && runningTitle("restart") == "Restarting the stack")
 check("result titles use the action's own last line where the contract has one",
-      resultTitle("proxy-haproxy", lines: []) == "The Tor proxy is now haproxy"
+      resultTitle("proxy-haproxy", lines: ["Switched: the proxy is now tor-haproxy, and DNS is answering."]) == "Switched: the proxy is now tor-haproxy, and DNS is answering."
       && resultTitle("bridges-on", lines: ["x", "Bridges are on; the proxy restarted and DNS is answering."]) == "Bridges are on; the proxy restarted and DNS is answering."
       && resultTitle("update", lines: ["updated to 0123456789ab"]) == "updated to 0123456789ab"
       && resultTitle("restart", lines: ["done"]) == "\(Actions.lookup("restart")?.label ?? "restart"): finished")
-check("elapsed time", elapsedText(12) == "12 s" && elapsedText(192) == "3 min 12 s" && elapsedText(-1) == "0 s")
+check("elapsed time", elapsedText(12) == "12 s" && elapsedText(192) == "3 min 12 s" && elapsedText(-1) == "0 s"
+      && elapsedText(120) == "2 min" && elapsedText(3900) == "1 h 5 min" && elapsedText(3600) == "1 h")
+// Wording shared with the Linux window (SPEC 13): one string, both platforms.
+check("a down node says Not answering, the legacy backup says so, no route says Not selected yet",
+      lookupPath(tweak(okStatus) { setVerdict(&$0, "container:pi-hole", "unhealthy") }).nodes[1].caption == "Not answering"
+      && lookupPath(tweak(okStatus) { $0.route = Route(id: "cloudflare-legacy", generation: "1"); setVerdict(&$0, "route:cloudflare-onion", "unhealthy") }).nodes[4].caption == "Backup: legacy port"
+      && lookupPath(tweak(okStatus) { $0.route = nil }).nodes[4].caption == "Not selected yet")
+check("no backup route ready says 0 backup routes are ready, and a selected route that fails says so",
+      lookupPath(tweak(okStatus) { s in for n in s.obs.map(\.name) where n.hasPrefix("route:") && n != "route:cloudflare-onion" { setVerdict(&s, n, "unhealthy") } }).footer
+        == "Answered in 1.9 s on the Cloudflare onion route. 0 backup routes are ready."
+      && lookupPath(tweak(okStatus) { setVerdict(&$0, "route:cloudflare-onion", "unhealthy") }).footer
+        == "The Cloudflare onion route is selected but not answering. 3 backup routes are ready.")
+check("failed titles use the sentence-case button label",
+      failedTitle("restart") == "Restart did not finish" && failedTitle("health-run") == "Run checks did not finish"
+      && runningTitle("update-check") == "Checking for updates" && runningTitle("failures") == "Reading recent failures")
+check("an attention verdict with nothing to blame says the last check was not clean",
+      hero(tweak(okStatus) { $0.controller.verdict = "INDETERMINATE [x]" }, now: nowFresh).title == "DNS works, but the last check was not clean"
+      && hero(tweak(okStatus) { $0.controller.verdict = "INDETERMINATE [x]" }, now: nowFresh).subtitle == "The controller said INDETERMINATE [x]. Checked just now."
+      && hero(tweak(okStatus) { $0.controller.verdict = "FAIL [chain-resolves]" }, now: nowFresh).subtitle == "The lookup chain is not resolving.")
+check("the Other group subtitle and the bridges tooltip are the shared wording",
+      checkGroups(tweak(okStatus) { $0.obs.append(Obs(name: "new-thing", verdict: "healthy", ms: nil, reason: "r")) }).last?.subtitle == "Checks this version of the window does not know"
+      && bridgesTooltip(okStatus, now: nowFresh) == "Bridges have not been refreshed yet")
+check("the version row names its commit for monospace", versionRowParts(updateStatus).commit == "4b5432d1e0a9" && versionRowParts(okStatus).commit == nil)
 let paneRun = runFake("restart", exit: 3).run
 check("each pane line has a kind: the command, stderr in its own, the outcome last",
       paneRun.paneKinds.count == paneRun.paneLines.count && paneRun.paneKinds.first == .command && paneRun.paneKinds.last == .outcome

@@ -95,11 +95,11 @@ final class OverviewTests: XCTestCase {
     }
 
     func testSetupAndActionBarText() {
-        XCTAssertEqual(versionRow(ok).title, "Installed 9 Nov 2026")
+        XCTAssertEqual(versionRow(ok).title, "Installed 9 November 2026")
         XCTAssertEqual(versionRow(update).subtitle, "Branch main at 4b5432d1e0a9")
         XCTAssertEqual(adminSubtitle(ok), "Blocklists and query log at localhost:8880/admin")
         XCTAssertEqual(runningTitle("proxy-haproxy"), "Switching the Tor proxy to haproxy")
-        XCTAssertEqual(resultTitle("proxy-socat", lines: []), "The Tor proxy is now socat")
+        XCTAssertEqual(resultTitle("proxy-socat", lines: ["Switched: the proxy is now tor-socat, and DNS is answering."]), "Switched: the proxy is now tor-socat, and DNS is answering.")
         XCTAssertEqual(elapsedText(192), "3 min 12 s")
     }
 }

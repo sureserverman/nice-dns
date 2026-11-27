@@ -50,7 +50,7 @@ struct Card<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) { content }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+            .background(RoundedRectangle(cornerRadius: 12).fill(Palette.card))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Palette.hairline))
     }
 }
@@ -103,6 +103,16 @@ struct ControlRow<Trailing: View>: View {
 extension ControlRow where Trailing == EmptyView {
     init(title: String, subtitle: String? = nil, commit: String? = nil) {
         self.init(title: title, subtitle: subtitle, commit: commit) { EmptyView() }
+    }
+}
+
+/// A flat text button: primary text colour (the accent is for links).
+struct FlatButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var enabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(Color.primary)
+            .opacity(configuration.isPressed ? 0.6 : (enabled ? 1 : 0.4))
     }
 }
 
@@ -199,6 +209,7 @@ struct PathNodeView: View {
                 Circle().fill(Palette.nodeFill(node.tone))
                 Circle().strokeBorder(Palette.nodeBorder(node.tone), lineWidth: 1.5)
                 Image(systemName: node.id.symbol)
+                    .symbolRenderingMode(.monochrome)
                     .font(.system(size: 20))
                     .foregroundStyle(Palette.icon(node.tone))
             }

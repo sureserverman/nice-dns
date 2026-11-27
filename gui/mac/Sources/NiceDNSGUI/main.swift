@@ -9,7 +9,7 @@ import AppKit
 import NiceDNSKit
 import SwiftUI
 
-let usage = "usage: NiceDNSGUI [--check | --version | --screenshot <png> [--view overview|checks|setup] | --screenshot-panel <png> | --run-action <id> --exit]"
+let usage = "usage: NiceDNSGUI [--check | --version | --screenshot <png> [--view overview|checks|setup] | --screenshot-panel <png> | --screenshot-status-items <png> | --run-action <id> --exit]"
 
 func version() -> String {
     (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "dev"
@@ -44,13 +44,19 @@ func runAction(_ id: String) -> Never {
 ///                                        seconds (default 2): refused unless the command is a fake
 ///                                        (its path holds /fakebin/), so a proof never touches a stack
 ///   NICE_DNS_GUI_SHOT_OUTPUT=1           open the output drawer
-func screenshot(_ path: String, view: ViewTab?, panel: Bool = false) -> Int32 {
+///   NICE_DNS_GUI_SHOT_OPEN_ROW=<obs id>  open that check to its raw record (and its group)
+/// `--screenshot-status-items <png>` draws the menu-bar symbol of every level.
+func screenshot(_ path: String, view: ViewTab?, panel: Bool = false, statusItems: Bool = false) -> Int32 {
     let app = NSApplication.shared
     app.setActivationPolicy(.prohibited)
     let env = ProcessInfo.processInfo.environment
     let model = AppModel()
     model.show(AppModel.read(environment: model.environment))
     if let v = view { model.view = v }
+    if let row = env["NICE_DNS_GUI_SHOT_OPEN_ROW"] {
+        model.rowOpen.insert(row)
+        model.groupOpen[Checks.resolve(row).group] = true
+    }
     if let id = env["NICE_DNS_GUI_SHOT_RUN"] {
         guard let argv = try? ActionRun.argv(id, choices: nil, environment: env), let program = argv.first, program.contains("/fakebin/") else {
             FileHandle.standardError.write("nice-dns-gui: screenshot: NICE_DNS_GUI_SHOT_RUN runs only fake commands (a path with /fakebin/)\n".data(using: .utf8)!)
@@ -66,7 +72,11 @@ func screenshot(_ path: String, view: ViewTab?, panel: Bool = false) -> Int32 {
         let p = s.split(separator: "x").compactMap { Double($0) }
         if p.count == 2 { size = NSSize(width: p[0], height: p[1]) }
     }
-    if panel {
+    if statusItems {
+        let h = NSHostingView(rootView: StatusItemSheet().background(Palette.window))
+        size = h.fittingSize
+        host = h
+    } else if panel {
         // The popover draws its own material; the hook stands in for it with the window colour.
         let h = NSHostingView(rootView: MenuPanel(model: model, close: {}, openWindow: {})
             .background(Color(nsColor: .windowBackgroundColor)))
@@ -126,6 +136,8 @@ case 1 where args[0] == "--check":
     exit(code)
 case 2 where args[0] == "--screenshot":
     exit(MainActor.assumeIsolated { screenshot(args[1], view: nil) })
+case 2 where args[0] == "--screenshot-status-items":
+    exit(MainActor.assumeIsolated { screenshot(args[1], view: nil, statusItems: true) })
 case 2 where args[0] == "--screenshot-panel":
     exit(MainActor.assumeIsolated { screenshot(args[1], view: nil, panel: true) })
 case 4 where args[0] == "--screenshot" && args[2] == "--view":

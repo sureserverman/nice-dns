@@ -28,9 +28,9 @@ struct SetupView: View {
             VStack(alignment: .leading, spacing: 8) {
                 SectionLabel("Version")
                 Card {
-                    let v = versionRow(status)
-                    ControlRow(title: v.title, subtitle: v.subtitle) {
-                        Button("Copy Build Details") { copyToPasteboard(buildDetails(status)) }.buttonStyle(.borderless)
+                    let v = versionRowParts(status)
+                    ControlRow(title: v.title, subtitle: v.subtitle, commit: v.commit) {
+                        Button("Copy Build Details") { copyToPasteboard(buildDetails(status)) }.buttonStyle(FlatButtonStyle())
                     }
                     .help(generationDate(status.install.generation) == nil ? "" : "Generation \(status.install.generation ?? "")")
                     Divider()
