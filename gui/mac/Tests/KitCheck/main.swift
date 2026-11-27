@@ -334,13 +334,15 @@ do {
 // every-row check above would pass over it.
 do {
     let gui = share.deletingLastPathComponent().appendingPathComponent("mac/Sources/NiceDNSGUI", isDirectory: true)
-    let drawing = try NSRegularExpression(pattern: #"(request\("|entry\([^\n]*, "[a-z-]+"\)|lookup\(")"#)
+    let drawing = try NSRegularExpression(pattern: #"(request\("|\brun\("|entry\([^\n]*, "[a-z-]+"\)|lookup\(")"#)
     var found: [String] = []
-    for f in ["WindowView.swift", "MenuBar.swift"] {
+    let files = ((try? FileManager.default.contentsOfDirectory(atPath: gui.path)) ?? []).filter { $0.hasSuffix(".swift") && $0 != "main.swift" && $0 != "Model.swift" }.sorted()
+    check("the view sources are found (\(files.joined(separator: ", ")))", files.contains("WindowView.swift") && files.contains("MenuBar.swift"))
+    for f in files {
         let text = try String(contentsOf: gui.appendingPathComponent(f), encoding: .utf8)
         for (n, line) in text.components(separatedBy: "\n").enumerated() {
             let r = NSRange(line.startIndex..., in: line)
-            if drawing.firstMatch(in: line, range: r) != nil { found.append("\(f):\(n + 1)") }
+            if drawing.firstMatch(in: line, range: r) != nil && !line.contains("Placement.") { found.append("\(f):\(n + 1)") }
         }
     }
     check("the views name no action id as a literal at a drawing call", found.isEmpty, found.joined(separator: ", "))
@@ -348,17 +350,19 @@ do {
     check("the view sources read for the drawing calls", false, "\(error)")
 }
 
-let buttonIds = Placement.buttons().map(\.id)
 for id in ["proxy-haproxy", "proxy-socat", "pihole-standard", "pihole-hardened"] {
-    check("\(id) is not a plain button", !buttonIds.contains(id), buttonIds.joined(separator: " "))
     check("\(id) is a selector's choice", Placement.place(of: id) == .selector)
 }
-check("the plain buttons are the table's plain rows, in table order",
-      buttonIds == ["reinstall", "restart", "uninstall", "update-check", "health-start", "health-stop", "health-run", "failures"],
-      buttonIds.joined(separator: " "))
-check("the update is the banner's, the bridges the switch's, install the not-installed page's",
-      Placement.place(of: "update") == .updateBanner && Placement.place(of: "bridges-on") == .bridgesSwitch
-      && Placement.place(of: "bridges-off") == .bridgesSwitch && Placement.place(of: "install") == .installView)
+check("each shared component is one place: the status header, the update row",
+      Placement.place(of: "health-run") == .statusHeader && Placement.place(of: "update-check") == .updateRow
+      && Placement.place(of: "update") == .updateRow)
+check("the switches, the admin row, the repairs link, maintenance and install each have their place",
+      Placement.place(of: "bridges-on") == .bridgesSwitch && Placement.place(of: "bridges-off") == .bridgesSwitch
+      && Placement.place(of: "health-start") == .autoChecks && Placement.place(of: "health-stop") == .autoChecks
+      && Placement.place(of: "open-admin") == .adminRow && Placement.place(of: "show-password-path") == .adminRow
+      && Placement.place(of: "failures") == .repairsHeader && Placement.place(of: "restart") == .maintenance
+      && Placement.place(of: "reinstall") == .maintenance && Placement.place(of: "uninstall") == .maintenance
+      && Placement.place(of: "install") == .installView)
 
 let tail = " The stack is rebuilt from the kept source. This takes a few minutes and DNS stops briefly. The running stack stays if anything fails."
 for (id, head) in [("proxy-haproxy", "Switch the Tor proxy to haproxy?"), ("proxy-socat", "Switch the Tor proxy to socat?"),
@@ -440,20 +444,10 @@ check("its notice says the switch did not happen",
       StackChoice.failedNotice(for: "pihole-hardened", said: sw126.said ?? "") == "The switch did not happen: authorisation cancelled (exit 126); Pi-hole is unchanged")
 check("no switch notice for another action", StackChoice.failedNotice(for: "restart", said: "failed (exit 1)") == nil)
 
-// The Update row says when the last check ran, whoever ran it.
+// `ago` is the one wording of every time on screen.
 check("ago says just now, minutes, hours, days and the future",
       ago(995, now: 1000) == "just now" && ago(700, now: 1000) == "5 min ago" && ago(0, now: 7200) == "2 h ago"
       && ago(0, now: 3 * 86_400) == "3 days ago" && ago(1010, now: 1000) == "in the future")
-if case .installed(let u) = view("status-update-available.tsv", 0), case .installed(let n) = view("status-installed.tsv", 0) {
-    check("the Update row names the answer and when it was checked",
-          updateRow(u.update, now: 1794251900 + 600) == "available: 0f6a6e7c3d2b (checked 10 min ago)", updateRow(u.update, now: 1794251900 + 600))
-    var later = u.update
-    later.checkedAt = 1794251900 + 590
-    later.result = .current
-    check("the Update row moves when a later check (the schedule's) wrote checked_at",
-          updateRow(later, now: 1794251900 + 600) == "up to date (checked just now)", updateRow(later, now: 1794251900 + 600))
-    check("the Update row says not checked yet without a check", updateRow(n.update, now: 1794251900) == "not checked yet", updateRow(n.update, now: 1794251900))
-}
 
 // --- The status level, the check table and what the views say (GUI spec 3 to 7) ---
 

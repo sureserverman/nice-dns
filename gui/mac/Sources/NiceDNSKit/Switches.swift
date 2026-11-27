@@ -4,50 +4,70 @@
 // so KitCheck tests it.
 import Foundation
 
-/// The one place an action of the table is drawn.
+/// The one place an action of the table is drawn (GUI spec section 10).
 public enum Place: String, CaseIterable, CustomStringConvertible {
-    /// A plain button in the window's Actions panel and an item of the menu.
-    case button
-    /// The bridges switch (the window's toggle, the menu's checked item).
+    /// The status header: one component, drawn in Overview and in Checks.
+    case statusHeader
+    /// The update row: one component, drawn in Overview and in Setup.
+    case updateRow
+    /// The bridges switch (the window's toggle, the panel's too).
     case bridgesSwitch
+    /// Overview's Pi-hole admin row (its buttons run no command).
+    case adminRow
+    /// Checks' "Check and repair automatically" switch.
+    case autoChecks
+    /// Checks' Automatic repairs header.
+    case repairsHeader
     /// A choice of the proxy or the Pi-hole selector.
     case selector
-    /// The update banner (the window's banner, the menu's first item).
-    case updateBanner
+    /// Setup's Maintenance rows.
+    case maintenance
     /// The not-installed page's Install button.
     case installView
-    /// The Admin panel's buttons (they run no command).
-    case adminPanel
 
     public var description: String { rawValue }
 }
 
 public enum Placement {
-    // The ids the views draw outside the plain-button lists. The views name
-    // them only through these constants, never as string literals (KitCheck
-    // reads the view sources for that), so `declared` is what they draw.
+    // The ids the views draw. The views name them only through these
+    // constants, never as string literals (KitCheck reads the view sources for
+    // that), so `declared` is what they draw.
+    /// The status header's button.
+    public static let healthRun = "health-run"
+    /// The update row's two buttons.
+    public static let updateCheck = "update-check"
+    public static let update = "update"
     /// The bridges switch: on, off.
     public static let bridgesOn = "bridges-on"
     public static let bridgesOff = "bridges-off"
-    /// The update banner's action.
-    public static let updateBanner = "update"
-    /// The not-installed page's action.
-    public static let install = "install"
-    /// The Admin panel's two buttons.
+    /// The admin row's two buttons.
     public static let openAdmin = "open-admin"
     public static let showPasswordPath = "show-password-path"
+    /// The automatic-checks switch: on, off.
+    public static let healthStart = "health-start"
+    public static let healthStop = "health-stop"
+    /// The Automatic repairs link.
+    public static let failures = "failures"
+    /// Maintenance.
+    public static let restart = "restart"
+    public static let reinstall = "reinstall"
+    public static let uninstall = "uninstall"
+    /// The not-installed page's action.
+    public static let install = "install"
 
     /// The ids each place draws, declared one place at a time. A row of the
     /// table no place names is drawn nowhere; one two places name is drawn
     /// twice. KitCheck and the tests refuse both.
     public static let declared: [(place: Place, ids: [String])] = [
-        (.button, ["reinstall", "restart", "uninstall", "update-check",
-                   "health-start", "health-stop", "health-run", "failures"]),
+        (.statusHeader, [healthRun]),
+        (.updateRow, [updateCheck, update]),
         (.bridgesSwitch, [bridgesOn, bridgesOff]),
+        (.adminRow, [openAdmin, showPasswordPath]),
+        (.autoChecks, [healthStart, healthStop]),
+        (.repairsHeader, [failures]),
         (.selector, StackChoice.all.flatMap(\.ids)),
-        (.updateBanner, [updateBanner]),
+        (.maintenance, [restart, reinstall, uninstall]),
         (.installView, [install]),
-        (.adminPanel, [openAdmin, showPasswordPath]),
     ]
 
     /// Every place that names `id`, in declaration order.
@@ -59,11 +79,6 @@ public enum Placement {
     public static func place(of id: String) -> Place? {
         let p = places(of: id)
         return p.count == 1 ? p[0] : nil
-    }
-
-    /// The plain buttons, in table order: the rows whose one place is a button.
-    public static func buttons(in table: [Action] = Actions.all) -> [Action] {
-        table.filter { place(of: $0.id) == .button }
     }
 
     /// The rows of `table` that do not have exactly one place, with the

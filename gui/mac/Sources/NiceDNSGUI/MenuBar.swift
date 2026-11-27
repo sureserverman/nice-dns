@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var watch: Set<AnyCancellable> = []
     private var bundleWatch = BundleWatch()
     private var bundleTimer: Timer?
+    private var keyMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -29,6 +30,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             .sink { [weak self] c in if c != nil { self?.openWindow() } }
             .store(in: &watch)
         drawGlyph()
+        // An accessory app has no main menu to carry key equivalents: ⌘1, ⌘2 and
+        // ⌘3 pick the window's views while it is the key window.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in self?.handleKey(e) ?? e }
         model.startRefreshing()
         // An uninstall removes the bundle under the running app: quit then,
         // or the menu-bar item outlives the app (Stage 2 gate round 1).
@@ -37,6 +41,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             let exists = FileManager.default.fileExists(atPath: program)
             if self.bundleWatch.tick(programExists: exists, busy: self.model.busy) { NSApp.terminate(nil) }
         }
+    }
+
+    private func handleKey(_ e: NSEvent) -> NSEvent? {
+        guard e.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+              let ch = e.charactersIgnoringModifiers, let n = Int(ch), (1...ViewTab.allCases.count).contains(n),
+              window?.isKeyWindow == true, model.status != nil else { return e }
+        model.view = ViewTab.allCases[n - 1]
+        return nil
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -83,7 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         head.isEnabled = false
         menu.addItem(head)
         if model.status?.update.result == .available {
-            menu.addItem(entry("A different version is available…", Placement.updateBanner))
+            menu.addItem(entry("A different version is available…", Placement.update))
         }
         menu.addItem(.separator())
         if model.installed {
@@ -97,8 +109,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if model.installed {
             // A described stack: the plain buttons; every other row has its
             // own place (Placement).
-            for a in Placement.buttons() {
-                menu.addItem(entry(a.label + (a.needsConfirm ? "…" : ""), a.id))
+            for id in [Placement.reinstall, Placement.restart, Placement.uninstall, Placement.updateCheck,
+                       Placement.healthStart, Placement.healthStop, Placement.healthRun, Placement.failures] {
+                if let a = Actions.lookup(id) { menu.addItem(entry(a.label + (a.needsConfirm ? "…" : ""), a.id)) }
             }
         } else if model.notInstalled && model.keptSource, let a = Actions.lookup(Placement.install) {
             menu.addItem(entry(a.label, a.id))
@@ -146,10 +159,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     @objc func openWindow() {
         if window == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 760),
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 700),
                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
                              backing: .buffered, defer: false)
             w.title = "nice-dns"
+            w.contentMinSize = NSSize(width: 680, height: 560)
             w.isReleasedWhenClosed = false
             w.contentView = NSHostingView(rootView: WindowView(model: model))
             w.center()
