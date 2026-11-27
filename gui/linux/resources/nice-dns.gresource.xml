@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/org/nice_dns/Gui">
+    <file>icons/scalable/actions/nice-dns-check-circle-symbolic.svg</file>
+    <file>icons/scalable/actions/nice-dns-clock-symbolic.svg</file>
+    <file>icons/scalable/actions/nice-dns-computer-symbolic.svg</file>
+    <file>icons/scalable/actions/nice-dns-external-symbolic.svg</file>
+    <file>icons/scalable/actions/nice-dns-filter-symbolic.svg</file>
+    <file>icons/scalable/actions/nice-dns-globe-symbolic.svg</file>
+    <file>icons/scalable/actions/nice-dns-resolver-symbolic.svg</file>
+    <file>icons/scalable/actions/nice-dns-shield-check-symbolic.svg</file>
+    <file>icons/scalable/actions/nice-dns-shield-symbolic.svg</file>
+    <file>icons/scalable/actions/nice-dns-tor-symbolic.svg</file>
+    <file>icons/scalable/actions/nice-dns-warning-symbolic.svg</file>
+  </gresource>
+</gresources>

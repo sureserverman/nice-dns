@@ -1,0 +1,46 @@
+/* The custom parts of the window: the hero circle, the lookup path, status
+   tints, pills and the raw-record box. Colours are @nd_* names defined per
+   appearance in src/theme.rs from the pack's tokens.json; everything else is
+   libadwaita's own. */
+
+.nd-hero-circle { min-width: 56px; min-height: 56px; border-radius: 28px; }
+.nd-hero-circle.nd-ok { background: @nd_ok_tint; color: @nd_ok_icon; }
+.nd-hero-circle.nd-attention { background: @nd_att_tint; color: @nd_att_icon; }
+.nd-hero-circle.nd-down { background: @nd_down_tint; color: @nd_down_icon; }
+.nd-hero-circle.nd-neutral { background: alpha(@nd_neutral_icon, 0.14); color: @nd_neutral_icon; }
+
+.nd-node-circle { min-width: 40px; min-height: 40px; border-radius: 22px; border: 2px solid transparent; }
+.nd-node-circle.nd-ok { background: @nd_ok_node_fill; border-color: @nd_ok_node_border; color: @nd_ok_icon; }
+.nd-node-circle.nd-attention { background: @nd_att_node_fill; border-color: @nd_att_node_border; color: @nd_att_icon; }
+.nd-node-circle.nd-down { background: @nd_down_node_fill; border-color: @nd_down_node_border; color: @nd_down_icon; }
+.nd-node-circle.nd-neutral { border-color: @nd_neutral_border; color: @nd_neutral_icon; }
+
+.nd-line { min-height: 0; border-top: 2px solid @nd_neutral_border; }
+.nd-line.nd-ok { border-top-color: @nd_ok_node_border; }
+.nd-line.nd-attention { border-top-color: @nd_att_node_border; }
+.nd-line.nd-down { border-top-color: @nd_down_node_border; }
+.nd-line.nd-dashed { border-top-style: dashed; }
+
+.nd-node-label { font-weight: 600; }
+.nd-node-caption { font-size: 0.9em; opacity: 0.75; }
+.nd-node-caption.nd-attention { color: @nd_att_text; opacity: 1; font-weight: 600; }
+.nd-node-caption.nd-down { color: @nd_down_text; opacity: 1; font-weight: 600; }
+
+.nd-icon-ok { color: @nd_ok_icon; }
+.nd-icon-attention { color: @nd_att_icon; }
+.nd-icon-down { color: @nd_down_icon; }
+.nd-text-ok { color: @nd_ok_icon; font-weight: 600; }
+.nd-text-attention { color: @nd_att_text; font-weight: 600; }
+.nd-text-down { color: @nd_down_text; font-weight: 600; }
+
+.nd-pill { background: @nd_ok_tint; color: @nd_ok_pill_text; border-radius: 999px; padding: 1px 9px; font-size: 0.85em; font-weight: 600; }
+
+.nd-record { background: @nd_inset; border-radius: 8px; padding: 10px 14px; font-family: monospace; font-size: 12px; }
+.nd-mono-sub .subtitle { font-family: monospace; font-size: 12px; }
+.nd-dim { opacity: 0.55; }
+.nd-path-card { padding: 16px 20px; }
+.nd-stderr { color: @nd_stderr; }
+.nd-secondary { color: @nd_secondary; }
+.nd-semibold { font-weight: 600; }
+.nd-link { color: @accent_color; font-weight: 600; }
+.nd-bar-detail { font-family: monospace; font-size: 12px; color: @nd_secondary; }

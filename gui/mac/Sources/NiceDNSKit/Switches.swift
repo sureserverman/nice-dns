@@ -4,50 +4,70 @@
 // so KitCheck tests it.
 import Foundation
 
-/// The one place an action of the table is drawn.
+/// The one place an action of the table is drawn (GUI spec section 10).
 public enum Place: String, CaseIterable, CustomStringConvertible {
-    /// A plain button in the window's Actions panel and an item of the menu.
-    case button
-    /// The bridges switch (the window's toggle, the menu's checked item).
+    /// The status header: one component, drawn in Overview and in Checks.
+    case statusHeader
+    /// The update row: one component, drawn in Overview and in Setup.
+    case updateRow
+    /// The bridges switch (the window's toggle, the panel's too).
     case bridgesSwitch
+    /// Overview's Pi-hole admin row (its buttons run no command).
+    case adminRow
+    /// Checks' "Check and repair automatically" switch.
+    case autoChecks
+    /// Checks' Automatic repairs header.
+    case repairsHeader
     /// A choice of the proxy or the Pi-hole selector.
     case selector
-    /// The update banner (the window's banner, the menu's first item).
-    case updateBanner
+    /// Setup's Maintenance rows.
+    case maintenance
     /// The not-installed page's Install button.
     case installView
-    /// The Admin panel's buttons (they run no command).
-    case adminPanel
 
     public var description: String { rawValue }
 }
 
 public enum Placement {
-    // The ids the views draw outside the plain-button lists. The views name
-    // them only through these constants, never as string literals (KitCheck
-    // reads the view sources for that), so `declared` is what they draw.
+    // The ids the views draw. The views name them only through these
+    // constants, never as string literals (KitCheck reads the view sources for
+    // that), so `declared` is what they draw.
+    /// The status header's button.
+    public static let healthRun = "health-run"
+    /// The update row's two buttons.
+    public static let updateCheck = "update-check"
+    public static let update = "update"
     /// The bridges switch: on, off.
     public static let bridgesOn = "bridges-on"
     public static let bridgesOff = "bridges-off"
-    /// The update banner's action.
-    public static let updateBanner = "update"
-    /// The not-installed page's action.
-    public static let install = "install"
-    /// The Admin panel's two buttons.
+    /// The admin row's two buttons.
     public static let openAdmin = "open-admin"
     public static let showPasswordPath = "show-password-path"
+    /// The automatic-checks switch: on, off.
+    public static let healthStart = "health-start"
+    public static let healthStop = "health-stop"
+    /// The Automatic repairs link.
+    public static let failures = "failures"
+    /// Maintenance.
+    public static let restart = "restart"
+    public static let reinstall = "reinstall"
+    public static let uninstall = "uninstall"
+    /// The not-installed page's action.
+    public static let install = "install"
 
     /// The ids each place draws, declared one place at a time. A row of the
     /// table no place names is drawn nowhere; one two places name is drawn
     /// twice. KitCheck and the tests refuse both.
     public static let declared: [(place: Place, ids: [String])] = [
-        (.button, ["reinstall", "restart", "uninstall", "update-check",
-                   "health-start", "health-stop", "health-run", "failures"]),
+        (.statusHeader, [healthRun]),
+        (.updateRow, [updateCheck, update]),
         (.bridgesSwitch, [bridgesOn, bridgesOff]),
+        (.adminRow, [openAdmin, showPasswordPath]),
+        (.autoChecks, [healthStart, healthStop]),
+        (.repairsHeader, [failures]),
         (.selector, StackChoice.all.flatMap(\.ids)),
-        (.updateBanner, [updateBanner]),
+        (.maintenance, [restart, reinstall, uninstall]),
         (.installView, [install]),
-        (.adminPanel, [openAdmin, showPasswordPath]),
     ]
 
     /// Every place that names `id`, in declaration order.
@@ -59,11 +79,6 @@ public enum Placement {
     public static func place(of id: String) -> Place? {
         let p = places(of: id)
         return p.count == 1 ? p[0] : nil
-    }
-
-    /// The plain buttons, in table order: the rows whose one place is a button.
-    public static func buttons(in table: [Action] = Actions.all) -> [Action] {
-        table.filter { place(of: $0.id) == .button }
     }
 
     /// The rows of `table` that do not have exactly one place, with the
@@ -94,8 +109,8 @@ public struct StackChoice: Equatable {
     public let title: String
     public let choices: [String]
 
-    public static let proxy = StackChoice(kind: .proxy, title: "Proxy", choices: ["haproxy", "socat"])
-    public static let pihole = StackChoice(kind: .pihole, title: "Pi-hole", choices: ["standard", "hardened"])
+    public static let proxy = StackChoice(kind: .proxy, title: "Tor proxy", choices: ["haproxy", "socat"])
+    public static let pihole = StackChoice(kind: .pihole, title: "Pi-hole image", choices: ["standard", "hardened"])
     public static let all = [proxy, pihole]
 
     public static func of(_ kind: Kind) -> StackChoice {
@@ -127,14 +142,36 @@ public struct StackChoice: Equatable {
         return v.flatMap { choices.contains($0) ? $0 : nil }
     }
 
-    /// The question asked before `choice` is switched to (DEC-018).
-    public func question(_ choice: String) -> String {
-        let head: String
+    /// The row's subtitle in Setup.
+    public var subtitle: String {
         switch kind {
-        case .proxy: head = "Switch the proxy to \(choice)?"
-        case .pihole: head = "Switch Pi-hole to \(choice)?"
+        case .proxy: return "HAProxy is the default. socat is lighter."
+        case .pihole: return "Hardened is a smaller build: about 109 MB instead of 700 MB."
         }
-        return head + " The stack is reinstalled from the kept source. This takes a few minutes and DNS stops briefly."
+    }
+
+    /// The footer under both selectors.
+    public static let footer = "Changing either one rebuilds the stack: a few minutes, with a short DNS gap. The running stack stays if anything fails."
+
+    /// The dialog's title before `choice` is switched to (DEC-018).
+    public func dialogTitle(_ choice: String) -> String {
+        switch kind {
+        case .proxy: return "Switch the Tor proxy to \(choice)?"
+        case .pihole: return "Switch Pi-hole to \(choice)?"
+        }
+    }
+
+    /// The dialog's body.
+    public static let dialogBody = "The stack is rebuilt from the kept source. This takes a few minutes and DNS stops briefly. The running stack stays if anything fails."
+
+    /// The question asked before `choice` is switched to: title, then body.
+    public func question(_ choice: String) -> String {
+        dialogTitle(choice) + " " + StackChoice.dialogBody
+    }
+
+    /// The dialog title for action `id`; nil when `id` is not a choice.
+    public static func dialogTitle(for id: String) -> String? {
+        choice(of: id).map { $0.selector.dialogTitle($0.choice) }
     }
 
     /// The question for action `id`; nil when `id` is not a choice.

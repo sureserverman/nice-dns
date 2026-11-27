@@ -2,10 +2,13 @@
 //! reads only the `nice-dns` command contract (docs/cli-contract.md).
 
 
+mod action_bar;
 mod actions;
+mod level;
 mod log_pane;
 mod model;
 mod runner;
+mod theme;
 mod window;
 
 use std::cell::{Cell, RefCell};
@@ -23,7 +26,7 @@ use libadwaita as adw;
 use model::View;
 
 const USAGE: &str =
-    "usage: nice-dns-gui [--check | --version | --screenshot <png> | --run-action <id> --exit | --probe <id>]";
+    "usage: nice-dns-gui [--check | --version | --screenshot <png> [--view overview|checks|setup] [--run <id>] | --run-action <id> --exit | --probe <id>]";
 
 /// The status command's argv: `<nice-dns> status --tsv`, the command found
 /// as `runner::resolve` finds it (PATH first, then where the installer put it).
@@ -131,10 +134,12 @@ fn run_window() -> ExitCode {
     app.run_with_args::<&str>(&[])
 }
 
-/// `--screenshot <png>`: read the status once, show the window, render it
-/// into `png` and exit (0, or 1 with the reason on stderr). A hook for tests
-/// and proofs; it needs a display (Xvfb will do).
-fn run_screenshot(png: PathBuf) -> ExitCode {
+/// `--screenshot <png> [--view <name>] [--run <id>]`: read the status once,
+/// show the window (on view `overview`, `checks` or `setup`), optionally start
+/// action `id` with no dialog (so the bar can be drawn running, finished or
+/// failed), render it into `png` and exit (0, or 1 with the reason on
+/// stderr). A hook for tests and proofs; it needs a display (Xvfb will do).
+fn run_screenshot(png: PathBuf, view: Option<String>, run: Option<String>) -> ExitCode {
     if let Err(code) = display_or_exit() {
         return code;
     }
@@ -145,10 +150,18 @@ fn run_screenshot(png: PathBuf) -> ExitCode {
         let ui = window::Ui::new(app);
         let (page, status) = window::read_page();
         ui.show(page, status);
+        if let Some(v) = &view {
+            ui.select_view(v);
+        }
         ui.window.present();
+        if let Some(id) = &run {
+            ui.run(id, None);
+        }
         let (app, c, png) = (app.clone(), Rc::clone(&c), png.clone());
-        // Give the window a frame or two to lay out before rendering it.
-        glib::timeout_add_local_once(Duration::from_millis(800), move || {
+        // Give the window a frame or two to lay out before rendering it (and
+        // a running action a moment to say something).
+        let wait = if run.is_some() { 1600 } else { 800 };
+        glib::timeout_add_local_once(Duration::from_millis(wait), move || {
             match ui.save_png(&png) {
                 Ok(()) => c.set(0),
                 Err(e) => eprintln!("nice-dns-gui: screenshot: {e}"),
@@ -167,7 +180,9 @@ fn probe_pick(ui: Rc<window::Ui>, app: adw::Application, c: Rc<Cell<i32>>, id: S
     if id == "bridges-on" || id == "bridges-off" {
         walk(ui.window.upcast_ref(), &mut |w| {
             if let Some(sw) = w.downcast_ref::<adw::SwitchRow>() {
-                sw.set_active(id == "bridges-on");
+                if sw.widget_name() == "bridges" {
+                    sw.set_active(id == "bridges-on");
+                }
             }
         });
     } else if let Some((sel, idx)) = window::selector_for(&id) {
@@ -202,6 +217,7 @@ fn probe_pick(ui: Rc<window::Ui>, app: adw::Application, c: Rc<Cell<i32>>, id: S
         if ui.settled() {
             println!("{}", probe_report(&ui, "after"));
             println!("pane: {}", ui.pane.text().lines().last().unwrap_or(""));
+            println!("bar: {}", ui.bar_summary());
             println!("log: {}", ui.pane.text().replace('\n', "|"));
             println!("toast: {}", ui.last_toast());
             c.set(0);
@@ -354,30 +370,28 @@ fn walk(w: &gtk4::Widget, f: &mut dyn FnMut(&gtk4::Widget)) {
     }
 }
 
-/// What a test reads off the window: the controls (action buttons and the
-/// bridges switch) and how many are disabled, the switch, the open dialog, the
-/// stale labels and how many rows are greyed.
+/// What a test reads off the window: the controls (action buttons, the
+/// bridges and automatic-checks switches and the selectors) and how many are
+/// disabled, the bridges switch, the open dialog, the status level and how
+/// many parts are dimmed (old results).
 fn probe_report(ui: &window::Ui, when: &str) -> String {
     let (mut controls, mut disabled, mut greyed) = (0, 0, 0);
     let mut switch = "none".to_string();
-    let mut stale = Vec::new();
     walk(ui.window.upcast_ref(), &mut |w| {
         let name = w.widget_name();
-        if name == "bridges" || name.starts_with("selector-") || actions::lookup(&name).is_some() {
+        if name == "bridges" || name == "auto-checks" || name == "turn-on" || name.starts_with("selector-") || actions::lookup(&name).is_some() {
             controls += 1;
             if !w.is_sensitive() {
                 disabled += 1;
             }
         }
         if let Some(sw) = w.downcast_ref::<adw::SwitchRow>() {
-            switch = if sw.is_active() { "on" } else { "off" }.into();
-        } else if w.is::<adw::ActionRow>() && !w.is_sensitive() {
-            greyed += 1;
-        }
-        if let Some(l) = w.downcast_ref::<gtk4::Label>() {
-            if l.has_css_class("warning") && l.text().starts_with("stale") {
-                stale.push(l.text().to_string());
+            if name == "bridges" {
+                switch = if sw.is_active() { "on" } else { "off" }.into();
             }
+        }
+        if w.has_css_class("nd-dim") {
+            greyed += 1;
         }
     });
     let (proxy, pihole) = (selector_value(ui, "proxy"), selector_value(ui, "pihole"));
@@ -385,8 +399,8 @@ fn probe_report(ui: &window::Ui, when: &str) -> String {
     let dialog = alert.as_ref().and_then(|d| d.heading()).map_or("none".to_string(), |h| h.replace(' ', "_"));
     let body = alert.as_ref().map_or(String::new(), |d| d.body().to_string());
     format!(
-        "{when}: controls={controls} disabled={disabled} switch={switch} proxy={proxy} pihole={pihole} greyed={greyed} stale={} dialog={dialog} page={} body={body}",
-        if stale.is_empty() { "none".into() } else { stale.join(",") },
+        "{when}: controls={controls} disabled={disabled} switch={switch} proxy={proxy} pihole={pihole} greyed={greyed} level={} dialog={dialog} page={} body={body}",
+        ui.level_summary(),
         ui.page_summary()
     )
 }
@@ -442,6 +456,10 @@ fn run_probe(id: String) -> ExitCode {
         let ui = window::Ui::new(app);
         let (page, status) = window::read_page();
         ui.show(page, status);
+        // The selectors are in Setup: a list only opens on a view that is shown.
+        if window::selector_for(&id).is_some() {
+            ui.select_view("setup");
+        }
         ui.window.present();
         let (app, c, id) = (app.clone(), Rc::clone(&c), id.clone());
         glib::timeout_add_local_once(Duration::from_millis(500), move || {
@@ -471,6 +489,23 @@ fn default_renderer(set: Option<&std::ffi::OsStr>) -> Option<&'static str> {
     }
 }
 
+/// The flags after `--screenshot <png>`: `--view overview|checks|setup` and
+/// `--run <id>` (an action that runs a command), each at most once.
+fn screenshot_flags(flags: &[&str]) -> Option<(Option<String>, Option<String>)> {
+    let (mut view, mut run) = (None, None);
+    let mut it = flags.iter();
+    while let Some(flag) = it.next() {
+        match (*flag, it.next()) {
+            ("--view", Some(v @ (&"overview" | &"checks" | &"setup"))) if view.is_none() => view = Some(v.to_string()),
+            ("--run", Some(id)) if run.is_none() && actions::lookup(id).and_then(|a| a.program).is_some() => {
+                run = Some(id.to_string())
+            }
+            _ => return None,
+        }
+    }
+    Some((view, run))
+}
+
 fn main() -> ExitCode {
     // Before GTK starts, and while this process has one thread.
     if let Some(r) = default_renderer(std::env::var_os("GSK_RENDERER").as_deref()) {
@@ -484,7 +519,13 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         ["--check"] => ExitCode::from(run_check()),
-        ["--screenshot", png] => run_screenshot(PathBuf::from(png)),
+        ["--screenshot", png, ref flags @ ..] => match screenshot_flags(flags) {
+            Some((view, run)) => run_screenshot(PathBuf::from(png), view, run),
+            None => {
+                eprintln!("{USAGE}");
+                ExitCode::from(2)
+            }
+        },
         ["--run-action", id, "--exit"] => run_action(id.to_string()),
         // Like --run-action: only actions that run a command.
         ["--probe", id] if actions::lookup(id).and_then(|a| a.program).is_some() => run_probe(id.to_string()),
@@ -503,6 +544,21 @@ mod tests {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../share/fixtures");
         let fx = if fixture == "-" { "-".to_string() } else { format!("{dir}/{fixture}") };
         vec![format!("{dir}/fake-status.sh"), fx, exit.to_string()]
+    }
+
+    #[test]
+    fn window_screenshot_flags() {
+        assert_eq!(screenshot_flags(&[]), Some((None, None)));
+        assert_eq!(screenshot_flags(&["--view", "setup"]), Some((Some("setup".into()), None)));
+        assert_eq!(
+            screenshot_flags(&["--run", "restart", "--view", "checks"]),
+            Some((Some("checks".into()), Some("restart".into())))
+        );
+        assert_eq!(screenshot_flags(&["--view", "nope"]), None);
+        assert_eq!(screenshot_flags(&["--view"]), None);
+        assert_eq!(screenshot_flags(&["--run", "open-admin"]), None, "an action that runs no command");
+        assert_eq!(screenshot_flags(&["--view", "setup", "--view", "checks"]), None);
+        assert_eq!(screenshot_flags(&["--other"]), None);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! The log pane (Task 1.3): the running action's own output, line by line,
+//! The log pane: the running action's own output, line by line,
 //! then what its exit means. The output stays until the next action starts.
 
 use gtk4 as gtk;
@@ -55,9 +55,8 @@ pub fn succeeded(id: &str, end: &Event) -> bool {
 }
 
 pub struct LogPane {
+    /// The output drawer's content: a header with Copy and the text.
     pub widget: gtk::Box,
-    title: gtk::Label,
-    result: gtk::Label,
     buffer: gtk::TextBuffer,
     view: gtk::TextView,
     lines: std::cell::RefCell<Vec<String>>,
@@ -65,19 +64,8 @@ pub struct LogPane {
 
 impl LogPane {
     pub fn new() -> LogPane {
-        let title = gtk::Label::builder().xalign(0.0).label("No action run yet").build();
-        title.add_css_class("heading");
-        let result = gtk::Label::builder().xalign(1.0).hexpand(true).selectable(true).build();
-        let head = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        head.set_margin_start(12);
-        head.set_margin_end(12);
-        head.set_margin_top(6);
-        head.set_margin_bottom(6);
-        head.append(&title);
-        head.append(&result);
-
         let buffer = gtk::TextBuffer::new(None);
-        buffer.create_tag(Some("stderr"), &[("foreground", &"#c0a050")]);
+        buffer.create_tag(Some("stderr"), &[]);
         buffer.create_tag(Some("auth"), &[("foreground", &"#e05050"), ("weight", &700i32)]);
         let view = gtk::TextView::builder()
             .buffer(&buffer)
@@ -85,32 +73,63 @@ impl LogPane {
             .cursor_visible(false)
             .monospace(true)
             .wrap_mode(gtk::WrapMode::WordChar)
-            .left_margin(12)
-            .right_margin(12)
+            .left_margin(18)
+            .right_margin(18)
             .top_margin(6)
-            .bottom_margin(6)
+            .bottom_margin(10)
             .build();
+        view.update_property(&[gtk::accessible::Property::Label("Command output")]);
+        // At most 240 px high, then it scrolls.
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
-            .min_content_height(160)
+            .min_content_height(120)
+            .max_content_height(240)
+            .propagate_natural_height(true)
             .child(&view)
             .build();
+
+        let copy = gtk::Button::builder().label("Copy").css_classes(["flat"]).build();
+        let (buf, weak_btn) = (buffer.clone(), copy.downgrade());
+        copy.connect_clicked(move |b| {
+            let (a, z) = buf.bounds();
+            b.clipboard().set_text(&buf.text(&a, &z, false));
+            b.set_label("Copied");
+            let weak = weak_btn.clone();
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
+                if let Some(b) = weak.upgrade() {
+                    b.set_label("Copy");
+                }
+            });
+        });
+        let heading = gtk::Label::builder().label("Output").xalign(0.0).hexpand(true).css_classes(["heading", "dim-label"]).build();
+        let head = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        head.set_margin_start(18);
+        head.set_margin_end(10);
+        head.set_margin_top(4);
+        head.append(&heading);
+        head.append(&copy);
 
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
         widget.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         widget.append(&head);
         widget.append(&scroller);
-        LogPane { widget, title, result, buffer, view, lines: Default::default() }
+        let pane = LogPane { widget, buffer, view, lines: Default::default() };
+        pane.restyle(false);
+        pane
+    }
+
+    /// stderr keeps its own colour, a muted one: a successful run that prints
+    /// helper notes there should not look like a failure.
+    pub fn restyle(&self, dark: bool) {
+        if let Some(t) = self.buffer.tag_table().lookup("stderr") {
+            t.set_foreground(Some(if dark { "#D9B46A" } else { "#8A5A00" }));
+        }
     }
 
     /// A new action: the old output goes, the command line is shown.
-    pub fn start(&self, label: &str, argv: &[String]) {
+    pub fn start(&self, argv: &[String]) {
         self.lines.borrow_mut().clear();
         self.buffer.set_text("");
-        self.title.set_text(label);
-        self.result.set_text("running…");
-        self.result.remove_css_class("error");
-        self.result.remove_css_class("success");
         self.append(&format!("$ {}", argv.join(" ")), None);
     }
 
@@ -135,6 +154,11 @@ impl LogPane {
         self.append(text, tag);
     }
 
+    /// The latest output line that says something.
+    pub fn last_line(&self) -> Option<String> {
+        self.lines.borrow().iter().rev().find(|l| !l.trim().is_empty()).cloned()
+    }
+
     /// The last output line starting with `prefix`.
     pub fn last_line_with_prefix(&self, prefix: &str) -> Option<String> {
         self.lines.borrow().iter().rev().find(|l| l.starts_with(prefix)).cloned()
@@ -149,8 +173,6 @@ impl LogPane {
     /// The end of the action; returns the line shown.
     pub fn finish(&self, id: &str, end: &Event) -> String {
         let said = outcome(id, end, &self.lines.borrow());
-        self.result.set_text(&said);
-        self.result.add_css_class(if succeeded(id, end) { "success" } else { "error" });
         self.append(&said, if succeeded(id, end) { None } else { Some("auth") });
         said
     }

@@ -45,17 +45,19 @@ nice-dns uninstall
 
 ## The window (Linux)
 
-![The nice-dns window on Linux Mint](docs/images/gui-linux.png)
+![The nice-dns window on Linux: the Overview view](docs/images/gui-linux.png)
 
 On Linux the installer also puts `nice-dns-gui` on the machine, with a
-launcher in the applications menu. The window shows what the stack is doing:
-each container, the health controller's last verdict, the bridges switch,
-recent actions, and whether an update is waiting. Its Installed section has a
-Proxy selector (haproxy, socat) and a Pi-hole selector (standard, hardened);
-picking the other value asks first and then runs `nice-dns switch`. Its
-buttons restart the stack, check for and install an update, turn bridges on
-or off, run or stop the health controller, reinstall and uninstall. Each one runs the `nice-dns`
-command, and its output appears in the window. Root steps ask for your
+launcher in the applications menu. The window has three views. Overview says
+in one sentence whether DNS is protected, draws the lookup path (this
+computer, Pi-hole, Unbound, Tor, the resolver), lists any check that needs
+attention, and holds the bridges switch, the Pi-hole admin and the update
+row. Checks shows every check in three groups, the automatic-checks switch
+and the controller's recent repairs. Setup holds the Tor proxy and Pi-hole
+image selectors (picking the other value asks first, then runs `nice-dns
+switch`), the version, restart, reinstall and uninstall. Each control runs the
+`nice-dns` command; while it runs a bar at the bottom shows its progress, and
+its full output opens on demand or by itself when it fails. Root steps ask for your
 password through the system's dialog (polkit). The window is a release asset,
 checked against `release/assets.lock`; an install without network goes on
 without it and says so. It needs GTK 4.14 and libadwaita 1.5 (Ubuntu 24.04,
@@ -63,16 +65,18 @@ Linux Mint 22 or later); on an older system the install goes on without it.
 
 ## The menu bar (macOS)
 
-![The nice-dns window on a Mac](docs/images/gui-mac.png)
+![The nice-dns window on a Mac: the Overview view](docs/images/gui-mac.png)
 
 On macOS the installer puts `nice-dns.app` in `~/Applications` (yours, no
-administrator password). Open it and a shield appears in the menu bar: green
-when every check is healthy, amber when the health controller is behind or a
-check cannot tell, red when the controller or a check reports a failure, grey
-when nothing is installed. Its menu runs the
-same actions as the Linux window (the proxy and the Pi-hole flavour are two
-submenus with a check mark on the installed one), and Open window shows the same sections with
-the output of the last action. Like the Linux window it is a release asset
+administrator password). Open it and a shield appears in the menu bar: a
+check mark when DNS is protected, an exclamation mark (amber) when DNS works
+but a check needs attention or the status is out of date, a cross (red) when
+DNS is down, a slashed shield when nothing is installed. Click it for a panel
+with the status, the lookup path, the bridges switch, Run Checks Now, Open
+Pi-hole Admin and Restart the Stack. Open nice-dns shows the same Overview,
+Checks and Setup views as the Linux window; the proxy and Pi-hole selectors
+live in Setup. An action from the panel opens the window only when it asks a
+question or fails. Like the Linux window it is a release asset
 checked against `release/assets.lock`; an install without network goes on
 without it and says so. It does not start by itself at login yet; add it under
 System Settings > General > Login Items if you want it there.

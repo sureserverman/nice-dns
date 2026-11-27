@@ -9,15 +9,18 @@ fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../share/fixtures")
 }
 
-fn screenshot(fixture: &str, exit: i32) -> (bool, u64, String) {
+fn screenshot(fixture: &str, exit: i32, view: Option<&str>) -> (bool, u64, String) {
     let dir = std::env::temp_dir().join(format!("nice-dns-gui-xvfb-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let png = dir.join(format!("{fixture}.png"));
+    let png = dir.join(format!("{fixture}-{}.png", view.unwrap_or("default")));
     let _ = std::fs::remove_file(&png);
     let status_cmd = format!("{} {} {exit}", fixtures().join("fake-status.sh").display(), fixtures().join(fixture).display());
-    let out = Command::new("xvfb-run")
-        .args(["-a", env!("CARGO_BIN_EXE_nice-dns-gui"), "--screenshot"])
-        .arg(&png)
+    let mut cmd = Command::new("xvfb-run");
+    cmd.args(["-a", env!("CARGO_BIN_EXE_nice-dns-gui"), "--screenshot"]).arg(&png);
+    if let Some(v) = view {
+        cmd.args(["--view", v]);
+    }
+    let out = cmd
         .env("NICE_DNS_GUI_STATUS_CMD", status_cmd)
         .env("GSK_RENDERER", "cairo")
         .output()
@@ -34,10 +37,27 @@ fn window_screenshot_under_xvfb_writes_a_png_for_every_fixture() {
         ("status-update-available.tsv", 0),
         ("status-not-installed.tsv", 1),
     ] {
-        let (ok, size, stderr) = screenshot(fixture, exit);
+        let (ok, size, stderr) = screenshot(fixture, exit, None);
         assert!(ok, "{fixture}: --screenshot failed: {stderr}");
         assert!(size > 10_000, "{fixture}: PNG is {size} bytes: {stderr}");
     }
+}
+
+/// `--view` shows each of the three views; the PNGs differ, and a view
+/// that does not exist is refused.
+#[test]
+fn window_screenshot_takes_a_view() {
+    let mut sizes = Vec::new();
+    for view in ["overview", "checks", "setup"] {
+        let (ok, size, stderr) = screenshot("status-installed.tsv", 0, Some(view));
+        assert!(ok, "{view}: --screenshot failed: {stderr}");
+        assert!(size > 10_000, "{view}: PNG is {size} bytes: {stderr}");
+        sizes.push(size);
+    }
+    sizes.dedup();
+    assert_eq!(sizes.len(), 3, "the three views drew the same PNG");
+    let (ok, _, _) = screenshot("status-installed.tsv", 0, Some("nope"));
+    assert!(!ok, "an unknown view is refused");
 }
 
 /// A plain launch (no hook) keeps the window alive: its status is read again
@@ -151,7 +171,7 @@ fn with_proxy(v: &str) -> String {
     INSTALLED.replacen("install\tvariant\tsocat", &format!("install\tvariant\t{v}"), 1)
 }
 
-const QUESTION_TAIL: &str = "The stack is reinstalled from the kept source. This takes a few minutes and DNS stops briefly.";
+const QUESTION_TAIL: &str = "The stack is rebuilt from the kept source. This takes a few minutes and DNS stops briefly. The running stack stays if anything fails.";
 
 #[test]
 fn selectors_the_installed_fixture_shows_both_with_the_status_values() {
@@ -161,8 +181,10 @@ fn selectors_the_installed_fixture_shows_both_with_the_status_values() {
     assert_eq!(field(before, "proxy"), "socat", "{before}");
     assert_eq!(field(before, "pihole"), "standard", "{before}");
     assert_eq!(field(before, "disabled"), "0", "both selectors are enabled: {before}");
-    // Counted among the controls: the 14 buttons-and-switch of the table plus two.
-    assert!(field(before, "controls").parse::<u32>().unwrap() >= 12, "{before}");
+    assert_eq!(field(before, "level"), "ok", "{before}");
+    // Counted among the controls: the action buttons and switches of the
+    // three views (the shared header and update row once per view), and the two selectors.
+    assert!(field(before, "controls").parse::<u32>().unwrap() >= 14, "{before}");
 }
 
 #[test]
@@ -172,7 +194,7 @@ fn selectors_picking_the_other_proxy_asks_then_runs_and_the_next_read_confirms()
     assert_eq!(field(p.at("before"), "proxy"), "haproxy", "{}", p.out);
     // The question, verbatim, before anything ran.
     let q = p.at("question");
-    assert_eq!(field(q, "dialog"), "Switch_the_proxy_to_socat?", "{q}");
+    assert_eq!(field(q, "dialog"), "Switch_the_Tor_proxy_to_socat?", "{q}");
     assert!(q.ends_with(&format!("body={QUESTION_TAIL}")), "{q}");
     // Running: the selector shows the new value; every control is disabled, the selectors too.
     let during = p.at("during");
@@ -184,6 +206,11 @@ fn selectors_picking_the_other_proxy_asks_then_runs_and_the_next_read_confirms()
     assert_eq!(field(after, "disabled"), "0", "{after}");
     assert_eq!(p.record, "switch proxy socat\n", "{}", p.out);
     assert!(p.out.contains("pane: finished (exit 0)"), "{}", p.out);
+    // A success says so in the bar; the drawer stays closed.
+    let bar = p.at("bar");
+    assert_eq!(field(bar, "state"), "finished", "{bar}");
+    assert!(field(bar, "title").starts_with("Switched:_the_proxy_is_now_tor-socat"), "{bar}");
+    assert_eq!(field(bar, "drawer"), "closed", "{bar}");
 }
 
 #[test]
@@ -221,8 +248,15 @@ fn selectors_a_failed_switch_puts_the_selector_back_and_names_the_exit() {
     assert!(p.out.contains("pane: failed (exit 3)"), "{}", p.out);
     // The command's stderr is in the log pane.
     assert!(p.at("log").contains("fake nice-dns: a line on stderr"), "{}", p.out);
-    let toast = p.at("toast");
-    assert!(toast.contains("did not happen") && toast.contains("exit 3"), "{toast}");
+    // The failed bar, not a toast: it says what did not finish and why, and
+    // its drawer opened by itself.
+    let bar = p.at("bar");
+    assert_eq!(field(bar, "state"), "failed", "{bar}");
+    assert_eq!(field(bar, "title"), "Switching_the_Tor_proxy_to_socat_did_not_finish", "{bar}");
+    assert_eq!(field(bar, "detail"), "failed_(exit_3)", "{bar}");
+    assert_eq!(field(bar, "drawer"), "open", "{bar}");
+    // (The only toast is the probe's second click: one action at a time.)
+    assert_eq!(p.at("toast"), "toast: Another action is running", "no toast for a failure: {}", p.out);
 }
 
 #[test]
@@ -232,7 +266,10 @@ fn selectors_a_root_step_not_authorised_puts_the_selector_back() {
     assert_eq!(p.code, Some(0), "{}", p.out);
     assert_eq!(field(p.at("after"), "proxy"), "haproxy", "{}", p.out);
     assert!(p.out.contains("pane: authorisation cancelled (exit 126)"), "{}", p.out);
-    assert!(p.at("toast").contains("did not happen"), "{}", p.out);
+    let bar = p.at("bar");
+    assert_eq!(field(bar, "state"), "failed", "{bar}");
+    assert_eq!(field(bar, "detail"), "authorisation_cancelled_(exit_126)", "{bar}");
+    assert_eq!(field(bar, "drawer"), "open", "{bar}");
 }
 
 #[test]
