@@ -3,6 +3,8 @@
 
 
 mod actions;
+#[allow(dead_code)] // drawn by the window from step 2
+mod level;
 mod log_pane;
 mod model;
 mod runner;

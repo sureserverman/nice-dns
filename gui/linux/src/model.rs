@@ -137,6 +137,8 @@ pub struct Update {
     pub result: Option<UpdateResult>,
     pub never_checked: bool,
     pub checked_at: Option<u64>,
+    /// `update auto loaded|stopped`: the twice-a-day check.
+    pub auto: Option<String>,
     pub remote_commit: Option<String>,
 }
 
@@ -283,6 +285,7 @@ pub fn parse(input: &str) -> Result<Status, ParseError> {
                         u.never_checked = f.get(3) == Some(&"never-checked");
                     }
                     "checked_at" => u.checked_at = val.parse().ok(),
+                    "auto" => u.auto = text(val),
                     "remote_commit" => u.remote_commit = text(val),
                     _ => {}
                 }
