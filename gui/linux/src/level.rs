@@ -452,8 +452,8 @@ pub fn checks_subtitle(s: &Status, now: u64) -> String {
 
 // ----------------------------------------------------------------------- hero
 
-/// The status header: the one place of `health-run` (or, with the schedule
-/// stopped and the results old, of `health-start`).
+/// The status header: the one place of `health-run` (with the schedule
+/// stopped and the results old, its button turns the schedule on instead).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hero {
     pub tint: Tint,
@@ -461,8 +461,26 @@ pub struct Hero {
     pub icon: &'static str,
     pub title: String,
     pub subtitle: String,
-    pub button: &'static str,
-    pub button_label: &'static str,
+    pub action: HeroAction,
+}
+
+/// The status header's one button. Turn on is the automatic-checks switch's
+/// setter: `health-start` keeps its one place there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeroAction {
+    /// "Run checks" (`health-run`).
+    RunChecks,
+    /// "Turn on": the schedule is stopped.
+    TurnOn,
+}
+
+impl HeroAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            HeroAction::RunChecks => "Run checks",
+            HeroAction::TurnOn => "Turn on",
+        }
+    }
 }
 
 fn last_pass_ago(s: &Status, now: u64) -> Option<String> {
@@ -488,8 +506,7 @@ pub fn hero(s: &Status, level: Level, now: u64) -> Hero {
         icon,
         title: title.to_string(),
         subtitle,
-        button: "health-run",
-        button_label: "Run checks",
+        action: HeroAction::RunChecks,
     };
     let checked = || match last_pass_ago(s, now) {
         Some(a) => format!("Checked {a}."),
@@ -546,8 +563,7 @@ pub fn hero(s: &Status, level: Level, now: u64) -> Hero {
             };
             if s.controller.schedule.as_deref() == Some("stopped") {
                 Hero {
-                    button: "health-start",
-                    button_label: "Turn on",
+                    action: HeroAction::TurnOn,
                     ..run(
                         Tint::Attention,
                         "nice-dns-warning-symbolic",
@@ -1112,9 +1128,9 @@ mod tests {
     #[test]
     fn hero_ok() {
         let h = hero_of(INSTALLED);
-        assert_eq!((h.title.as_str(), h.tint, h.button), ("DNS is protected", Tint::Ok, "health-run"));
+        assert_eq!((h.title.as_str(), h.tint, h.action), ("DNS is protected", Tint::Ok, HeroAction::RunChecks));
         assert_eq!(h.subtitle, "Every lookup leaves through Tor. Checked 1 min ago.");
-        assert_eq!(h.button_label, "Run checks");
+        assert_eq!(h.action.label(), "Run checks");
     }
 
     #[test]
@@ -1150,7 +1166,7 @@ mod tests {
         let h = hero_of(STALE);
         assert_eq!(h.title, "Status is out of date");
         assert_eq!(h.subtitle, "The last check ran 1 min ago. Checks are overdue.");
-        assert_eq!(h.button, "health-run");
+        assert_eq!(h.action, HeroAction::RunChecks);
         for s in [&h.title, &h.subtitle] {
             assert!(!s.contains("stale 942s"));
         }
@@ -1159,7 +1175,7 @@ mod tests {
         let h = hero_of(&stopped);
         assert_eq!(h.title, "Automatic checks are off");
         assert_eq!(h.subtitle, "The last check ran 1 min ago.");
-        assert_eq!((h.button, h.button_label), ("health-start", "Turn on"));
+        assert_eq!((h.action, h.action.label()), (HeroAction::TurnOn, "Turn on"));
 
         let h = hero_of(&INSTALLED.replacen("controller\tstale\tno", "controller\tstale\tnever", 1));
         assert_eq!((h.title.as_str(), h.tint), ("Waiting for the first check", Tint::Neutral));

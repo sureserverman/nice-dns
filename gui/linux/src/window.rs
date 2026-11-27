@@ -21,7 +21,7 @@ use libadwaita as adw;
 
 use crate::action_bar::{self, Bar};
 use crate::actions::{self, Choices};
-use crate::level::{self, CheckRow, Group, Hero, Level, Node, Repair, Severity, Tint, UpdateRow};
+use crate::level::{self, CheckRow, Group, Hero, HeroAction, Level, Node, Repair, Severity, Tint, UpdateRow};
 use crate::log_pane::{self, LogPane};
 use crate::model::{self, Status, View};
 use crate::runner::{self, Event, Exit, Stream};
@@ -1127,6 +1127,37 @@ impl Ui {
         b
     }
 
+    /// The status header's button. Turn on sets the automatic-checks switch,
+    /// as the switch would: `health-start` keeps its one place there.
+    fn hero_button(self: &Rc<Self>, a: HeroAction) -> gtk::Button {
+        match a {
+            HeroAction::RunChecks => self.action_button("health-run", a.label()),
+            HeroAction::TurnOn => {
+                let b = gtk::Button::with_label(a.label());
+                b.set_widget_name("turn-on");
+                let weak = Rc::downgrade(self);
+                b.connect_clicked(move |_| {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.set_auto(true);
+                    }
+                });
+                b.set_sensitive(!self.busy.get());
+                b
+            }
+        }
+    }
+
+    /// The automatic-checks switch's setter, and the status header's Turn on:
+    /// `health-start` or `health-stop`, unless the switch is already there.
+    fn set_auto(self: &Rc<Self>, on: bool) {
+        let now_on = self.auto_pending.get().unwrap_or_else(|| {
+            self.status.borrow().as_ref().is_some_and(|s| s.controller.schedule.as_deref() == Some("loaded"))
+        });
+        if on != now_on {
+            self.act(AUTO_ACTIONS[usize::from(!on)]);
+        }
+    }
+
     /// An expander row that remembers, across redraws, whether the person
     /// left it open (`key`); `default` is how it starts.
     fn remember(self: &Rc<Self>, key: String, default: bool, row: &adw::ExpanderRow) {
@@ -1198,7 +1229,7 @@ impl Ui {
         if !h.subtitle.is_empty() {
             text.append(&gtk::Label::builder().label(h.subtitle.as_str()).xalign(0.0).wrap(true).css_classes(["dim-label"]).build());
         }
-        let button = self.action_button(h.button, h.button_label);
+        let button = self.hero_button(h.action);
         button.set_valign(gtk::Align::Center);
         row.append(&circle);
         row.append(&text);
@@ -1346,7 +1377,7 @@ impl Ui {
         let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(4).hexpand(true).valign(gtk::Align::Center).build();
         text.append(&gtk::Label::builder().label(b.checks_title.as_str()).xalign(0.0).wrap(true).css_classes(["title-2"]).build());
         text.append(&gtk::Label::builder().label(b.checks_subtitle.as_str()).xalign(0.0).wrap(true).css_classes(["dim-label"]).build());
-        let button = self.action_button(b.header.button, b.header.button_label);
+        let button = self.hero_button(b.header.action);
         button.set_valign(gtk::Align::Center);
         head.append(&text);
         head.append(&button);
@@ -1365,7 +1396,7 @@ impl Ui {
         let weak = Rc::downgrade(self);
         sw.connect_active_notify(move |sw| {
             if let Some(ui) = weak.upgrade() {
-                ui.act(AUTO_ACTIONS[usize::from(!sw.is_active())]);
+                ui.set_auto(sw.is_active());
             }
         });
         g.add(&sw);
@@ -1754,7 +1785,7 @@ mod tests {
         let b = body_for(INSTALLED);
         assert_eq!(b.level, Level::Ok);
         assert_eq!(b.header.title, "DNS is protected");
-        assert_eq!(b.header.button, "health-run");
+        assert_eq!(b.header.action, HeroAction::RunChecks);
         assert_eq!(b.path.len(), 5);
         assert!(b.path[1..].iter().all(|n| n.state == NodeState::Ok));
         assert!(b.attention.is_empty());
@@ -1821,7 +1852,7 @@ mod tests {
     #[test]
     fn window_stopped_schedule_turns_the_header_button_into_turn_on() {
         let b = body_for(&STALE.replacen("controller\tschedule\tloaded", "controller\tschedule\tstopped", 1));
-        assert_eq!((b.header.title.as_str(), b.header.button), ("Automatic checks are off", "health-start"));
+        assert_eq!((b.header.title.as_str(), b.header.action), ("Automatic checks are off", HeroAction::TurnOn));
         assert!(!b.auto_checks.on);
     }
 
@@ -1929,7 +1960,7 @@ mod tests {
     #[test]
     fn window_the_four_selector_actions_are_in_no_button_list() {
         let b = body_for(INSTALLED);
-        let buttons: Vec<&str> = [b.header.button, b.update.button]
+        let buttons: Vec<&str> = ["health-run", b.update.button]
             .into_iter()
             .chain(b.setup.maintenance.iter().map(|m| m.id))
             .chain(["show-password-path", "open-admin", "failures"])
@@ -1966,7 +1997,9 @@ mod tests {
     fn places() -> Vec<(String, &'static str)> {
         let mut out: Vec<(String, &'static str)> = Vec::new();
         let b = body_for(INSTALLED);
-        out.push(("the status header".into(), b.header.button));
+        // Its Turn on (schedule stopped) is the automatic-checks switch's setter, not a place.
+        assert_eq!(b.header.action, HeroAction::RunChecks);
+        out.push(("the status header".into(), "health-run"));
         out.push(("the update row".into(), b.update.button));
         // `update` takes the update row's place when a different version is there.
         let avail = body_for(UPDATE);

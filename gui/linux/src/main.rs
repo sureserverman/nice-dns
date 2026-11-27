@@ -379,7 +379,7 @@ fn probe_report(ui: &window::Ui, when: &str) -> String {
     let mut switch = "none".to_string();
     walk(ui.window.upcast_ref(), &mut |w| {
         let name = w.widget_name();
-        if name == "bridges" || name == "auto-checks" || name.starts_with("selector-") || actions::lookup(&name).is_some() {
+        if name == "bridges" || name == "auto-checks" || name == "turn-on" || name.starts_with("selector-") || actions::lookup(&name).is_some() {
             controls += 1;
             if !w.is_sensitive() {
                 disabled += 1;
