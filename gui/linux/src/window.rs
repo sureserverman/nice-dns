@@ -1758,7 +1758,7 @@ mod tests {
         assert_eq!(b.path.len(), 5);
         assert!(b.path[1..].iter().all(|n| n.state == NodeState::Ok));
         assert!(b.attention.is_empty());
-        assert_eq!(b.links, ["15 of 15 checks passing", "Last repair 1 h ago \u{b7} moved back to the Cloudflare onion route"]);
+        assert_eq!(b.links, ["15 of 15 checks passing", "Last repair 1 h ago \u{b7} Moved back to the Cloudflare onion route"]);
         assert!(b.bridges.on);
         assert_eq!(b.update.title, "Not checked yet");
         assert_eq!(b.badge, 0);

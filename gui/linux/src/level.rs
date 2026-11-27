@@ -909,10 +909,7 @@ pub fn repairs(s: &Status, now: u64) -> Vec<Repair> {
 /// "Last repair {ago} \u{b7} {newest repair sentence}", when there is one.
 pub fn last_repair_link(repairs: &[Repair]) -> Option<String> {
     let r = repairs.first()?;
-    let sentence = {
-        let mut c = r.text.chars();
-        c.next().map(|f| f.to_lowercase().collect::<String>() + c.as_str()).unwrap_or_default()
-    };
+    let sentence = &r.text;
     if r.when.is_empty() {
         Some(format!("Last repair: {sentence}"))
     } else {
@@ -1431,7 +1428,7 @@ mod tests {
             ["Moved back to the Cloudflare onion route", "Moved to the Cloudflare Tor exit route"]
         );
         assert_eq!(r[0].when, "1 h ago");
-        assert_eq!(last_repair_link(&r).unwrap(), "Last repair 1 h ago \u{b7} moved back to the Cloudflare onion route");
+        assert_eq!(last_repair_link(&r).unwrap(), "Last repair 1 h ago \u{b7} Moved back to the Cloudflare onion route");
         assert_eq!(last_repair_link(&[]), None);
     }
 
