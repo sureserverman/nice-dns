@@ -206,6 +206,11 @@ fn selectors_picking_the_other_proxy_asks_then_runs_and_the_next_read_confirms()
     assert_eq!(field(after, "disabled"), "0", "{after}");
     assert_eq!(p.record, "switch proxy socat\n", "{}", p.out);
     assert!(p.out.contains("pane: finished (exit 0)"), "{}", p.out);
+    // A success says so in the bar; the drawer stays closed.
+    let bar = p.at("bar");
+    assert_eq!(field(bar, "state"), "finished", "{bar}");
+    assert!(field(bar, "title").starts_with("Switched:_the_proxy_is_now_tor-socat"), "{bar}");
+    assert_eq!(field(bar, "drawer"), "closed", "{bar}");
 }
 
 #[test]
@@ -243,8 +248,15 @@ fn selectors_a_failed_switch_puts_the_selector_back_and_names_the_exit() {
     assert!(p.out.contains("pane: failed (exit 3)"), "{}", p.out);
     // The command's stderr is in the log pane.
     assert!(p.at("log").contains("fake nice-dns: a line on stderr"), "{}", p.out);
-    let toast = p.at("toast");
-    assert!(toast.contains("did not happen") && toast.contains("exit 3"), "{toast}");
+    // The failed bar, not a toast: it says what did not finish and why, and
+    // its drawer opened by itself.
+    let bar = p.at("bar");
+    assert_eq!(field(bar, "state"), "failed", "{bar}");
+    assert_eq!(field(bar, "title"), "Switch_the_proxy_to_socat_did_not_finish", "{bar}");
+    assert_eq!(field(bar, "detail"), "failed_(exit_3)", "{bar}");
+    assert_eq!(field(bar, "drawer"), "open", "{bar}");
+    // (The only toast is the probe's second click: one action at a time.)
+    assert_eq!(p.at("toast"), "toast: Another action is running", "no toast for a failure: {}", p.out);
 }
 
 #[test]
@@ -254,7 +266,10 @@ fn selectors_a_root_step_not_authorised_puts_the_selector_back() {
     assert_eq!(p.code, Some(0), "{}", p.out);
     assert_eq!(field(p.at("after"), "proxy"), "haproxy", "{}", p.out);
     assert!(p.out.contains("pane: authorisation cancelled (exit 126)"), "{}", p.out);
-    assert!(p.at("toast").contains("did not happen"), "{}", p.out);
+    let bar = p.at("bar");
+    assert_eq!(field(bar, "state"), "failed", "{bar}");
+    assert_eq!(field(bar, "detail"), "authorisation_cancelled_(exit_126)", "{bar}");
+    assert_eq!(field(bar, "drawer"), "open", "{bar}");
 }
 
 #[test]

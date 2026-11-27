@@ -19,6 +19,7 @@ use gtk4 as gtk;
 use gtk::{gio, glib};
 use libadwaita as adw;
 
+use crate::action_bar::{self, Bar};
 use crate::actions::{self, Choices};
 use crate::level::{self, CheckRow, Group, Hero, Level, Node, Repair, Severity, Tint, UpdateRow};
 use crate::log_pane::{self, LogPane};
@@ -405,6 +406,9 @@ pub struct Ui {
     toasts: adw::ToastOverlay,
     /// The running or last action's output.
     pub pane: LogPane,
+    /// The bar at the bottom while an action runs and after it ends, and
+    /// the drawer with the pane's output.
+    bar: Rc<Bar>,
     shown: RefCell<Option<Page>>,
     pub status: RefCell<Option<Status>>,
     reading: Cell<bool>,
@@ -479,15 +483,14 @@ impl Ui {
         header.set_title_widget(Some(&switcher));
 
         let pane = LogPane::new();
-        let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        column.append(&root);
-        column.append(&pane.widget);
+        let bar = Bar::new(pane.widget.upcast_ref());
 
         let toasts = adw::ToastOverlay::new();
-        toasts.set_child(Some(&column));
+        toasts.set_child(Some(&root));
         let view = adw::ToolbarView::new();
         view.add_top_bar(&header);
         view.set_content(Some(&toasts));
+        view.add_bottom_bar(&bar.widget);
 
         let window = adw::ApplicationWindow::builder()
             .application(app)
@@ -509,6 +512,7 @@ impl Ui {
             other,
             toasts,
             pane,
+            bar,
             shown: RefCell::new(None),
             status: RefCell::new(None),
             reading: Cell::new(false),
@@ -523,6 +527,14 @@ impl Ui {
             held: RefCell::new(None),
             last_toast: RefCell::new(String::new()),
             open: RefCell::new(HashMap::new()),
+        });
+        let weak = Rc::downgrade(&ui);
+        let manager = adw::StyleManager::default();
+        ui.pane.restyle(manager.is_dark());
+        manager.connect_dark_notify(move |m| {
+            if let Some(ui) = weak.upgrade() {
+                ui.pane.restyle(m.is_dark());
+            }
         });
         // Closing the window would end this process and leave the running
         // command with no one reading its output, midway through (say) a
@@ -619,12 +631,11 @@ impl Ui {
         if self.busy.get() {
             return self.toast("Another action is running");
         }
-        let label = actions::lookup(id).map_or(id, |a| a.label).to_string();
         let argv = match actions::argv(id, choices, runner::resolve) {
             Ok(Some(v)) => v,
             Ok(None) => return self.act_local(id),
             Err(e) => {
-                self.pane.start(&label, &[]);
+                self.pane.start(&[]);
                 return self.end(id, Event::Failed(e));
             }
         };
@@ -639,7 +650,8 @@ impl Ui {
             self.selector_pending.set(Some((sel.kind, idx)));
         }
         self.set_busy(true);
-        self.pane.start(&label, &argv);
+        self.pane.start(&argv);
+        self.bar.running(&action_bar::running_title(id));
         let rx = match runner::spawn(&argv) {
             Ok(rx) => rx,
             Err(e) => return self.end(id, Event::Failed(e.to_string())),
@@ -670,6 +682,9 @@ impl Ui {
             // Only new output scrolls: someone reading back is left there.
             if added {
                 ui.pane.scroll_to_end();
+                if let Some(l) = ui.pane.last_line() {
+                    ui.bar.latest(&l);
+                }
             }
             glib::ControlFlow::Continue
         });
@@ -688,6 +703,14 @@ impl Ui {
             self.selector_pending.set(None);
         }
         self.close_asked.set(None);
+        // The bar says how it ended: a result, or "did not finish" with the
+        // drawer open (a failure is no toast).
+        if log_pane::succeeded(id, &end) {
+            let title = action_bar::result_title(id, self.pane.last_line().as_deref());
+            self.bar.finished(true, &title, &format!("Finished in {} \u{b7} {said}", self.bar.took()));
+        } else {
+            self.bar.finished(false, &action_bar::failed_title(id), &said);
+        }
         self.set_busy(false);
         let done = self.headless.borrow_mut().take();
         if let Some(done) = done {
@@ -696,13 +719,6 @@ impl Ui {
                 Event::Exit(Exit::Signal(s)) => 128 + s,
                 _ => 1,
             });
-        }
-        if !log_pane::succeeded(id, &end) {
-            if selector_for(id).is_some() {
-                self.toast(&format!("The switch did not happen: {said}"));
-            } else {
-                self.toast(&format!("{}: {said}", actions::lookup(id).map_or(id, |a| a.label)));
-            }
         }
         // Re-read and redraw everything: a switch the command did not turn
         // goes back to what the status says. A read already under way is
@@ -923,7 +939,7 @@ impl Ui {
     }
 
     /// The actions that run no command: the admin page and the password path.
-    pub fn act_local(&self, id: &str) {
+    pub fn act_local(self: &Rc<Self>, id: &str) {
         let admin = self.status.borrow().as_ref().map(|s| s.admin.clone()).unwrap_or_default();
         match id {
             "open-admin" => match admin.url {
@@ -935,12 +951,50 @@ impl Ui {
                 None => self.toast("The status names no admin page"),
             },
             "show-password-path" => match admin.password_path {
-                Some(p) => self.toast(&format!("The admin password is in {p}")),
+                Some(p) => self.reveal_password_file(&p),
                 None => self.toast("The status names no password file"),
             },
             other => self.toast(&format!("{other}: not available here")),
         }
     }
+    /// Show the admin password file in the file manager; when that cannot be
+    /// done, say where it is, with a Copy button.
+    fn reveal_password_file(self: &Rc<Self>, path: &str) {
+        let weak = Rc::downgrade(self);
+        let shown = path.to_string();
+        gtk::FileLauncher::new(Some(&gio::File::for_path(path))).open_containing_folder(
+            Some(&self.window),
+            gio::Cancellable::NONE,
+            move |res| {
+                // A dismissed chooser is no failure.
+                let Err(e) = res else { return };
+                if e.matches(gtk::DialogError::Dismissed) {
+                    return;
+                }
+                if let Some(ui) = weak.upgrade() {
+                    ui.toast_with_copy(&format!("The admin password is in {shown}"), &shown);
+                }
+            },
+        );
+    }
+
+    /// A toast with a Copy button that puts `copy` on the clipboard.
+    fn toast_with_copy(&self, text: &str, copy: &str) {
+        let t = adw::Toast::new(text);
+        t.set_use_markup(false);
+        t.set_timeout(15);
+        t.set_button_label(Some("Copy"));
+        let (clip, copy) = (self.window.clipboard(), copy.to_string());
+        t.connect_button_clicked(move |_| clip.set_text(&copy));
+        *self.last_toast.borrow_mut() = text.to_string();
+        self.toasts.add_toast(t);
+    }
+
+    /// The bar in one line (the probe hook reports it).
+    pub fn bar_summary(&self) -> String {
+        self.bar.summary()
+    }
+
     pub fn toast(&self, text: &str) {
         let t = adw::Toast::new(text);
         t.set_use_markup(false);

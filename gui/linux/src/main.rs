@@ -2,6 +2,7 @@
 //! reads only the `nice-dns` command contract (docs/cli-contract.md).
 
 
+mod action_bar;
 mod actions;
 mod level;
 mod log_pane;
@@ -25,7 +26,7 @@ use libadwaita as adw;
 use model::View;
 
 const USAGE: &str =
-    "usage: nice-dns-gui [--check | --version | --screenshot <png> [--view overview|checks|setup] | --run-action <id> --exit | --probe <id>]";
+    "usage: nice-dns-gui [--check | --version | --screenshot <png> [--view overview|checks|setup] [--run <id>] | --run-action <id> --exit | --probe <id>]";
 
 /// The status command's argv: `<nice-dns> status --tsv`, the command found
 /// as `runner::resolve` finds it (PATH first, then where the installer put it).
@@ -133,11 +134,12 @@ fn run_window() -> ExitCode {
     app.run_with_args::<&str>(&[])
 }
 
-/// `--screenshot <png> [--view <name>]`: read the status once, show the
-/// window (on view `overview`, `checks` or `setup`), render it into `png` and
-/// exit (0, or 1 with the reason on stderr). A hook for tests and proofs; it
-/// needs a display (Xvfb will do).
-fn run_screenshot(png: PathBuf, view: Option<String>) -> ExitCode {
+/// `--screenshot <png> [--view <name>] [--run <id>]`: read the status once,
+/// show the window (on view `overview`, `checks` or `setup`), optionally start
+/// action `id` with no dialog (so the bar can be drawn running, finished or
+/// failed), render it into `png` and exit (0, or 1 with the reason on
+/// stderr). A hook for tests and proofs; it needs a display (Xvfb will do).
+fn run_screenshot(png: PathBuf, view: Option<String>, run: Option<String>) -> ExitCode {
     if let Err(code) = display_or_exit() {
         return code;
     }
@@ -152,9 +154,14 @@ fn run_screenshot(png: PathBuf, view: Option<String>) -> ExitCode {
             ui.select_view(v);
         }
         ui.window.present();
+        if let Some(id) = &run {
+            ui.run(id, None);
+        }
         let (app, c, png) = (app.clone(), Rc::clone(&c), png.clone());
-        // Give the window a frame or two to lay out before rendering it.
-        glib::timeout_add_local_once(Duration::from_millis(800), move || {
+        // Give the window a frame or two to lay out before rendering it (and
+        // a running action a moment to say something).
+        let wait = if run.is_some() { 1600 } else { 800 };
+        glib::timeout_add_local_once(Duration::from_millis(wait), move || {
             match ui.save_png(&png) {
                 Ok(()) => c.set(0),
                 Err(e) => eprintln!("nice-dns-gui: screenshot: {e}"),
@@ -210,6 +217,7 @@ fn probe_pick(ui: Rc<window::Ui>, app: adw::Application, c: Rc<Cell<i32>>, id: S
         if ui.settled() {
             println!("{}", probe_report(&ui, "after"));
             println!("pane: {}", ui.pane.text().lines().last().unwrap_or(""));
+            println!("bar: {}", ui.bar_summary());
             println!("log: {}", ui.pane.text().replace('\n', "|"));
             println!("toast: {}", ui.last_toast());
             c.set(0);
@@ -481,6 +489,23 @@ fn default_renderer(set: Option<&std::ffi::OsStr>) -> Option<&'static str> {
     }
 }
 
+/// The flags after `--screenshot <png>`: `--view overview|checks|setup` and
+/// `--run <id>` (an action that runs a command), each at most once.
+fn screenshot_flags(flags: &[&str]) -> Option<(Option<String>, Option<String>)> {
+    let (mut view, mut run) = (None, None);
+    let mut it = flags.iter();
+    while let Some(flag) = it.next() {
+        match (*flag, it.next()) {
+            ("--view", Some(v @ (&"overview" | &"checks" | &"setup"))) if view.is_none() => view = Some(v.to_string()),
+            ("--run", Some(id)) if run.is_none() && actions::lookup(id).and_then(|a| a.program).is_some() => {
+                run = Some(id.to_string())
+            }
+            _ => return None,
+        }
+    }
+    Some((view, run))
+}
+
 fn main() -> ExitCode {
     // Before GTK starts, and while this process has one thread.
     if let Some(r) = default_renderer(std::env::var_os("GSK_RENDERER").as_deref()) {
@@ -494,10 +519,13 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         ["--check"] => ExitCode::from(run_check()),
-        ["--screenshot", png] => run_screenshot(PathBuf::from(png), None),
-        ["--screenshot", png, "--view", view @ ("overview" | "checks" | "setup")] => {
-            run_screenshot(PathBuf::from(png), Some(view.to_string()))
-        }
+        ["--screenshot", png, ref flags @ ..] => match screenshot_flags(flags) {
+            Some((view, run)) => run_screenshot(PathBuf::from(png), view, run),
+            None => {
+                eprintln!("{USAGE}");
+                ExitCode::from(2)
+            }
+        },
         ["--run-action", id, "--exit"] => run_action(id.to_string()),
         // Like --run-action: only actions that run a command.
         ["--probe", id] if actions::lookup(id).and_then(|a| a.program).is_some() => run_probe(id.to_string()),
@@ -516,6 +544,21 @@ mod tests {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../share/fixtures");
         let fx = if fixture == "-" { "-".to_string() } else { format!("{dir}/{fixture}") };
         vec![format!("{dir}/fake-status.sh"), fx, exit.to_string()]
+    }
+
+    #[test]
+    fn window_screenshot_flags() {
+        assert_eq!(screenshot_flags(&[]), Some((None, None)));
+        assert_eq!(screenshot_flags(&["--view", "setup"]), Some((Some("setup".into()), None)));
+        assert_eq!(
+            screenshot_flags(&["--run", "restart", "--view", "checks"]),
+            Some((Some("checks".into()), Some("restart".into())))
+        );
+        assert_eq!(screenshot_flags(&["--view", "nope"]), None);
+        assert_eq!(screenshot_flags(&["--view"]), None);
+        assert_eq!(screenshot_flags(&["--run", "open-admin"]), None, "an action that runs no command");
+        assert_eq!(screenshot_flags(&["--view", "setup", "--view", "checks"]), None);
+        assert_eq!(screenshot_flags(&["--other"]), None);
     }
 
     #[test]
