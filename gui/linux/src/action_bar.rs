@@ -58,9 +58,24 @@ pub fn result_title(id: &str, last_line: Option<&str>) -> String {
     }
 }
 
-/// "{label} did not finish".
+/// "{label} did not finish", with the label the window's own buttons use.
 pub fn failed_title(id: &str) -> String {
-    format!("{} did not finish", actions::lookup(id).map_or(id, |a| a.label))
+    let label = match id {
+        "install" => "Install".to_string(),
+        "reinstall" => "Reinstall".into(),
+        "restart" => "Restart".into(),
+        "uninstall" => "Uninstall".into(),
+        "update-check" => "Check for update".into(),
+        "update" => "Update".into(),
+        "bridges-on" => "Turning Tor bridges on".into(),
+        "bridges-off" => "Turning Tor bridges off".into(),
+        "health-start" => "Turning on automatic checks".into(),
+        "health-stop" => "Turning off automatic checks".into(),
+        "health-run" => "Run checks".into(),
+        "failures" => "Show failures".into(),
+        _ => running_title(id),
+    };
+    format!("{label} did not finish")
 }
 
 /// A time taken: "12 s", "2 min 48 s", "1 h 5 min".
@@ -302,7 +317,8 @@ mod tests {
         assert_eq!(result_title("restart", Some("done")), "Restart the stack: finished");
         assert_eq!(result_title("bridges-on", Some("fake nice-dns: done")), "Turn bridges on: finished");
         assert_eq!(result_title("update-check", None), "Check for an update: finished");
-        assert_eq!(failed_title("proxy-socat"), "Switch the proxy to socat did not finish");
+        assert_eq!(failed_title("proxy-socat"), "Switching the Tor proxy to socat did not finish");
+        assert_eq!(failed_title("restart"), "Restart did not finish");
     }
 
     #[test]

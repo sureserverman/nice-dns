@@ -738,7 +738,11 @@ pub fn path(s: &Status, level: Level) -> (Vec<Node>, String) {
                 _ => "Backup: Tor exit".into(),
             };
         } else if matches!(state, NodeState::Attention | NodeState::Down) && id != NodeId::Resolver {
-            caption = if state == NodeState::Down { "Not answering".into() } else { "Needs attention".into() };
+            caption = match (id, state) {
+                (NodeId::Computer, NodeState::Down) => "Not using nice-dns".into(),
+                (_, NodeState::Down) => "Not answering".into(),
+                _ => "Needs attention".into(),
+            };
         } else if id == NodeId::Resolver && state == NodeState::Down {
             caption = "Not answering".into();
         }
@@ -799,7 +803,7 @@ pub fn update_row(s: &Status, now: u64) -> UpdateRow {
         suggested: false,
     };
     match (u.result, u.never_checked) {
-        (_, true) => check("Not checked yet", twice.trim().to_string()),
+        (_, true) => check("Not checked yet", String::new()),
         (Some(UpdateResult::Current), _) => {
             let lead = match (branch, &checked) {
                 (Some(b), Some(c)) => format!("Branch {b}, checked {c}."),
@@ -1256,6 +1260,7 @@ mod tests {
         assert_eq!(nodes[2].state, NodeState::Down);
         let (nodes, _) = path_of(&obs_is(INSTALLED, "dns-owner", "unhealthy", "x"));
         assert_eq!(nodes[0].state, NodeState::Down);
+        assert_eq!(nodes[0].caption, "Not using nice-dns");
         // A healthy route that is not in use does not colour the resolver.
         let (nodes, _) = path_of(&obs_is(INSTALLED, "route:quad9-exit", "unhealthy", "x"));
         assert_eq!(nodes[4].state, NodeState::Ok);
@@ -1410,7 +1415,7 @@ mod tests {
     #[test]
     fn update_row_unknown_variants() {
         let r = update_row(&st(INSTALLED), NOW);
-        assert_eq!((r.title, r.button), ("Not checked yet", "update-check"));
+        assert_eq!((r.title, r.button, r.subtitle.as_str()), ("Not checked yet", "update-check", ""));
         let tried = INSTALLED.replacen("update\tresult\tunknown\tnever-checked\n", &format!("update\tresult\tunknown\nupdate\tchecked_at\t{}\n", NOW - 600), 1);
         let r = update_row(&st(&tried), NOW);
         assert_eq!((r.title, r.subtitle.as_str()), ("Could not check for updates", "Last tried 10 min ago."));

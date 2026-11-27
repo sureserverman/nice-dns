@@ -36,6 +36,7 @@ const LIGHT: &str = "
 @define-color nd_neutral_border #C9CBD1;
 @define-color nd_inset #F3F3F5;
 @define-color nd_stderr #8A5A00;
+@define-color nd_secondary #5E6066;
 ";
 
 const DARK: &str = "
@@ -60,6 +61,7 @@ const DARK: &str = "
 @define-color nd_neutral_border #6B6E76;
 @define-color nd_inset #1B1C1E;
 @define-color nd_stderr #D9B46A;
+@define-color nd_secondary #A9ABB3;
 ";
 
 fn css(dark: bool) -> String {

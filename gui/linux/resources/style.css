@@ -40,3 +40,7 @@
 .nd-dim { opacity: 0.55; }
 .nd-path-card { padding: 16px 20px; }
 .nd-stderr { color: @nd_stderr; }
+.nd-secondary { color: @nd_secondary; }
+.nd-semibold { font-weight: 600; }
+.nd-link { color: @accent_color; font-weight: 600; }
+.nd-bar-detail { font-family: monospace; font-size: 12px; color: @nd_secondary; }

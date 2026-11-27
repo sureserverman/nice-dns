@@ -252,7 +252,7 @@ fn selectors_a_failed_switch_puts_the_selector_back_and_names_the_exit() {
     // its drawer opened by itself.
     let bar = p.at("bar");
     assert_eq!(field(bar, "state"), "failed", "{bar}");
-    assert_eq!(field(bar, "title"), "Switch_the_proxy_to_socat_did_not_finish", "{bar}");
+    assert_eq!(field(bar, "title"), "Switching_the_Tor_proxy_to_socat_did_not_finish", "{bar}");
     assert_eq!(field(bar, "detail"), "failed_(exit_3)", "{bar}");
     assert_eq!(field(bar, "drawer"), "open", "{bar}");
     // (The only toast is the probe's second click: one action at a time.)

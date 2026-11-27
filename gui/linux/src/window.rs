@@ -707,7 +707,7 @@ impl Ui {
         // drawer open (a failure is no toast).
         if log_pane::succeeded(id, &end) {
             let title = action_bar::result_title(id, self.pane.last_line().as_deref());
-            self.bar.finished(true, &title, &format!("Finished in {} \u{b7} {said}", self.bar.took()));
+            self.bar.finished(true, &title, &format!("Finished in {} . {said}", self.bar.took()));
         } else {
             self.bar.finished(false, &action_bar::failed_title(id), &said);
         }
@@ -1211,7 +1211,7 @@ impl Ui {
         let card = gtk::Box::new(gtk::Orientation::Vertical, 14);
         card.add_css_class("card");
         card.add_css_class("nd-path-card");
-        card.append(&gtk::Label::builder().label("How a lookup travels").xalign(0.0).css_classes(["heading", "dim-label"]).build());
+        card.append(&gtk::Label::builder().label("How a lookup travels").xalign(0.0).css_classes(["nd-secondary", "nd-semibold"]).build());
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         for (i, n) in b.path.iter().enumerate() {
             if i > 0 {
@@ -1247,7 +1247,7 @@ impl Ui {
         }
         card.append(&row);
         card.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        card.append(&gtk::Label::builder().label(b.path_footer.as_str()).xalign(0.0).wrap(true).css_classes(["dim-label"]).build());
+        card.append(&gtk::Label::builder().label(b.path_footer.as_str()).xalign(0.0).wrap(true).css_classes(["nd-secondary"]).build());
         card.update_property(&[gtk::accessible::Property::Label(&format!("{} {}", b.path_sentence, b.path_footer))]);
         card.upcast()
     }
@@ -1255,7 +1255,7 @@ impl Ui {
     fn attention_group(self: &Rc<Self>, b: &Body) -> gtk::Widget {
         let g = adw::PreferencesGroup::new();
         g.set_title(&b.attention_title);
-        let all = gtk::Button::builder().css_classes(["flat"]).build();
+        let all = gtk::Button::builder().css_classes(["flat", "nd-link"]).build();
         let inner = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         inner.append(&gtk::Label::new(Some(&format!("All {} checks", b.checks_total))));
         inner.append(&gtk::Image::from_icon_name("go-next-symbolic"));
@@ -1328,7 +1328,7 @@ impl Ui {
 
     /// The update row: one component, drawn in Overview and Setup.
     fn update_row_widget(self: &Rc<Self>, u: &UpdateRow) -> adw::ActionRow {
-        let r = adw::ActionRow::builder().title(u.title).subtitle(u.subtitle.as_str()).use_markup(false).subtitle_lines(0).build();
+        let r = adw::ActionRow::builder().title(u.title).subtitle(hex_markup(&u.subtitle)).use_markup(true).subtitle_lines(0).build();
         let btn = self.action_button(u.button, u.button_label);
         btn.set_valign(gtk::Align::Center);
         btn.add_css_class(if u.suggested { "suggested-action" } else { "flat" });
@@ -1344,7 +1344,7 @@ impl Ui {
         // The same status header as the Overview's, as text and its button.
         let head = gtk::Box::new(gtk::Orientation::Horizontal, 18);
         let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(4).hexpand(true).valign(gtk::Align::Center).build();
-        text.append(&gtk::Label::builder().label(b.checks_title.as_str()).xalign(0.0).wrap(true).css_classes(["title-1"]).build());
+        text.append(&gtk::Label::builder().label(b.checks_title.as_str()).xalign(0.0).wrap(true).css_classes(["title-2"]).build());
         text.append(&gtk::Label::builder().label(b.checks_subtitle.as_str()).xalign(0.0).wrap(true).css_classes(["dim-label"]).build());
         let button = self.action_button(b.header.button, b.header.button_label);
         button.set_valign(gtk::Align::Center);
@@ -1400,6 +1400,7 @@ impl Ui {
         rep.set_title("Automatic repairs");
         let failures = self.action_button("failures", "Show failures");
         failures.add_css_class("flat");
+        failures.add_css_class("nd-link");
         rep.set_header_suffix(Some(&failures));
         if b.repairs.is_empty() {
             rep.add(&adw::ActionRow::builder().title("Nothing yet").subtitle("The controller's journal is empty").build());
@@ -1437,7 +1438,7 @@ impl Ui {
             v.set_tooltip_text(Some(&r.reason));
             row.add_suffix(&v);
         }
-        let arrow = gtk::Image::from_icon_name("pan-down-symbolic");
+        let arrow = gtk::Image::from_icon_name("pan-end-symbolic");
         row.add_suffix(&arrow);
         let record = gtk::Label::builder()
             .label(r.record.as_str())
@@ -1457,7 +1458,7 @@ impl Ui {
             let (under, arrow) = (under.clone(), arrow.clone());
             move |open: bool| {
                 under.set_visible(open);
-                arrow.set_icon_name(Some(if open { "pan-up-symbolic" } else { "pan-down-symbolic" }));
+                arrow.set_icon_name(Some(if open { "pan-down-symbolic" } else { "pan-end-symbolic" }));
             }
         };
         show(self.open.borrow().get(&key).copied().unwrap_or(false));
@@ -1489,7 +1490,7 @@ impl Ui {
 
         let version = adw::PreferencesGroup::new();
         version.set_title("Version");
-        let row = adw::ActionRow::builder().title(s.version.title.as_str()).subtitle(s.version.subtitle.as_str()).use_markup(false).build();
+        let row = adw::ActionRow::builder().title(s.version.title.as_str()).subtitle(hex_markup(&s.version.subtitle)).use_markup(true).build();
         let copy = gtk::Button::builder().label("Copy build details").valign(gtk::Align::Center).css_classes(["flat"]).build();
         copy.set_widget_name("copy-build-details");
         let (weak, text) = (Rc::downgrade(self), s.version.details.clone());
@@ -1661,6 +1662,22 @@ fn status_icon(sev: Severity) -> gtk::Image {
     i
 }
 
+/// A commit in a subtitle (a 12-hex word) in monospace, as Pango markup; the
+/// rest of the text is escaped.
+fn hex_markup(s: &str) -> String {
+    s.split(' ')
+        .map(|w| {
+            let core = w.trim_end_matches(['.', ',']);
+            if core.len() == 12 && core.bytes().all(|b| b.is_ascii_hexdigit()) {
+                format!("<tt>{core}</tt>{}", glib::markup_escape_text(&w[core.len()..]))
+            } else {
+                glib::markup_escape_text(w).to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// `max` px wide at most, centred, around `child`.
 fn clamp(child: &impl IsA<gtk::Widget>, max: i32) -> adw::Clamp {
     adw::Clamp::builder().maximum_size(max).tightening_threshold(max).child(child).build()
@@ -1671,12 +1688,12 @@ fn column(parts: &[gtk::Widget]) -> gtk::Widget {
     let col = gtk::Box::new(gtk::Orientation::Vertical, 22);
     col.set_margin_top(24);
     col.set_margin_bottom(24);
-    col.set_margin_start(24);
-    col.set_margin_end(24);
+    col.set_margin_start(50);
+    col.set_margin_end(50);
     for p in parts {
         col.append(p);
     }
-    clamp(&col, 660).upcast()
+    clamp(&col, 760).upcast()
 }
 
 #[cfg(test)]
